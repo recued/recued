@@ -173,7 +173,7 @@ describe('the AI pass through the chat’s privacy layer', () => {
     expect(packet).not.toContain('__entity');
   });
 
-  it('sends the owner’s own prompt as written, as the chat sends a message the owner typed', async () => {
+  it('treats the owner’s own prompt as the chat treats a message the owner typed', async () => {
     const sent: string[] = [];
     const execute: ExecuteChatAiCall = async (_manifest, input) => {
       sent.push(input['llm.prompt'] as string);
@@ -184,13 +184,18 @@ describe('the AI pass through the chat’s privacy layer', () => {
       resolver: resolver(),
       getContactKnownValueIndex: createContactKnownValueIndexBuilder(() => contacts),
     });
-    await call(MAIL_FACT_AI_MANIFEST, request('Sarah Chen answers these.'), { timeout_ms: 1_000 });
+    await call(MAIL_FACT_AI_MANIFEST, request('Sarah Chen answers these, not Tom Haverford.'), { timeout_ms: 1_000 });
     const packet = JSON.parse(sent[0]!);
-    expect(packet.user_message).toBe('Sarah Chen answers these.');
-    // The email itself still goes aliased.
+    // Scanned against what this request knows, as a chat message is against its
+    // turn: Sarah Chen's address is in the mail's cc, so the contact is known (D-326)
+    // and named by the mail's alias. A name the request does not know goes as written.
+    expect(packet.user_message).toBe('pii.Person1 answers these, not Tom Haverford.');
+    // The email itself still goes aliased, by the same person.
     const mail = packet.prior_tool_calls[0].result;
     expect(mail.body_text).not.toContain('Sarah Chen');
     expect(JSON.stringify(mail)).not.toContain('sarah.chen@acme.example');
+    // The cc address carries that contact (decorated with the words the owner typed).
+    expect(JSON.stringify(mail)).toMatch(/"cc":\["pii\.Person1(?:\.[a-z0-9-]+)*@d\d+\.invalid"\]/u);
   });
 
   it('refuses an alias the ledger never issued: mapping back leaves it, the guard catches it', async () => {

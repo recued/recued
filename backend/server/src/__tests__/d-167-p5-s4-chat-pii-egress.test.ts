@@ -248,7 +248,8 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
     const original = JSON.stringify({
       available_tools: [],
       commitment_context: [],
-      chat_tail: [{ role: 'user', content: 'hi alice@acme.com' }],
+      // A name: an address would be aliased by its shape (2026-10-24).
+      chat_tail: [{ role: 'user', content: 'hi Alice' }],
       user_message: 'ping',
       execution_case_context: {
         cards: [{
@@ -1413,11 +1414,12 @@ const runOrchestratorTurn = async (opts: {
 describe('D-167 P5 S4 — end-to-end through the orchestrator', () => {
   it('is behavior-preserving with the noop resolver (nothing aliased)', async () => {
     const result = await runOrchestratorTurn({
-      userMessage: 'contact alice@acme.com',
+      // A name: an address would be aliased by its shape (2026-10-24).
+      userMessage: 'contact Alice Chen',
       aiResponse: () => 'done',
     });
     // Egress carries the real message unchanged; reply unchanged; no summary.
-    expect(result.egressPacket.user_message).toBe('contact alice@acme.com');
+    expect(result.egressPacket.user_message).toBe('contact Alice Chen');
     expect(result.messageComplete).toBe('done');
     expect(result.assistantAudit).toBeDefined();
     expect(result.assistantAudit).not.toHaveProperty('redaction_summary');

@@ -91,11 +91,11 @@ const fixture = (accounts: readonly BulkOAuthAppAccount[] = refs, saved = new Ma
 describe('bulk native saved-app switching', () => {
   it('offers an entry only on Mail and Calendar lists with eligible native accounts', () => {
     const state = initialAccountsPanelState('mail'); state.bulkOAuthAppSwitchAvailable = true;
-    expect(renderAccountsPanel({ state })).not.toContain('Bulk switch saved OAuth apps');
+    expect(renderAccountsPanel({ state })).not.toContain('Switch OAuth app for several accounts');
     state.loading = false; state.rows = [{ slug: 'work', adapterType: 'gmail', authState: 'healthy' }];
-    expect(renderAccountsPanel({ state })).toContain('Bulk switch saved OAuth apps'); state.lane = 'calendar'; state.rows = [{ slug: 'work', adapterType: 'gcal', authState: 'healthy' }]; expect(renderAccountsPanel({ state })).toContain('Bulk switch saved OAuth apps');
-    state.lane = 'file'; expect(renderAccountsPanel({ state })).not.toContain('Bulk switch saved OAuth apps'); state.lane = 'mail'; state.stage = 'form';
-    expect(renderAccountsPanel({ state })).not.toContain('Bulk switch saved OAuth apps');
+    expect(renderAccountsPanel({ state })).toContain('Switch OAuth app for several accounts'); state.lane = 'calendar'; state.rows = [{ slug: 'work', adapterType: 'gcal', authState: 'healthy' }]; expect(renderAccountsPanel({ state })).toContain('Switch OAuth app for several accounts');
+    state.lane = 'file'; expect(renderAccountsPanel({ state })).not.toContain('Switch OAuth app for several accounts'); state.lane = 'mail'; state.stage = 'form';
+    expect(renderAccountsPanel({ state })).not.toContain('Switch OAuth app for several accounts');
   });
   it('loads without authorizing or writing, filters the vendor, and escapes app names', async () => {
     const f = fixture([...refs, { platform: 'mail', slug: 'microsoft', issuer: 'microsoft' }]); await f.panel.open('mail'); f.choose();

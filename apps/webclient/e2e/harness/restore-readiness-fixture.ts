@@ -24,7 +24,7 @@ export const restoreReadinessFixture = (mode: string | null, method: string): un
   if (method === 'server.archive.unattended.get') return mode === 'attention' ? { configured: false }
     : { configured: true, settings: { ...destination, enabled: true, keep_last: 5, schedule }, next_run_at: now + 3600_000 };
   if (method === 'server.archive.health.get') return {
-    checked_at: now, monitoring: mode === 'attention' ? 'not_configured' : 'active', destination,
+    checked_at: now, monitoring: mode === 'failed_checks' ? 'unavailable' : mode === 'attention' ? 'not_configured' : 'active', destination,
     policy: { alerts_enabled: true, backup_max_age_hours: 36, recovery_max_age_days: 30 }, alerts: [],
     backup: { state: 'current', created_at: now - 1000, due_at: now + 3600_000 },
     recovery: { state: 'current', finished_at: now - 1000, due_at: now + 3600_000 },

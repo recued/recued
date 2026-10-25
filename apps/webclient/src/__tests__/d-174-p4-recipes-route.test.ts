@@ -1427,8 +1427,8 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).not.toContain('data-recued-recipes-action="open-run"');
     expect(html).not.toContain('data-recued-recipes-action="open-schedule"');
     expect(html).not.toContain('data-recued-recipes-action="toggle-auto-run:');
-    expect(html).toContain(
-      'class="recipes-button recipes-button--primary"\n            href="#automation/on-new-mail"',
+    expect(html).toMatch(
+      /class="recipes-button recipes-button--primary"\s+href="#automation\/on-new-mail"/,
     );
     expect(html).toContain('>Manage automation</a>');
 

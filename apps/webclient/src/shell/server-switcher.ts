@@ -27,7 +27,11 @@
  */
 
 import type { WebclientServerProfile } from '@recued/contracts';
-import { validLastConnectedAt } from '../storage/server-profiles.js';
+import {
+  defaultProfileLabel,
+  fallbackAfterRemoving,
+  validLastConnectedAt,
+} from '../storage/server-profiles.js';
 import type { ServerSwitchActiveWork } from './server-switch-work-tracker.js';
 
 export const SERVER_SWITCHER_ATTR = 'data-recued-server-switcher';
@@ -35,6 +39,8 @@ export const SERVER_SWITCHER_MENU_ATTR = 'data-recued-server-switcher-menu';
 export const SERVER_SWITCHER_ITEM_ATTR = 'data-recued-server-switcher-item';
 export const SERVER_SWITCHER_CURRENT_ATTR = 'data-recued-server-switcher-current';
 export const SERVER_SWITCHER_RECENCY_ATTR = 'data-recued-server-switcher-recency';
+export const SERVER_SWITCHER_NEEDS_PAIRING_ATTR =
+  'data-recued-server-switcher-needs-pairing';
 export const SERVER_SWITCHER_SWITCH_CONFIRM_ATTR =
   'data-recued-server-switcher-switch-confirm';
 export const SERVER_SWITCHER_SWITCH_COMMIT_ATTR =
@@ -75,6 +81,12 @@ export const SERVER_SWITCHER_REMOVE_STATUS_ATTR =
   'data-recued-server-switcher-remove-status';
 export const SERVER_SWITCHER_REMOVE_ERROR_ATTR =
   'data-recued-server-switcher-remove-error';
+/** On the CURRENT server's forget confirm: what this tab's unsent work loses. */
+export const SERVER_SWITCHER_REMOVE_WORK_ATTR =
+  'data-recued-server-switcher-remove-work';
+/** On the CURRENT server's forget confirm: where this tab goes next. */
+export const SERVER_SWITCHER_REMOVE_NEXT_ATTR =
+  'data-recued-server-switcher-remove-next';
 export const SERVER_SWITCHER_EMPTY_ATTR = 'data-recued-server-switcher-empty';
 export const SERVER_SWITCHER_STYLES_MARKER = 'data-recued-server-switcher-styles';
 
@@ -97,6 +109,31 @@ export const isInFlightServerSwitchWorkState = (
 ): boolean => state === 'in_flight'
   || state === 'in_flight_with_chat_draft'
   || state === 'in_flight_with_unsaved_changes';
+
+/** What leaving the current server ANOTHER way than a switch — forgetting
+ *  it, or adding a server — does to this tab's work, or null when there is
+ *  nothing to lose. Both reload the tab, as a switch does, so they owe the
+ *  owner the same warning first. */
+export const leaveServerWorkConsequence = (
+  workState: ServerSwitchWorkState,
+  action: 'Forgetting it' | 'Adding a server',
+  sourceLabel: string,
+): string | null => {
+  switch (workState) {
+    case 'clean':
+      return null;
+    case 'chat_draft':
+      return `The Chat message you have not sent is only in this tab. ${action} reloads this tab, and the message is lost.`;
+    case 'unsaved_changes':
+      return `You have unsaved changes on ${sourceLabel}. ${action} reloads this tab and discards them.`;
+    case 'in_flight_with_chat_draft':
+      return `Work is still finishing on ${sourceLabel}, and this tab has an unsent Chat draft. ${action} reloads this tab: it cannot confirm or cancel that work, and the draft is lost.`;
+    case 'in_flight_with_unsaved_changes':
+      return `Work is still finishing on ${sourceLabel}, and this tab may hold unsaved changes. ${action} reloads this tab: it cannot confirm or cancel that work, and unsaved changes are discarded.`;
+    case 'in_flight':
+      return `Work is still finishing on ${sourceLabel}. ${action} reloads this tab, which cannot confirm or cancel it; any result stays on that server.`;
+  }
+};
 
 export const serverSwitchWorkStateHasChatDraft = (
   state: ServerSwitchWorkState,
@@ -205,6 +242,12 @@ export interface ProfileListMount {
   /** Drop any idle switch/rename/removal review. In-flight work keeps
    *  ownership of its result even if the containing Account dialog closes. */
   disarm(): void;
+  /** Escape inside the list: close the open rename or review, as its Cancel
+   *  would, and give focus back to what opened it. True when something was
+   *  open (busy work included: it keeps the Escape, closes nothing), so the
+   *  containing dialog stays open. ⛔ Escape closed the whole Account menu,
+   *  and a half-typed name went with it. */
+  dismissNested(): boolean;
   /** Tear down listeners and nodes. Idempotent. */
   dispose(): void;
 }
@@ -218,11 +261,9 @@ export const SERVER_SWITCHER_STYLES = `
   list-style: none;
   margin: 0;
   padding: 0;
-  /* Fixed height + scroll: a roster is unbounded, and a menu that grows past
-     the viewport puts its own controls out of reach. */
-  max-height: 216px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* No scroll of its own: the container bounds it (the account menu fits
+     the viewport and scrolls as one). A 216px scroll box here cut the row
+     above an open confirm in half and hid Rename's Save below its fold. */
 }
 [${SERVER_SWITCHER_MENU_ATTR}] > li:not([${SERVER_SWITCHER_SWITCH_CONFIRM_ATTR}]):not([${SERVER_SWITCHER_REMOVE_CONFIRM_ATTR}]):not([${SERVER_SWITCHER_RENAME_FORM_ATTR}]) {
   display: flex;
@@ -250,7 +291,7 @@ export const SERVER_SWITCHER_STYLES = `
   text-align: left;
   cursor: pointer;
 }
-[${SERVER_SWITCHER_ITEM_ATTR}]:hover { background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
+[${SERVER_SWITCHER_ITEM_ATTR}]:hover { background: var(--surface-subtle, rgba(127,127,127,0.12)); }
 [${SERVER_SWITCHER_ITEM_ATTR}][aria-current="true"] { font-weight: 600; }
 [${SERVER_SWITCHER_ITEM_ATTR}]:focus-visible,
 [${SERVER_SWITCHER_SWITCH_COMMIT_ATTR}]:focus-visible,
@@ -264,13 +305,14 @@ export const SERVER_SWITCHER_STYLES = `
 [${SERVER_SWITCHER_REMOVE_LOCAL_ATTR}]:focus-visible,
 [${SERVER_SWITCHER_REMOVE_REVOKE_ATTR}]:focus-visible,
 [${SERVER_SWITCHER_REMOVE_CANCEL_ATTR}]:focus-visible {
-  outline: 2px solid var(--recued-focus, #4c8dff);
+  outline: 2px solid var(--accent, #4c8dff);
   outline-offset: 1px;
 }
 [${SERVER_SWITCHER_ITEM_ATTR}] .recued-switcher-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 2px 6px;
   min-width: 0;
 }
 [${SERVER_SWITCHER_ITEM_ATTR}] .recued-switcher-name,
@@ -283,20 +325,39 @@ export const SERVER_SWITCHER_STYLES = `
   flex: 0 0 auto;
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--recued-accent-weak, rgba(20, 125, 158, 0.12));
-  color: var(--recued-accent, #147d9e);
+  background: var(--accent-weak, rgba(20, 125, 158, 0.12));
+  color: var(--accent, #147d9e);
   font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
-[${SERVER_SWITCHER_ITEM_ATTR}] .recued-switcher-url { font-size: 11px; opacity: 0.62; }
+span[${SERVER_SWITCHER_NEEDS_PAIRING_ATTR}] {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--warn-soft, rgba(176, 106, 0, 0.14));
+  color: var(--warn, #8a5200);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+/* The muted ink, not a faded one: at 62% opacity this 11px line read 4.4:1
+   on white, under the 4.5:1 small text needs. */
+[${SERVER_SWITCHER_ITEM_ATTR}] .recued-switcher-url { font-size: 11px; color: var(--fg-muted); }
+[${SERVER_SWITCHER_ITEM_ATTR}] .recued-switcher-lock {
+  display: inline-block;
+  margin-right: 3px;
+  line-height: 0;
+  vertical-align: -1px;
+}
 [${SERVER_SWITCHER_RECENCY_ATTR}] {
   font-size: 10.5px;
   opacity: 0.7;
 }
-[${SERVER_SWITCHER_ITEM_ATTR}][data-unreachable="true"] .recued-switcher-url {
-  color: var(--recued-danger, #b3261e);
+[${SERVER_SWITCHER_ITEM_ATTR}][data-unreachable="true"] [${SERVER_SWITCHER_RECENCY_ATTR}] {
+  color: var(--danger, #b3261e);
   opacity: 1;
 }
 [${SERVER_SWITCHER_RENAME_ATTR}],
@@ -314,15 +375,15 @@ export const SERVER_SWITCHER_STYLES = `
   opacity: 0.78;
   cursor: pointer;
 }
-[${SERVER_SWITCHER_REMOVE_ATTR}]:hover { opacity: 1; background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
-[${SERVER_SWITCHER_RENAME_ATTR}]:hover { opacity: 1; background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
+[${SERVER_SWITCHER_REMOVE_ATTR}]:hover { opacity: 1; background: var(--surface-subtle, rgba(127,127,127,0.12)); }
+[${SERVER_SWITCHER_RENAME_ATTR}]:hover { opacity: 1; background: var(--surface-subtle, rgba(127,127,127,0.12)); }
 [${SERVER_SWITCHER_RENAME_FORM_ATTR}] {
   display: block;
   margin: 2px 0 8px;
   padding: 10px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,0.28));
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
   border-radius: 8px;
-  background: var(--recued-surface-subtle, rgba(127,127,127,0.07));
+  background: var(--surface-subtle, rgba(127,127,127,0.07));
 }
 [${SERVER_SWITCHER_RENAME_FORM_ATTR}] label {
   display: block;
@@ -334,9 +395,10 @@ export const SERVER_SWITCHER_STYLES = `
   width: 100%;
   min-height: 44px;
   padding: 7px 9px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,0.35));
+  /* A field's edge needs 3:1: --border measured 1.27:1 on white. */
+  border: 1px solid color-mix(in srgb, var(--fg-muted) 75%, var(--surface));
   border-radius: 7px;
-  background: var(--recued-surface, #fff);
+  background: var(--surface, #fff);
   color: inherit;
   font: inherit;
   font-size: 13px;
@@ -348,7 +410,7 @@ export const SERVER_SWITCHER_STYLES = `
   line-height: 1.4;
 }
 [${SERVER_SWITCHER_RENAME_FORM_ATTR}] .recued-switcher-rename-hint { opacity: 0.72; }
-[${SERVER_SWITCHER_RENAME_ERROR_ATTR}] { color: var(--recued-danger, #b3261e); }
+[${SERVER_SWITCHER_RENAME_ERROR_ATTR}] { color: var(--danger, #b3261e); }
 [${SERVER_SWITCHER_RENAME_FORM_ATTR}] .recued-switcher-rename-actions {
   display: flex;
   flex-wrap: wrap;
@@ -358,7 +420,7 @@ export const SERVER_SWITCHER_STYLES = `
 [${SERVER_SWITCHER_RENAME_CANCEL_ATTR}] {
   min-height: 44px;
   padding: 6px 10px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,0.28));
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
   border-radius: 7px;
   background: transparent;
   color: inherit;
@@ -367,12 +429,12 @@ export const SERVER_SWITCHER_STYLES = `
   cursor: pointer;
 }
 [${SERVER_SWITCHER_RENAME_SAVE_ATTR}] {
-  border-color: var(--recued-accent, #147d9e);
-  color: var(--recued-accent, #147d9e);
+  border-color: var(--accent, #147d9e);
+  color: var(--accent, #147d9e);
 }
 [${SERVER_SWITCHER_RENAME_SAVE_ATTR}]:hover,
 [${SERVER_SWITCHER_RENAME_CANCEL_ATTR}]:hover {
-  background: var(--recued-surface-hover, rgba(127,127,127,0.12));
+  background: var(--surface-subtle, rgba(127,127,127,0.12));
 }
 [${SERVER_SWITCHER_ANNOUNCER_ATTR}] {
   position: absolute;
@@ -390,9 +452,9 @@ export const SERVER_SWITCHER_STYLES = `
   display: block;
   margin: 2px 0 8px;
   padding: 10px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,0.28));
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
   border-radius: 8px;
-  background: var(--recued-surface-subtle, rgba(127,127,127,0.07));
+  background: var(--surface-subtle, rgba(127,127,127,0.07));
 }
 [${SERVER_SWITCHER_SWITCH_CONFIRM_ATTR}] h3,
 [${SERVER_SWITCHER_REMOVE_CONFIRM_ATTR}] h3 {
@@ -410,7 +472,7 @@ export const SERVER_SWITCHER_STYLES = `
 }
 [${SERVER_SWITCHER_REMOVE_STATUS_ATTR}] { opacity: 0.86; }
 [${SERVER_SWITCHER_REMOVE_ERROR_ATTR}] {
-  color: var(--recued-danger, #b3261e);
+  color: var(--danger, #b3261e);
   opacity: 1;
 }
 [${SERVER_SWITCHER_SWITCH_CONFIRM_ATTR}] .recued-switcher-switch-boundary {
@@ -431,7 +493,7 @@ export const SERVER_SWITCHER_STYLES = `
   min-width: 0;
   padding: 7px 8px;
   border-radius: 7px;
-  background: var(--recued-surface, rgba(127,127,127,0.08));
+  background: var(--surface, rgba(127,127,127,0.08));
   font-size: 11px;
 }
 [${SERVER_SWITCHER_ACTIVE_WORK_ITEM_ATTR}] > span {
@@ -443,7 +505,7 @@ export const SERVER_SWITCHER_STYLES = `
   flex: 0 0 auto;
   min-height: 36px;
   padding: 5px 8px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,0.28));
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
   border-radius: 7px;
   background: transparent;
   color: inherit;
@@ -453,7 +515,7 @@ export const SERVER_SWITCHER_STYLES = `
   cursor: pointer;
 }
 [${SERVER_SWITCHER_SWITCH_ERROR_ATTR}] {
-  color: var(--recued-danger, #b3261e);
+  color: var(--danger, #b3261e);
   opacity: 1;
 }
 [${SERVER_SWITCHER_SWITCH_CONFIRM_ATTR}] .recued-switcher-switch-actions,
@@ -470,7 +532,7 @@ export const SERVER_SWITCHER_STYLES = `
 [${SERVER_SWITCHER_REMOVE_CANCEL_ATTR}] {
   min-height: 44px;
   padding: 6px 9px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,0.28));
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
   border-radius: 7px;
   background: transparent;
   color: inherit;
@@ -479,22 +541,22 @@ export const SERVER_SWITCHER_STYLES = `
   cursor: pointer;
 }
 [${SERVER_SWITCHER_SWITCH_COMMIT_ATTR}] {
-  border-color: var(--recued-accent, #147d9e);
-  color: var(--recued-accent, #147d9e);
+  border-color: var(--accent, #147d9e);
+  color: var(--accent, #147d9e);
 }
 [${SERVER_SWITCHER_SWITCH_COMMIT_ATTR}]:hover,
 [${SERVER_SWITCHER_SWITCH_CANCEL_ATTR}]:hover,
 [${SERVER_SWITCHER_RETURN_TO_WORK_ATTR}]:hover,
 [${SERVER_SWITCHER_REMOVE_LOCAL_ATTR}]:hover,
 [${SERVER_SWITCHER_REMOVE_CANCEL_ATTR}]:hover {
-  background: var(--recued-surface-hover, rgba(127,127,127,0.12));
+  background: var(--surface-subtle, rgba(127,127,127,0.12));
 }
 [${SERVER_SWITCHER_REMOVE_REVOKE_ATTR}] {
-  border-color: color-mix(in srgb, var(--recued-danger, #b3261e) 48%, transparent);
-  color: var(--recued-danger, #b3261e);
+  border-color: color-mix(in srgb, var(--danger, #b3261e) 48%, transparent);
+  color: var(--danger, #b3261e);
 }
 [${SERVER_SWITCHER_REMOVE_REVOKE_ATTR}]:hover {
-  background: color-mix(in srgb, var(--recued-danger, #b3261e) 9%, transparent);
+  background: color-mix(in srgb, var(--danger, #b3261e) 9%, transparent);
 }
 [${SERVER_SWITCHER_SWITCH_COMMIT_ATTR}][disabled],
 [${SERVER_SWITCHER_SWITCH_CANCEL_ATTR}][disabled],
@@ -528,6 +590,34 @@ export const orderServerProfilesByRecency = (
     (left, right) =>
       (validLastConnectedAt(right) ?? 0) - (validLastConnectedAt(left) ?? 0),
   );
+
+/** A saved server this browser holds no sign-in for — a pairing that stopped
+ *  before its token was saved, or a reconnect from before 2026-10-23 that
+ *  wiped another server's sign-in with its own. Switching to it opens a fresh
+ *  pairing with its address filled in (pairing that address re-attaches to
+ *  this record, name and all), so the list says so first. */
+export const needsPairingAgain = (profile: WebclientServerProfile): boolean =>
+  profile.webclient_token === null || profile.webclient_token === undefined;
+
+/** The address a row shows. An encrypted `wss://` scheme becomes a small
+ *  lock and a plain `ws://` simply goes — the cue a browser's address bar
+ *  gives, in fewer characters. Anything else is shown as stored; the full
+ *  address stays on the line's tooltip. */
+const serverAddressParts = (
+  url: string,
+): { readonly encrypted: boolean; readonly text: string } => {
+  const scheme = /^(wss?):\/\//i.exec(url);
+  return scheme === null
+    ? { encrypted: false, text: url }
+    : {
+        encrypted: scheme[1]!.toLowerCase() === 'wss',
+        text: url.slice(scheme[0].length),
+      };
+};
+
+/** Lock glyph, from the same stroke set as the account icon. */
+const LOCK_ICON_SVG =
+  '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>';
 
 export const formatServerProfileRecency = (
   connectedAt: number | null,
@@ -743,20 +833,41 @@ export const mountProfileList = (
         current.setAttribute(SERVER_SWITCHER_CURRENT_ATTR, '');
         current.textContent = 'Current';
         heading.appendChild(current);
+      } else if (needsPairingAgain(p)) {
+        const needsPairing = doc.createElement('span');
+        needsPairing.setAttribute(SERVER_SWITCHER_NEEDS_PAIRING_ATTR, '');
+        needsPairing.textContent = 'Needs pairing again';
+        heading.appendChild(needsPairing);
       }
       const url = doc.createElement('span');
       url.className = 'recued-switcher-url';
-      url.textContent = isActive && activeUnreachable
-        ? `${p.server_url} — not reachable`
-        : p.server_url;
+      url.setAttribute('title', p.server_url);
+      const address = serverAddressParts(p.server_url);
+      if (address.encrypted) {
+        const lock = doc.createElement('span');
+        lock.className = 'recued-switcher-lock';
+        lock.setAttribute('role', 'img');
+        lock.setAttribute('aria-label', 'Encrypted connection');
+        lock.setAttribute('title', 'Encrypted connection');
+        lock.innerHTML = LOCK_ICON_SVG;
+        url.appendChild(lock);
+      }
+      const addressText = doc.createElement('span');
+      addressText.textContent = address.text;
+      url.appendChild(addressText);
       item.appendChild(heading);
       item.appendChild(url);
       const recency = doc.createElement('time');
       recency.setAttribute(SERVER_SWITCHER_RECENCY_ATTR, '');
       const connectedAt = validLastConnectedAt(p);
-      recency.textContent = isActive && activeConnected
-        ? 'Connected now'
-        : formatServerProfileRecency(connectedAt, renderedAt);
+      // ⛔ "— not reachable" rode the end of the address, which a phone cuts
+      // off first. The status leads its own line now.
+      const sinceConnected = formatServerProfileRecency(connectedAt, renderedAt);
+      recency.textContent = isActive && activeUnreachable
+        ? `Not reachable — ${sinceConnected.charAt(0).toLowerCase()}${sinceConnected.slice(1)}`
+        : isActive && activeConnected
+          ? 'Connected now'
+          : sinceConnected;
       if (connectedAt !== null) {
         const connectedDate = new Date(connectedAt);
         if (Number.isFinite(connectedDate.getTime())) {
@@ -817,10 +928,10 @@ export const mountProfileList = (
         remove.setAttribute('data-profile-id', p.id);
         if (choiceBusy) remove.setAttribute('disabled', '');
         remove.textContent = 'Forget';
-        remove.setAttribute(
-          'aria-label',
-          `See how to remove ${p.label} from this browser`,
-        );
+        // The name starts with what the button says, as Rename's does. ⛔ It
+        // read "See how to remove alice from this browser": a screen-reader
+        // or voice-control user hunting for "Forget" could not find it.
+        remove.setAttribute('aria-label', `Forget ${p.label}`);
         remove.addEventListener('click', () => {
           if (choiceBusy) return;
           disarmChoices();
@@ -851,13 +962,16 @@ export const mountProfileList = (
         }
         const titleId = `recued-switch-server-${p.id}`;
         const consequenceId = `${titleId}-consequence`;
+        const pairingId = `${titleId}-pairing`;
         const detailId = `${titleId}-detail`;
         const activeWorkId = `${titleId}-active-work`;
+        const pairAgain = needsPairingAgain(p);
         confirm.setAttribute('aria-labelledby', titleId);
         confirm.setAttribute(
           'aria-describedby',
           [
             consequenceId,
+            ...(pairAgain ? [pairingId] : []),
             ...(switching.activeWork.length > 0 ? [activeWorkId] : []),
             detailId,
           ].join(' '),
@@ -892,6 +1006,14 @@ export const mountProfileList = (
                     : `Work is still finishing on ${sourceLabel}. It may already have reached that server. Switching now cannot confirm or cancel it; any outcome or receipt will stay there.`
                   : `Recued will reload this tab so it uses ${p.label}.`;
         confirm.appendChild(consequence);
+
+        if (pairAgain) {
+          const pairing = doc.createElement('p');
+          pairing.setAttribute('id', pairingId);
+          pairing.setAttribute(SERVER_SWITCHER_NEEDS_PAIRING_ATTR, '');
+          pairing.textContent = `This browser has no sign-in for ${p.label} any more. Switching opens the pairing page for it, with its address filled in.`;
+          confirm.appendChild(pairing);
+        }
 
         if (switching.activeWork.length > 0) {
           const activeWork = doc.createElement('ul');
@@ -1036,7 +1158,11 @@ export const mountProfileList = (
         });
         registerFocusTarget(`switch-cancel:${p.id}`, cancel);
         actions.appendChild(cancel);
-        if (switchFocusTarget === null) switchFocusTarget = commit;
+        // ⛔ A review that warns of a loss started on "Switch server", so one
+        // Enter took the loss: it starts on the safe answer now.
+        if (switchFocusTarget === null) {
+          switchFocusTarget = switching.workState === 'clean' ? commit : cancel;
+        }
         confirm.appendChild(actions);
         list.appendChild(confirm);
       }
@@ -1081,7 +1207,7 @@ export const mountProfileList = (
         const hint = doc.createElement('p');
         hint.setAttribute('id', hintId);
         hint.className = 'recued-switcher-rename-hint';
-        hint.textContent = `Stored on this browser. Server address: ${p.server_url}`;
+        hint.textContent = `Stored on this browser. Server address: ${defaultProfileLabel(p.server_url)}`;
         renameRow.appendChild(hint);
 
         if (rename.error !== null) {
@@ -1201,7 +1327,7 @@ export const mountProfileList = (
 
         const title = doc.createElement('h3');
         title.setAttribute('id', titleId);
-        title.textContent = `Remove ${p.label}?`;
+        title.textContent = `Forget ${p.label}?`;
         confirm.appendChild(title);
 
         const detail = doc.createElement('p');
@@ -1215,10 +1341,10 @@ export const mountProfileList = (
         status.setAttribute(SERVER_SWITCHER_REMOVE_STATUS_ATTR, '');
         if (canRevoke) {
           status.textContent =
-            'Take this browser’s access away first, to sign it out on the server, before you forget it here.';
+            'Revoke this browser’s access first, to sign it out on the server, before you forget it here.';
         } else if (!isActive) {
           status.textContent =
-            'Switch to this server first if you also want to take this browser’s access away.';
+            'Switch to this server first if you also want to revoke this browser’s access.';
         } else if (!activeConnected) {
           status.textContent =
             'Reconnect to this server before revoking access. You can still forget the saved profile here.';
@@ -1227,6 +1353,28 @@ export const mountProfileList = (
             'This older profile has no revocable browser identity. You can still forget it here.';
         }
         confirm.appendChild(status);
+
+        // Forgetting the CURRENT server reloads this tab onto another, as a
+        // switch does — so it says what that costs and where it goes first.
+        const reviewedWork = isActive ? currentSwitchWorkState() : 'clean';
+        if (isActive) {
+          const work = leaveServerWorkConsequence(reviewedWork, 'Forgetting it', p.label);
+          if (work !== null) {
+            const workLine = doc.createElement('p');
+            workLine.setAttribute(SERVER_SWITCHER_REMOVE_WORK_ATTR, '');
+            workLine.textContent = work;
+            confirm.appendChild(workLine);
+          }
+          const next = fallbackAfterRemoving(profiles, p.id);
+          const nextLine = doc.createElement('p');
+          nextLine.setAttribute(SERVER_SWITCHER_REMOVE_NEXT_ATTR, '');
+          nextLine.textContent = next === undefined || next.server_url.length === 0
+            ? 'This tab then asks you to pair this browser with a server.'
+            : needsPairingAgain(next)
+              ? `This tab then opens pairing for ${next.label}.`
+              : `This tab then opens ${next.label}.`;
+          confirm.appendChild(nextLine);
+        }
 
         if (removal.error !== null) {
           const error = doc.createElement('p');
@@ -1244,6 +1392,13 @@ export const mountProfileList = (
         const busy = removal.busy !== null;
         const runRemoval = (mode: ServerProfileRemovalMode): void => {
           if (disposed || removal?.id !== p.id || removal.busy !== null) return;
+          if (isActive && !serverSwitchReviewCoversWorkState(reviewedWork, currentSwitchWorkState())) {
+            render();
+            announcer.textContent =
+              'Your work changed while this choice was open. Review the updated details.';
+            focusElement(renderedFocusTargets.get(`remove-cancel:${p.id}`) ?? null);
+            return;
+          }
           removal = { id: p.id, busy: mode, error: null };
           render();
           focusElement(confirmFocusTarget);
@@ -1283,7 +1438,7 @@ export const mountProfileList = (
           revoke.setAttribute(SERVER_SWITCHER_REMOVE_REVOKE_ATTR, '');
           revoke.textContent = removal.busy === 'revoke'
             ? 'Revoking…'
-            : 'Take access away and forget';
+            : 'Revoke access and forget';
           if (busy) revoke.setAttribute('disabled', '');
           revoke.addEventListener('click', () => runRemoval('revoke'));
           registerFocusTarget(`remove-revoke:${p.id}`, revoke);
@@ -1407,6 +1562,34 @@ export const mountProfileList = (
     disarm() {
       disarmChoices();
       if (!disposed) render();
+    },
+    dismissNested() {
+      if (disposed) return false;
+      if (rename !== null) {
+        if (rename.busy) return true;
+        const id = rename.id;
+        rename = null;
+        render();
+        focusElement(renderedRenameButtons.get(id) ?? null);
+        return true;
+      }
+      if (removal !== null) {
+        if (removal.busy !== null) return true;
+        const id = removal.id;
+        removal = null;
+        render();
+        focusElement(renderedRemoveButtons.get(id) ?? null);
+        return true;
+      }
+      if (switching !== null) {
+        if (switching.busy) return true;
+        const id = switching.id;
+        switching = null;
+        render();
+        focusElement(renderedFocusTargets.get(`item:${id}`) ?? null);
+        return true;
+      }
+      return false;
     },
     dispose() {
       if (disposed) return;

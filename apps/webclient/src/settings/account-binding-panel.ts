@@ -14,9 +14,11 @@
  *  ungated read made opening ANY settings surface a cloud call.
  */
 
+import { RpcError } from '@recued/contracts';
 import type {
   AccountBindRelayRequest,
   AccountBindResult,
+  AccountBindingExchangeErrorCode,
   AccountBindingStatusResponse,
   AccountBindingSummary,
   AccountUnbindResult,
@@ -34,6 +36,65 @@ import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 export type AccountBindingStatusCaller = () => Promise<AccountBindingStatusResponse>;
 export type AccountBindCaller = (args: AccountBindRelayRequest) => Promise<AccountBindResult>;
 export type AccountUnbindCaller = () => Promise<AccountUnbindResult>;
+
+/** What a Disconnect did, in the owner's words.
+ *
+ *  ⛔ It used to say "no longer hooked up to recued.com" every time, while the
+ *  server only forgot its own copy and recued.com kept listing it. Only a
+ *  server that reports recued.com let go (`released`, or `not_listed` — it
+ *  already had) gets that line. `not_told` — and a `cloud` that is absent,
+ *  from a server too old to tell recued.com at all — says where to finish. */
+export const unbindMessage = (result: AccountUnbindResult): string => {
+  if (result.outcome === 'not_bound') return 'This server was not hooked up to anything.';
+  if (result.cloud === 'released' || result.cloud === 'not_listed') {
+    return 'Your server is no longer hooked up to recued.com.';
+  }
+  return 'Your server is disconnected here, but recued.com was not told, so it still lists this server. Open the dashboard and use Unbind server to remove it there.';
+};
+
+const BIND_FAILED_COPY = 'Recued could not connect your server to recued.com. Try again.';
+
+const bindFailureCopy = (reason: AccountBindingExchangeErrorCode): string => {
+  switch (reason) {
+    case 'token_expired':
+      return 'That took too long, so recued.com stopped waiting. Try again.';
+    case 'account_not_authenticated':
+      return 'Your recued.com sign-in has ended. Sign in again, then try again.';
+    case 'exchange_unavailable':
+      return 'Your server could not reach recued.com. Check its internet connection, then try again.';
+    case 'internal':
+      return 'recued.com had a problem. Try again in a minute.';
+    case 'token_invalid':
+    case 'nonce_reused':
+    case 'proof_invalid':
+    case 'server_identity_mismatch':
+      return 'recued.com did not accept this request. Try again.';
+  }
+  // A reason from a newer server than this bundle gets the plain line, never
+  // its code.
+  const unknown: never = reason;
+  void unknown;
+  return BIND_FAILED_COPY;
+};
+
+/** A failed Connect in the owner's words.
+ *
+ *  ⛔ The server's own text was shown as-is, so the owner read "account
+ *  binding exchange failed (account_not_authenticated)". The reason travels
+ *  as the error's `details.reason`. */
+export const bindErrorMessage = (err: unknown): string => {
+  if (err instanceof RpcError) {
+    if (err.code === 'binding_exchange_failed') {
+      const reason = err.details?.reason;
+      return typeof reason === 'string'
+        ? bindFailureCopy(reason as AccountBindingExchangeErrorCode)
+        : BIND_FAILED_COPY;
+    }
+    if (err.code === 'not_ready') return 'Your server is still starting. Try again in a moment.';
+    if (err.code === 'bad_request') return BIND_FAILED_COPY;
+  }
+  return humanizeRpcError(err);
+};
 export type ProConvenienceStatusCaller = () => Promise<ProConvenienceStatusResponse>;
 export type AccountBindingTokenMintCaller = () => Promise<BindingTokenMintResponse>;
 export type AccountBindingSessionCaller = () => Promise<AccountBindingAuthSession>;
@@ -51,6 +112,8 @@ export type AccountBindingViewState =
   | 'not-connected'
   | 'connected-no-server'
   | 'bound-active'
+  /** Bound, but not to the recued.com account signed in here. */
+  | 'bound-other-account'
   | 'conflict';
 
 export interface AccountBindingPanelState {
@@ -117,6 +180,9 @@ export const ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR = 'data-recued-account-binding-
 export const ACCOUNT_BINDING_CANCEL_UNBIND_ATTR = 'data-recued-account-binding-cancel-unbind';
 export const ACCOUNT_BINDING_SIGNOUT_ATTR = 'data-recued-account-binding-signout';
 export const ACCOUNT_BINDING_SESSION_ATTR = 'data-recued-account-binding-session';
+export const ACCOUNT_BINDING_OTHER_ACCOUNT_ATTR = 'data-recued-account-binding-other-account';
+export const ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ATTR = 'data-recued-account-binding-public-server-note';
+const ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ID = 'account-binding-public-server-note';
 export const ACCOUNT_BINDING_DASHBOARD_LINK_ATTR = 'data-recued-account-binding-dashboard-link';
 export const ACCOUNT_BINDING_FREE_CARD_ATTR = 'data-recued-account-binding-free-card';
 export const ACCOUNT_BINDING_FREE_HANDLE_ATTR = 'data-recued-account-binding-free-handle';
@@ -367,9 +433,44 @@ export const mountAccountBindingPanel = (
   root.setAttribute(ACCOUNT_BINDING_PANEL_ATTR, '');
   opts.host.appendChild(root);
 
+  /** The recued.com account signed in here, when one is. */
+  const signedInUser = (): { id: string; email: string } | null =>
+    state.session?.authenticated === true ? state.session.user : null;
+
+  /** The server is bound, but not to the account signed in here. recued.com
+   *  binds with the session's own user id as `account_id`, so the two compare
+   *  directly. ⛔ The card said "Bound" beside "Signed in as …" and another
+   *  account's name, and the difference surfaced only after pressing Connect. */
+  const boundToAnotherAccount = (): boolean => {
+    const binding = state.bindingStatus?.status === 'bound' ? state.bindingStatus.binding : null;
+    const user = signedInUser();
+    return binding !== null && user !== null && binding.account_id !== user.id;
+  };
+
+  /** An account by the name the owner knows: the email signed in here when it
+   *  is that account, otherwise its handle and id. */
+  const accountName = (value: { account_id: string; publisher_handle?: string }): string => {
+    const user = signedInUser();
+    if (user === null || user.id !== value.account_id) return accountLabel(value);
+    return value.publisher_handle ? `${user.email} (@${value.publisher_handle})` : user.email;
+  };
+
+  /** Another of this account's servers holds its web address. Connecting here
+   *  moves the address, and its certificate, to this server: recued.com hands
+   *  them to whichever of the account's servers connected last. Reported only
+   *  for Pro, the one plan with an address to move. */
+  const addressHeldElsewhere = (): boolean =>
+    state.bindingStatus?.status === 'bound'
+    && !boundToAnotherAccount()
+    && state.proStatus?.items.ddns.state === 'inactive-elsewhere';
+
+  const publicAddress = (): string => state.proStatus?.ddns_hostname ?? 'your web address';
+
   const viewState = (): AccountBindingViewState => {
     if (state.conflict !== null) return 'conflict';
-    if (state.bindingStatus?.status === 'bound') return 'bound-active';
+    if (state.bindingStatus?.status === 'bound') {
+      return boundToAnotherAccount() ? 'bound-other-account' : 'bound-active';
+    }
     if (state.session?.authenticated === true) return 'connected-no-server';
     return 'not-connected';
   };
@@ -445,11 +546,17 @@ export const mountAccountBindingPanel = (
       connect.setAttribute('type', 'button');
       connect.setAttribute(ACCOUNT_BINDING_CONNECT_ATTR, '');
       const connecting = state.action === 'connecting';
+      const user = signedInUser();
       connect.textContent = connecting
         ? 'Connecting…'
-        : state.bindingStatus.status === 'bound'
-          ? 'Check the connection again'
-          : 'Connect your recued.com account';
+        : state.bindingStatus.status !== 'bound'
+          ? 'Connect your recued.com account'
+          : boundToAnotherAccount() && user !== null
+            ? `Move it to ${user.email}`
+            : addressHeldElsewhere()
+              ? 'Make this your public server'
+              : 'Check the connection again';
+      if (addressHeldElsewhere()) connect.setAttribute('aria-describedby', ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ID);
       if (isBusy()) connect.setAttribute('aria-disabled', 'true');
       if (connecting) connect.setAttribute('aria-busy', 'true');
       connect.addEventListener('click', () => {
@@ -523,14 +630,20 @@ export const mountAccountBindingPanel = (
     const title = append(doc, box, 'h4');
     title.setAttribute('id', 'account-binding-conflict-title');
     title.textContent = 'Two accounts want this server';
-    renderLabelValue(doc, box, 'Current owner', accountLabel(state.conflict.current_owner));
-    renderLabelValue(doc, box, 'The account asking', accountLabel(state.conflict.incoming));
+    renderLabelValue(doc, box, 'Current owner', accountName(state.conflict.current_owner));
+    renderLabelValue(doc, box, 'The account asking', accountName(state.conflict.incoming));
     const actions = append(doc, box, 'div', 'account-bind-actions');
     const confirm = append(doc, actions, 'button', 'rx-btn rx-btn-primary');
     confirm.setAttribute('type', 'button');
     confirm.setAttribute(ACCOUNT_BINDING_CONFIRM_REBIND_ATTR, '');
     const confirming = state.action === 'confirming';
-    confirm.textContent = confirming ? 'Rebinding…' : 'Yes, move it';
+    // ⛔ "Yes, move it" did not say where to. The account asking is the one
+    // signed in here whenever this browser asked.
+    const user = signedInUser();
+    const destination = user !== null && user.id === state.conflict.incoming.account_id
+      ? user.email
+      : 'the account asking';
+    confirm.textContent = confirming ? 'Moving…' : `Yes, move it to ${destination}`;
     if (isBusy()) confirm.setAttribute('aria-disabled', 'true');
     if (confirming) confirm.setAttribute('aria-busy', 'true');
     confirm.addEventListener('click', () => {
@@ -587,7 +700,10 @@ export const mountAccountBindingPanel = (
 
     switch (viewState()) {
       case 'bound-active':
-        chip.textContent = 'Bound';
+        chip.textContent = 'Connected';
+        break;
+      case 'bound-other-account':
+        chip.textContent = 'On another account';
         break;
       case 'connected-no-server':
         chip.textContent = 'Signed in, but your server is not hooked up';
@@ -622,10 +738,24 @@ export const mountAccountBindingPanel = (
       const signedIn = append(doc, card, 'p', 'account-bind-message');
       signedIn.setAttribute(ACCOUNT_BINDING_SESSION_ATTR, '');
       signedIn.textContent = 'Signed in as ' + state.session.user.email;
+      if (boundToAnotherAccount()) {
+        const elsewhere = append(doc, card, 'p', 'account-bind-message');
+        elsewhere.setAttribute(ACCOUNT_BINDING_OTHER_ACCOUNT_ATTR, '');
+        elsewhere.textContent = `This server is on another recued.com account, not ${state.session.user.email}. Moving it takes it off that account.`;
+      }
     }
 
     const binding = state.bindingStatus?.binding ?? null;
     if (binding !== null) renderStatusSummary(card, binding);
+    // ⛔ Connecting again moves the address. The button read "Check the
+    // connection again", and on a second server it took the account's web
+    // address and certificate off the first.
+    if (addressHeldElsewhere()) {
+      const note = append(doc, card, 'p', 'account-bind-message');
+      note.setAttribute('id', ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ID);
+      note.setAttribute(ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ATTR, '');
+      note.textContent = `Moves ${publicAddress()} and its certificate here from your other server.`;
+    }
     renderConflict(card);
     renderUnbindConfirmation(card);
     renderActions(card);
@@ -668,11 +798,14 @@ export const mountAccountBindingPanel = (
     card.setAttribute(ACCOUNT_BINDING_FREE_CARD_ATTR, '');
     const header = append(doc, card, 'div', 'account-bind-card-head');
     const title = append(doc, header, 'h3');
-    title.textContent = 'Free account';
+    // ⛔ Titled "Free account" with "Your recued.com account is free" on every
+    // plan, so a Pro owner read it beside "Pro — active". The plan is the Pro
+    // card's line; this card is what every account includes.
+    title.textContent = 'Marketplace';
 
     const blurb = append(doc, card, 'p', 'account-bind-message');
     blurb.textContent =
-      'Your recued.com account is free. It saves you a name in the Marketplace, so you can share Recipes and Packs.';
+      'Every recued.com account includes a name in the Marketplace, so you can share Recipes and Packs.';
 
     if (state.errors.proStatus !== null) {
       renderError(doc, card, 'proStatus', state.errors.proStatus);
@@ -733,7 +866,7 @@ export const mountAccountBindingPanel = (
     }
     const blurb = append(doc, card, 'p', 'account-bind-message');
     blurb.textContent =
-      'Optional $5.99/mo conveniences that save setup work — a ready-to-use web address (DDNS) and an auto-renewing HTTPS certificate (ACME). You can set these up yourself for free instead.';
+      'Optional $5.99/mo conveniences that save setup work — a ready-to-use web address and an auto-renewing HTTPS certificate. You can set these up yourself for free instead.';
     // proStatus errors surface once on the Free card above.
     if (state.proStatus === null) return;
 
@@ -885,6 +1018,8 @@ export const mountAccountBindingPanel = (
         actionMessage: null,
       });
       if (ownFocus) focusControl(actionAttr);
+      const movingAddress = !confirm_rebind && addressHeldElsewhere();
+      const address = publicAddress();
       // The one place an UNBOUND server may reach the auth Worker: the owner
       // pressed Connect, so the cloud call is the action they asked for. It
       // costs no extra request — `mintBindingToken` fetches the same session
@@ -932,12 +1067,17 @@ export const mountAccountBindingPanel = (
       const refreshPromise = refreshAndTrack();
       if (returnToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
       await refreshPromise;
+      // Said only once the fresh read shows it: the move is recued.com's, and
+      // the address lines below show when it points here.
+      if (movingAddress && !disposed && !addressHeldElsewhere()) {
+        setState({ actionMessage: `This server now holds ${address} and its certificate.` });
+      }
       if (returnToConnect && focusIsUnowned()) {
         focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
       }
     } catch (err) {
       const returnToAction = ownFocus && controlHasFocus(actionAttr);
-      setActionError(errMessage(err));
+      setActionError(bindErrorMessage(err));
       if (returnToAction) focusControl(actionAttr);
     } finally {
       mutationInFlight = false;
@@ -974,6 +1114,24 @@ export const mountAccountBindingPanel = (
     if (returnToUnbind) focusControl(ACCOUNT_BINDING_UNBIND_ATTR);
   };
 
+  // Escape answers an open confirmation the way its Cancel does, with focus
+  // back on the control that opened it. ⛔ Both alert dialogs ignored it.
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || event.isComposing || disposed || isBusy()) return;
+    if (state.conflict !== null) {
+      event.preventDefault();
+      cancelRebind(false);
+      focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
+      return;
+    }
+    if (unbindConfirmationOpen) {
+      event.preventDefault();
+      cancelUnbind(false);
+      focusControl(ACCOUNT_BINDING_UNBIND_ATTR);
+    }
+  };
+  root.addEventListener('keydown', onKeyDown as EventListener);
+
   const unbindFlow = async (ownFocus = false): Promise<void> => {
     if (disposed || isBusy() || mutationInFlight) return;
     mutationInFlight = true;
@@ -991,9 +1149,7 @@ export const mountAccountBindingPanel = (
       setState({
         action: 'idle',
         conflict: null,
-        actionMessage: result.outcome === 'not_bound'
-          ? 'This server was not hooked up to anything.'
-          : 'Your server is no longer hooked up to recued.com.',
+        actionMessage: unbindMessage(result),
       });
       const refreshPromise = refreshAndTrack();
       if (advanceToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
@@ -1078,6 +1234,7 @@ export const mountAccountBindingPanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      root.removeEventListener('keydown', onKeyDown as EventListener);
       root.remove();
     },
   };

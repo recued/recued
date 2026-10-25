@@ -86,8 +86,15 @@ export const createAssetClassStore = (db: Database.Database) => {
       }
     },
     list: (): AssetClassPreset[] => (db.prepare('SELECT value FROM asset_class_presets ORDER BY id').all() as { value: string }[]).map(row => JSON.parse(row.value)),
-    saveOwner(value: AssetClassPreset): void {
+    saveOwner(value: AssetClassPreset, create = false): void {
       if (value.origin !== 'owner') throw new Error('Save an owner copy to edit a pack class');
+      if (create) {
+        const preset = { ...value, version: 1 }; validateAssetClass(preset);
+        const result = db.prepare('INSERT INTO asset_class_presets(id,version,origin,value) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING')
+          .run(preset.id, preset.version, preset.origin, JSON.stringify(preset));
+        if (!result.changes) throw new Error('This class id already exists. Choose a different id or edit the existing class.');
+        return;
+      }
       const old = get(value.id);
       if (old?.origin && old.origin !== 'owner') throw new Error('Choose a new id for your copy');
       register({ ...value, version: (old?.version ?? 0) + 1 });

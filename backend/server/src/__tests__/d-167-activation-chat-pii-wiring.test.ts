@@ -342,7 +342,9 @@ describe('D-167 activation — composeChatOrchestrator wires the table-backed re
         {
           tool_name: 'crm.unrelated.fetch',
           status: 'ok',
-          result: { properties: { email: 'alice@acme.com' } },
+          // A name, not an address: since 2026-10-24 an address is aliased by its
+          // shape with no tag, so it would no longer show what this pins.
+          result: { properties: { firstname: 'Alice', lifecycle_stage: 'lead' } },
         },
       ],
     });
@@ -437,13 +439,14 @@ const runComposedTurn = async (opts: {
 describe('D-167 activation — a real composed turn is behavior-preserving (empty table)', () => {
   it('round-trips a no-tool turn unchanged when nothing privacy-tagged is installed', async () => {
     const result = await runComposedTurn({
-      userMessage: 'contact alice@acme.com',
+      // A name: an address would be aliased by its shape since 2026-10-24.
+      userMessage: 'contact Alice Chen',
       aiResponse: () => 'done',
     });
 
     // Egress carries the real message verbatim (the composed resolver tagged
     // nothing — a main turn has no `result` envelope, and the table is empty).
-    expect(result.egressPacket.user_message).toBe('contact alice@acme.com');
+    expect(result.egressPacket.user_message).toBe('contact Alice Chen');
     // The user-facing reply is unchanged, and no redaction summary is stamped.
     expect(result.finalContent).toBe('done');
     expect(result.assistantAudit).toBeDefined();

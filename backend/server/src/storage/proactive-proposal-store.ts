@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { PROACTIVE_PROPOSAL_KINDS, type ProactiveProposal, type ProactiveProposalInput, type ProactiveSuppression, type SituationRef } from '@recued/contracts';
+import { createSettingsBatch } from './settings-batch.js';
 
 const boundedText = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 const validRef = (ref: SituationRef) => ref && boundedText(ref.collection, 200) && boundedText(ref.id, 2000);
@@ -83,6 +84,9 @@ export const createProactiveProposalStore = (db: Database.Database) => {
     const row = db.prepare('SELECT value FROM proactive_intake_settings WHERE key=?').get(key) as { value: string } | undefined;
     return row ? JSON.parse(row.value) as T : fallback;
   };
+  const settings = createSettingsBatch('setting', setting, keys =>
+    db.prepare(`SELECT key,value FROM proactive_intake_settings WHERE key IN (${keys.map(() => '?').join(',')})`)
+      .all(...keys) as { key: string; value: string }[]);
   const keyBatches = new WeakMap<ProposalKeyReader, Map<string, PrefetchedProposalKey>>();
   const ensure = (input: ProactiveProposalInput, at: number, prefetched?: ProposalKeyReader): ProactiveProposal => {
     validateProposal(input);
@@ -132,7 +136,7 @@ export const createProactiveProposalStore = (db: Database.Database) => {
     (db.prepare('SELECT revision,at,value FROM proactive_proposal_events WHERE delivered=0 ORDER BY revision LIMIT ?').all(Math.max(1, Math.min(1000, limit))) as { revision: number; at: number; value: string }[])
       .map(({ value, ...row }) => ({ ...row, proposal: JSON.parse(value) }));
   const store = {
-    read, byKey, list, save, setting, suppressions, ensure, prefetchKeys, pendingEvents,
+    read, byKey, list, save, setting, settings, suppressions, ensure, prefetchKeys, pendingEvents,
     acknowledgeEvent(revision: number, wrote?: (rows: number, connection: Database.Database) => void): void {
       const result = db.prepare('UPDATE proactive_proposal_events SET delivered=1 WHERE revision=?').run(revision); wrote?.(result.changes, db);
     },

@@ -815,7 +815,7 @@ export const PAIRING_STEPS: readonly string[] = [
 /** ⚠ The one surprise worth naming up front: the first pair is also enrolment,
  *  and the words it shows are the only copy of them. */
 export const PAIRING_FIRST_DEVICE_NOTE =
-  'The first device you sign in also sets up your recovery words. Keep them safe.';
+  'The first device you sign in also sets up your recovery key. Keep it safe.';
 
 export const PRO_CERTIFICATE_NOTE =
   'Recued Pro gives your server its own web address, like yourname.recued.net, '

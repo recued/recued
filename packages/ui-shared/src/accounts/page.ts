@@ -47,7 +47,7 @@ import {
   CONNECTION_NAME_REGEX,
 } from '@recued/contracts';
 import { e } from '../template.js';
-import { renderAuthenticationManagement, type AuthenticationManagementAction } from '../connections/manage-authentication.js';
+import { AUTHENTICATION_MANAGEMENT_STYLES, renderAuthenticationManagement, type AuthenticationManagementAction } from '../connections/manage-authentication.js';
 import { button } from '../primitives/button.js';
 import { textInput, select as selectField, formRow } from '../primitives/field.js';
 import { inlineError, inlineHint, inlineMessage } from '../primitives/message.js';
@@ -1127,7 +1127,7 @@ const renderProviderForm = (
     control: selectField({ id: 'acct-field-auth-method', data: { 'acct-field': 'auth_method' },
       options: [
         { value: 'direct', label: 'Recued direct OAuth (recommended)', selected: !managed },
-        { value: 'managed_oauth', label: 'OAuth broker (optional)', selected: managed },
+        { value: 'managed_oauth', label: 'OAuth broker (Nango)', selected: managed },
       ] }),
   }) : '';
   const compatible = managedConnectionsForAccount(provider.id, state.managedConnections ?? []);
@@ -1235,8 +1235,12 @@ const displayStatusFor = (
   if (row.mailSync !== undefined) {
     if (row.authState !== 'healthy') return { state: row.authState, label: row.authState === 'degraded' ? 'Sync interrupted' : AUTH_STATE_LABEL[row.authState] };
     if (!row.mailSync.access_verified) return { state: 'syncing', label: 'Checking mailbox access' };
+    // After its first import a mailbox reads like any account: that milestone
+    // has its own line on the detail page, and "Last mailbox read" says whether
+    // mail still comes in. It used to read "Initial sync complete" for as long
+    // as the mailbox lived.
     return row.mailSync.initial_sync_complete
-      ? { state: 'healthy', label: 'Initial sync complete' }
+      ? { state: 'healthy', label: AUTH_STATE_LABEL.healthy }
       : { state: 'syncing', label: 'Connected — syncing' };
   }
   return row.authState === 'healthy'
@@ -1929,7 +1933,7 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
       <div class="accounts-stage">${stageHtml}</div>
       ${state.bulkOAuthAppSwitchAvailable && state.stage === 'list' && !state.oauthFinishing && ['mail', 'calendar'].includes(state.lane)
         && state.rows.some(row => ['gmail', 'gcal', 'graph'].includes(row.adapterType) && !row.managedConnectionName)
-        ? button({ label: 'Bulk switch saved OAuth apps', action: 'accounts-bulk-switch-oauth-app', size: 'sm' }) : ''}
+        ? button({ label: 'Switch OAuth app for several accounts', action: 'accounts-bulk-switch-oauth-app', size: 'sm' }) : ''}
       ${state.stage === 'detail' && state.authenticationManagement?.slug === state.detailSlug ? (() => {
         const row = state.rows.find(r => r.slug === state.detailSlug);
         return row ? renderAuthenticationManagement({ prefix: 'accounts', action: state.authenticationManagement!.action,
@@ -1942,6 +1946,7 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
               + button({ label: 'Continue to current sign-in', action: 'accounts-open-managed-connection', size: 'sm' }) : '') : '';
       })() : ''}
       <div data-bulk-collection-oauth-app-host></div>
+      ${state.stage === 'list' && !state.oauthFinishing ? '<div data-accounts-list-footer-host></div>' : ''}
       <div data-account-password-host></div>
       <div data-collection-authentication-host></div>
       <div data-collection-oauth-app-host></div>
@@ -1955,11 +1960,14 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
 // ════════════════════════════════════════════════════════════════
 
 export const ACCOUNTS_PANEL_STYLES = `
+${AUTHENTICATION_MANAGEMENT_STYLES}
 .accounts-panel { min-width: 0; display: grid; gap: 14px; }
+.accounts-panel > div:empty,
+.accounts-panel > [data-accounts-list-footer-host]:not(:has(> :not([hidden]))) { display: none; }
 .accounts-inventory-filters{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:12px 0;font-size:13px}
 .accounts-inventory-filters label,.accounts-password-repair label{display:grid;gap:5px;min-width:0}
 .accounts-inventory-filters input,.accounts-inventory-filters select,.accounts-password-repair input{box-sizing:border-box;max-width:100%;min-width:0;font:inherit;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--fg)}
-.accounts-inventory-filters label:first-child{flex:1 1 180px}.accounts-cloud-connect{margin:12px 0}.accounts-cloud-connect summary{cursor:pointer;font-weight:600}
+.accounts-inventory-filters label:first-child{flex:1 1 180px}.accounts-cloud-connect{margin:12px 0;font-size:13px}.accounts-cloud-connect summary{cursor:pointer;font-size:14px;font-weight:600}.accounts-cloud-connect p{color:var(--fg-muted)}
 .accounts-password-repair{border:1px solid var(--border);padding:16px;border-radius:10px;overflow-wrap:anywhere;font-size:13px;line-height:1.5}.accounts-password-repair h3{margin-top:0;font-size:16px}.accounts-password-repair form{display:grid;gap:12px}
 .accounts-password-repair p{color:var(--fg-muted);font-weight:400}.accounts-password-repair label{font-weight:500}
 .accounts-cloud-source{cursor:default}.accounts-cloud-source:hover{background:transparent}.accounts-cloud-source .accounts-row-meta{font-size:12px;color:var(--fg-muted);line-height:1.5}
@@ -2171,6 +2179,7 @@ export const ACCOUNTS_PANEL_STYLES = `
 .accounts-status[data-state='unauthorized'] { color: var(--danger, #c62828); }
 .accounts-status[data-state='degraded'] { color: var(--warn, #ef6c00); }
 .accounts-add-row { margin-top: 4px; }
+.accounts-panel > [data-action='accounts-bulk-switch-oauth-app'] { justify-self: start; }
 .accounts-picker-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .accounts-picker-card {
   appearance: none; text-align: left; cursor: pointer; display: grid; gap: 4px;

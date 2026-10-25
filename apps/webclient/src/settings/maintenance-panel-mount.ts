@@ -144,6 +144,9 @@ export const mountMaintenancePanel = (
 
   opts.host.setAttribute(MAINTENANCE_PANEL_HOST_ATTR, '');
 
+  const cellLabel = (label: string): string =>
+    `<span class="housekeeping-cell-label" aria-hidden="true">${escapeHtml(label)}</span>`;
+
   /** The storage read-out. Rows come from the shared `pressureSurfaceRows`
    *  projection, so the ordering + labelling match the server-pill popover
    *  exactly — one model, two renderers, no chance of the two surfaces
@@ -159,18 +162,18 @@ export const mountMaintenancePanel = (
           + ` data-action="${ACTION_RECLAIM}" data-surface="${escapeHtml(row.surface)}"`
           + `${busy ? ' disabled' : ''}>`
           + `${busy ? 'Reclaiming…' : 'Reclaim now'}</button>`;
-      return `<tr class="maintenance-storage-row${row.attention ? ' maintenance-storage-row--attention' : ''}">`
-        + `<th scope="row">${escapeHtml(row.surface)}</th>`
-        + `<td>${escapeHtml(row.stateLabel)}</td>`
-        + `<td class="maintenance-storage-size">${escapeHtml(row.size)}`
+      return `<tr class="maintenance-storage-row${row.attention ? ' maintenance-storage-row--attention' : ''}" role="row">`
+        + `<th scope="row" role="rowheader">${escapeHtml(row.surface)}</th>`
+        + `<td class="maintenance-storage-state" role="cell">${cellLabel('State')}${escapeHtml(row.stateLabel)}</td>`
+        + `<td class="maintenance-storage-size" role="cell">${cellLabel('Used')}${escapeHtml(row.size)}`
         + ` (${escapeHtml(row.pctLabel)})</td>`
         // ⚠ The server's `last_reclaim` is the durable column; the click
         // receipt is a transient overlay on top of it. Showing only the
         // receipt (the first cut) left this column blank until you pressed the
         // button, on a row whose header promised "Last reclaim".
-        + `<td class="maintenance-storage-receipt">`
+        + `<td class="maintenance-storage-receipt" role="cell">${cellLabel('Last reclaim')}`
         + `${escapeHtml(receipt ?? row.lastReclaim)}</td>`
-        + `<td>${button}</td>`
+        + `<td class="maintenance-storage-action" role="cell">${button}</td>`
         + `</tr>`;
     }).join('');
     return `
@@ -182,13 +185,13 @@ export const mountMaintenancePanel = (
             ? ''
             : ' — Reclaim now does the same pass immediately'}.
         </p>
-        <table class="housekeeping-task-table">
-          <thead><tr>
-            <th scope="col">Surface</th><th scope="col">State</th>
-            <th scope="col">Used</th><th scope="col">Last reclaim</th>
-            <th scope="col"><span class="sr-only">Actions</span></th>
+        <table class="housekeeping-task-table" role="table" aria-label="Storage">
+          <thead role="rowgroup"><tr role="row">
+            <th scope="col" role="columnheader">Surface</th><th scope="col" role="columnheader">State</th>
+            <th scope="col" role="columnheader">Used</th><th scope="col" role="columnheader">Last reclaim</th>
+            <th scope="col" role="columnheader"><span class="sr-only">Actions</span></th>
           </tr></thead>
-          <tbody>${rows}</tbody>
+          <tbody role="rowgroup">${rows}</tbody>
         </table>
       </section>
     `;
@@ -221,10 +224,12 @@ export const mountMaintenancePanel = (
         ${renderStorage()}
 
         <section class="housekeeping-maintenance" aria-label="Maintenance tasks">
+          <h3>Tasks</h3>
           ${renderHousekeepingTaskStatusTable({
             tasks: state.tasks,
             kind: 'core',
             showRunNow: opts.runRunNow !== undefined,
+            responsive: true,
             now: now(),
           })}
         </section>
@@ -288,7 +293,8 @@ export const mountMaintenancePanel = (
     const actionElement = active.closest?.('[data-action]');
     const action = actionElement?.getAttribute('data-action');
     if (action) {
-      const taskId = actionElement?.getAttribute('data-task-id');
+      const taskId = actionElement?.getAttribute('data-task-id')
+        ?? actionElement?.getAttribute('data-surface');
       return {
         kind: 'action',
         action,

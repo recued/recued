@@ -20,9 +20,16 @@ const snapshot = (result: ServerExecuteResponse): RecipesResultPanelSnapshot => 
 const render = (panel: RecipesResultPanelSnapshot | null): string =>
   renderRecipeResultPanel(panel, [], registry(), new Map());
 const runHref = (html: string): string | undefined =>
-  html.match(/href="([^"]*)">Open this run in Logs<\/a>/)?.[1];
+  html.match(/href="([^"]*)">Review run<\/a>/)?.[1];
 
 describe('result link to its exact Logs run', () => {
+  it('retains the presenting workspace independently of the executed recipe', () => {
+    const html = renderRecipeResultPanel(snapshot(response()), [], registry(), new Map(), new Map(), false, {
+      run_review_return: { surface: 'recipes', recipeId: 'parent-route' },
+    });
+    expect(runHref(html)).toBe('#logs/run-child-7/return/recipes/parent-route');
+    expect(html).toContain('data-recued-run-review-link');
+  });
   it('uses the response anchor even when route, source and rendered recipe identities differ', () => {
     const href = runHref(render(snapshot(response())));
     expect(href).toBe('#logs/run-child-7');

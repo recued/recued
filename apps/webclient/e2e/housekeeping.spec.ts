@@ -39,7 +39,7 @@ test('Settings Housekeeping identifies repeated producer actions', async ({ page
     .evaluateAll((segments) =>
       segments.map((segment) => segment.getBoundingClientRect().height)
   );
-  expect(Math.min(...filterHeights)).toBeGreaterThanOrEqual(36);
+  expect(Math.min(...filterHeights)).toBeGreaterThanOrEqual(44);
 });
 
 test('Settings Housekeeping keeps every mobile control full-size and in bounds', async ({ page }) => {
@@ -73,9 +73,9 @@ test('Settings Housekeeping keeps every mobile control full-size and in bounds',
     ));
     expect(dimensions.length).toBeGreaterThan(0);
     expect(Math.min(...dimensions.map(({ width }) => width)))
-      .toBeGreaterThanOrEqual(36);
+      .toBeGreaterThanOrEqual(44);
     expect(Math.min(...dimensions.map(({ height }) => height)))
-      .toBeGreaterThanOrEqual(36);
+      .toBeGreaterThanOrEqual(44);
     expect(await panel.evaluate(
       (element) => element.scrollWidth <= element.clientWidth,
     )).toBe(true);

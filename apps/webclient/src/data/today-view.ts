@@ -37,6 +37,8 @@ export interface TodayItem {
   unreachable?: boolean;
   taskId?: string;
   commitmentId?: string;
+  /** D-325 §15.7 (2026-10-24) — the occurrence of a renewal: Done acknowledges it. */
+  renewalOccurrenceId?: string;
   cluster?: SituationCluster;
   dateUnknown?: boolean;
 }
@@ -231,12 +233,15 @@ export const loadToday = async (
     for (const occurrence of proactive?.occurrences ?? []) {
       if (occurrence.question) continue;
       const existing = projected.find(item => item.commitmentId === occurrence.commitment.id);
+      // D-325 §15.7 (2026-10-24) — an acknowledged renewal stays out of Today until its next reminder.
+      if (occurrence.acknowledged) { if (existing) projected.splice(projected.indexOf(existing), 1); continue; }
       const longWindow = workItem({ ...occurrence.commitment, _kind: 'commitment' }, { ...span, before: 8.64e15 });
       const item = existing ?? (occurrence.reminders_started && longWindow && longWindow.when >= span.before
         ? { ...longWindow, group: 'coming_up' as const } : undefined);
       if (!item) continue;
       item.href = occurrence.subject_kind === 'occasion' ? serializeShellRoute('yours', 'occasions', 'occasion', occurrence.asset_id) : serializeShellRoute('yours', 'asset', occurrence.asset_id);
       if (!item.title.includes(occurrence.asset_name)) item.title += ` · ${occurrence.asset_name}`;
+      if (occurrence.renewal) item.renewalOccurrenceId = occurrence.id;
       if (!existing) projected.push(item);
     }
     for (const cluster of proactive?.situations.clusters ?? []) {
@@ -429,7 +434,9 @@ const rowOpenAttrs = (item: TodayItem, actionAttr: string): string => {
 };
 const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 /** Why an item is here and how Recued knows it (§6.2), in the owner's words. */
-const REASON_WORDS: Record<SituationReason, string> = { due: 'due', collides: 'overlaps something else', related: 'connected to this', missing: 'something is missing', last_time: 'from last time' };
+const REASON_WORDS: Record<SituationReason, string> = { due: 'due', collides: 'overlaps something else', related: 'connected to this', missing: 'something is missing', last_time: 'from last time',
+  // Never on Today, which only looks forward; worded for whatever else shows an item.
+  ended: 'already happened' };
 const BASIS_WORDS: Record<SituationBasis, string> = { declared: 'From your records', derived: 'Worked out from your records', inferred: 'Recued’s guess' };
 const reasonText = (item: SituationItem): string => {
   // Today reads each group again by its own items, so all of them are connected; the group says so.
@@ -520,6 +527,8 @@ export const TODAY_VIEW_STYLES = `
 .today-view [data-today-task-notice] { border-inline-start:3px solid var(--accent); padding:10px 12px; background:var(--surface-subtle, var(--surface)); color:var(--fg); overflow-wrap:anywhere; }
 .today-task-editor [role=alert] { color:var(--danger, var(--fg)); }
 @media (max-width:540px) { .today-row { grid-template-columns:minmax(0,1fr); gap:6px; } }
+/* A finger's height on a phone. ⛔ Refresh was 36px, and the Sources row only as tall as its text. */
+@media (max-width:640px) { .today-refresh { min-height:44px; } .today-sources summary { box-sizing:border-box; min-height:44px; padding-block:12px; } }
 `;
 
 /** D-267 — the Today zero-state's one action. Today is now what bare `#data`

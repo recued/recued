@@ -814,13 +814,19 @@ describe('Connection example — the MCP snippet lives where the endpoint is dec
     // ELEMENT rather than the modal's aggregate text: this suite's fake DOM does
     // not roll `textContent` up through children, so an aggregate read is
     // vacuously '' and would pass any assertion phrased as `.not.toContain`.
-    for (const id of ['claude', 'cursor', 'codex', 'custom']) {
+    for (const id of ['claude-code', 'cursor', 'cline', 'codex', 'custom']) {
       const pre = findByAttr(host, EXPOSURE_CONNECT_SNIPPET_ATTR, id);
       expect(pre, id).not.toBeNull();
       const body = (pre as unknown as { textContent: string }).textContent;
       expect(body, id).toContain('http://127.0.0.1:3001/mcp');
       expect(body, id).not.toContain('ws://');
     }
+    // Claude Desktop runs Recued's stdio mode locally, so it names no address.
+    const desktop = findByAttr(host, EXPOSURE_CONNECT_SNIPPET_ATTR, 'claude');
+    expect(desktop).not.toBeNull();
+    const desktopBody = (desktop as unknown as { textContent: string }).textContent;
+    expect(desktopBody).toContain('"--mcp"');
+    expect(desktopBody).not.toContain('://');
   });
 });
 

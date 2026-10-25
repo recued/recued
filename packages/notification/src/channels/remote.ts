@@ -50,7 +50,7 @@ import type {
   NotificationMessage,
 } from '../types.js';
 import { isChannelName, type AskOption } from '../types.js';
-import type { AskDeliveryDestination, AskDeliveryEnvelope, AskDeliveryOutcome } from '../ask-delivery-store.js';
+import { receivesOnly, type AskDeliveryDestination, type AskDeliveryEnvelope, type AskDeliveryOutcome } from '../ask-delivery-store.js';
 
 /** The BYO credential a remote channel sends with — resolved fresh per
  *  delivery from `connection.notification` (D-125). */
@@ -205,7 +205,7 @@ export const createRemoteChannel = (
       /** How a reminder delivery was shown. Only a text delivery printed the
        *  options a typed reply may name; a button delivery is answered by the
        *  vendor's authenticated press, never by matching chat text. */
-      presentation?: 'buttons' | 'text';
+      presentation?: 'buttons' | 'text' | 'notice';
     }
   >();
 
@@ -232,24 +232,34 @@ export const createRemoteChannel = (
     }
   };
 
+  // A household copy names no answerer, so its principal is not pinned: one the
+  // group's connection happens to carry neither blocks the post nor answers it.
   const pinnedCredential = async (destination: AskDeliveryDestination): Promise<RemoteChannelCredential | null> => {
     const credential = await resolveCredential(destination);
     return credential && destination.channel === name
       && credential.connection_name === destination.connection_name
       && credential.connection_enrolled_at === destination.connection_enrolled_at
       && credential.recipient === destination.recipient
-      && credential.expected_sender === destination.expected_sender ? credential : null;
+      && (destination.audience === 'household' || credential.expected_sender === destination.expected_sender) ? credential : null;
   };
+  // D-325 §15.7 (2026-10-24) — a reminder is a notification, never an approval: on
+  // the owner's own reminder destination the named principal answers, or with none
+  // anyone in the owner's private conversation. ⛔ A copy that only receives (the
+  // household's, or one in a conversation others may be in) answers nothing. ⛔⛔ An
+  // ask with no destination is a classic ask, an approval among them: D-238 holds,
+  // and with no known approver nobody may answer it by typing.
   const senderAllowed = (entry: { expected_sender?: string; destination?: AskDeliveryDestination }, sender: string): boolean =>
-    entry.destination?.audience === 'household' ? entry.destination.allowed_senders?.includes(sender) === true
+    entry.destination
+      ? !receivesOnly(entry.destination) && (entry.expected_sender === undefined || entry.expected_sender === sender)
       : !!entry.expected_sender && entry.expected_sender === sender;
   const clip = (value: string, max: number): string => value.length <= max ? value
     : `${value.slice(0, Math.max(1, max - 1)).replace(/\s+\S*$/u, '')}…`;
   /** §5.1 — every item says why; §15.6 — a bundle has one link, to Today. Each item
    * gets an equal share of a body that stays well inside Telegram's limit, which
-   * refuses a longer message rather than trimming it. */
+   * refuses a longer message rather than trimming it. A household copy carries no
+   * link: it opens the owner's own Recued, which nobody in the group can reach. */
   const deliveryBody = (envelope: AskDeliveryEnvelope) => {
-    const links = [...new Set(envelope.asks.map(ask => ask.message.link_url).filter((url): url is string =>
+    const links = envelope.destination.audience === 'household' ? [] : [...new Set(envelope.asks.map(ask => ask.message.link_url).filter((url): url is string =>
       typeof url === 'string' && /^https?:\/\//.test(url)))];
     const link = envelope.asks.length === 1 ? links[0] : links[0] && `${links[0].split('#')[0]}#today`;
     const room = Math.floor(3400 / envelope.asks.length) - 6;
@@ -412,6 +422,14 @@ export const createRemoteChannel = (
       catch { return { outcome: 'not_delivered', error: 'The pinned notification credential is unavailable' }; }
       if (!credential) return { outcome: 'not_delivered', error: 'The pinned notification connection is unavailable or changed', permanent: true };
       const { token, recipient } = credential;
+      // D-325 §15.7 (2026-10-24) — a copy that only receives (`receivesOnly`): the
+      // reminder as a message, with no buttons and nothing to answer, so nothing is
+      // withdrawn later. Only the household's carries no link.
+      if (receivesOnly(envelope.destination)) {
+        const result = deliveryOutcome(await transport.send({ token, recipient, delivery_id: envelope.attempt_id,
+          text: deliveryBody(envelope) }));
+        return result.outcome === 'delivered' ? { ...result, presentation: 'notice' } : result;
+      }
       if (isInteractive(transport) && managedButtons(envelope)) {
         const result = deliveryOutcome(await transport.sendPrompt({ token, recipient,
           text: deliveryBody(envelope), correlation_id: envelope.group_id,
@@ -419,7 +437,7 @@ export const createRemoteChannel = (
         return result.outcome === 'delivered' ? { ...result, presentation: 'buttons' } : result;
       }
       const instructions = envelope.asks.length > 1
-        ? 'Reply with the item number and answer, for example: 2 done.'
+        ? 'Reply with the item number and answer, for example: 2 later.'
         : renderAnswerHint(envelope.asks[0]!.options);
       const choices = envelope.asks.map((ask, index) => `${envelope.asks.length > 1 ? `${index + 1}: ` : ''}`
         + ask.options.map(option => option.label).join(', ')).join('\n');
@@ -443,7 +461,7 @@ export const createRemoteChannel = (
         const entry = delivered.get(ask.ask_id);
         if (entry && closed.includes(ask.ask_id)) entry.closed = true;
       }
-      if (receipt.presentation === 'text' || !isInteractive(transport) || !managedButtons(receipt)) return true;
+      if (receipt.presentation === 'text' || receipt.presentation === 'notice' || !isInteractive(transport) || !managedButtons(receipt)) return true;
       if (!receipt.provider_message_id) return false;
       const credential = await pinnedCredential(receipt.destination);
       if (!credential) return false;

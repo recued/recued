@@ -456,6 +456,9 @@ export interface ReceptionPreflightEnableResult {
 type ReceptionMethods =
   | 'reception.approval.targets'
   | 'reception.signoff.quotes'
+  | 'reception.signoff.resume'
+  | 'reception.signoff.link.check'
+  | 'reception.signoff.completion.resume'
   | 'reception.signoff.prepare'
   | 'reception.signoff.prepare_addition'
   | 'reception.signoff.publish'
@@ -4430,6 +4433,9 @@ export const makeReceptionHandlers = (
   return {
     methods: [
       'reception.signoff.quotes',
+      'reception.signoff.resume',
+      'reception.signoff.link.check',
+      'reception.signoff.completion.resume',
       'reception.signoff.prepare',
       'reception.signoff.prepare_addition',
       'reception.signoff.publish',
@@ -4686,6 +4692,18 @@ export const makeReceptionHandlers = (
       'reception.signoff.quotes': async (_args, client) => {
         const { handleSignoffQuotes } = await import('./quote-signoff-rpc-handler.js');
         return handleSignoffQuotes(deps, client);
+      },
+      'reception.signoff.resume': async (args, client) => {
+        const { handleSignoffResume } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffResume(deps, args, client);
+      },
+      'reception.signoff.link.check': async (args, client) => {
+        const { handleCustomerRequestLinkCheck } = await import('./quote-signoff-rpc-handler.js');
+        return handleCustomerRequestLinkCheck(deps, args, client);
+      },
+      'reception.signoff.completion.resume': async (args, client) => {
+        const { handleCompletionResume } = await import('./quote-completion-rpc-handler.js');
+        return handleCompletionResume(deps, args, client);
       },
       'reception.signoff.prepare': async (args, client) => {
         const { handleSignoffPrepare } = await import('./quote-signoff-rpc-handler.js');

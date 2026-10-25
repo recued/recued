@@ -10,6 +10,8 @@ import { runRulesPass, type MailFactSourceEmail } from '../mail-facts/rules-pass
 import {
   runTemplatePattern,
   TEMPLATE_PATTERN_MAX_INPUT,
+  TEMPLATE_PATTERN_RETRY_TIMEOUT_MS,
+  TEMPLATE_PATTERN_TIMEOUT_MS,
   TemplatePatternTimeout,
 } from '../mail-facts/template-pattern.js';
 
@@ -91,4 +93,67 @@ describe('patterns that still need the watchdog', () => {
       }
     },
   );
+});
+
+describe('a pattern the watchdog stopped once', () => {
+  /** Every first run is stopped, as a process kept off the CPU has its runs
+   *  stopped; every second run is real. Records each run's budget. */
+  const starved = () => {
+    const real = Script.prototype.runInContext;
+    const budgets: number[] = [];
+    const watchdog = vi.spyOn(Script.prototype, 'runInContext').mockImplementation(function (this: Script, ...args) {
+      const budget = Number((args[1] as { timeout?: number } | undefined)?.timeout);
+      budgets.push(budget);
+      if (budget === TEMPLATE_PATTERN_TIMEOUT_MS) deadline();
+      return real.apply(this, args);
+    });
+    return { budgets, restore: () => watchdog.mockRestore() };
+  };
+
+  it('reads every block of a regex split the process was only waiting to run', () => {
+    // The full sweep (2026-10-24): under load `Parcel \d+` was stopped at 50 ms,
+    // and one email's 100 parcels came out of a backfill as no facts, "done".
+    const template: MailTemplateDefinition = {
+      name: 'Returns', type: 'return_refund',
+      entrance: { conditions: [{ field: 'from', op: 'domain_is', value: 'shop.example' }], variables: ['merchant'] },
+      rules: Object.entries({ merchant: 'Merchant', return_id: 'Return', order_id: 'Order' }).map(([variable, label]) => ({
+        target: { variable }, source: 'body', find: { kind: 'after_label', label: `${label}:` },
+      })),
+      repeat: { source: 'body', split: '-{2}' }, html: false, ai: { enabled: false },
+    };
+    const email: MailFactSourceEmail = {
+      subject: 'About your orders', html: null, from_address: 'returns@shop.example', from_name: 'Shop',
+      body_text: [1, 2, 3].map((n) => `--\nMerchant: Shop\nOrder: O-${n}\nReturn: R-${n}\n`).join(''),
+      headers: {}, labels: ['INBOX'], relationships: [], attachments: [],
+    };
+    const watchdog = starved();
+    try {
+      const outcome = runRulesPass(template, getMailFactBuiltinType('return_refund')!, email);
+      expect(outcome).toEqual({ kind: 'facts', facts: [1, 2, 3].map((n) => expect.objectContaining({
+        variables: expect.objectContaining({ merchant: 'Shop', order_id: `O-${n}`, return_id: `R-${n}` }),
+      })) });
+      expect(new Set(watchdog.budgets)).toEqual(new Set([TEMPLATE_PATTERN_TIMEOUT_MS, TEMPLATE_PATTERN_RETRY_TIMEOUT_MS]));
+    } finally {
+      watchdog.restore();
+    }
+  });
+
+  it('stops a pattern that is stopped on its second run too, after one run at each budget', () => {
+    const budgets: number[] = [];
+    const watchdog = vi.spyOn(Script.prototype, 'runInContext').mockImplementation((...args) => {
+      budgets.push(Number((args[1] as { timeout?: number } | undefined)?.timeout));
+      return deadline();
+    });
+    try {
+      expect(() => runTemplatePattern('-{2}', '', '-- --')).toThrow(TemplatePatternTimeout);
+      expect(budgets).toEqual([TEMPLATE_PATTERN_TIMEOUT_MS, TEMPLATE_PATTERN_RETRY_TIMEOUT_MS]);
+    } finally {
+      watchdog.mockRestore();
+    }
+  });
+
+  it('still stops a pattern that backtracks catastrophically, with no stand-in for the watchdog', () => {
+    // Real time: about both budgets, since it spends the second one too.
+    expect(() => runTemplatePattern('^(a+)+$', '', `${'a'.repeat(32)}!`)).toThrow(TemplatePatternTimeout);
+  });
 });

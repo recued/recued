@@ -30,6 +30,8 @@ import {
   type WorkEntitySourceFreshness,
 } from '@recued/contracts';
 
+import type { FtsWordCheck } from '@recued/fts';
+
 import {
   WorkEntityValidationError,
   type WorkEntityListQuery,
@@ -89,6 +91,10 @@ export interface WorkEntityResolver {
    *  visibility as `readEntity`, applied per hit, so a stale index entry is
    *  dropped rather than served. */
   searchByText(kind: WorkEntityKind, query: string, limit: number): WorkEntity[];
+  /** The visible assets that name a holder, newest-updated first, at most `limit`
+   *  (the store's `listAssetsWithHolder`): what `work.search` matches a holder's
+   *  name against. Empty where the store cannot list them. */
+  listAssetsWithHolder(limit: number): WorkEntity[];
   /** How many VISIBLE records of one kind exist, optionally within one Source.
    *  Feeds `work.search`'s query-miss hint, which must distinguish "you have no
    *  notes" from "your query matched none of your notes" — and with matching
@@ -98,6 +104,9 @@ export interface WorkEntityResolver {
    *  `matchTextsByQuery`. The read tool's read-through half runs through this
    *  so live items and local rows are judged by ONE matcher. */
   matchTextsByQuery(texts: readonly string[], query: string): number[];
+  /** The store's index-wide spelling check — see `WorkEntityStore.checkSpelling`.
+   *  Empty where the store cannot check. */
+  checkSpelling(query: string): FtsWordCheck[];
   readEntity(kind: WorkEntityKind, id: string): WorkEntity | null;
   /** Read one mirrored entity by its stable Source-native identity. This is
    *  the lookup half of an AI-facing qualified id; it applies the same
@@ -224,6 +233,9 @@ export const createWorkEntityResolver = (
     return out;
   };
 
+  const listAssetsWithHolder: WorkEntityResolver['listAssetsWithHolder'] = limit =>
+    (store.listAssetsWithHolder?.(limit) ?? []).map(asset => ({ _kind: 'asset' as const, ...asset }));
+
   const countByKind: WorkEntityResolver['countByKind'] = (kind, source_id) => {
     requireWorkEntityKind(kind);
     // Same default visibility filter the polymorphic list applies (live +
@@ -310,8 +322,10 @@ export const createWorkEntityResolver = (
     listByKind,
     listByKindScoped,
     searchByText,
+    listAssetsWithHolder,
     countByKind,
     matchTextsByQuery,
+    checkSpelling: (query: string): FtsWordCheck[] => store.checkSpelling?.(query) ?? [],
     readEntity,
     readEntityBySourceIdentity,
     listSources,

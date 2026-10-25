@@ -34,6 +34,12 @@ import {
   CONTRACT_GRANTS_RISK_ATTR,
   CONTRACT_GRANTS_SOURCE_ATTR,
   CONTRACT_GRANTS_SUMMARY_ATTR,
+  CONTRACT_GRANTS_AI_TOOLS_GROUP,
+  CONTRACT_GRANTS_AI_TOOLS_NOTE,
+  CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR,
+  CONTRACT_GRANTS_NEED_ATTR,
+  CONTRACT_GRANTS_NEEDS_ATTR,
+  CONTRACT_GRANTS_TITLE_ATTR,
   mountContractGrantsPanel,
   type GrantCatalogOperationsCaller,
   type GrantReadCaller,
@@ -41,7 +47,22 @@ import {
   type GrantWriteCaller,
 } from '../contracts/contract-grants-panel.js';
 import {
+  CONTRACT_KEY_CONFIRM_ATTR,
+  CONTRACT_KEY_CREATE_ATTR,
+  CONTRACT_KEY_TURN_OFF_ATTR,
+  CONTRACT_KEY_VALUE_ATTR,
+} from '../contracts/contract-key-panel.js';
+import { PERMISSIONS_PANEL_HOST_ATTR } from '../settings/permissions-panel.js';
+import {
   bootstrapContractsRoute,
+  CONTRACTS_ROUTE_LIMITS_CANCEL_ATTR,
+  CONTRACTS_ROUTE_LIMITS_CAP_ATTR,
+  CONTRACTS_ROUTE_LIMITS_EDIT_ATTR,
+  CONTRACTS_ROUTE_LIMITS_ERROR_ATTR,
+  CONTRACTS_ROUTE_LIMITS_FORM_ATTR,
+  CONTRACTS_ROUTE_LIMITS_PERIOD_ATTR,
+  CONTRACTS_ROUTE_LIMITS_SAVE_ATTR,
+  CONTRACTS_ROUTE_RULES_ATTR,
   CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR,
   CONTRACTS_ROUTE_HEAD_ERROR_ATTR,
   CONTRACTS_ROUTE_PILL_ATTR,
@@ -53,6 +74,7 @@ import {
   type ContractsListTab,
 } from '../contracts/bootstrap-contracts-route.js';
 import {
+  KERNEL_OP_GUIDE,
   KERNEL_OP_REGISTRY,
   OWNER_CONTRACT_ID,
   READABLE_COLLECTIONS,
@@ -65,6 +87,8 @@ import {
   type CatalogIngredientView,
   type ContractDefinitionView,
   type DoorType,
+  type McpInboundTokenRecord,
+  type SetContractLimitsRequest,
   type RegistryDescribeRpcOutput,
   type RegistryDescribeTopicEntry,
 } from '@recued/contracts';
@@ -339,6 +363,8 @@ interface PanelOpts {
   contractId?: string;
   seed?: Record<string, boolean>;
   explicitGrantRowsOnly?: boolean;
+  /** D-327 — an agreement that is its key's whole authority. */
+  keyAgreement?: boolean;
   withCatalog?: boolean;
   withRegistry?: boolean;
   grantReadRejects?: boolean;
@@ -452,6 +478,7 @@ const mountPanelWith = (opts: PanelOpts = {}) => {
     runGrantRead,
     runGrantWrite,
     ...(opts.explicitGrantRowsOnly === true ? { explicitGrantRowsOnly: true } : {}),
+    ...(opts.keyAgreement === true ? { keyAgreement: true } : {}),
     ...(opts.withCatalog === false ? {} : { runCatalogOperations }),
     ...(opts.withRegistry === false ? {} : { runRegistryDescribe }),
     ...(opts.withCliList === false ? {} : { runCliReachabilityList }),
@@ -475,6 +502,7 @@ const mountPanelWith = (opts: PanelOpts = {}) => {
     runRegistryDescribe,
     runCliReachabilityList,
     runCliReachabilitySet,
+    runRecipeOpUsage,
   };
 };
 
@@ -1013,6 +1041,17 @@ interface RouteGrantStubs {
     args: { contract_id: string; door_types: ReadonlyArray<DoorType> },
   ) => Promise<ContractDefinitionView>;
   revokeImpl?: (args: { contract_id: string; reason?: string }) => Promise<ContractDefinitionView>;
+  /** D-327 — the Connect tab's key callers. */
+  keyCallers?: Pick<
+    Parameters<typeof bootstrapContractsRoute>[0],
+    | 'permissionsListInboundTokensCaller'
+    | 'permissionsIssueInboundTokenCaller'
+    | 'permissionsRevokeInboundTokenCaller'
+  >;
+  /** D-327 — wire the override (rules) callers. */
+  withRules?: boolean;
+  /** D-327 — `collection.contract.setLimits`. */
+  setLimitsImpl?: (args: SetContractLimitsRequest) => Promise<ContractDefinitionView>;
 }
 
 const mountRoute = (
@@ -1061,6 +1100,14 @@ const mountRoute = (
       : { grantReadCaller: runGrantRead, grantWriteCaller: runGrantWrite, grantCatalogOperationsCaller: runCatalogOperations, grantRegistryDescribeCaller: runRegistryDescribe }),
     ...(stubs.withSetDoorTypes === false ? {} : { grantSetDoorTypesCaller }),
     ...(stubs.withRevoke === false ? {} : { contractsRevokeCaller }),
+    ...(stubs.keyCallers ?? {}),
+    ...(stubs.setLimitsImpl !== undefined ? { grantSetLimitsCaller: vi.fn(stubs.setLimitsImpl) } : {}),
+    ...(stubs.withRules === true
+      ? {
+          permissionsListOverridesCaller: vi.fn(async () => ({ overrides: [] })),
+          permissionsDeleteOverrideCaller: vi.fn(async () => ({ deleted: true })),
+        }
+      : {}),
   });
   return {
     doc,
@@ -1212,20 +1259,31 @@ describe('contracts route delta 3 — header door toggle (L1)', () => {
 
     // wildcard door (no door_types) backs every door — all checked, none locked.
     expect(doorToggle(root, 'mcp').getAttribute('data-backed')).toBe('true');
-    expect(doorToggle(root, 'mcp_chat').getAttribute('data-backed')).toBe('true');
     expect(doorToggle(root, 'llm_gateway').getAttribute('data-backed')).toBe('true');
+    expect(allText(root)).not.toContain('One way in has to stay on');
 
     doorInput(doorToggle(root, 'mcp')).dispatch('change');
     await tick();
     expect(ctx.grantSetDoorTypesCaller).toHaveBeenCalledWith({
       contract_id: 'door_alpha',
-      door_types: ['mcp_chat', 'llm_gateway'],
+      door_types: ['llm_gateway'],
     });
-    // header re-rendered: mcp un-backed; two doors remain backed and editable.
+    // header re-rendered: mcp un-backed and still editable; the AI door is now
+    // the last way in, so it locks and the page says why.
     expect(doorToggle(root, 'mcp').getAttribute('data-backed')).toBe('false');
-    expect(doorToggle(root, 'mcp_chat').getAttribute('data-backed')).toBe('true');
+    expect(doorInput(doorToggle(root, 'mcp')).hasAttribute('disabled')).toBe(false);
     expect(doorToggle(root, 'llm_gateway').getAttribute('data-backed')).toBe('true');
-    expect(doorInput(doorToggle(root, 'mcp_chat')).hasAttribute('disabled')).toBe(false);
+    expect(doorInput(doorToggle(root, 'llm_gateway')).hasAttribute('disabled')).toBe(true);
+    expect(allText(root)).toContain('One way in has to stay on. To stop this agreement, use Revoke.');
+  });
+
+  it('offers no MCP chat box — nothing serves that door yet', async () => {
+    const ctx = mountRoute('door_alpha');
+    const root = ctx.root as unknown as FakeEl;
+    await ctx.route.whenLoaded();
+    expect(
+      collectByAttr(root, CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR).map((t) => t.getAttribute('data-door')),
+    ).toEqual(['mcp', 'llm_gateway']);
   });
 
   it('a wildcard "backs all" reflects even when the server omits door_types', async () => {
@@ -1238,7 +1296,8 @@ describe('contracts route delta 3 — header door toggle (L1)', () => {
     });
     const root = ctx.root as unknown as FakeEl;
     await ctx.route.whenLoaded();
-    // mcp + mcp_chat backed; toggling llm_gateway ON → backs all → sent as [].
+    // mcp backed (mcp_chat is not shown); toggling llm_gateway ON → backs every
+    // shown door → sent as [].
     doorInput(doorToggle(root, 'llm_gateway')).dispatch('change');
     await tick();
     expect(ctx.grantSetDoorTypesCaller).toHaveBeenCalledWith({
@@ -1246,7 +1305,6 @@ describe('contracts route delta 3 — header door toggle (L1)', () => {
       door_types: [],
     });
     expect(doorToggle(root, 'mcp').getAttribute('data-backed')).toBe('true');
-    expect(doorToggle(root, 'mcp_chat').getAttribute('data-backed')).toBe('true');
     expect(doorToggle(root, 'llm_gateway').getAttribute('data-backed')).toBe('true');
   });
 
@@ -1258,6 +1316,11 @@ describe('contracts route delta 3 — header door toggle (L1)', () => {
     await ctx.route.whenLoaded();
     const onlyInput = doorInput(doorToggle(root, 'mcp'));
     expect(onlyInput.hasAttribute('disabled')).toBe(true);
+    // A greyed tick with no reason read as a third state of the box.
+    expect(doorToggle(root, 'mcp').getAttribute('title')).toBe(
+      'One way in has to stay on. To stop this agreement, use Revoke.',
+    );
+    expect(allText(root)).toContain('One way in has to stay on. To stop this agreement, use Revoke.');
     onlyInput.dispatch('change'); // disabled → no-op
     await tick();
     expect(ctx.grantSetDoorTypesCaller).not.toHaveBeenCalled();
@@ -1452,6 +1515,150 @@ describe('contract grants — CLI ops route to cli_reachability (R22 GAP-B fix)'
 });
 
 // ════════════════════════════════════════════════════════════════
+// D-327 follow-on — each switch says what it is; each AI tool, what it needs
+// ════════════════════════════════════════════════════════════════
+
+/** ⛔ THE OWNER'S REPORT (2026-10-24): "each op should have a tooltip or hovering
+ *  text showing what it is, for the work/work-entity requirement it is unclear",
+ *  and "take out the work.* and other mcp-only op to its own group name".
+ *
+ *  On an agreement that grants nothing by default, switching `work.create` on adds
+ *  nothing: the tool also checks `core.work-entity.<kind>.create`. Nothing on the
+ *  page said so. These pin the three answers: a plain title and hover sentence on
+ *  every Recued switch, the AI tools in a group of their own, and under each tool
+ *  the other switches it needs, switchable in place. */
+describe('D-327 follow-on — every switch says what it is, every AI tool what it needs', () => {
+  const opsGroupNames = (root: FakeEl): string[] => {
+    const out: string[] = [];
+    const walk = (node: FakeEl): void => {
+      if (node.className === 'cg-op-ingredient-name') out.push(node.textContent);
+      for (const child of node.children) walk(child);
+    };
+    walk(root);
+    return out;
+  };
+  const needsLine = (root: FakeEl, toolKey: string): FakeEl | undefined =>
+    collectByAttr(root, CONTRACT_GRANTS_NEEDS_ATTR).find((l) => l.getAttribute('data-entry') === toolKey);
+  const needButton = (root: FakeEl, toolKey: string, needKey: string): FakeEl | undefined =>
+    collectByAttr(needsLine(root, toolKey) ?? root, CONTRACT_GRANTS_NEED_ATTR)
+      .find((b) => b.getAttribute('data-entry') === needKey);
+
+  it('shows Recued’s title beside the id, and the whole sentence on hover', async () => {
+    const { panel } = mountPanelWith({});
+    await panel.whenLoaded();
+    const cell = cellFor(opsRootEl(panel), opGrantEntry('core.work-entity.task.create'))!;
+    expect(collectByAttr(cell, CONTRACT_GRANTS_TITLE_ATTR)[0]?.textContent).toBe('Create a task');
+    // The id stays the name: it is what the docs and the MCP tool list call it.
+    expect(allText(cell)).toContain('core.work-entity.task.create');
+    expect(cell.title).toContain(KERNEL_OP_GUIDE['core.work-entity.task.create']!.summary);
+    // The join the owner could not see, from the needed switch's side.
+    expect(cell.title).toContain('AI tools that need this: work.create (to add tasks).');
+    // get versus read, the question this started from: two different sentences.
+    const get = cellFor(opsRootEl(panel), opGrantEntry('core.work-entity.get'))!;
+    const read = cellFor(opsRootEl(panel), opGrantEntry('core.work-entity.read'))!;
+    expect(get.title).toContain('Lets a recipe read one item');
+    expect(read.title).toContain('Lets an AI read and search');
+    expect(read.title).toContain('AI tools that need this: work.search, work.read.');
+  });
+
+  it('heads the AI tools group above every entity group, and says what the tools are', async () => {
+    const { panel } = mountPanelWith({});
+    await panel.whenLoaded();
+    const root = opsRootEl(panel);
+    expect(opsGroupNames(root)[0]).toBe(CONTRACT_GRANTS_AI_TOOLS_GROUP);
+    expect(collectByAttr(root, CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR)[0]?.textContent).toBe(CONTRACT_GRANTS_AI_TOOLS_NOTE);
+    const tools = panel.getEntries().filter((e) => e.group === CONTRACT_GRANTS_AI_TOOLS_GROUP);
+    expect(tools.map((e) => e.label).sort()).toEqual([...TIER1_TOOL_NAMES].sort());
+    // …and the steps stay under what they reach.
+    const work = panel.getEntries().find((e) => e.entry_key === opGrantEntry('core.work-entity.task.create'));
+    expect(work?.group).toBe('Tasks & notes');
+  });
+
+  it('lists what an AI tool needs, each one on or off, and a click switches it in place', async () => {
+    const { panel, runGrantWrite } = mountPanelWith({ keyAgreement: true });
+    await panel.whenLoaded();
+    const root = opsRootEl(panel);
+    const tool = primitiveGrantEntry('work.create');
+    const buttons = collectByAttr(needsLine(root, tool)!, CONTRACT_GRANTS_NEED_ATTR);
+    expect(buttons.map((b) => b.getAttribute('data-entry'))).toEqual([
+      'core.work-entity.task.create',
+      'core.work-entity.note.create',
+      'core.work-entity.commitment.create',
+      'core.work-entity.project.create',
+      // D-325 — `work.create` adds things you own, so the asset create is a need too.
+      'core.work-entity.asset.create',
+    ]);
+    expect(needButton(root, tool, 'core.work-entity.asset.create')?.textContent).toBe('+ Add a thing you own');
+    const task = needButton(root, tool, 'core.work-entity.task.create')!;
+    expect(task.getAttribute('data-effective')).toBe('off');
+    expect(task.getAttribute('aria-pressed')).toBe('false');
+    // Its title names the kind, so the condition is not repeated after it.
+    expect(task.textContent).toBe('+ Create a task');
+
+    task.click();
+    await panel.whenLoaded();
+    await tick(10);
+    expect(runGrantWrite).toHaveBeenCalledWith({
+      contract_id: 'door_x', entry_key: 'core.work-entity.task.create', granted: true,
+    });
+    const after = needButton(opsRootEl(panel), tool, 'core.work-entity.task.create')!;
+    expect(after.getAttribute('data-effective')).toBe('on');
+    expect(after.textContent).toBe('✓ Create a task');
+    // The same switch as its own row, not a copy that could disagree with it.
+    expect(panel.getEffective('core.work-entity.task.create')).toBe('on');
+    expect(cellFor(opsRootEl(panel), 'core.work-entity.task.create')!.getAttribute('data-effective')).toBe('on');
+  });
+
+  it('shows a need that is a data switch, and a need that applies only sometimes', async () => {
+    const { panel } = mountPanelWith({ keyAgreement: true });
+    await panel.whenLoaded();
+    const root = opsRootEl(panel);
+    const mail = primitiveGrantEntry('mail.read');
+    expect(needButton(root, mail, collectionGrantEntry('mail'))?.textContent).toBe('+ Your mail');
+    expect(needButton(root, mail, collectionGrantEntry('file'))?.textContent).toBe('+ Your files (to list attachments)');
+  });
+
+  it('shows the note of a tool that checks no switch of its own', async () => {
+    const { panel } = mountPanelWith({});
+    await panel.whenLoaded();
+    const line = needsLine(opsRootEl(panel), primitiveGrantEntry('recipe.run'))!;
+    expect(collectByAttr(line, CONTRACT_GRANTS_NEED_ATTR)).toHaveLength(0);
+    expect(allText(line)).toContain('unless the recipe is on under Recipes');
+    // A tool with nothing to add gets no line at all.
+    expect(needsLine(opsRootEl(panel), primitiveGrantEntry('recipe.stop'))).toBeUndefined();
+  });
+
+  it('shows a pack op’s own description on hover', async () => {
+    const described: { ingredients: ReadonlyArray<CatalogIngredientView> } = {
+      ingredients: [{
+        ingredient_id: 'hubspot-catalog', name: 'HubSpot',
+        operations: [{
+          operation_id: READ_OP, operation_key: 'deal.read', risk_tier: 'read', groups: [],
+          description: 'Read one HubSpot deal by id.',
+        }],
+      }],
+    };
+    const { panel } = mountPanelWith({ catalog: described });
+    await panel.whenLoaded();
+    const cell = cellFor(opsRootEl(panel), READ_OP)!;
+    expect(cell.title).toBe('Read one HubSpot deal by id.');
+    // No Recued title for a pack's own op: the id and the author's words are all.
+    expect(collectByAttr(cell, CONTRACT_GRANTS_TITLE_ATTR)).toHaveLength(0);
+  });
+
+  it('finds a switch by its plain title', async () => {
+    const { panel } = mountPanelWith({ operationFilterDebounceMs: 0 });
+    await panel.whenLoaded();
+    const root = opsRootEl(panel);
+    const input = collectByAttr(root, CONTRACT_GRANTS_OP_FILTER_ATTR)[0]!;
+    input.value = 'create a task';
+    input.dispatch('input');
+    expect(cellFor(root, opGrantEntry('core.work-entity.task.create'))).toBeDefined();
+    expect(cellFor(root, WRITE_OP)).toBeUndefined();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
 // D-247 D11 — the op toggle stops lying
 // ════════════════════════════════════════════════════════════════
 
@@ -1474,13 +1681,24 @@ describe('D-247 D11 — the op row shows what a revoke would actually cost', () 
     oldest_scanned_at: 1,
     underivable: [] as readonly string[],
   });
+  const recipe = (recipe_id: string, name: string) => ({
+    recipe_id, publisher_id: 'recued-core', source: 'pair-sync' as const,
+    recipe: { metadata: { name } },
+  });
+  const RECIPES = [
+    recipe('overdue-invoice-chase', 'Chase overdue invoices'),
+    recipe('send-order-customer-reply-shopify', 'Reply to a Shopify customer'),
+    recipe('reschedule-calendar-event', 'Reschedule a calendar event'),
+  ];
+  const ALLOW_CHASE = { 'recipe.recued-core/overdue-invoice-chase': true };
 
   const usedLine = (panel: { opsRoot: HTMLElement }): FakeEl | undefined =>
     collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_STILL_USED_ATTR)[0];
 
-  it('names the recipes that COULD reach it and the runs that DID', async () => {
+  it('names the recipes ALLOWED HERE that could reach it, and the runs that DID', async () => {
     const { panel } = mountPanelWith({
-      seed: { [WRITE_OP]: false },
+      seed: { [WRITE_OP]: false, ...ALLOW_CHASE },
+      recipes: RECIPES,
       usage: usageFor({
         could: ['overdue-invoice-chase', 'send-order-customer-reply-shopify'],
         count: 3,
@@ -1490,25 +1708,79 @@ describe('D-247 D11 — the op row shows what a revoke would actually cost', () 
     await panel.whenLoaded();
     const line = usedLine(panel);
     expect(line).toBeDefined();
-    expect(line!.textContent).toContain('The AI cannot call this itself');
-    expect(line!.textContent).toContain('still used by: overdue-invoice-chase');
-    expect(line!.textContent).toContain('ran 3× in the last 30 days');
+    // The NAME the Recipes tab shows, not the id.
+    expect(line!.textContent).toContain('Still runs inside a recipe allowed here: Chase overdue invoices.');
+    expect(line!.textContent).toContain('Ran 3 times here in the last 30 days.');
+    // The covering recipe is already named once; it is not named twice.
+    expect(line!.textContent).not.toContain(', inside');
     // Structured, so a copy edit cannot silently drop one half.
     expect(line!.getAttribute('data-ran')).toBe('3');
-    expect(line!.getAttribute('data-could')).toContain('overdue-invoice-chase');
+    expect(line!.getAttribute('data-could')).toBe('recued-core/overdue-invoice-chase');
+  });
+
+  it('⛔ a recipe this agreement does not allow is never named, so the line does not appear', async () => {
+    // THE OWNER'S REPORT (2026-10-24): "still used by: reschedule-calendar-event · not
+    // run in the last 30 days" on almost every op they switched off. Coverage rides
+    // the recipe grant of the agreement the run is made under, so a recipe this
+    // agreement does not allow cannot run the op through it — naming it was false.
+    const { panel } = mountPanelWith({
+      seed: { [WRITE_OP]: false },
+      recipes: RECIPES,
+      usage: usageFor({ could: ['reschedule-calendar-event'], count: 0, recipes: [] }),
+    });
+    await panel.whenLoaded();
+    expect(panel.getEffective('recipe.recued-core/reschedule-calendar-event')).toBe('off');
+    expect(usedLine(panel)).toBeUndefined();
+  });
+
+  it('names only the allowed ones when several recipes could reach it', async () => {
+    const { panel } = mountPanelWith({
+      seed: {
+        [WRITE_OP]: false,
+        ...ALLOW_CHASE,
+        'recipe.recued-core/reschedule-calendar-event': true,
+      },
+      recipes: RECIPES,
+      usage: usageFor({
+        could: ['overdue-invoice-chase', 'reschedule-calendar-event', 'send-order-customer-reply-shopify'],
+        count: 0,
+        recipes: [],
+      }),
+    });
+    await panel.whenLoaded();
+    const text = usedLine(panel)!.textContent!;
+    expect(text).toContain(
+      'Still runs inside 2 recipes allowed here: Chase overdue invoices, Reschedule a calendar event.',
+    );
+    expect(text).not.toContain('Shopify');
   });
 
   it('says the WINDOW when nothing ran — retention is not history', async () => {
     // ⛔ `data.audit` evicts oldest-first, so "not run in the last 30 days" is the
     // honest sentence and "never used" is a claim the instrument cannot make.
     const { panel } = mountPanelWith({
-      seed: { [WRITE_OP]: false },
+      seed: { [WRITE_OP]: false, ...ALLOW_CHASE },
+      recipes: RECIPES,
       usage: usageFor({ could: ['overdue-invoice-chase'], count: 0, recipes: [] }),
     });
     await panel.whenLoaded();
     const line = usedLine(panel);
-    expect(line!.textContent).toContain('not run in the last 30 days');
+    expect(line!.textContent).toContain('Not run here in the last 30 days.');
     expect(line!.textContent).not.toContain('never');
+  });
+
+  it('shows runs here even when no allowed recipe is known to reach it', async () => {
+    // A covered run is evidence on its own: a recipe whose steps could not be read
+    // ahead of time still ran the op here, and the count says so.
+    const { panel } = mountPanelWith({
+      seed: { [WRITE_OP]: false },
+      recipes: RECIPES,
+      usage: usageFor({ could: [], count: 1, recipes: ['recued-core/overdue-invoice-chase'] }),
+    });
+    await panel.whenLoaded();
+    expect(usedLine(panel)!.textContent).toBe(
+      'Ran once here in the last 30 days, inside Chase overdue invoices.',
+    );
   });
 
   it('carries the SERVER’s window, not a hardcoded 30', async () => {
@@ -1518,6 +1790,15 @@ describe('D-247 D11 — the op row shows what a revoke would actually cost', () 
     });
     await panel.whenLoaded();
     expect(usedLine(panel)!.textContent).toContain('last 7 days');
+  });
+
+  it('asks for THIS agreement’s runs, not every agreement’s', async () => {
+    const { panel, runRecipeOpUsage } = mountPanelWith({
+      contractId: 'door_x',
+      usage: usageFor({ could: [], count: 0, recipes: [] }),
+    });
+    await panel.whenLoaded();
+    expect(runRecipeOpUsage).toHaveBeenCalledWith({ contract_id: 'door_x' });
   });
 
   it('renders NOTHING when the evidence read FAILED — not a zero', async () => {
@@ -1538,8 +1819,9 @@ describe('D-247 D11 — the op row shows what a revoke would actually cost', () 
 
   it('renders NOTHING on a row whose grant is ON — the line is about a REVOKE', async () => {
     const { panel } = mountPanelWith({
-      seed: { [WRITE_OP]: true },
-      usage: usageFor({ could: ['chase'], count: 3, recipes: ['x/chase'] }),
+      seed: { [WRITE_OP]: true, ...ALLOW_CHASE },
+      recipes: RECIPES,
+      usage: usageFor({ could: ['overdue-invoice-chase'], count: 3, recipes: ['recued-core/overdue-invoice-chase'] }),
     });
     await panel.whenLoaded();
     expect(usedLine(panel)).toBeUndefined();
@@ -1617,5 +1899,294 @@ describe('D-247 — installed recipes are grantable on their own root', () => {
     const { panel } = mountPanelWith({});
     await panel.whenLoaded();
     expect(allText(recipesRootEl(panel))).toContain('You have no Recipes yet');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// D-327 — one agreement, one key, one gate
+// ════════════════════════════════════════════════════════════════
+
+/** A fake key store behind the three key callers, so the Connect tab's key panel
+ *  runs its real list → create → turn-off flow. */
+const makeKeyStore = (seed: McpInboundTokenRecord[] = []) => {
+  const tokens = [...seed];
+  let seq = 0;
+  const list = vi.fn(async () => ({ tokens: [...tokens] }));
+  const issue = vi.fn(async (args: {
+    label: string;
+    contract_id: string;
+    grants: Readonly<Record<string, boolean>>;
+    concurrency_tier: 5;
+    chat_mode: null;
+  }) => {
+    seq += 1;
+    const record: McpInboundTokenRecord = {
+      token_id: `tok_${seq}`,
+      bearer_hash: 'hash',
+      label: args.label,
+      created_at: 1_000 + seq,
+      revoked_at: null,
+      grants: {},
+      concurrency_tier: 5,
+      chat_mode: null,
+      contract_id: args.contract_id,
+      updated_at: 1_000 + seq,
+    };
+    tokens.unshift(record);
+    return { record, bearer_plaintext: `recued_secret_${seq}` };
+  });
+  const revoke = vi.fn(async ({ token_id }: { token_id: string }) => {
+    const i = tokens.findIndex((t) => t.token_id === token_id);
+    tokens[i] = { ...tokens[i]!, revoked_at: 9_999 };
+    return { revoked: true, token: tokens[i]! };
+  });
+  return {
+    tokens,
+    list,
+    issue,
+    revoke,
+    callers: {
+      permissionsListInboundTokensCaller: list,
+      permissionsIssueInboundTokenCaller: issue,
+      permissionsRevokeInboundTokenCaller: revoke,
+    },
+  };
+};
+
+const keyToken = (overrides: Partial<McpInboundTokenRecord> = {}): McpInboundTokenRecord => ({
+  token_id: 'tok_existing',
+  bearer_hash: 'hash',
+  label: 'Alpha agent',
+  created_at: 500,
+  revoked_at: null,
+  grants: {},
+  concurrency_tier: 5,
+  chat_mode: null,
+  contract_id: 'door_alpha',
+  updated_at: 500,
+  ...overrides,
+});
+
+describe('D-327 — an agreement is its key\'s whole authority', () => {
+  const KEY_AGREEMENT = agentContract({ key_authority: 'contract' });
+
+  it('gives such an agreement a Recipes tab, grants that start off, and no switch a key can never use', async () => {
+    const ctx = mountRoute('door_alpha', { contracts: [KEY_AGREEMENT] });
+    const root = ctx.root as unknown as FakeEl;
+    await ctx.route.whenLoaded();
+    expect(collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR).map((t) => t.getAttribute('data-tab')))
+      .toEqual(['connect', 'ops', 'entities', 'recipes']);
+
+    tabBtn(root, 'ops').click();
+    const panel = ctx.route.contractGrantsPanel()!;
+    await panel.whenLoaded();
+    await tick();
+    // A read the older wildcard model admits by default is OFF here: the
+    // agreement is the whole gate, so nothing is allowed until switched on.
+    expect(panel.getEffective(opGrantEntry('core.data.calendar.list'))).toBe('off');
+    expect(panel.getEffective(primitiveGrantEntry('mail.search'))).toBe('off');
+    expect(panel.getEffective(collectionGrantEntry('mail'))).toBe('off');
+    // A kernel op kept off every door is not offered at all.
+    expect(cellFor(opsRootEl(panel), opGrantEntry('core.ai.summarize'))).toBeUndefined();
+    expect(cellFor(opsRootEl(panel), opGrantEntry('core.data.calendar.list'))).toBeDefined();
+  });
+
+  it('keeps an older agreement on its old defaults and its old tabs', async () => {
+    const ctx = mountRoute('door_alpha');
+    const root = ctx.root as unknown as FakeEl;
+    await ctx.route.whenLoaded();
+    expect(collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR).map((t) => t.getAttribute('data-tab')))
+      .toEqual(['connect', 'ops', 'entities']);
+    tabBtn(root, 'ops').click();
+    const panel = ctx.route.contractGrantsPanel()!;
+    await panel.whenLoaded();
+    expect(panel.getEffective(opGrantEntry('core.data.calendar.list'))).toBe('on');
+    expect(cellFor(opsRootEl(panel), opGrantEntry('core.ai.summarize'))).toBeDefined();
+  });
+
+  it('creates this agreement\'s key with its id and nothing else, shows it once, and turns it off', async () => {
+    const keys = makeKeyStore([keyToken({ token_id: 'tok_other', contract_id: 'door_beta' })]);
+    const ctx = mountRoute('door_alpha', { contracts: [KEY_AGREEMENT], keyCallers: keys.callers });
+    const root = ctx.root as unknown as FakeEl;
+    await ctx.route.whenLoaded();
+    const keyPanel = ctx.route.contractKeyPanel()!;
+    await keyPanel.whenLoaded();
+    // Another agreement's key is not this agreement's key.
+    expect(keyPanel.getState()).toBe('none');
+
+    collectByAttr(root, CONTRACT_KEY_CREATE_ATTR)[0]!.click();
+    await tick(10);
+    expect(keys.issue).toHaveBeenCalledWith({
+      label: 'Alpha agent',
+      contract_id: 'door_alpha',
+      grants: {},
+      concurrency_tier: 5,
+      chat_mode: null,
+    });
+    expect(keyPanel.getState()).toBe('active');
+    expect(collectByAttr(root, CONTRACT_KEY_VALUE_ATTR)[0]?.textContent).toBe('recued_secret_1');
+
+    collectByAttr(root, CONTRACT_KEY_TURN_OFF_ATTR)[0]!.click();
+    expect(keys.revoke).not.toHaveBeenCalled();
+    expect(allText(root)).toContain('Every app using this key stops working at once');
+    collectByAttr(root, CONTRACT_KEY_CONFIRM_ATTR)[0]!.click();
+    await tick(10);
+    expect(keys.revoke).toHaveBeenCalledWith({ token_id: 'tok_1' });
+    expect(keys.revoke).toHaveBeenCalledTimes(1);
+    expect(keyPanel.getState()).toBe('none');
+    expect(collectByAttr(root, CONTRACT_KEY_VALUE_ATTR)).toHaveLength(0);
+  });
+
+  it('shows a key made elsewhere without its value', async () => {
+    const keys = makeKeyStore([keyToken()]);
+    const ctx = mountRoute('door_alpha', { contracts: [KEY_AGREEMENT], keyCallers: keys.callers });
+    const root = ctx.root as unknown as FakeEl;
+    await ctx.route.whenLoaded();
+    await ctx.route.contractKeyPanel()!.whenLoaded();
+    expect(ctx.route.contractKeyPanel()!.getState()).toBe('active');
+    expect(collectByAttr(root, CONTRACT_KEY_VALUE_ATTR)).toHaveLength(0);
+    expect(allText(root)).toContain('Recued shows a key only once');
+    expect(collectByAttr(root, CONTRACT_KEY_CREATE_ATTR)).toHaveLength(0);
+  });
+
+  it('offers an older agreement no new key, but lets its existing key be turned off', async () => {
+    const empty = makeKeyStore();
+    const older = mountRoute('door_alpha', { keyCallers: empty.callers });
+    await older.route.whenLoaded();
+    await older.route.contractKeyPanel()!.whenLoaded();
+    const olderRoot = older.root as unknown as FakeEl;
+    expect(collectByAttr(olderRoot, CONTRACT_KEY_CREATE_ATTR)).toHaveLength(0);
+    expect(allText(olderRoot)).toContain('made before an agreement could hold its own key');
+
+    const withKey = makeKeyStore([keyToken()]);
+    const ctx = mountRoute('door_alpha', { keyCallers: withKey.callers });
+    const root = ctx.root as unknown as FakeEl;
+    await ctx.route.whenLoaded();
+    await ctx.route.contractKeyPanel()!.whenLoaded();
+    collectByAttr(root, CONTRACT_KEY_TURN_OFF_ATTR)[0]!.click();
+    collectByAttr(root, CONTRACT_KEY_CONFIRM_ATTR)[0]!.click();
+    await tick(10);
+    expect(withKey.revoke).toHaveBeenCalledWith({ token_id: 'tok_existing' });
+  });
+
+  it('moves the rules for every agreement off the Connect tab and onto the list page', async () => {
+    const detail = mountRoute('door_alpha', {
+      contracts: [KEY_AGREEMENT],
+      keyCallers: makeKeyStore().callers,
+      withRules: true,
+    });
+    await detail.route.whenLoaded();
+    expect(collectByAttr(detail.root as unknown as FakeEl, PERMISSIONS_PANEL_HOST_ATTR)).toHaveLength(0);
+    expect(collectByAttr(detail.root as unknown as FakeEl, CONTRACTS_ROUTE_RULES_ATTR)).toHaveLength(0);
+
+    const list = mountRoute(undefined, { initialListTab: 'others', withRules: true });
+    const root = list.root as unknown as FakeEl;
+    await list.route.whenLoaded();
+    const section = collectByAttr(root, CONTRACTS_ROUTE_RULES_ATTR)[0]!;
+    expect(allText(section)).toContain('Rules for every agreement');
+    // Loaded on first open, not with every list paint.
+    expect(list.route.rulesPanel()).toBeNull();
+    (section as unknown as { open: boolean }).open = true;
+    section.dispatch('toggle');
+    expect(list.route.rulesPanel()).not.toBeNull();
+    expect(collectByAttr(section, PERMISSIONS_PANEL_HOST_ATTR)).toHaveLength(1);
+  });
+
+  describe('limits, edited in place', () => {
+    const echo = (args: SetContractLimitsRequest): Promise<ContractDefinitionView> =>
+      Promise.resolve(agentContract({
+        key_authority: 'contract',
+        ...(args.max_uses !== null ? { max_uses: args.max_uses, uses_remaining: args.max_uses } : {}),
+        ...(args.max_uses !== null && args.use_period !== 'total' ? { use_period: args.use_period } : {}),
+        ...(args.expiry_at !== null ? { expiry_at: args.expiry_at } : {}),
+      }));
+
+    it('opens on the current limit, saves in place, and shows the new one', async () => {
+      const setLimitsImpl = vi.fn(echo);
+      const ctx = mountRoute('door_alpha', {
+        contracts: [agentContract({ key_authority: 'contract', max_uses: 5, uses_remaining: 5 })],
+        setLimitsImpl,
+      });
+      const root = ctx.root as unknown as FakeEl;
+      await ctx.route.whenLoaded();
+      collectByAttr(root, CONTRACTS_ROUTE_LIMITS_EDIT_ATTR)[0]!.click();
+      const cap = collectByAttr(root, CONTRACTS_ROUTE_LIMITS_CAP_ATTR)[0]!;
+      expect(cap.value).toBe('5');
+      expect(ctx.doc.activeElement).toBe(cap);
+      cap.value = '100';
+      cap.dispatch('input');
+      const period = collectByAttr(root, CONTRACTS_ROUTE_LIMITS_PERIOD_ATTR)[0]!;
+      period.value = 'month';
+      period.dispatch('change');
+      collectByAttr(root, CONTRACTS_ROUTE_LIMITS_SAVE_ATTR)[0]!.click();
+      await tick(10);
+      expect(setLimitsImpl).toHaveBeenCalledWith({
+        contract_id: 'door_alpha',
+        max_uses: 100,
+        use_period: 'month',
+        expiry_at: null,
+      });
+      expect(collectByAttr(root, CONTRACTS_ROUTE_LIMITS_FORM_ATTR)).toHaveLength(0);
+      expect(allText(root)).toContain('100 of 100 uses left');
+      expect(ctx.doc.activeElement).toBe(collectByAttr(root, CONTRACTS_ROUTE_LIMITS_EDIT_ATTR)[0]);
+    });
+
+    it('sends a cleared limit as no count and one budget', async () => {
+      const setLimitsImpl = vi.fn(echo);
+      const ctx = mountRoute('door_alpha', {
+        contracts: [agentContract({ key_authority: 'contract', max_uses: 5, uses_remaining: 5, use_period: 'month' })],
+        setLimitsImpl,
+      });
+      const root = ctx.root as unknown as FakeEl;
+      await ctx.route.whenLoaded();
+      collectByAttr(root, CONTRACTS_ROUTE_LIMITS_EDIT_ATTR)[0]!.click();
+      const cap = collectByAttr(root, CONTRACTS_ROUTE_LIMITS_CAP_ATTR)[0]!;
+      cap.value = '';
+      cap.dispatch('input');
+      collectByAttr(root, CONTRACTS_ROUTE_LIMITS_SAVE_ATTR)[0]!.click();
+      await tick(10);
+      expect(setLimitsImpl).toHaveBeenCalledWith({
+        contract_id: 'door_alpha',
+        max_uses: null,
+        use_period: 'total',
+        expiry_at: null,
+      });
+      expect(allText(root)).toContain('as many times as you like');
+    });
+
+    it('refuses a bad limit before calling, and Cancel changes nothing', async () => {
+      const setLimitsImpl = vi.fn(echo);
+      const ctx = mountRoute('door_alpha', { contracts: [agentContract({ key_authority: 'contract' })], setLimitsImpl });
+      const root = ctx.root as unknown as FakeEl;
+      await ctx.route.whenLoaded();
+      collectByAttr(root, CONTRACTS_ROUTE_LIMITS_EDIT_ATTR)[0]!.click();
+      const cap = collectByAttr(root, CONTRACTS_ROUTE_LIMITS_CAP_ATTR)[0]!;
+      cap.value = '0';
+      cap.dispatch('input');
+      collectByAttr(root, CONTRACTS_ROUTE_LIMITS_SAVE_ATTR)[0]!.click();
+      await tick();
+      expect(setLimitsImpl).not.toHaveBeenCalled();
+      expect(collectByAttr(root, CONTRACTS_ROUTE_LIMITS_ERROR_ATTR)[0]?.textContent)
+        .toBe('The limit has to be a whole number above zero.');
+      collectByAttr(root, CONTRACTS_ROUTE_LIMITS_CANCEL_ATTR)[0]!.click();
+      expect(collectByAttr(root, CONTRACTS_ROUTE_LIMITS_FORM_ATTR)).toHaveLength(0);
+      expect(setLimitsImpl).not.toHaveBeenCalled();
+    });
+
+    it('is not offered on yourself, a public door or a revoked agreement', async () => {
+      for (const [id, contracts] of [
+        [OWNER_CONTRACT_ID, undefined],
+        ['door_rcpt', [agentContract({ contract_id: 'door_rcpt', door_types: ['reception'] })]],
+        ['door_alpha', [agentContract({ lifecycle_state: 'revoked', revoked_at: 5 })]],
+      ] as const) {
+        const ctx = mountRoute(id, {
+          ...(contracts !== undefined ? { contracts } : {}),
+          setLimitsImpl: echo,
+        });
+        await ctx.route.whenLoaded();
+        expect(collectByAttr(ctx.root as unknown as FakeEl, CONTRACTS_ROUTE_LIMITS_EDIT_ATTR)).toHaveLength(0);
+        ctx.route.dispose();
+      }
+    });
   });
 });

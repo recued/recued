@@ -81,9 +81,17 @@ describe('pii-protect — a `content` tag matched against the host\'s known valu
     expect(back.restored).toEqual(MAIL);
   });
 
-  it('without a host source a content-only tag hides nothing — the behaviour before the amendment', () => {
+  // Without a host source no known NAME or ORG is matched — the behaviour before the
+  // amendment. The address is aliased all the same: since 2026-10-24 an email in
+  // content needs no ledger anchor (D-167 amendment).
+  const MAIL_ADDRESS_ONLY = {
+    ...MAIL,
+    body: 'Dana Whitfield at Northwind Traders asked for the addendum; cc m1@d1.invalid.',
+  };
+
+  it('without a host source a content-only tag matches no known name or org', () => {
     const out = protect({ data: MAIL, fields: [{ path: 'body', kind: 'content' }] }, ctxWith()) as ProtectOut;
-    expect(out.aliased).toEqual(MAIL);
+    expect(out.aliased).toEqual(MAIL_ADDRESS_ONLY);
   });
 
   it('ABSENCE IS NOT FAILURE: a host whose warehouse is unwired lends undefined, and nothing throws', () => {
@@ -91,7 +99,7 @@ describe('pii-protect — a `content` tag matched against the host\'s known valu
       { data: MAIL, fields: [{ path: 'body', kind: 'content' }] },
       ctxWith(() => undefined),
     ) as ProtectOut;
-    expect(out.aliased).toEqual(MAIL);
+    expect(out.aliased).toEqual(MAIL_ADDRESS_ONLY);
   });
 
   it('a nested thread is matched leaf by leaf', () => {

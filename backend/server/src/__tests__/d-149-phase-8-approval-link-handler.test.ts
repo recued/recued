@@ -797,3 +797,59 @@ describe('D-149 P8 § A.5.5 — POST /reception/approve/<id>', () => {
     expect(env.intentStore.findById('ep-approve-1')?.consumed_at).toBeNull();
   });
 });
+
+describe('customer response recovery', () => {
+  const post = async (env: ReturnType<typeof buildEnv>, fields: Record<string,string>, handler = buildHandler(env)) => {
+    const res = fakeRes(); await handler(fakeReq('POST','/reception/approve/ep-approve-1?t=goodbearer',formUrlencode(fields),{
+      host:'mary.recued.cloud',origin:'https://mary.recued.cloud','content-type':'application/x-www-form-urlencoded',
+    }),res); return res;
+  };
+  it('keeps escaped contact fields and selection, issues a fresh nonce, and accepts a corrected submission exactly once', async () => {
+    const env = buildEnv(); insertEndpoint(env,'goodbearer'); const audit = fakeAudit(); const handler = buildHandler(env,audit);
+    const nonce = env.nonce.issue('ep-approve-1',NOW);
+    const fields = {form_nonce:nonce,visitor_name:'Morgan <script>alert(1)</script>',visitor_email:'bad email',option_id:'opt_b'};
+    const failed = await post(env,fields,handler);
+    expect(failed.status).toBe(400); expect(failed.body).toContain('Enter a valid email address'); expect(failed.body).toContain('role="alert"');
+    expect(failed.body).toContain('value="bad email"'); expect(failed.body).toContain('Morgan &lt;script&gt;'); expect(failed.body).not.toContain('<script>');
+    expect(failed.body).toContain('value="opt_b" checked'); expect(failed.body).not.toContain('secret alias'); expect(failed.body).not.toContain('INTERNAL:');
+    const next = failed.body.match(/name="form_nonce" value="([^"]+)"/)?.[1]; expect(next).toBeTruthy(); expect(next).not.toBe(nonce);
+    expect(env.intentStore.findByEndpoint('ep-approve-1')?.consumed_at).toBeNull(); expect(audit.calls).toHaveLength(0);
+    expect(failed.getHeader('cache-control')).toBe('no-store'); expect(failed.getHeader('referrer-policy')).toBe('no-referrer');
+    const success = await post(env,{...fields,form_nonce:next!,visitor_email:'morgan@example.test'},handler); expect(success.status).toBe(200);
+    expect(env.intentStore.findByEndpoint('ep-approve-1')?.consumed_at).toBe(NOW); expect(audit.calls).toHaveLength(1);
+    const replay = await post(env,{...fields,form_nonce:next!,visitor_email:'morgan@example.test'},handler);
+    expect(replay.status).toBe(200); expect(replay.body).toContain('Already responded'); expect(replay.body).not.toContain('<form');
+    const recorded = env.intentStore.findByEndpoint('ep-approve-1');
+    const refused = fakeRes();
+    await handler(fakeReq('POST','/reception/approve/ep-approve-1?t=goodbearer',formUrlencode({...fields,form_nonce:next!,option_id:'opt_a'}),{
+      host:'mary.recued.cloud',origin:'https://another.example','content-type':'application/x-www-form-urlencoded',
+    }),refused);
+    expect(refused.status).toBe(403); expect(env.intentStore.findByEndpoint('ep-approve-1')).toEqual(recorded);
+    const review = fakeRes(); await handler(fakeReq('GET','/reception/approve/ep-approve-1?t=goodbearer',undefined,{host:'mary.recued.cloud'}),review);
+    expect(review.body).toContain('Already responded'); expect(audit.calls).toHaveLength(1);
+  });
+  it('recovers completion acceptance with an invalid optional email and preserves corrections safely', async () => {
+    const env = buildEnv(); const config: ApprovalLinkConfig = {...baseConfig,action_kind:'approve_wording',options:undefined,
+      visitor_field_constraints:{name:'optional',email:'optional'},on_action:{target_id:'saved-completion',on_approve_action:'quote_completion'}};
+    insertEndpoint(env,'goodbearer',config);
+    const handler = createReceptionPortHandler({getStore:()=>env.store,getCache:()=>env.cache,getRateLimiter:()=>env.limiter,getPepper:()=>PEPPER,now:()=>NOW,
+      getApprovalIntentStore:()=>env.intentStore,getApprovalLinkNonceStore:()=>env.nonce,getApprovalIntentPiiKey:()=>deriveApprovalIntentPiiKeyFromSubDek(SUB_DEK),
+      auditLog:fakeAudit(),checkQuoteCompletionLink:()=>null});
+    const failed = await post(env,{form_nonce:env.nonce.issue('ep-approve-1',NOW),visitor_email:'invalid',comment:'Retain <these> notes.',decision:'approve'},handler);
+    expect(failed.status).toBe(400); expect(failed.body).toContain('Enter a valid email address'); expect(failed.body).toContain('Retain &lt;these&gt; notes.');
+    const nonce = failed.body.match(/name="form_nonce" value="([^"]+)"/)![1]!;
+    const accepted = await post(env,{form_nonce:nonce,visitor_email:'',comment:'Retain <these> notes.',decision:'approve'},handler);
+    expect(accepted.status).toBe(200); expect(env.intentStore.findByEndpoint('ep-approve-1')?.consumed_at).toBe(NOW);
+  });
+  it('does not offer another response form when the saved request changed during validation', async () => {
+    const env = buildEnv(); const config: ApprovalLinkConfig = {...baseConfig,action_kind:'approve_wording',options:undefined,
+      on_action:{target_id:'saved-signoff',on_approve_action:'quote_signoff'}};
+    insertEndpoint(env,'goodbearer',config);
+    const handler = createReceptionPortHandler({getStore:()=>env.store,getCache:()=>env.cache,getRateLimiter:()=>env.limiter,getPepper:()=>PEPPER,now:()=>NOW,
+      getApprovalIntentStore:()=>env.intentStore,getApprovalLinkNonceStore:()=>env.nonce,getApprovalIntentPiiKey:()=>deriveApprovalIntentPiiKeyFromSubDek(SUB_DEK),auditLog:fakeAudit(),
+      checkQuoteSignoffLink:()=> 'This quote has changed. Ask for a new link.'});
+    const res = await post(env,{form_nonce:env.nonce.issue('ep-approve-1',NOW),visitor_email:'invalid',decision:'approve'},handler);
+    expect(res.status).toBe(409); expect(res.body).toContain('quote has changed'); expect(res.body).not.toContain('<form');
+    expect(env.intentStore.findByEndpoint('ep-approve-1')?.consumed_at).toBeNull();
+  });
+});

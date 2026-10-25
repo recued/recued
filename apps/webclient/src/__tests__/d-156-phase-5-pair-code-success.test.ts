@@ -103,7 +103,7 @@ const seamOptions = () => ({
 describe('finalizePairCodeSuccess — happy path', () => {
   it('writes 5 IDB fields + binds AAD on the wrapped bearer', async () => {
     const localStore = createInMemoryWebclientLocalStore();
-    const ensureProfile = vi.spyOn(localStore, 'ensureProfile');
+    const commitPair = vi.spyOn(localStore, 'commitPair');
     const setField = vi.spyOn(localStore, 'set');
     const { store: tokenStore, calls: wrapCalls } = buildFakeTokenStore();
     const invokePassportFetch = vi.fn(async () => ({
@@ -162,9 +162,10 @@ describe('finalizePairCodeSuccess — happy path', () => {
       server_url: 'ws://localhost:3001/ws',
       bearer: 'realm-bearer-xyz',
     });
-    expect(ensureProfile).toHaveBeenCalledOnce();
-    expect(ensureProfile).toHaveBeenCalledWith('ws://localhost:3001/ws');
-    expect(setField.mock.calls.some(([key]) => key === 'server_url')).toBe(false);
+    // The roster saves the pairing as one write, selecting the record by URL.
+    expect(commitPair).toHaveBeenCalledOnce();
+    expect(commitPair.mock.calls[0]?.[0]).toBe('ws://localhost:3001/ws');
+    expect(setField).not.toHaveBeenCalled();
   });
 
   it('persists the D-151 paired instance_id into pair_metadata when supplied', async () => {
@@ -587,7 +588,47 @@ describe('finalizePairCodeSuccess — failures leave IDB untouched', () => {
     expect(inspected.cert_pin_state).toBeNull();
   });
 
-  it('clears an existing target token before replacement writes can fail', async () => {
+  it('replaces a saved server’s sign-in in one write, never clearing it first', async () => {
+    // ⛔ The field-by-field path removed the saved token, then wrote four
+    // fields: a failure at any of them left the server "Needs pairing again".
+    // A roster store saves the pairing whole; the field writes are not used.
+    const localStore = createInMemoryWebclientLocalStore();
+    const serverUrl = 'wss://known.example:8443/ws';
+    await localStore.ensureProfile(serverUrl);
+    await localStore.set('server_public_key', 'OLD_PUBKEY');
+    await localStore.set('webclient_token', {
+      token_id: 'old-token',
+      ciphertext_b64: 'old-ciphertext',
+      iv_b64: 'old-iv',
+      issued_at: 1,
+    });
+    await localStore.beginNewProfile();
+    const fieldWrites: string[] = [];
+    localStore.set = async (key) => { fieldWrites.push(`set ${key}`); };
+    localStore.remove = async (key) => { fieldWrites.push(`remove ${key}`); };
+    const { store: tokenStore } = buildFakeTokenStore();
+
+    const result = await finalizePairCodeSuccess({
+      serverUrl: 'https://known.example:8443',
+      bearer: 'replacement-bearer',
+      localStore,
+      profileStore: localStore,
+      tokenStore,
+      invokePassportFetch: vi.fn(async () => ({
+        passport: buildPassport({ server_public_key: 'NEW_PUBKEY' }) as ServerPassportProjection,
+      })),
+      ...seamOptions(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fieldWrites).toEqual([]);
+    const profiles = await localStore.listProfiles();
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({ server_url: serverUrl, server_public_key: 'NEW_PUBKEY' });
+    expect(profiles[0]?.webclient_token?.token_id).not.toBe('old-token');
+  });
+
+  it('without a one-write store, still clears an existing target token before replacement writes can fail', async () => {
     const localStore = createInMemoryWebclientLocalStore();
     const serverUrl = 'wss://known.example:8443/ws';
     await localStore.ensureProfile(serverUrl);
@@ -613,7 +654,7 @@ describe('finalizePairCodeSuccess — failures leave IDB untouched', () => {
       serverUrl: 'https://known.example:8443',
       bearer: 'replacement-bearer',
       localStore,
-      profileStore: localStore,
+      profileStore: { ensureProfile: (url: string) => localStore.ensureProfile(url) },
       tokenStore,
       invokePassportFetch: vi.fn(async () => ({
         passport: buildPassport({ server_public_key: 'NEW_PUBKEY' }) as ServerPassportProjection,
@@ -702,6 +743,23 @@ describe('normaliseServerUrlToWs', () => {
   it('returns null for missing protocol', () => {
     expect(normaliseServerUrlToWs('localhost:3001')).toBeNull();
     expect(normaliseServerUrlToWs('//localhost:3001')).toBeNull();
+  });
+
+  it('writes the host as one form, so one server is saved once', () => {
+    // ⛔ Kept as typed, each of these saved a second entry for one server.
+    for (const typed of [
+      'https://Alice.Recued.Cloud',
+      'https://alice.recued.cloud:443',
+      'HTTPS://ALICE.RECUED.CLOUD:443/',
+      'wss://alice.recued.cloud:443/ws',
+    ]) {
+      expect(normaliseServerUrlToWs(typed), typed).toBe('wss://alice.recued.cloud/ws');
+    }
+    expect(normaliseServerUrlToWs('http://LocalHost:80')).toBe('ws://localhost/ws');
+    // A port that is not the default is part of the address.
+    expect(normaliseServerUrlToWs('https://Alice.Recued.Cloud:8443')).toBe(
+      'wss://alice.recued.cloud:8443/ws',
+    );
   });
 
   it('returns null for empty / whitespace-only input', () => {

@@ -148,7 +148,7 @@ test('Approvals gives repeated decision and handoff actions exact owners', async
   for (const name of [
     `Recipe for ${subject}`,
     `Connection for ${subject}`,
-    `Run audit for ${subject}`,
+    `Recipe run history for ${subject}`,
   ]) {
     await expect(page.getByRole('link', { name, exact: true })).toHaveCount(1);
   }
@@ -260,7 +260,7 @@ test('Approvals moves focus to the next card after resolving a gate', async ({ p
 test('Approvals keeps a slow gate decision focus-owned and attached', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?attention=pending&attention_action_response=slow`,
+    `${HARNESS_URL}?attention=pending&attention_action_response=slow&hold_rpc=approval.resolve`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#approvals'));
@@ -318,6 +318,7 @@ test('Approvals keeps a slow gate decision focus-owned and attached', async ({ p
   await expect(page).toHaveURL(/#approvals$/);
   await expect(approving).toBeFocused();
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('approval.resolve'))).toBe(1);
   await expect(gate).toHaveCount(0);
   await expect(ask).toBeFocused();
   await page.evaluate(() => window.__app.setHash('#chat'));

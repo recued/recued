@@ -137,7 +137,9 @@ interface WsClientOptions {
   queue_on_send_error?: boolean;
 }
 
-const DEFAULT_BACKOFF = [
+/** The delay before each retry of a failed connect; the last one repeats.
+ *  Exported so the connection-status windows can be checked against it. */
+export const WEBCLIENT_WS_RECONNECT_SCHEDULE_MS = [
   1_000, 2_000, 4_000, 8_000, 16_000, 30_000,
 ] as const satisfies ReadonlyArray<number>;
 
@@ -162,7 +164,7 @@ export const createWebclientWsClient = (options: WsClientOptions): WebclientWsCl
   const setTimer = options.setTimer ?? realTimer;
   const random = options.random ?? Math.random;
   const queueMax = options.send_queue_max ?? WEBCLIENT_WS_SEND_QUEUE_MAX;
-  const schedule = options.reconnect_schedule_ms ?? DEFAULT_BACKOFF;
+  const schedule = options.reconnect_schedule_ms ?? WEBCLIENT_WS_RECONNECT_SCHEDULE_MS;
   let attempt = 0;
   let pending: { cancel: () => void } | null = null;
   let active = false;

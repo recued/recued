@@ -122,7 +122,7 @@ test('keeps owner reminder scheduling available during a mail-account outage',as
 test('stores a completion link for reminders only when the owner opts in at publishing',async ({ page }) => {
   await openJob(page,'overview');await page.getByRole('button',{ name: 'Request completion',exact: true }).click();
   const request = page.getByRole('form',{ name: 'Request customer completion',exact: true });await request.getByLabel('Delivered work shown to the customer').fill('Delivered all drawings.');
-  await request.getByRole('button',{ name: 'Preview completion',exact: true }).click();const keep = request.getByLabel('Save this link for follow-up emails');await expect(keep).not.toBeChecked();await keep.check();
+  await request.getByRole('button',{ name: 'Prepare completion preview',exact: true }).click();const keep = request.getByLabel('Save this link for follow-up emails');await expect(keep).not.toBeChecked();await keep.check();
   await request.getByRole('button',{ name: 'Publish completion link',exact: true }).click();
   await expect(page.getByLabel('Customer completion link',{ exact: true })).toBeVisible();
   const published = await page.evaluate(() => window.__completionReminders.calls.find(call => call.method === 'reception.signoff.completion.publish')?.payload);

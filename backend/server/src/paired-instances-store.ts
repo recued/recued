@@ -62,6 +62,12 @@ export interface PairedInstance {
   kind: ClientKind;
   added_at: number;    // unix seconds
   revoked_at: number | null;
+  /** Unix seconds — when this device last connected or left, as far as this
+   *  server saw. Null until it first does. ⛔ Without it the owner could
+   *  not tell a quiet device from a dead one: a browser that cleared its
+   *  storage never comes back, and its entry stayed, live, looking like any
+   *  other. */
+  last_seen_at: number | null;
 }
 
 export interface PairedInstancesStore {
@@ -97,6 +103,13 @@ export interface PairedInstancesStore {
   /** True if this instance_id exists AND revoked_at IS NOT NULL. Used to
    *  reject register attempts from a retired device. */
   isRevoked(instance_id: string): boolean;
+  /** Stamp `last_seen_at` on a device's active row (a connect or a leave).
+   *  No-op for an unknown or revoked instance. */
+  noteSeen(instance_id: string, now?: number): void;
+  /** The owner's name for a device, replacing the one it paired with.
+   *  Returns the updated row, or null when it is unknown or revoked. A later
+   *  re-pair of the same instance names it again, as pairing always has. */
+  rename(instance_id: string, display_name: string): PairedInstance | null;
   /** Mark every active row revoked. Returns the instance_ids of the
    *  rows that were mutated (empty array when no row was active).
    *  Callers: the free-tier recover-pair flow (with maxInstances=1 the
@@ -161,6 +174,10 @@ export const createPairedInstancesStore = (db: Database.Database): PairedInstanc
   if (!existingColumns.includes('kind')) {
     db.exec(`ALTER TABLE paired_instances ADD COLUMN kind TEXT`);
   }
+  //   `last_seen_at` → null: not seen since this column shipped.
+  if (!existingColumns.includes('last_seen_at')) {
+    db.exec(`ALTER TABLE paired_instances ADD COLUMN last_seen_at INTEGER`);
+  }
 
   const selectAllByUser = db.prepare(`
     SELECT * FROM paired_instances WHERE user_id = ? ORDER BY added_at ASC
@@ -191,6 +208,14 @@ export const createPairedInstancesStore = (db: Database.Database): PairedInstanc
   `);
   const markRevoked = db.prepare(`
     UPDATE paired_instances SET revoked_at = ? WHERE instance_id = ?
+  `);
+  const markSeen = db.prepare(`
+    UPDATE paired_instances SET last_seen_at = ?
+    WHERE instance_id = ? AND revoked_at IS NULL
+  `);
+  const updateName = db.prepare(`
+    UPDATE paired_instances SET display_name = ?
+    WHERE instance_id = ? AND revoked_at IS NULL
   `);
   const selectPrefs = db.prepare(`
     SELECT preferences FROM paired_instances WHERE instance_id = ?
@@ -229,6 +254,7 @@ export const createPairedInstancesStore = (db: Database.Database): PairedInstanc
       kind: string | null;
       added_at: number;
       revoked_at: number | null;
+      last_seen_at?: number | null;
     };
     return {
       instance_id: r.instance_id,
@@ -237,6 +263,7 @@ export const createPairedInstancesStore = (db: Database.Database): PairedInstanc
       kind: isClientKind(r.kind) ? r.kind : DEFAULT_PAIRED_KIND,
       added_at: r.added_at,
       revoked_at: r.revoked_at,
+      last_seen_at: r.last_seen_at ?? null,
     };
   };
 
@@ -299,6 +326,15 @@ export const createPairedInstancesStore = (db: Database.Database): PairedInstanc
       return !!row && row.revoked_at !== null;
     },
 
+    noteSeen(instance_id, now) {
+      markSeen.run(now ?? Math.floor(Date.now() / 1000), instance_id);
+    },
+
+    rename(instance_id, display_name) {
+      const changed = updateName.run(display_name, instance_id).changes;
+      return changed > 0 ? rowToRecord(selectOne.get(instance_id)) : null;
+    },
+
     getPrefs(instance_id) {
       const row = selectPrefs.get(instance_id) as { preferences: string | null } | undefined;
       const stored = parsePrefsBlob(row?.preferences);
@@ -309,7 +345,7 @@ export const createPairedInstancesStore = (db: Database.Database): PairedInstanc
       const row = selectPrefs.get(instance_id) as { preferences: string | null } | undefined;
       if (!row) {
         // No paired row yet. Drop the patch to avoid orphan preference
-        // blobs — the register path is the only place that inserts.
+        // blobs — pairing (`/auth/pair`) is what inserts the row.
         return applyPrefsPatch({}, {});
       }
       const current = parsePrefsBlob(row.preferences);

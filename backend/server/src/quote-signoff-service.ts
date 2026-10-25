@@ -207,6 +207,16 @@ const recordedMoney = (value: unknown, total: string): string => {
 };
 
 export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
+  // Each statement is prepared once per service: `db.prepare` re-parsed the same SQL on
+  // every call, and with `today` below half the cost of preparing and cancelling a
+  // sign-off (2026-10-23). All of it is static text. ⚠ The one `.iterate()` below
+  // keeps its own `prepare`: a statement cannot run again while it is iterating.
+  const statements = new Map<string, Database.Statement>();
+  const statement = (sql: string): Database.Statement => {
+    let prepared = statements.get(sql);
+    if (!prepared) { prepared = deps.db.prepare(sql); statements.set(sql, prepared); }
+    return prepared;
+  };
   deps.db.exec(`CREATE TABLE IF NOT EXISTS ${TABLE} (
     signoff_id TEXT PRIMARY KEY, quote_id TEXT NOT NULL,
     quote_json TEXT NOT NULL, plan_json TEXT NOT NULL, plan_hash TEXT NOT NULL,
@@ -235,45 +245,66 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       BEGIN UPDATE quote_signoff_task_versions SET revision=revision+1
         WHERE task_id=${operation === 'DELETE' ? 'OLD' : 'NEW'}.id; END;`).join('\n'));
   };
-  if (deps.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='data_task'").get()) ensureTaskVersions();
+  if (statement("SELECT 1 FROM sqlite_master WHERE type='table' AND name='data_task'").get()) ensureTaskVersions();
 
+  // One formatter per time zone: building an Intl.DateTimeFormat costs more than the
+  // formatting, and `today` runs several times per sign-off.
+  const dayFormats = new Map<string, Intl.DateTimeFormat>();
   const today = (): string => {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: deps.timeZone?.() ?? resolveServerTimeZone(createServerTimeZoneStore(deps.db).read(),
-        Intl.DateTimeFormat().resolvedOptions().timeZone),
-      year: 'numeric', month: '2-digit', day: '2-digit',
-    }).formatToParts(deps.now());
+    const timeZone = deps.timeZone?.() ?? resolveServerTimeZone(createServerTimeZoneStore(deps.db).read(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone);
+    let format = dayFormats.get(timeZone);
+    if (!format) {
+      format = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+      dayFormats.set(timeZone, format);
+    }
+    const parts = format.formatToParts(deps.now());
     return ['year', 'month', 'day'].map((kind) => parts.find((p) => p.type === kind)!.value).join('-');
   };
   const load = (id: string): Row => {
-    const row = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE signoff_id=?`).get(id) as Row | undefined;
+    const row = statement(`SELECT * FROM ${TABLE} WHERE signoff_id=?`).get(id) as Row | undefined;
     if (!row) throw new QuoteSignoffError('quote_signoff_not_found', 'This customer sign-off no longer exists.', 404);
     return row;
   };
   const quoteOf = (row: Row): RecordsFriendlyRecord => JSON.parse(row.quote_json) as RecordsFriendlyRecord;
   const planOf = (row: Row): Plan => JSON.parse(row.plan_json) as Plan;
+  // Requests whose saved digest this service has recomputed and found intact, with the
+  // exact texts it was recomputed from. The digest is a pure function of those three
+  // texts, so a request whose texts are all unchanged needs no second parse and hash:
+  // each sign-off step checks the quote's whole history, and recomputing every digest
+  // was 4.0 s of the 9.2 s that 100 chained additions took (2026-10-23). A changed text
+  // is checked in full, a request that fails is never kept, and the oldest entry goes
+  // once there are 1,024.
+  const intactRequests = new Map<string, Pick<Row, 'quote_json' | 'plan_json' | 'plan_hash'>>();
   /** Damaged amendment terms can move a request out of the root index. Check
    * the quote's saved digests before trusting a complete scoped job or balance.
    * Stream the indexed quote history; never export a silently smaller job. */
   const assertQuoteJobRouting = (quoteId: string,code = 'customer_jobs_unavailable'): void => {
     for (const row of deps.db.prepare(`SELECT * FROM ${TABLE} WHERE quote_id=?`).iterate(quoteId) as IterableIterator<Row>) {
+      const intact = intactRequests.get(row.signoff_id);
+      if (intact && intact.plan_hash === row.plan_hash && intact.quote_json === row.quote_json && intact.plan_json === row.plan_json) continue;
       let valid = false;
       try { valid = row.plan_hash === hash({ quote: quoteOf(row),plan: planOf(row) }); } catch { /* Unreadable terms cannot establish job membership. */ }
       if (!valid) throw new QuoteSignoffError(code,'A saved request for this quote has damaged terms. Review its job history in Records.');
+      if (!intact && intactRequests.size >= 1_024) intactRequests.delete(intactRequests.keys().next().value!);
+      intactRequests.set(row.signoff_id, { quote_json: row.quote_json, plan_json: row.plan_json, plan_hash: row.plan_hash });
     }
   };
   const binding = (owner: typeof QUOTES, action: string, entity: string): RecordsExecutionBinding => {
-    const ns = deps.records.getNamespace(owner);
+    // The state alone: sign-off reads and writes pass here, most of them more than once,
+    // and the whole namespace decodes the pack's schema. That was 3.4 s of the 29 s CPU
+    // that the 10,505-request customer-jobs case took (2026-10-23).
+    const state = deps.records.getNamespaceState(owner);
     // These are versioned core adapters, not an untyped join of arbitrary packs.
     const supported = QUOTE_SIGNOFF_PACK_VERSIONS[owner.pack_slug] ?? [];
     const latest = supported[supported.length - 1];
-    if (!ns || ns.state.state !== 'ready' || !supported.includes(ns.state.version)) {
+    if (!state || state.state !== 'ready' || !supported.includes(state.version)) {
       throw new QuoteSignoffError('quote_signoff_pack_unavailable',
-        ns?.state.state === 'ready' && latest !== undefined && ns.state.version > latest
-          ? `This Recued does not know ${owner.pack_slug} version ${ns.state.version} yet. Update Recued before using customer sign-off.`
+        state?.state === 'ready' && latest !== undefined && state.version > latest
+          ? `This Recued does not know ${owner.pack_slug} version ${state.version} yet. Update Recued before using customer sign-off.`
           : `Install ${owner.pack_slug} version ${latest} before using customer sign-off.`);
     }
-    const installed = ns.state.version;
+    const installed = state.version;
     const catalog = deps.manifest(owner);
     const found = Object.values(catalog?.surfaces?.records?.executes ?? {})
       .find((b) => b.action === action && b.entity === entity);
@@ -297,7 +328,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     }
     const get = binding(INVOICES,'get','credit_note');const search = binding(INVOICES,'search','credit_note');
     let cursor: string | undefined;let sum = 0n;
-    const lifecycle = deps.db.prepare("SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox WHERE publisher=? AND pack_slug=? AND kind=? AND pk=?");
+    const lifecycle = statement("SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox WHERE publisher=? AND pack_slug=? AND kind=? AND pk=?");
     do {
       const page = deps.records.ownerSearch({ owner: INVOICES,entity: 'credit_note',filters: { invoice_ref: `invoice/${invoice.id}` },limit: 200,...(cursor ? { cursor } : {}) });
       for (const record of page.records) {
@@ -366,7 +397,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     if (!quote) throw new QuoteSignoffError('quote_signoff_quote_missing', 'The quote no longer exists.', 404);
     return quote;
   };
-  const taskRevision = (id: string): number => (deps.db.prepare('SELECT revision FROM quote_signoff_task_versions WHERE task_id=?')
+  const taskRevision = (id: string): number => (statement('SELECT revision FROM quote_signoff_task_versions WHERE task_id=?')
     .get(id) as { revision: number } | undefined)?.revision ?? 0;
   const quoteTerms = (quote: RecordsFriendlyRecord): string => hash(Object.fromEntries(Object.keys(quote)
     .filter((key) => !['_record', 'status', 'decided_on'].includes(key)).sort().map((key) => [key, quote[key]])));
@@ -379,7 +410,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       throw new QuoteSignoffError('quote_signoff_not_released', 'Choose a released agreement before adding work.');
     }
     assertQuoteJobRouting(root.quote_id,'quote_signoff_base_unavailable');
-    const additions = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=?
+    const additions = statement(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=?
       AND state='released' AND signoff_id<>?
       ORDER BY json_extract(plan_json,'$.addition.revision')`).all(root.signoff_id,root.signoff_id) as Row[];
     let tip = root.signoff_id; let amount = units(rootPlan.amount); let scope = rootPlan.scope;
@@ -412,7 +443,9 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     }
     return { root, quote, task, revision: additions.length + 1, base_scope: scope, base_amount: decimal(amount) };
   };
-  const availability = (row: Row): QuoteSignoffSummary['availability'] => {
+  /** `known` is the addition base the caller's own transaction has just computed for
+   *  this row, so it is not walked again; only prepareAddition passes it. */
+  const availability = (row: Row, known?: ReturnType<typeof additionBase>): QuoteSignoffSummary['availability'] => {
     if (row.state === 'released' || row.state === 'rejected' || row.state === 'cancelled') return 'current';
     if (row.state === 'superseded') return 'superseded';
     if (deps.now() >= row.expires_at) return 'expired';
@@ -420,7 +453,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       const quote = currentQuote(row.quote_id);
       const plan = planOf(row);
       if (plan.addition) {
-        const base = additionBase(plan.addition.parent_signoff_id);
+        const base = known ?? additionBase(plan.addition.parent_signoff_id);
         if (JSON.stringify(quote) !== row.quote_json || hash(base.task) !== hash(plan.addition.task)
           || taskRevision(base.task.id) !== plan.addition.task_revision) return 'superseded';
       } else {
@@ -443,7 +476,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         : current === 'expired' ? 'This quote sign-off has expired. Prepare a new one.'
           : 'A required quote or invoice pack is unavailable. Nothing was released.');
   };
-  const summary = (row: Row): QuoteSignoffSummary => {
+  const summary = (row: Row, known?: ReturnType<typeof additionBase>): QuoteSignoffSummary => {
     const quote = quoteOf(row); const plan = planOf(row);
     return {
       signoff_id: row.signoff_id, quote_id: row.quote_id,
@@ -453,7 +486,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       currency: String(quote.currency), scope: plan.scope, task_title: plan.task_title,
       net: plan.net, vat_amount: plan.vat_amount,
       invoice_ref: plan.invoice_ref, issued_on: plan.issued_on, due_on: plan.due_on,
-      state: row.state, availability: availability(row), created_at: row.created_at,
+      state: row.state, availability: availability(row, known), created_at: row.created_at,
       expires_at: row.expires_at, endpoint_id: row.endpoint_id,
       responded_at: row.responded_at, released_at: row.released_at,
       task_id: row.state === 'released' ? plan.addition?.task.id ?? `quote_signoff_${row.signoff_id}` : null,
@@ -520,10 +553,10 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     if (row.state === 'released') {
       result.follow_up = followUp(row);
       result.can_request_completion = result.follow_up.task.availability === 'current'
-        && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE state='released'
+        && !statement(`SELECT 1 FROM ${TABLE} WHERE state='released'
           AND ${customerJobParentSql()}=? LIMIT 1`).get(row.signoff_id);
       result.can_add_work = result.follow_up.task.availability === 'current' && !result.follow_up.task.done
-        && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE quote_id=? AND state='released'
+        && !statement(`SELECT 1 FROM ${TABLE} WHERE quote_id=? AND state='released'
           AND ${customerJobParentSql()}=? LIMIT 1`).get(row.quote_id, row.signoff_id);
     }
     return result;
@@ -687,7 +720,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           return value;
         };
         let sum = 0n;
-        const lifecycle = deps.db.prepare(`SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox
+        const lifecycle = statement(`SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox
           WHERE publisher=? AND pack_slug=? AND kind=? AND pk=?`);
         const evidence = rows.map(record => {
           const amount = recordedMoney(record.amount, result.total);
@@ -725,6 +758,13 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     })();
   };
   return {
+    resumeDraft(id: string) {
+      const row = load(id); requireCurrent(row);
+      if (row.state !== 'draft') throw new QuoteSignoffError('quote_signoff_not_draft', 'Only a saved draft can resume its preview.');
+      const plan = planOf(row);
+      return { signoff: summary(row), display_name: plan.display_name, expiry_days: plan.expiry_days,
+        ...(plan.addition ? { parent: summary(load(plan.addition.parent_signoff_id)) } : {}) };
+    },
     prepare(input: QuoteSignoffPrepareInput): QuoteSignoffSummary {
       const quoteId = text(input.quote_id, 'Quote', 512);
       const scope = text(input.scope, 'Customer-visible scope', QUOTE_SIGNOFF_SCOPE_MAX);
@@ -764,8 +804,8 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         freezeCustomerPreview(row);
         // A new scope for the same quote supersedes every earlier offer, even
         // when the quote row itself did not change. Old held releases stay closed.
-        deps.db.prepare(`UPDATE ${TABLE} SET state='superseded' WHERE quote_id=? AND state IN ('draft','publishing','waiting','accepted')`).run(quoteId);
-        deps.db.prepare(`INSERT INTO ${TABLE} (signoff_id,quote_id,quote_json,plan_json,plan_hash,state,created_at,expires_at) VALUES (?,?,?,?,?,'draft',?,?)`)
+        statement(`UPDATE ${TABLE} SET state='superseded' WHERE quote_id=? AND state IN ('draft','publishing','waiting','accepted')`).run(quoteId);
+        statement(`INSERT INTO ${TABLE} (signoff_id,quote_id,quote_json,plan_json,plan_hash,state,created_at,expires_at) VALUES (?,?,?,?,?,'draft',?,?)`)
           .run(row.signoff_id, quoteId, row.quote_json, row.plan_json, row.plan_hash, row.created_at, row.expires_at);
         return summary(row);
       }).immediate();
@@ -786,7 +826,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         const due = date(input.due_on ?? new Date(Date.parse(`${issued}T00:00:00Z`) + 30 * DAY).toISOString().slice(0, 10), 'Invoice due date');
         if (due < issued) throw new QuoteSignoffError('quote_signoff_invalid', 'Invoice due date cannot precede its issue date.', 400);
         ensureTaskVersions();
-        deps.db.prepare('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(base.task.id);
+        statement('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(base.task.id);
         const plan: Plan = { display_name: text(input.display_name, 'Business name', 100), scope,
           task_title: base.task.title, invoice_ref: text(input.invoice_ref, 'Additional invoice reference', 100),
           issued_on: issued, due_on: due, amount, net: decimal(units(amount) - units(vat)), vat_amount: vat, expiry_days: expiry,
@@ -800,11 +840,15 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           created_at: deps.now(), expires_at: deps.now() + expiry * DAY,
           endpoint_id: null, responded_at: null, released_at: null, intent_id: null };
         freezeCustomerPreview(row);
-        deps.db.prepare(`UPDATE ${TABLE} SET state='superseded' WHERE state IN ('draft','publishing','waiting','accepted')
+        statement(`UPDATE ${TABLE} SET state='superseded' WHERE state IN ('draft','publishing','waiting','accepted')
           AND ${customerJobRootSql()}=?`).run(base.root.signoff_id);
-        deps.db.prepare(`INSERT INTO ${TABLE} (signoff_id,quote_id,quote_json,plan_json,plan_hash,state,created_at,expires_at)
+        statement(`INSERT INTO ${TABLE} (signoff_id,quote_id,quote_json,plan_json,plan_hash,state,created_at,expires_at)
           VALUES (?,?,?,?,?,'draft',?,?)`).run(row.signoff_id, row.quote_id, row.quote_json, row.plan_json, row.plan_hash, row.created_at, row.expires_at);
-        return summary(row);
+        // The base this transaction walked above still holds. Since then it has written a
+        // task-version row, open drafts marked superseded (their terms untouched) and this
+        // draft, whose digest it computed from this base: nothing the walk found can have
+        // changed. Walking the chain again was a sixth of a chained addition's cost.
+        return summary(row, base);
       }).immediate();
     },
     get: (id: string): QuoteSignoffSummary => summary(load(id)),
@@ -898,7 +942,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         const root = load(id);
         if (planOf(root).addition) throw new QuoteSignoffError('customer_statement_invalid', 'Open the payment statement from the original customer job.', 400);
         if (root.state !== 'released') throw new QuoteSignoffError('customer_statement_not_released', 'A job payment statement needs a released customer invoice.');
-        const rows = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=?
+        const rows = statement(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=?
           ORDER BY rowid LIMIT 10001`).all(id) as Row[];
         if (rows.length > 10000) throw new QuoteSignoffError('customer_statement_limit', 'This job history is too large to export completely. Review its records.');
         assertQuoteJobRouting(root.quote_id,'customer_statement_unavailable');
@@ -962,7 +1006,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         if (row.state === 'released' && invoice?.availability === 'current') {
           const record = deps.records.ownerGet(INVOICES,'invoice',signoff.invoice_id!);
           const namespace = deps.records.getNamespace(INVOICES);
-          const changes = deps.db.prepare(`SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox
+          const changes = statement(`SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox
             WHERE publisher=? AND pack_slug=? AND kind='invoice' AND pk=?`)
             .get(INVOICES.publisher,INVOICES.pack_slug,signoff.invoice_id);
           fingerprint = hash({ record,activation_generation: namespace?.activation_generation,
@@ -977,16 +1021,16 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       const root = load(id);if (planOf(root).addition) throw new QuoteSignoffError('customer_job_closeout_invalid','Choose the original customer job.',400);
       assertQuoteJobRouting(root.quote_id);
       const taskId = `quote_signoff_${id}`;
-      if (root.state === 'released') deps.db.prepare('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(taskId);
-      const rows = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=? ORDER BY signoff_id`).all(id);
+      if (root.state === 'released') statement('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(taskId);
+      const rows = statement(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=? ORDER BY signoff_id`).all(id);
       return hash({ rows,task: deps.work?.readTask(taskId) ?? null,task_revision: taskRevision(taskId) });
     },
     customerJobCandidates: (input: Parameters<typeof readCustomerJobCandidates>[1]) => ({ ...readCustomerJobCandidates(deps.db,input),captured_at: deps.now() }),
     customerJobsSnapshot<T,C>(readIntent: (endpoint: string | null) => T, readCompletion: (root: string) => C,jobId?: string) {
       return deps.db.transaction(() => {
         const captured_at = deps.now();
-        const rows = jobId === undefined ? deps.db.prepare(`SELECT * FROM ${TABLE} ORDER BY rowid LIMIT 10001`).all() as Row[]
-          : deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=? ORDER BY rowid LIMIT 10001`).all(jobId) as Row[];
+        const rows = jobId === undefined ? statement(`SELECT * FROM ${TABLE} ORDER BY rowid LIMIT 10001`).all() as Row[]
+          : statement(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=? ORDER BY rowid LIMIT 10001`).all(jobId) as Row[];
         if (rows.length > 10000) throw new QuoteSignoffError('customer_jobs_too_large', jobId === undefined
           ? 'The job history is too large to read completely. Browse saved requests in Customer sign-offs.'
           : 'This job has too many saved requests to read completely. Review its requests in Customer sign-offs.');
@@ -1004,10 +1048,10 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           if (!plan.addition) originals.set(row.quote_id,row);
         }
         const latestOriginal = (quoteId: string) => jobId === undefined ? originals.get(quoteId)?.signoff_id
-          : (deps.db.prepare(`SELECT signoff_id FROM ${TABLE} WHERE quote_id=? AND ${customerJobOriginalSql()}=1 ORDER BY rowid DESC LIMIT 1`).get(quoteId) as { signoff_id: string } | undefined)?.signoff_id;
+          : (statement(`SELECT signoff_id FROM ${TABLE} WHERE quote_id=? AND ${customerJobOriginalSql()}=1 ORDER BY rowid DESC LIMIT 1`).get(quoteId) as { signoff_id: string } | undefined)?.signoff_id;
         const roots = rows.filter(row => !planOf(row).addition
           && (row.state === 'released' || latestOriginal(row.quote_id) === row.signoff_id
-            || jobArchiveTableExists(deps.db) && Boolean(deps.db.prepare('SELECT 1 FROM customer_job_archives WHERE job_id=?').get(row.signoff_id))));
+            || jobArchiveTableExists(deps.db) && Boolean(statement('SELECT 1 FROM customer_job_archives WHERE job_id=?').get(row.signoff_id))));
         const originalIds = new Set(rows.filter(row => !planOf(row).addition).map(row => row.signoff_id));
         if ([...groups.keys()].some(root => !originalIds.has(root))) throw new QuoteSignoffError('customer_jobs_unavailable', 'A job is missing its original agreement. Review saved requests in Records.');
         if (roots.length > 2000) throw new QuoteSignoffError('customer_jobs_too_large', 'Too many jobs to read completely. Browse saved requests in Customer sign-offs.');
@@ -1050,10 +1094,10 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         const root = snapshot.root_signoff_id;
         assertQuoteJobRouting(load(root).quote_id,'quote_signoff_history_unavailable');
         if (isCustomerJobArchived(deps.db,root)) throw new QuoteSignoffError('customer_job_archived','Restore the archived customer job before requesting or reviewing completion.');
-        const released = deps.db.prepare(`SELECT count(*) AS count FROM ${TABLE} WHERE state='released'
+        const released = statement(`SELECT count(*) AS count FROM ${TABLE} WHERE state='released'
           AND ${customerJobRootSql()}=? AND signoff_id<>?`).get(root,root) as { count: number };
         if (released.count !== snapshot.requests.length - 1) throw new QuoteSignoffError('quote_signoff_superseded', 'Choose the latest released agreement before requesting completion.');
-        if (deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE state IN ('draft','publishing','waiting','accepted')
+        if (statement(`SELECT 1 FROM ${TABLE} WHERE state IN ('draft','publishing','waiting','accepted')
           AND ${customerJobRootSql()}=? LIMIT 1`).get(root)) {
           throw new QuoteSignoffError('quote_signoff_superseded', 'Review or cancel the pending added work before requesting completion.');
         }
@@ -1065,7 +1109,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           throw new QuoteSignoffError('quote_signoff_task_unavailable', 'The agreement’s local task is missing or changed. Review it before requesting completion.');
         }
         ensureTaskVersions();
-        deps.db.prepare('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(task.id);
+        statement('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(task.id);
         return { root_signoff_id: root, signoff_id: id, business_name: last.business_name,
           customer: last.customer, quote_label: last.quote_label,
           quote_reference: last.quote_reference, task, task_revision: taskRevision(task.id),
@@ -1128,7 +1172,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         values.push(anchor.created_at, anchor.created_at, anchor.signoff_id);
       }
       return deps.db.transaction(() => {
-        const rows = deps.db.prepare(`SELECT * FROM ${TABLE} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+        const rows = statement(`SELECT * FROM ${TABLE} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
           ORDER BY created_at DESC, signoff_id LIMIT ?`).all(...values, limit + 1) as Row[];
         const truncated = rows.length > limit;
         const last = rows[limit - 1];
@@ -1146,24 +1190,24 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       deps.db.transaction(() => {
         const row = load(id); requireCurrent(row);
         if (row.state !== 'draft') throw new QuoteSignoffError('quote_signoff_already_published', 'This request is already published or has been superseded.');
-        deps.db.prepare(`UPDATE ${TABLE} SET state='publishing' WHERE signoff_id=?`).run(id);
+        statement(`UPDATE ${TABLE} SET state='publishing' WHERE signoff_id=?`).run(id);
       }).immediate();
     },
     attachEndpoint(id: string, endpoint: string): void {
       deps.db.transaction(() => {
         const row = load(id); requireCurrent(row);
         if (row.state !== 'publishing') throw new QuoteSignoffError('quote_signoff_superseded', 'The request changed while its link was being created.');
-        deps.db.prepare(`UPDATE ${TABLE} SET endpoint_id=?,state='waiting' WHERE signoff_id=?`).run(endpoint, id);
+        statement(`UPDATE ${TABLE} SET endpoint_id=?,state='waiting' WHERE signoff_id=?`).run(endpoint, id);
       }).immediate();
     },
     resetPublish(id: string): void {
-      deps.db.prepare(`UPDATE ${TABLE} SET state='draft',endpoint_id=NULL WHERE signoff_id=? AND state IN ('publishing','waiting') AND responded_at IS NULL`).run(id);
+      statement(`UPDATE ${TABLE} SET state='draft',endpoint_id=NULL WHERE signoff_id=? AND state IN ('publishing','waiting') AND responded_at IS NULL`).run(id);
     },
     cancel(id: string): QuoteSignoffSummary {
       return deps.db.transaction(() => {
         const row = load(id);
         if (row.state === 'released') throw new QuoteSignoffError('quote_signoff_already_released', 'The work and invoice have already been released. Correct those records explicitly.');
-        deps.db.prepare(`UPDATE ${TABLE} SET state='cancelled' WHERE signoff_id=?`).run(id);
+        statement(`UPDATE ${TABLE} SET state='cancelled' WHERE signoff_id=?`).run(id);
         return summary(load(id));
       }).immediate();
     },
@@ -1184,10 +1228,10 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           return row.state === 'accepted' ? releaseInput(row) : null;
         }
         if (row.state !== 'waiting' || availability(row) !== 'current') {
-          if (row.state !== 'cancelled' && row.state !== 'superseded') deps.db.prepare(`UPDATE ${TABLE} SET state='superseded' WHERE signoff_id=?`).run(id);
+          if (row.state !== 'cancelled' && row.state !== 'superseded') statement(`UPDATE ${TABLE} SET state='superseded' WHERE signoff_id=?`).run(id);
           return null;
         }
-        deps.db.prepare(`UPDATE ${TABLE} SET state=?,responded_at=?,intent_id=? WHERE signoff_id=?`)
+        statement(`UPDATE ${TABLE} SET state=?,responded_at=?,intent_id=? WHERE signoff_id=?`)
           .run(affirmative ? 'accepted' : 'rejected', deps.now(), intent, id);
         return affirmative ? releaseInput(load(id)) : null;
       }).immediate();
@@ -1205,7 +1249,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         if (row.state !== 'accepted' || row.intent_id === null) throw new QuoteSignoffError('quote_signoff_not_accepted', 'The customer has not accepted this quote, or the request was cancelled.');
         requireCurrent(row);
         if (!deps.work) throw new QuoteSignoffError('quote_signoff_work_unavailable', 'The local task store is unavailable. Nothing was released.');
-        if (!plan.addition && deps.db.prepare('SELECT id FROM data_task WHERE id=?').get(id)) {
+        if (!plan.addition && statement('SELECT id FROM data_task WHERE id=?').get(id)) {
           throw new QuoteSignoffError('quote_signoff_target_exists', 'The planned task already exists. Nothing was overwritten.');
         }
         const quote = quoteOf(row);
@@ -1243,7 +1287,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
             source_extension_blob: { quote_signoff_id: row.signoff_id, quote_id: row.quote_id,
               quote_revision: quote._record.revision, reception_approval_intent_id: row.intent_id,
               invoice_id: id } }, deps.now());
-          deps.db.prepare(`UPDATE ${TABLE} SET state='released',released_at=? WHERE signoff_id=?`).run(deps.now(), row.signoff_id);
+          statement(`UPDATE ${TABLE} SET state='released',released_at=? WHERE signoff_id=?`).run(deps.now(), row.signoff_id);
         } finally { lease.release(); }
         return { signoff_id: row.signoff_id, task_id: taskId, invoice_id: id, already_released: false };
       }).immediate();

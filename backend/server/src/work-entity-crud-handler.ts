@@ -64,6 +64,7 @@ import {
 } from './work-entity-resolver.js';
 import {
   CommitmentLifecycleError,
+  RenewalDateRequiredError,
   WorkEntityContainerPickRequiredError,
   WorkEntityNotFoundError,
   WorkEntityWriteCapabilityError,
@@ -156,6 +157,14 @@ const mapCrudError = (method: string, err: unknown): never => {
       dependency_ref: err.dependency_ref,
       options: err.options,
       can_create: err.can_create,
+    });
+  }
+  // D-325 §15.7 (2026-10-24) — Today, Data and Yours show this message as it is: it says
+  // what to do instead, so it carries no method prefix.
+  if (err instanceof RenewalDateRequiredError) {
+    throw new RpcError('bad_request', err.message, 400, method, {
+      reason: 'renewal_date_required',
+      commitment_id: err.commitment_id,
     });
   }
   if (

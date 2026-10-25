@@ -1199,7 +1199,7 @@ export const RECEPTION_AUTHORING_STYLES = `
 .reception-form-select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-weak);
+  box-shadow: var(--wc-ring);
 }
 .reception-form-textarea {
   resize: vertical;

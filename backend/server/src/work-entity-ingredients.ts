@@ -112,6 +112,7 @@ import {
 import { classifyCommitmentDueStatus } from './work-entity-due-status-sweep.js';
 import { readThroughSourceIds } from './work-entity-read-resolution.js';
 import { changedAssetFields } from './situations/event-visibility.js';
+import { AssetTypeError, assetTypeApplication, assetTypeIssues, typedAssetFacts, type AssetTypes } from './situations/asset-types.js';
 import type { WorkEntityResolver } from './work-entity-resolver.js';
 import type {
   WorkEntitySourceWriteExecutor,
@@ -374,6 +375,17 @@ export class CommitmentLifecycleError extends Error {
   }
 }
 
+/** D-325 §15.7 (2026-10-24) — a renewal's task fulfilled before its new date was entered.
+ *  Still a forbidden lifecycle move (same `code`), but its message is the owner's words,
+ *  and the rpc layer sends it as it is. */
+export class RenewalDateRequiredError extends CommitmentLifecycleError {
+  constructor(commitment_id: string, from: string, owner_message: string) {
+    super(commitment_id, from, 'fulfilled', owner_message);
+    this.name = 'RenewalDateRequiredError';
+    this.message = owner_message;
+  }
+}
+
 /** Thrown by the dispatcher when an update / delete / lifecycle
  *  ingredient targets an id that doesn't exist (or has been
  *  hard-deleted). */
@@ -572,6 +584,12 @@ export interface WorkEntityIngredientDeps {
   /** Host-only owner close: commit its receipt in the same transaction as the
    * canonical transition, before publishing either warehouse event. */
   ownerCompletionWrite?: (prior: Commitment, at: number, write: () => Commitment) => Commitment;
+  /** D-325 §15.7 (2026-10-24) — may refuse any fulfil, by anyone, before it writes:
+   *  a renewal waits for its new date (`createRenewalFulfillGuard`). */
+  commitmentFulfillGuard?: (commitment: Commitment) => void;
+  /** D-325 §4.4 (2026-10-24) — the asset types. Wired, an extracted create that
+   *  names one is held to its fields and gets its reminders (`asset-types.ts`). */
+  assetTypes?: Pick<AssetTypes, 'get'>;
   annotationCascadeOnDelete?: (collection: string, id: string) => void;
 }
 
@@ -2511,6 +2529,7 @@ const commitmentLifecycleMove = (
         + ` (only 'escalate_overdue' and 'indefinite' do)`,
     );
   }
+  if (to === 'fulfilled') deps.commitmentFulfillGuard?.(existing);
   const sourceReg = deps.store.getSource(existing.source_id);
   if (sourceReg) {
     await prepareVendorWrite(deps, sourceReg, 'commitment', 'update', {});
@@ -2821,12 +2840,24 @@ const checkedAssetFactSource = (input: (AssetCreateInput | AssetUpdateInput) & W
   }
   return input.source;
 };
+/** The type an extracted create names, once the create keeps to it. The owner's
+ *  own create applies its class in Yours (`yours-service.ts`), so only an
+ *  extracted one, from an AI or a recipe, is held here. */
+const createdAssetType = (deps: WorkEntityIngredientDeps, input: AssetCreateInput, factSource: AssetWriteSource) => {
+  if (factSource.kind !== 'extracted' || input.class_id == null || !deps.assetTypes) return undefined;
+  const type = deps.assetTypes.get(input.class_id);
+  if (!type) throw new AssetValidationError(`There is no asset type \`${input.class_id}\`. work.type lists them.`, 'class_id');
+  const issues = assetTypeIssues(type, input);
+  if (issues) throw new AssetTypeError(type, issues);
+  return type;
+};
 const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreateInput & WorkEntityCreateOrigin): Promise<{ asset: Asset }> => {
   const factSource = checkedAssetFactSource(input);
+  const type = createdAssetType(deps, input, factSource);
   const source = resolveCreateSource(deps, 'asset', input.source_id, input);
   if (source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(source.id, 'asset', 'create');
   const keyed = idempotentCreateKey('asset', input.idempotency_key, source.id);
-  const patch = assetPatchOf(input);
+  const patch = type ? typedAssetFacts(type, assetPatchOf(input)) : assetPatchOf(input);
   const write = { ...patch, source_id: source.id, source: factSource };
   let asset: Asset;
   if (keyed) {
@@ -2835,6 +2866,13 @@ const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreat
     asset = result.asset;
     if (!result.created) { verifyIdempotentReuse('asset', asset, keyed.key); return { asset }; }
   } else asset = deps.store.writeAsset(write, deps.now?.());
+  // The owner's ruling of 2026-10-24: its type's own reminders start at once.
+  // Should this second write fail, the asset still stands with its type, and
+  // Yours offers the type's reminders as a class update.
+  if (type) {
+    try { asset = deps.store.writeAsset({ ...assetTypeApplication(type), id: asset.id, source_id: asset.source_id }, deps.now?.()); }
+    catch (error) { console.warn(`[assets] the reminders of type ${type.id} were not applied; Yours offers them as a class update`, error); }
+  }
   emitWorkEntityEvent(deps, 'asset', 'created', tagWorkEntity('asset', asset));
   await deps.onAssetChanged?.(asset);
   return { asset };
@@ -3379,6 +3417,32 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
   bookingDelete: bookingDelete(deps),
   assetCreate: assetCreate(deps),
   assetUpdate: assetUpdate(deps),
+  assetAddEvidence: async (input: Parameters<WorkEntityStore['addAssetEvidence']>[0], actor: ExecutionSource, verifyAttachment: () => void) => {
+    if (actor?.channel !== 'user' || actor.actor !== 'user_self') throw new AssetValidationError('Adding evidence requires the owner');
+    const id = resolveWorkEntityInputId(deps, 'asset', input.id); const prior = deps.store.readAsset(id);
+    if (!prior || prior.deleted_at != null) throw new WorkEntityNotFoundError('asset', input.id);
+    const asset = deps.store.addAssetEvidence({ ...input, id }, verifyAttachment, deps.now?.());
+    if (JSON.stringify(asset) !== JSON.stringify(prior)) {
+      emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', asset), tagWorkEntity('asset', prior)); cascadeOnWrite(deps, 'asset', id, 'update');
+    }
+    await deps.onAssetChanged?.(asset, prior); return { asset };
+  },
+  /** Paired owner UI only. Atomic source/target checks happen in the store. */
+  assetRecordAttributeReading: async (input: Parameters<WorkEntityStore['recordAttributeReading']>[0], actor: ExecutionSource) => {
+    if (actor?.channel !== 'user' || actor.actor !== 'user_self') throw new AssetValidationError('Recording an attribute requires the owner');
+    const id = resolveWorkEntityInputId(deps, 'asset', input.id);
+    const prior = deps.store.readAsset(id);
+    if (!prior || prior.deleted_at != null) throw new WorkEntityNotFoundError('asset', input.id);
+    const asset = deps.store.recordAttributeReading({ ...input, id }, { kind: 'owner', ref: 'paired-owner' }, deps.now?.());
+    if (JSON.stringify(asset) !== JSON.stringify(prior)) {
+      emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', asset), tagWorkEntity('asset', prior));
+      cascadeOnWrite(deps, 'asset', id, 'update');
+    }
+    // A lost response may have interrupted reconciliation after commit. Its
+    // existing idempotent path can finish without another sample or event.
+    await deps.onAssetChanged?.(asset, prior);
+    return { asset };
+  },
   // Owner UI only: this is deliberately outside the recipe ingredient surface.
   assetAllowAutomaticUpdates: async (input: Parameters<WorkEntityStore['allowAssetAutomaticUpdates']>[0], actor: ExecutionSource) => {
     if (actor?.channel !== 'user' || actor.actor !== 'user_self') throw new AssetValidationError('Automatic update changes require the owner');

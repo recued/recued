@@ -22,8 +22,11 @@ const makeFakeHost = () => {
   let focusedTarget:
     | { action: string; instanceId: string }
     | { receipt: true }
+    | { renameInput: true }
     | { outside: true }
     | undefined;
+  /** What the owner has typed in the rename field (the live input value). */
+  let renameValue: string | undefined;
   const body = {} as HTMLElement;
   const outside = {} as HTMLElement;
   const fakeDocument = {
@@ -33,6 +36,10 @@ const makeFakeHost = () => {
       if ('outside' in target) return outside;
       if ('receipt' in target) return {
         hasAttribute: (name: string) => name === 'data-device-revoke-success',
+      } as unknown as HTMLElement;
+      if ('renameInput' in target) return {
+        hasAttribute: (name: string) => name === 'data-rename-input',
+        getAttribute: () => null,
       } as unknown as HTMLElement;
       return {
         getAttribute: (name: string) => {
@@ -51,6 +58,7 @@ const makeFakeHost = () => {
     },
     set innerHTML(value: string) {
       html = value;
+      if (!html.includes('data-rename-input')) renameValue = undefined;
       if (focusedTarget === undefined || !('outside' in focusedTarget)) focusedTarget = undefined;
     },
     ownerDocument: fakeDocument,
@@ -84,6 +92,17 @@ const makeFakeHost = () => {
         });
     },
     querySelector: (selector: string): HTMLElement | null => {
+      if (selector === '[data-rename-input]') {
+        const input = /<input\b[^>]*data-rename-input[^>]*>/.exec(html)?.[0];
+        if (input === undefined) return null;
+        const written = /value="([^"]*)"/.exec(input)?.[1] ?? '';
+        return {
+          get value() { return renameValue ?? written; },
+          focus: () => { focusedTarget = { renameInput: true }; },
+          select: () => {},
+          setSelectionRange: () => {},
+        } as unknown as HTMLElement;
+      }
       if (
         selector !== '[data-device-revoke-success]'
         || !html.includes('data-device-revoke-success')
@@ -118,6 +137,38 @@ const makeFakeHost = () => {
       button.focus();
     },
     focusOutside: (): void => { focusedTarget = { outside: true }; },
+    typeRename: (value: string): void => { renameValue = value; },
+    submitRename: (instanceId: string): void => {
+      fire('submit', {
+        hasAttribute: (name: string) => name === 'data-rename-form',
+        getAttribute: (name: string) => (name === 'data-instance-id' ? instanceId : null),
+      });
+    },
+    pressEscape: (): void => {
+      for (const fn of [...(listeners.keydown ?? [])]) {
+        fn({
+          key: 'Escape',
+          type: 'keydown',
+          stopPropagation: () => {},
+          target: { hasAttribute: () => false, getAttribute: () => null },
+        } as unknown as Event);
+      }
+    },
+    escapeRename: (instanceId: string): void => {
+      for (const fn of [...(listeners.keydown ?? [])]) {
+        fn({
+          key: 'Escape',
+          type: 'keydown',
+          stopPropagation: () => {},
+          target: {
+            hasAttribute: (name: string) => name === 'data-rename-input',
+            getAttribute: (name: string) => (name === 'data-instance-id' ? instanceId : null),
+          },
+        } as unknown as Event);
+      }
+    },
+    renameInputFocused: (): boolean =>
+      focusedTarget !== undefined && 'renameInput' in focusedTarget,
     listenerCount: () => Object.values(listeners).reduce((n, s) => n + s.size, 0),
     clickAction: (action: string, instanceId?: string): void => {
       const actionEl = {
@@ -239,7 +290,7 @@ describe('mountDevicesPage — initial render + roster fetch', () => {
     expect(html).not.toContain('Old laptop');
     expect(html).not.toContain('Revoked');
     // buildDevice defaults kind to 'webclient'.
-    expect(html).toMatch(/\(Webclient\)/);
+    expect(html).toMatch(/\(Browser\)/);
   });
 
   it('D-156 P10 — renders the per-device kind label from the row (Bridge / CLI)', async () => {
@@ -261,9 +312,9 @@ describe('mountDevicesPage — initial render + roster fetch', () => {
 
     await flush();
     const html = fakeHost.getHtml();
-    expect(html).toMatch(/\(Webclient\)/);
-    expect(html).toMatch(/\(Bridge\)/);
-    expect(html).toMatch(/\(CLI\)/);
+    expect(html).toMatch(/\(Browser\)/);
+    expect(html).toMatch(/\(Browser Bridge\)/);
+    expect(html).toMatch(/\(Command line\)/);
   });
 
   it('surfaces a list error when pair.list rejects + fires onListError', async () => {
@@ -287,6 +338,22 @@ describe('mountDevicesPage — initial render + roster fetch', () => {
     expect(fakeHost.getHtml()).toContain('data-error="list"');
     expect(onListError).toHaveBeenCalledTimes(1);
     expect(onListError.mock.calls[0][0]).toBeInstanceOf(Error);
+  });
+
+  it('does not call a list that never loaded empty', async () => {
+    // ⛔ Under "Couldn't load paired devices" it read "No paired devices yet."
+    // — a claim about the server the page had not been able to check.
+    const fakeHost = makeFakeHost();
+    mountDevicesPage({
+      host: fakeHost.host,
+      runPairList: vi.fn(async () => { throw new Error('network down'); }),
+      runPairRevoke: vi.fn(),
+      now: () => FIXED_NOW,
+    });
+    await flush();
+    expect(fakeHost.getHtml()).toContain('data-error="list"');
+    expect(fakeHost.getHtml()).not.toContain('No paired devices yet');
+    expect(fakeHost.getHtml()).not.toContain('account-devices-table');
   });
 
   it('keeps list Retry focused, single-flight, and advances into recovered rows', async () => {
@@ -384,6 +451,12 @@ describe('mountDevicesPage — initial render + roster fetch', () => {
     expect(html).toMatch(
       /data-action="revoke-device"[^>]*data-instance-id="inst-other"/,
     );
+    // ⛔ With no Revoke on its own row, the page says where this browser can
+    // revoke its own access, instead of claiming that it cannot.
+    expect(html).toContain(
+      'To revoke this browser’s own access, open Account &amp; servers and choose Forget.',
+    );
+    expect(html).not.toContain('cannot remove itself');
   });
 
   it('R30 — the list-error banner offers a Retry that re-fetches', async () => {
@@ -600,7 +673,7 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
     const html = fakeHost.getHtml();
     // The confirm panel stays expanded for retry.
     expect(html).toContain('account-devices-confirm-row');
-    expect(html).toContain('Recued could not shut this device out');
+    expect(html).toContain('Recued could not revoke this device');
     expect(html).toContain('forbidden. Try again');
     expect(fakeHost.getFocusedAction()).toEqual({
       action: 'confirm-revoke',
@@ -665,7 +738,8 @@ describe('mountDevicesPage — dispose', () => {
       now: () => FIXED_NOW,
     });
     await flush();
-    expect(fakeHost.listenerCount()).toBe(1);
+    // Click, plus the rename form's submit and Escape.
+    expect(fakeHost.listenerCount()).toBe(3);
 
     mount.dispose();
     expect(fakeHost.getHtml()).toBe('');
@@ -1197,5 +1271,153 @@ describe('mountDevicesPage — manual refresh and last successful check', () => 
       manual.resolve({ devices: [buildDevice({})] }); await flush();
       expect(fakeHost.getFocusedAction()).toEqual({ action: 'refresh-devices', instanceId: '' });
     } finally { mount.dispose(); }
+  });
+});
+
+// ⛔ There was no rename: two browsers of one kind read alike here ("Chrome
+// on macOS"), and which one to revoke was a guess.
+// ⛔ The revoke alert dialog ignored Escape.
+describe('mountDevicesPage — Escape on a revoke confirmation', () => {
+  it('closes it as Cancel does and returns to that row’s Revoke', async () => {
+    const fake = makeFakeHost();
+    const runPairRevoke = vi.fn(async () => ({ ok: true as const }));
+    const mount = mountDevicesPage({
+      host: fake.host,
+      runPairList: vi.fn(async () => ({
+        devices: [buildDevice({ instance_id: 'inst-B', display_name: 'Old phone', connected: false })],
+      })),
+      runPairRevoke,
+      now: () => FIXED_NOW,
+    });
+    await flush();
+    fake.clickAction('revoke-device', 'inst-B');
+    expect(fake.getHtml()).toContain('data-action="confirm-revoke"');
+
+    fake.pressEscape();
+
+    expect(fake.getHtml()).not.toContain('data-action="confirm-revoke"');
+    expect(fake.getFocusedAction()).toEqual({ action: 'revoke-device', instanceId: 'inst-B' });
+    expect(runPairRevoke).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+});
+
+describe('mountDevicesPage — rename', () => {
+  const twoChromes = () => vi.fn(async () => ({
+    devices: [
+      buildDevice({ instance_id: 'inst-A', display_name: 'Chrome on macOS' }),
+      buildDevice({ instance_id: 'inst-B', display_name: 'Chrome on macOS', connected: false }),
+    ],
+  }));
+
+  it('opens a form in place of the name, saves the trimmed name, and shows it', async () => {
+    const fake = makeFakeHost();
+    const names: Record<string, string> = { 'inst-A': 'Chrome on macOS', 'inst-B': 'Chrome on macOS' };
+    const runPairList = vi.fn(async () => ({
+      devices: Object.entries(names).map(([instance_id, display_name]) =>
+        buildDevice({ instance_id, display_name, connected: instance_id === 'inst-A' })),
+    }));
+    const runPairRename = vi.fn(async (args: { instance_id: string; display_name: string }) => {
+      names[args.instance_id] = args.display_name;
+      return { ok: true as const, display_name: args.display_name };
+    });
+    const mount = mountDevicesPage({
+      host: fake.host,
+      runPairList,
+      runPairRevoke: vi.fn(async () => ({ ok: true as const })),
+      runPairRename,
+      now: () => FIXED_NOW,
+    });
+    await flush();
+
+    fake.clickAction('rename-device', 'inst-B');
+    expect(fake.getHtml()).toContain('data-rename-form');
+    expect(fake.renameInputFocused()).toBe(true);
+    fake.typeRename('  Old work laptop ');
+    fake.submitRename('inst-B');
+    await flush();
+
+    expect(runPairRename).toHaveBeenCalledWith({ instance_id: 'inst-B', display_name: 'Old work laptop' });
+    expect(fake.getHtml()).not.toContain('data-rename-form');
+    expect(fake.getHtml()).toContain('Old work laptop');
+    expect(runPairList).toHaveBeenCalledTimes(2);
+    mount.dispose();
+  });
+
+  it('keeps the old name on Escape, and refuses an empty one before any call', async () => {
+    const fake = makeFakeHost();
+    const runPairRename = vi.fn(async () => ({ ok: true as const, display_name: 'x' }));
+    const mount = mountDevicesPage({
+      host: fake.host,
+      runPairList: twoChromes(),
+      runPairRevoke: vi.fn(async () => ({ ok: true as const })),
+      runPairRename,
+      now: () => FIXED_NOW,
+    });
+    await flush();
+
+    fake.clickAction('rename-device', 'inst-A');
+    fake.typeRename('   ');
+    fake.submitRename('inst-A');
+    expect(runPairRename).not.toHaveBeenCalled();
+    expect(fake.getHtml()).toContain('Type a name of 1 to 64 characters.');
+
+    fake.escapeRename('inst-A');
+    expect(fake.getHtml()).not.toContain('data-rename-form');
+    expect(fake.getFocusedAction()).toEqual({ action: 'rename-device', instanceId: 'inst-A' });
+    mount.dispose();
+  });
+
+  it('keeps the form and the typed name when the server refuses, and through a refresh', async () => {
+    const fake = makeFakeHost();
+    const runPairList = twoChromes();
+    const mount = mountDevicesPage({
+      host: fake.host,
+      runPairList,
+      runPairRevoke: vi.fn(async () => ({ ok: true as const })),
+      runPairRename: vi.fn(async () => { throw new Error('device belongs to a different user'); }),
+      now: () => FIXED_NOW,
+    });
+    await flush();
+
+    fake.clickAction('rename-device', 'inst-A');
+    fake.typeRename('Kitchen iPad');
+    await mount.refresh();
+    expect(fake.getHtml()).toContain('value="Kitchen iPad"');
+
+    fake.submitRename('inst-A');
+    await flush();
+    expect(fake.getHtml()).toContain('data-rename-form');
+    expect(fake.getHtml()).toContain('Recued could not rename this device');
+    expect(fake.getHtml()).toContain('value="Kitchen iPad"');
+    mount.dispose();
+  });
+
+  it('offers no Rename without the caller (an older server)', async () => {
+    const fake = makeFakeHost();
+    const mount = mountDevicesPage({
+      host: fake.host,
+      runPairList: twoChromes(),
+      runPairRevoke: vi.fn(async () => ({ ok: true as const })),
+      now: () => FIXED_NOW,
+    });
+    await flush();
+    expect(fake.getHtml()).not.toContain('data-action="rename-device"');
+    mount.dispose();
+  });
+
+  it('says when an offline device was last used', async () => {
+    const fake = makeFakeHost();
+    const mount = mountDevicesPage({
+      host: fake.host,
+      runPairList: vi.fn(async () => ({
+        devices: [buildDevice({ instance_id: 'inst-B', connected: false, last_seen_at: FIXED_NOW / 1000 - 2 * 86_400 })],
+      })),
+      runPairRevoke: vi.fn(async () => ({ ok: true as const })),
+      now: () => FIXED_NOW,
+    });
+    await flush();
+    expect(fake.getHtml()).toContain('Last used 2 days ago');
+    mount.dispose();
   });
 });

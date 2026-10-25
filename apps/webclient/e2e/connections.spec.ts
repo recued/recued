@@ -1051,7 +1051,8 @@ test('the first mailbox enrolment ends by opening Proposals', async ({ page }) =
   await expect(page).toHaveURL(/#yours\/proposals$/);
   await expect(route).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Yours', level: 1 })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'What is read' })).toBeVisible();
+  // "What is read" is a disclosure on Yours since df90904f4, not a heading.
+  await expect(page.locator('summary').filter({ hasText: /^What is read$/u })).toBeVisible();
 });
 
 test('a successful IMAP enrollment confirms the connected account in focus', async ({ page }) => {

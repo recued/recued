@@ -174,36 +174,6 @@ describe('WebSocket server', () => {
     expect(terminated).toBe(true);
   });
 
-  it('routes live heartbeat pushes through the bounded JSON sender', async () => {
-    const ws = await connectWs(server.port, 'test-realm');
-    const registered = nextMessage(ws);
-    ws.send(JSON.stringify({
-      type: 'register',
-      instance_id: 'backpressured-heartbeat-client',
-      display_name: 'Stalled client',
-    }));
-    await registered;
-    const descriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'bufferedAmount');
-    if (!descriptor) throw new Error('ws bufferedAmount descriptor missing');
-    const closed = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('backpressured client stayed open')), 3000);
-      ws.once('close', () => { clearTimeout(timeout); resolve(); });
-    });
-
-    try {
-      Object.defineProperty(WebSocket.prototype, 'bufferedAmount', {
-        configurable: true,
-        enumerable: descriptor.enumerable,
-        get: () => WS_JSON_MAX_BUFFERED_BYTES,
-      });
-      server.wsServer.broadcastServerHeartbeat({ state: 'running' });
-      await closed;
-    } finally {
-      Object.defineProperty(WebSocket.prototype, 'bufferedAmount', descriptor);
-      ws.terminate();
-    }
-  });
-
   it('rejects connections without auth', async () => {
     await expect(new Promise((_, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -223,34 +193,33 @@ describe('WebSocket server', () => {
     });
 
     ws.send(JSON.stringify({
-      type: 'register',
-      instance_id: 'oversized-rpc-client',
-      display_name: 'x'.repeat(RPC_WS_MAX_PAYLOAD_BYTES),
+      type: 'ping',
+      padding: 'x'.repeat(RPC_WS_MAX_PAYLOAD_BYTES),
     }));
     await expect(closed).resolves.toBe(1009);
 
     const survivor = await connectWs(server.port, 'test-realm');
     const reply = nextMessage(survivor);
-    survivor.send(JSON.stringify({
-      type: 'register',
-      instance_id: 'post-oversize-client',
-      display_name: 'Still healthy',
-    }));
-    await expect(reply).resolves.toMatchObject({
-      type: 'registered',
-      instance_id: 'post-oversize-client',
-    });
+    survivor.send(JSON.stringify({ type: 'ping' }));
+    await expect(reply).resolves.toMatchObject({ type: 'pong' });
     survivor.close();
   });
 
-  it('registers instance and receives ack', async () => {
+  it('refuses register: a connection cannot name its own identity', async () => {
+    // ⛔ `register` let a client choose its instance and the user id written
+    // to its Devices row (hiding it from the owner and making Revoke refuse
+    // it). Retired 2026-10-23: the answer says so, and nothing changes.
     const ws = await connectWs(server.port, 'test-realm');
     const msgP = nextMessage(ws);
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-1', display_name: 'Test' }));
-    const msg = await msgP;
-    expect(msg.type).toBe('registered');
-    expect(msg.instance_id).toBe('ext-1');
-    ws.close();
+    ws.send(JSON.stringify({
+      type: 'register', instance_id: 'ext-1', display_name: 'Test', user_id: 'someone-else',
+    }));
+    expect(await msgP).toMatchObject({ type: 'register_error', code: 'unsupported' });
+    expect(server.wsServer.listConnectedInstances()).toEqual([]);
+    expect(server.wsServer.listConnectedPairedInstances()).toEqual([]);
+    expect(server.wsServer.getPairedUserId()).toBeUndefined();
+    // Wait for the close: the next test counts open connections.
+    await new Promise<void>((resolve) => { ws.once('close', () => resolve()); ws.close(); });
   });
 
   it('tracks client count', async () => {
@@ -273,8 +242,6 @@ describe('WebSocket server', () => {
     // that never comes — stalling every cold step-cache miss 8s-per-step
     // during recipe runs. Post-fix: no bridge online → immediate null.
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-cache-mute' }));
-    await nextMessage(ws);
     const frames: any[] = [];
     ws.on('message', (data) => frames.push(JSON.parse(data.toString())));
 
@@ -290,25 +257,18 @@ describe('WebSocket server', () => {
     ws.close();
   });
 
-  it('handles AI delegation round-trip', async () => {
+  it('register no longer makes a connection an AI delegation target', async () => {
+    // Delegated AI requests carry recipe input. A client that could name
+    // itself an extension with `register` would have been sent them.
     const ws = await connectWs(server.port, 'test-realm');
+    const frames: Array<{ type?: string }> = [];
+    ws.on('message', (data) => frames.push(JSON.parse(data.toString())));
     ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-ai' }));
-    await nextMessage(ws);
+    await wait(50);
 
-    // Extension listens for ai_request and responds
-    ws.on('message', (data) => {
-      const msg = JSON.parse(data.toString());
-      if (msg.type === 'ai_request') {
-        ws.send(JSON.stringify({
-          type: 'ai_response',
-          request_id: msg.request_id,
-          result: { answer: 'hello from extension' },
-        }));
-      }
-    });
-
-    const result = await server.wsServer.delegateAi('ai-classify', { data: 'test' }, 5000);
-    expect(result).toEqual({ answer: 'hello from extension' });
+    await expect(server.wsServer.delegateAi('ai-classify', { data: 'test' }, 500))
+      .rejects.toThrow('No extension connected');
+    expect(frames.filter((f) => f.type === 'ai_request')).toHaveLength(0);
     ws.close();
   });
 
@@ -342,8 +302,6 @@ describe('WebSocket server', () => {
 
   it('rpc execute runs the recipe (recipe_id lookup)', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-exec' }));
-    await nextMessage(ws);
 
     const reply = await rpcCall(ws, 'r-101', 'execute', { recipe_id: 'ws-test' });
     expect(reply.error).toBeUndefined();
@@ -354,8 +312,6 @@ describe('WebSocket server', () => {
 
   it('rpc execute runs an inline recipe payload', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-exec-inline' }));
-    await nextMessage(ws);
 
     const reply = await rpcCall(ws, 'r-102', 'execute', { recipe: RECIPE });
     expect(reply.error).toBeUndefined();
@@ -366,8 +322,6 @@ describe('WebSocket server', () => {
 
   it('rpc execute returns error for unknown recipe_id', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-exec-404' }));
-    await nextMessage(ws);
 
     const reply = await rpcCall(ws, 'r-103', 'execute', { recipe_id: 'does-not-exist' });
     expect(reply.error?.code).toBe('recipe_not_found');
@@ -376,8 +330,6 @@ describe('WebSocket server', () => {
 
   it('rpc returns unknown_method for an unrecognized method', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-rpc-unk' }));
-    await nextMessage(ws);
 
     const reply = await rpcCall(ws, 'r-104', 'definitely.not.a.thing');
     expect(reply.error?.code).toBe('unknown_method');
@@ -386,8 +338,6 @@ describe('WebSocket server', () => {
 
   it('rpc without request_id is dropped silently (next valid call still works)', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-rpc-noid' }));
-    await nextMessage(ws);
 
     ws.send(JSON.stringify({ type: 'rpc', method: 'execute', args: { recipe_id: 'ws-test' } }));
     const reply = await rpcCall(ws, 'r-105', 'execute', { recipe_id: 'ws-test' });
@@ -817,8 +767,6 @@ describe('WebSocket server — rpc without executeDeps', () => {
 
   it('rpc execute replies not_configured when executeDeps absent', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-noexec' }));
-    await nextMessage(ws);
 
     const replyP = new Promise<any>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('timeout')), 3000);
@@ -891,8 +839,6 @@ describe('WebSocket server — schedules.* rpc', () => {
 
   it('create → list → update → delete round-trips', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-sched' }));
-    await nextMessage(ws);
 
     const created = await call(ws, 's-1', 'schedules.create', {
       recipe_id: 'ws-test', cron_expression: '*/10 * * * *',
@@ -920,11 +866,58 @@ describe('WebSocket server — schedules.* rpc', () => {
 
   it('schedules.update without schedule_id returns bad_request', async () => {
     const ws = await connectWs(server.port, 'test-realm');
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-sched-bad' }));
-    await nextMessage(ws);
 
     const reply = await call(ws, 's-bad', 'schedules.update', { enabled: false });
     expect(reply.error?.code).toBe('bad_request');
     ws.close();
+  });
+});
+
+describe('WebSocket server — paired connections', () => {
+  let server: RunningServer;
+  let db: Database.Database;
+  let pairedBearer: string;
+
+  beforeAll(async () => {
+    db = new Database(':memory:');
+    const clientTokens = createClientTokenStore(db, { argon2_params: { t: 1, m: 8, p: 1 } });
+    const issued = await clientTokens.issue({
+      client_kind: 'webclient',
+      client_label: 'Stalled client',
+      metadata: { issued_via: '/auth/pair', instance_id: 'backpressured-heartbeat-client' },
+    });
+    pairedBearer = `${issued.token_id}.${issued.bearer}`;
+    server = await startServer(0, { clientTokens });
+  });
+
+  afterAll(async () => {
+    await server.close();
+    db.close();
+  });
+
+  it('routes live heartbeat pushes through the bounded JSON sender', async () => {
+    // The heartbeat goes to paired connections, so this one presents a
+    // bearer that carries a paired instance.
+    const ws = await connectWs(server.port, pairedBearer);
+    await wait(50);
+    const descriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'bufferedAmount');
+    if (!descriptor) throw new Error('ws bufferedAmount descriptor missing');
+    const closed = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('backpressured client stayed open')), 3000);
+      ws.once('close', () => { clearTimeout(timeout); resolve(); });
+    });
+
+    try {
+      Object.defineProperty(WebSocket.prototype, 'bufferedAmount', {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get: () => WS_JSON_MAX_BUFFERED_BYTES,
+      });
+      server.wsServer.broadcastServerHeartbeat({ state: 'running' });
+      await closed;
+    } finally {
+      Object.defineProperty(WebSocket.prototype, 'bufferedAmount', descriptor);
+      ws.terminate();
+    }
   });
 });

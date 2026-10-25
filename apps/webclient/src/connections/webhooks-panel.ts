@@ -95,6 +95,7 @@ export const WEBHOOKS_PANEL_STYLES = `
 [${WEBHOOKS_PANEL_CARD_ATTR}] { display:grid; gap:11px; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-card-head { display:flex; gap:10px; justify-content:space-between; align-items:flex-start; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-card-head h3 { margin:0; font-size:15px; }
+[${WEBHOOKS_PANEL_ATTR}] details > summary { cursor:pointer; margin:4px 0; color:var(--fg); font-size:13px; font-weight:600; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-pill { border:1px solid var(--border); border-radius:999px; padding:3px 7px; font-size:11px; color:var(--muted); }
 [${WEBHOOKS_PANEL_ATTR}] dl { display:grid; grid-template-columns:max-content 1fr; gap:5px 12px; margin:0; font-size:12px; }
 [${WEBHOOKS_PANEL_ATTR}] dt { color:var(--muted); }

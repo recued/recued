@@ -236,14 +236,17 @@ describe('D-167 P1 — E.1 entity-marker resolution', () => {
     const contact = ENTITY_TAGS.find((t) => t.entity_id === 'contact');
     const deal = ENTITY_TAGS.find((t) => t.entity_id === 'deal');
     const account = ENTITY_TAGS.find((t) => t.entity_id === 'account');
-    // `phone` + `company` (D-167 B4) ride only on the prefetch's resolved payload
-    // (contact.search results surface neither); tagging each seeds the turn ledger
-    // so a user-typed known phone / org is aliased by the D-167 P4 user-message
-    // pass. The `company → org` tag is a no-op for every other contact-marked
-    // record (chat projections carry no `company`).
+    // `phone` + `company` (D-167 B4) were first tagged for the prefetch's resolved
+    // payload, seeding the turn ledger so a user-typed known phone / org is aliased
+    // by the D-167 P4 user-message pass. `contact.search` candidates now carry both,
+    // and `contact.read` the mailing address: its street lines and postal code, as
+    // the vendor contact schemas tag them.
     expect(contact?.fields.map((f) => `${f.path}:${f.kind}`).sort()).toEqual([
       'company:org',
       'email:email',
+      'mailing_address.address1:address',
+      'mailing_address.address2:address',
+      'mailing_address.zip:address',
       'name:name',
       'phone:phone',
       'target_id:email',
@@ -297,14 +300,16 @@ describe('D-167 P1 — `__entity` strip at the model-bound seam (hard egress inv
     const plan = makePlan(piiEgress.noopFieldPrivacyResolver);
     const prompt = JSON.stringify({
       user_message: 'hi',
-      prior_tool_calls: [{ result: { candidates: [{ record: { __entity: 'contact', email: 'a@b.com' } }] } }],
+      // A name, not an address: an address is aliased by its shape on every path
+      // (2026-10-24), which would take this packet off the early path it pins.
+      prior_tool_calls: [{ result: { candidates: [{ record: { __entity: 'contact', name: 'Ann Lee' } }] } }],
     });
     const { rawPrompt, packet } = await egress(plan, prompt);
     expect(hasEntityMarkerAnywhere(packet)).toBe(false);
     expect(rawPrompt).not.toContain('__entity');
-    // The email is NOT aliased on this path (noop resolver) — the early strip is
+    // The name is NOT aliased on this path (noop resolver) — the early strip is
     // marker-removal only, not aliasing.
-    expect(rawPrompt).toContain('a@b.com');
+    expect(rawPrompt).toContain('Ann Lee');
   });
 
   it('strips a DEEPLY nested marker (no depth-bound escape — codex P2 regression)', async () => {
@@ -325,8 +330,9 @@ describe('D-167 P1 — `__entity` strip at the model-bound seam (hard egress inv
     const plan = makePlan(piiEgress.noopFieldPrivacyResolver);
     const prompt = JSON.stringify({
       user_message: 'ping',
-      chat_tail: [{ role: 'user', content: 'hi alice@acme.com' }],
-      prior_tool_calls: [{ result: { candidates: [{ record: { email: 'a@b.com' } }] } }],
+      // Names, not addresses: an address is aliased by its shape (2026-10-24).
+      chat_tail: [{ role: 'user', content: 'hi Alice' }],
+      prior_tool_calls: [{ result: { candidates: [{ record: { name: 'Ann Lee' } }] } }],
     });
     const { rawPrompt } = await egress(plan, prompt);
     // No tagged field AND no marker → the original input string is returned

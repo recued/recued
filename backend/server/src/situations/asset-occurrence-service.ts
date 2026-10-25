@@ -13,7 +13,7 @@ import { classifyCommitmentDueStatus } from '../work-entity-due-status-sweep.js'
 import type { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { assetIntervalCycle, assetObjectiveCycle, assetOccurrenceClock, objectiveCycleNumber } from './asset-interval-cycle.js';
 import { createAssetClockStore } from '../storage/asset-clock-store.js';
-import { assetClockRows, assetPlaceLabels, assetRuleTimings, isTravelDocument } from './asset-rule-timing.js';
+import { assetClockRows, assetPlaceLabels, assetRenewal, assetRuleTimings, isTravelDocument } from './asset-rule-timing.js';
 
 const occurrenceId = (asset: string, rule: string, cycle: string): string =>
   `occurrence-${createHash('sha256').update(JSON.stringify([asset, rule, cycle])).digest('hex')}`;
@@ -46,8 +46,9 @@ export interface AssetOccurrenceService {
   reconcileAsset(asset_id: string): Promise<void>;
   retireAsset(asset_id: string): Promise<void>;
   tick(): Promise<void>;
-  /** Owner action, using its original durable answer time on recovery. */
-  completeOccurrence(input: { occurrence_id: string; answered_at: number; actual_time_unknown?: boolean; owner_action?: boolean }): Promise<void>;
+  /** Owner action, using its original durable answer time on recovery. A renewal
+   *  (`assetRenewal`) is left open: its new date closes it, through `recordRenewal`. */
+  completeOccurrence(input: { occurrence_id: string; answered_at: number; owner_action?: boolean }): Promise<void>;
   confirmCompletion(input: { occurrence_id: string; on: string; reading?: { value: number; unit: string } }): Promise<void>;
   /** Confirmed evidence records its REAL date, including after strict lapse. */
   recordLastDone(input: { asset_id: string; rule_id: string; on: string; evidence_ref: string; confirmed: boolean }): Promise<void>;
@@ -132,7 +133,7 @@ export const createAssetOccurrenceService = (deps: AssetOccurrenceServiceDeps): 
       let next: Asset = asset;
       // A recipe, an MCP client or another non-owner close fulfilled it without
       // saying when. Keep the last-done fact and ask the owner for the actual date
-      // or reading before the clock advances, as for a household Done.
+      // or reading before the clock advances.
       if (commitment.lifecycle_state === 'fulfilled' && rule && !row.question && rows.completion(row.id) === null
         && (rule.when.kind === 'interval' || (rule.when.kind === 'objective' && rule.when.mode === 'usage' && rule.when.every))) {
         rows.recordCompletion(row.id, commitment.lifecycle_changed_at, null, false, false);
@@ -322,6 +323,10 @@ export const createAssetOccurrenceService = (deps: AssetOccurrenceServiceDeps): 
       const asset = row ? deps.work.readAssetEffective(row.asset_id) : null;
       const rule = asset?.rules.find(item => item.id === row?.rule_id);
       if (!row?.commitment_id || row.question || !live(asset) || !rule?.enabled) return;
+      // D-325 §15.7 (2026-10-24) — Done on a reminder sent before Done was dropped does not
+      // renew a passport: only its new date does. The press settles that reminder; the task
+      // stays open, and its next reminder still comes.
+      if (assetRenewal(asset, rule)) return;
       const commitment = deps.work.readCommitment(row.commitment_id);
       if (!commitment || !['pending', 'fulfilled'].includes(commitment.lifecycle_state)) return;
       const usage = rule.when.kind === 'objective' && rule.when.mode === 'usage';
@@ -329,8 +334,8 @@ export const createAssetOccurrenceService = (deps: AssetOccurrenceServiceDeps): 
         ? deps.work.assetReadingAt(asset.id, rule.when.field, input.answered_at) : null;
       // Save the evidence before a semantic close or any downstream network
       // withdrawal. A retry cannot use tomorrow's odometer for today's service.
-      const known = input.owner_action === true && !input.actual_time_unknown && (!usage || reading !== null);
-      rows.recordCompletion(row.id, input.answered_at, input.actual_time_unknown ? null : reading, known, input.owner_action === true);
+      const known = input.owner_action === true && (!usage || reading !== null);
+      rows.recordCompletion(row.id, input.answered_at, reading, known, input.owner_action === true);
       if (commitment.lifecycle_state === 'pending') await close(row, 'fulfilled');
       await reconcileAsset(asset.id);
     },

@@ -1,8 +1,9 @@
-import { RpcError, type QuoteSignoffPrepareInput, type QuoteSignoffAdditionPrepareInput, type QuoteSignoffPublishInput,
-  type QuoteSignoffListInput, type QuoteSignoffCancelInput, type QuoteSignoffReceiptInput } from '@recued/contracts';
+import { APPROVAL_LINK_VISITOR_COMMENT_MAX, RpcError, type CustomerRequestLinkCheckInput, type QuoteSignoffPrepareInput, type QuoteSignoffAdditionPrepareInput, type QuoteSignoffPublishInput,
+  type QuoteSignoffListInput, type QuoteSignoffCancelInput, type QuoteSignoffReceiptInput, type QuoteSignoffResponse } from '@recued/contracts';
 import { openCompletionResponse } from './quote-completion-rpc-handler.js';
 import { QuoteSignoffError } from './quote-signoff-service.js';
 import { openApprovalIntentPiiField } from './ports/reception/approval-pii.js';
+import { parseApprovalLinkConfig } from './ports/reception/transformations/approval-link.js';
 import { handleReceptionEndpointPreviewDraft, handleReceptionEndpointCreate,
   handleReceptionEndpointEnable, handleReceptionEndpointRevoke, type ReceptionRpcDeps } from './reception-rpc-handler.js';
 
@@ -47,6 +48,13 @@ export const handleSignoffList = (deps: ReceptionRpcDeps, input: QuoteSignoffLis
   const service = serviceFor(deps, caller);
   if (input !== undefined) shape(input, ['limit', 'search', 'state', 'cursor', 'signoff_id']);
   const result = service.list(input ?? {});
+  const capturedAt = deps.now();
+  const store = deps.getApprovalIntentStore!();
+  // Capture each request's own encrypted intent before any asynchronous reads.
+  const replies = result.signoffs.map(signoff => {
+    const intent = signoff.endpoint_id ? store.findByEndpoint(signoff.endpoint_id) : null;
+    return intent ? { ...intent } : null;
+  });
   await Promise.all(result.signoffs.map(async (signoff) => {
     if (signoff.state !== 'accepted' || !signoff.endpoint_id) return;
     const anchor = await deps.auditLog.get(`reception-quote-signoff-${signoff.endpoint_id}`);
@@ -54,7 +62,34 @@ export const handleSignoffList = (deps: ReceptionRpcDeps, input: QuoteSignoffLis
       : anchor.commit_status === 'awaiting_approval' ? 'waiting'
         : anchor.commit_status === 'running' || anchor.commit_status === 'pending' ? 'running' : 'closed';
   }));
-  return result;
+  await Promise.all(result.signoffs.map(async (signoff,index) => {
+    const intent = replies[index];
+    const response: QuoteSignoffResponse = { decision: 'unavailable',received_at: null,recorded_at: signoff.responded_at };
+    signoff.response = response;
+    if (!signoff.endpoint_id) { if (signoff.responded_at === null) response.decision = 'not_recorded'; return; }
+    if (!intent || intent.endpoint_id !== signoff.endpoint_id || intent.intent_id !== signoff.endpoint_id
+      || intent.target_id !== signoff.signoff_id || intent.action_kind !== 'approve_wording') return;
+    if (intent.consumed_at === null) { if (signoff.responded_at === null) response.decision = 'not_recorded'; return; }
+    if (!Number.isSafeInteger(intent.consumed_at) || intent.consumed_at < signoff.created_at
+      || intent.consumed_at >= signoff.expires_at || intent.consumed_at > capturedAt
+      || signoff.responded_at !== null && (signoff.responded_at < intent.consumed_at || signoff.responded_at > capturedAt)) return;
+    response.received_at = intent.consumed_at;
+    try {
+      const key = deps.getApprovalIntentPiiKey?.(); if (!key) return;
+      const outcome = await openApprovalIntentPiiField({ key,endpoint_id: intent.endpoint_id,intent_id: intent.intent_id,
+        field: 'outcome',ciphertext: intent.consumed_outcome_encrypted });
+      // A changed intent must not publish a reply captured for an earlier read.
+      const current = store.findByEndpoint(signoff.endpoint_id);
+      if (!current || JSON.stringify(current) !== JSON.stringify(intent)) return;
+      if (outcome === 'approve' && signoff.state !== 'rejected') response.decision = 'accepted';
+      else if ((outcome === 'reject' || outcome?.startsWith('reject:')) && !['accepted','released'].includes(signoff.state)) {
+        const reason = outcome === 'reject' ? '' : outcome.slice(7).trim();
+        if (reason.length > APPROVAL_LINK_VISITOR_COMMENT_MAX) return;
+        response.decision = 'declined'; if (reason) response.reason = reason;
+      }
+    } catch { /* Locked or corrupt replies stay unavailable; never infer a decision. */ }
+  }));
+  return { ...result,server_now: deps.now() };
 });
 
 export const handleSignoffPrepare = (deps: ReceptionRpcDeps, input: QuoteSignoffPrepareInput, caller: Caller) => run(async () => {
@@ -64,7 +99,8 @@ export const handleSignoffPrepare = (deps: ReceptionRpcDeps, input: QuoteSignoff
   try {
     const draft = endpointDraft(deps, signoff.signoff_id);
     const preview = await handleReceptionEndpointPreviewDraft(deps, draft, { instance_id: caller!.instance_id });
-    return { signoff, preview_hash: preview.preview_hash, customer_preview: draft.metadata.context_raw.summary };
+    return { signoff, preview_hash: preview.preview_hash, customer_preview: draft.metadata.context_raw.summary,
+      preview_expires_at: preview.expires_at, preview_server_now: deps.now() };
   } catch (error) { service.cancel(signoff.signoff_id); throw error; }
 });
 
@@ -75,8 +111,47 @@ export const handleSignoffPrepareAddition = (deps: ReceptionRpcDeps, input: Quot
   try {
     const draft = endpointDraft(deps, signoff.signoff_id);
     const preview = await handleReceptionEndpointPreviewDraft(deps, draft, { instance_id: caller!.instance_id });
-    return { signoff, preview_hash: preview.preview_hash, customer_preview: draft.metadata.context_raw.summary };
+    return { signoff, preview_hash: preview.preview_hash, customer_preview: draft.metadata.context_raw.summary,
+      preview_expires_at: preview.expires_at, preview_server_now: deps.now() };
   } catch (error) { service.cancel(signoff.signoff_id); throw error; }
+});
+
+export const handleSignoffResume = (deps: ReceptionRpcDeps, input: QuoteSignoffCancelInput, caller: Caller) => run(async () => {
+  const service = serviceFor(deps, caller); shape(input, ['signoff_id']);
+  const signoffId = id(input.signoff_id); service.resumeDraft(signoffId);
+  const draft = endpointDraft(deps, signoffId);
+  const preview = await handleReceptionEndpointPreviewDraft(deps, draft, { instance_id: caller!.instance_id });
+  // Revalidate after the asynchronous preview; resuming never creates, cancels,
+  // extends or supersedes an offer, even if issuing its preview fails.
+  return { ...service.resumeDraft(signoffId), preview_hash: preview.preview_hash, customer_preview: draft.metadata.context_raw.summary,
+    preview_expires_at: preview.expires_at, preview_server_now: deps.now() };
+});
+
+export const handleCustomerRequestLinkCheck = (deps: ReceptionRpcDeps, input: CustomerRequestLinkCheckInput, caller: Caller) => run(() => {
+  const signoffs = serviceFor(deps, caller); shape(input, ['kind', 'request_id', 'share_url']);
+  if (!['signoff', 'completion'].includes(input.kind) || typeof input.share_url !== 'string' || input.share_url.length > 2048) {
+    throw new RpcError('quote_signoff_invalid', 'A customer request link is required.', 400);
+  }
+  const requestId = id(input.request_id);
+  const service = input.kind === 'completion' ? deps.getQuoteCompletionService?.() : signoffs;
+  if (!service) throw new RpcError('not_configured', 'Completion requests are unavailable.', 503);
+  const request = service.get(requestId);
+  if (request.state !== 'waiting' || request.availability !== 'current' || !request.endpoint_id
+    || service.checkLink(requestId, request.endpoint_id) !== null) return { current: false };
+  const intent = deps.getApprovalIntentStore!().findByEndpoint(request.endpoint_id);
+  if (!intent || intent.intent_id !== request.endpoint_id || intent.target_id !== requestId
+    || intent.action_kind !== 'approve_wording' || intent.consumed_at !== null) return { current: false };
+  const store = deps.getStore(); const endpoint = store.findById(request.endpoint_id);
+  const config = endpoint ? parseApprovalLinkConfig(endpoint.metadata) : null;
+  if (!config || service.checkLink(requestId, request.endpoint_id, config) !== null) return { current: false };
+  let parsed: URL; let base: URL;
+  try { parsed = new URL(input.share_url); base = new URL(deps.getShareBaseUrl()); }
+  catch { return { current: false }; }
+  if (parsed.origin !== base.origin || parsed.username || parsed.password || parsed.hash
+    || parsed.pathname !== `${base.pathname.replace(/\/+$/, '')}/reception/approve/${encodeURIComponent(request.endpoint_id)}`
+    || [...parsed.searchParams.keys()].length !== 1 || !parsed.searchParams.get('t')) return { current: false };
+  return { current: store.verifyBearer({ endpoint_id: request.endpoint_id, submitted_secret: parsed.searchParams.get('t')!,
+    pepper: deps.getPepper(), now: deps.now() }).kind === 'ok' };
 });
 
 export const handleSignoffPublish = (deps: ReceptionRpcDeps, input: QuoteSignoffPublishInput, caller: Caller) => run(async () => {

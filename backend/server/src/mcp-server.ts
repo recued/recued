@@ -36,14 +36,20 @@ import {
 } from './canonical-op-tool-catalog.js';
 import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
 import { CANONICAL_OP_TOOL_PREFIX } from '@recued/contracts';
-import { deriveChannelSessionId } from '@recued/gateway';
+import { deriveChannelSessionId, planApproval } from '@recued/gateway';
 import { resolveConnectionVendor } from './storage/connection-store.js';
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import {
   HELD_FOR_APPROVAL_MESSAGE,
   projectRunResultForAgent,
 } from './run-result-agent-projection.js';
-import { dispatchRawOp } from './raw-op-dispatch.js';
+import {
+  dispatchRawOp,
+  findWaitingHold,
+  holdTier1Call,
+  oneIdenticalMcpCallAtATime,
+} from './raw-op-dispatch.js';
+import { useWriteRule } from './write-rules.js';
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
 // D-225 § 9.5.1 — the raw-op projection now lives in a shared module so the
 // CHAT catalog can consume the same source the door does. Behaviour unchanged.
@@ -160,13 +166,13 @@ import {
   recipeUsesInstalledRecordsOperation,
 } from './records/non-owner-exposure.js';
 import {
-  MCP_LEGACY_PROTOCOL_VERSION,
   MCP_MODERN_PROTOCOL_VERSION,
   MCP_SUPPORTED_PROTOCOL_VERSIONS,
   MCP_UNSUPPORTED_PROTOCOL_VERSION,
   hasModernMcpClientCapabilities,
   mcpServerResultMeta,
   readMcpRequestProtocolVersion,
+  selectMcpServerInitializeVersion,
 } from '@recued/ingredients/mcp-protocol.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -215,6 +221,26 @@ const INGREDIENT_TOOL_PREFIX = 'recued_ingredient_';
 const CUSTOMER_STATUS_TOOL_NAME = 'recued_customerStatus';
 const MCP_STOP_RECIPE_TOOL_NAME = 'recued_stopRecipe';
 const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
+/** Registry tools the MCP wire does not carry, each with the wire tool that does
+ *  the same job. `recipe.stop` is chat's stop (D-259 § 7.4.3): it calls the same
+ *  `stopOwnRun`, under the same session scope, as `recued_stopRecipe`, which
+ *  every authenticated token already holds as a protocol utility. Listing both
+ *  gave an MCP agent two names for one action, and `recipe.stop` is worded for a
+ *  chat ("in this conversation"). Chat and messenger keep it; `tools/list`, both
+ *  call checks and the door grant picker (`wire-chat-orchestrator.ts`) leave it
+ *  out, as they do Tier 3. */
+const MCP_WIRE_HIDDEN_REGISTRY_TOOLS: ReadonlyMap<string, string> = new Map([
+  ['recipe.stop', MCP_STOP_RECIPE_TOOL_NAME],
+]);
+/** True for a registry entry the MCP wire lists, calls and offers for a grant. */
+export const isMcpWireRegistryTool = (entry: { readonly name: string; readonly tier: number }): boolean =>
+  entry.tier !== 3 && !MCP_WIRE_HIDDEN_REGISTRY_TOOLS.has(entry.name);
+const mcpWireHiddenToolRefusal = (name: string): string | undefined => {
+  const instead = MCP_WIRE_HIDDEN_REGISTRY_TOOLS.get(name);
+  return instead === undefined
+    ? undefined
+    : `Tool '${name}' is not offered on the MCP wire; use ${instead}.`;
+};
 /** ⛔⛔ D-228 slice 2 (2nd attempt) — THE HAND-LIST IS GONE AND SO IS THE
  *  DERIVATION. Kernel MCP exposure is now an AUTHORED per-ingredient field,
  *  `IngredientManifest.mcp_exposed`, read only for `author: 'recued'`.
@@ -414,6 +440,13 @@ const resolveMcpDoorReadGrantChecker = (deps: McpDeps): ReadGrantChecker =>
  *  passes `isVerbOpGranted('core.peer.receive-ask')` (the CONTRACT overlay, a
  *  different axis) and then the receiver's default-closed per-(peer, label)
  *  exposure check. This one answers "may this token call this tool at all". */
+/** What a key is told for a tool it may not call. D-327: an agreement's key
+ *  takes its tools from the agreement's switches, so that is where it points —
+ *  the key's own checklist has no page of its own any more. */
+const MCP_KEY_TOOL_REFUSAL = (tool_name: string): string =>
+  `Tool '${tool_name}' is not granted to this key. Switch it on for the key's agreement `
+  + 'on the Contracts page of the web app (Ops, Entities, Recipes).';
+
 const isCheckedListGranted = (deps: McpDeps, tool_name: string): boolean => {
   const gate = deps.inboundTokenAuthorize;
   if (gate === undefined) return false;
@@ -1401,6 +1434,50 @@ import { buildRecipeOpCoverage } from './raw-op-tool-catalog.js';
  *  Absent `recipeOpCoverage` ⇒ no suppression (every write emitted). Pure;
  *  never throws. */
 
+/** D-329 — hold an AI app's Tier-1 write for the owner and answer the app as a held raw op
+ *  answers it: `awaiting_approval` with the `action_ref` `recued_actionStatus` follows, and
+ *  the same do-not-resend message. Unheld (no hold substrate) degrades to the anti-loop
+ *  stub; it never runs the write. */
+const holdMcpTier1Write = async (
+  deps: McpDeps,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<unknown> => {
+  const executionSource = buildMcpExecutionSource(deps);
+  const contractSnapshot = buildMcpContractSnapshot(executionSource, deps);
+  const outcome = await holdTier1Call(deps, {
+    tool,
+    args,
+    executionSource,
+    contractSnapshot,
+    ...(executionSource.channel === 'mcp' ? { correlationId: executionSource.tool_call_id } : {}),
+  });
+  if (outcome.kind === 'held') return heldMcpTier1Response(deps, tool, outcome.run_id);
+  if (outcome.kind === 'ask') {
+    return markMcpZeroCustomerUsage(text({ status: 'requires_approval', tool, message: outcome.message }));
+  }
+  return err(outcome.kind === 'refused' ? outcome.message : `${tool} could not be held for approval.`);
+};
+
+/** D-329 — the app's answer for its held Tier-1 write: `awaiting_approval`, the `action_ref`
+ *  to follow, and the do-not-resend message. A repeat of a write still waiting gets the same
+ *  answer, with the same `action_ref`. */
+const heldMcpTier1Response = async (
+  deps: McpDeps,
+  tool: string,
+  run_id: string,
+): Promise<unknown> => markMcpZeroCustomerUsage(text(await attachMcpActionRef(deps, {
+  run_id,
+  tool_name: tool,
+  kind: 'raw_op',
+  projected: {
+    status: 'awaiting_approval',
+    awaiting_approval: true,
+    tool,
+    message: HELD_FOR_APPROVAL_MESSAGE,
+  },
+})));
+
 export const buildMcpGrantCatalogLegacyEntries = (
   manifests: Pick<ManifestRegistry, 'slugs' | 'get'>,
   /** D-182 §8 (Inc D) — the installed-pack inventory scan; when supplied, the
@@ -1514,12 +1591,13 @@ const mcpServerCapabilities = (deps: McpDeps): Record<string, unknown> => {
   };
 };
 
-const handleInitialize = (_params: unknown, deps: McpDeps): unknown => {
-  // Recued currently implements one legacy wire revision. Per the legacy MCP
-  // negotiation rule, select the newest legacy version the server actually
-  // implements even when the client's proposal differs.
+const handleInitialize = (params: unknown, deps: McpDeps): unknown => {
+  // The client's own revision when this server implements it, else the newest
+  // it implements that is older than the client's. Until 2026-10-24 this
+  // answered 2024-11-05 whatever was asked: every client accepted it, but one
+  // that drops that revision would have refused Recued.
   return {
-    protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
+    protocolVersion: selectMcpServerInitializeVersion(params),
     capabilities: mcpServerCapabilities(deps),
     serverInfo: SERVER_INFO,
   };
@@ -1659,7 +1737,7 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   const adapter = buildAdapterForDeps(deps);
   const registryTools = adapter
     ? adapter.listTools()
-        .filter((t) => t._meta.tier !== 3)
+        .filter((t) => isMcpWireRegistryTool({ name: t.name, tier: t._meta.tier }))
         .map((t) => ({
           name: t.name,
           description: t.description,
@@ -2510,9 +2588,7 @@ const preflightMcpCustomerUsage = (
     ) {
       return {
         ok: false,
-        result: err(
-          `Tool '${params.name}' is not granted by this token's per-tool checklist (the Contracts page of the web app).`,
-        ),
+        result: err(MCP_KEY_TOOL_REFUSAL(params.name)),
       };
     }
   }
@@ -2532,6 +2608,8 @@ const preflightMcpCustomerUsage = (
         ),
       };
     }
+    const hiddenRefusal = mcpWireHiddenToolRefusal(registryEntry.name);
+    if (hiddenRefusal !== undefined) return { ok: false, result: err(hiddenRefusal) };
     schema = registryEntry.arg_schema;
   } else if (params.name.startsWith(INGREDIENT_TOOL_PREFIX)) {
     const slug = params.name.slice(INGREDIENT_TOOL_PREFIX.length);
@@ -2695,7 +2773,7 @@ const handleToolCall = async (
           ? `Tool '${params.name}' is not available: this connection presented no MCP token, `
             + 'so it carries no per-tool checklist. Pass --token <bearer> or set '
             + 'RECUED_MCP_TOKEN; create one on the Contracts page of the web app.'
-          : `Tool '${params.name}' is not granted by this token's per-tool checklist (the Contracts page of the web app).`,
+          : MCP_KEY_TOOL_REFUSAL(params.name),
       );
     }
   }
@@ -2739,6 +2817,8 @@ const handleToolCall = async (
         `Tool '${params.name}' is a connection.mcp.* passthrough and is not exposed on the MCP wire (call the upstream MCP server directly).`,
       );
     }
+    const hiddenRefusal = mcpWireHiddenToolRefusal(registryEntry.name);
+    if (hiddenRefusal !== undefined) return err(hiddenRefusal);
     // ⛔⛔ D-228 slice 5 — THE CONTRACT GATE ON TIER-1 PRIMITIVES, wired here and
     // ONLY here. This is the seam where a contract identity exists: the internal
     // chat channel leaves `execution_source` / `contract_snapshot` undefined by
@@ -2764,6 +2844,45 @@ const handleToolCall = async (
         return err(
           `Tool '${params.name}' is not granted by this contract (Settings → Contracts → Ops).`,
         );
+      }
+    }
+    // D-329 — a Tier-1 write is held for the owner, as a write raw op is: the ask fans out
+    // to every approval channel, and approving runs it (`resumeRawOp`). Every MCP call runs
+    // at the `read` ceiling, the owner's own token included, so every such write asks.
+    if (registryEntry.tier === 1 && planApproval.requiresPlanApproval(registryEntry)) {
+      const source = buildMcpExecutionSource(deps);
+      const gate = await oneIdenticalMcpCallAtATime(source, params.name, args, async () => {
+        // D-329 — this app's repeat of a write still waiting for the owner is that write: one
+        // ask, and one run on the yes. Asked before the rule: a rule accepted while it waited
+        // would run the repeat at once, and the first again when approved.
+        const waiting = await findWaitingHold(deps, {
+          executionSource: source,
+          opId: params.name,
+          tier1Tool: params.name,
+          connectionName: '',
+          opArgs: args,
+        });
+        if (waiting !== undefined) {
+          return { response: await heldMcpTier1Response(deps, params.name, waiting) };
+        }
+        // D-329 §3.4 — unless a standing write rule the owner accepted for this app stands in
+        // for the ask: then it runs below, and spends one of the rule's uses.
+        const ruled = useWriteRule(deps.writeRules, source, params.name, args);
+        if (ruled === undefined) return { response: await holdMcpTier1Write(deps, params.name, args) };
+        return { ruled };
+      });
+      if ('response' in gate) return gate.response;
+      const { ruled } = gate;
+      if (deps.auditLog) {
+        try {
+          await deps.auditLog.logActivity({
+            activity_id: '',
+            timestamp: Date.now(),
+            action: 'write_rule_used',
+            target: `mcp:${source.mcp_token_id}:${params.name}`,
+            detail: JSON.stringify({ rule_id: ruled.rule_id, uses_remaining: ruled.uses_remaining }),
+          });
+        } catch { /* audit is best-effort */ }
       }
     }
     // D-153 P2.C — resolve the per-call `ExecutionSource` +
@@ -4003,6 +4122,15 @@ const dispatch = async (
     };
   }
   const request = msg as JsonRpcRequest;
+  // A notification (no `id`) is never answered: JSON-RPC 2.0 forbids a reply,
+  // and on HTTP the door then sends a bare 202. Recued acts on one only,
+  // `notifications/initialized` (the stdio loop reads it after this returns),
+  // and ignores the rest, as it does a request method sent without an id,
+  // which is not run. Until 2026-10-24 an unknown one got -32601, so the
+  // `notifications/cancelled` a client sends when it gives up on a call came
+  // back as a response to no request, which the official SDK reports as an
+  // error.
+  if (request.id === undefined) return null;
   const id = request.id ?? null;
   const declaredProtocolVersion = readMcpRequestProtocolVersion(request.params);
   const modern = declaredProtocolVersion === MCP_MODERN_PROTOCOL_VERSION;
@@ -4066,6 +4194,15 @@ const dispatch = async (
       case 'notifications/initialized':
         // Client acknowledgement — no response needed
         return null;
+
+      case 'ping':
+        // Either side may ping to check the other is still there, and the
+        // receiver answers at once with an empty result: a MUST in every
+        // revision from 2024-11-05 to 2025-11-25. It reads no state, so it
+        // needs no handshake first, and a modern ping gets the same answer.
+        // Until 2026-10-24 this fell to the default below, so a client that
+        // pings to check health was told the method did not exist.
+        return resultResponse({});
 
       case 'tools/list':
         return resultResponse(await handleToolsList(deps));

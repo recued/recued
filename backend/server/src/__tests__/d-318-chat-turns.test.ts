@@ -434,7 +434,8 @@ describe('D-318 step 3 — an email request runs as a chat turn', () => {
     const session = h.sessionOf('req-1@owner.example');
     await eventually(async () => expect((await h.store.listMessages(session))[0]?.content)
       .toBe('remind me in 2 minutes to check the test\n\ntesting 2 for reminder'));
-    expect(h.prompts[0]).toContain('remind me in 2 minutes to check the test');
+    // The owner's message is stored before the model is called, so wait for the prompt too.
+    await eventually(() => expect(h.prompts[0]).toContain('remind me in 2 minutes to check the test'));
     expect(h.store.getSession(session)?.title).toBe('remind me in 2 minutes to check the test');
   });
 });
@@ -581,7 +582,8 @@ describe('D-318 step 4 — the owner’s own words', () => {
     });
     const session = h.sessionOf('req-1@owner.example');
     await eventually(async () => expect((await h.store.listMessages(session))[0]?.content).toBe('(forwarded email)'));
-    expect(h.prompts[0]).toContain('mail.read');
+    // The owner's message is stored before the model is called, so wait for the prompt too.
+    await eventually(() => expect(h.prompts[0]).toContain('mail.read'));
   });
 
   it('⛔ §8.12 — a forward whose mail is not found gives none of its text as the owner’s', async () => {
@@ -594,7 +596,7 @@ describe('D-318 step 4 — the owner’s own words', () => {
     });
     const session = h.sessionOf('req-1@owner.example');
     await eventually(async () => expect((await h.store.listMessages(session))[0]?.content).toBe('(forwarded email)'));
-    expect(h.prompts[0]).toContain('mail.read');
+    await eventually(() => expect(h.prompts[0]).toContain('mail.read'));
     expect(h.prompts[0]).not.toContain('DE00 1234');
   });
 
@@ -607,7 +609,7 @@ describe('D-318 step 4 — the owner’s own words', () => {
     });
     const session = h.sessionOf('req-1@owner.example');
     await eventually(async () => expect((await h.store.listMessages(session))[0]?.content).toBe('(forwarded email)'));
-    expect(h.prompts[0]).toContain('mail.read');
+    await eventually(() => expect(h.prompts[0]).toContain('mail.read'));
     expect(h.prompts[0]).not.toContain('DE00 1234');
   });
 
@@ -634,7 +636,7 @@ describe('D-318 step 4 — the owner’s own words', () => {
     });
     const session = h.sessionOf('req-1@owner.example');
     await eventually(async () => expect((await h.store.listMessages(session))[0]?.content).toBe('What do you make of this?'));
-    expect(h.prompts[0]).toContain('mail.read');
+    await eventually(() => expect(h.prompts[0]).toContain('mail.read'));
     expect(h.prompts[0]).not.toContain('DE00 1234');
   });
 
@@ -704,7 +706,7 @@ describe('D-318 step 4 — the owner’s own words', () => {
     });
     const session = h.sessionOf('req-1@owner.example');
     await eventually(async () => expect((await h.store.listMessages(session))[0]?.content).toBe('thoughts?'));
-    expect(h.prompts[0]).toContain('mail.read');
+    await eventually(() => expect(h.prompts[0]).toContain('mail.read'));
   });
 });
 

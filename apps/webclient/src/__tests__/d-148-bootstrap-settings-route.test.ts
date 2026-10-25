@@ -79,10 +79,7 @@ import {
   type LearningPrefsGetCaller,
   type LearningPrefsSetCaller,
 } from '../settings/learning-panel.js';
-import {
-  PERMISSIONS_DOORS_SECTION_ATTR,
-  PERMISSIONS_MCP_DOOR_CONTROLS_ATTR,
-} from '../settings/permissions-panel.js';
+import { PERMISSIONS_PANEL_HOST_ATTR } from '../settings/permissions-panel.js';
 import {
   TLS_RENEW_PANEL_ATTR,
   TLS_RENEW_PANEL_STATE_ATTR,
@@ -735,8 +732,9 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: construction', () => {
 
     expect(route.permissionsPanel()).toBeNull();
     expect(findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'permissions')).toBeNull();
-    expect(findByAttr(host, PERMISSIONS_DOORS_SECTION_ATTR)).toBeNull();
-    expect(findByAttr(host, PERMISSIONS_MCP_DOOR_CONTROLS_ATTR)).toBeNull();
+    // D-327 — the rules editor lives on the Contracts list page now, and the
+    // server-wide door panel is gone; Settings mounts neither.
+    expect(findByAttr(host, PERMISSIONS_PANEL_HOST_ATTR)).toBeNull();
     route.dispose();
   });
 

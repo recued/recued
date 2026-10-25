@@ -157,7 +157,7 @@ export const createBackupHealth = (options: {
       const text = kind === 'backup_overdue'
         ? 'No verified backup is recent enough for your saved age limit. Open Backup & Recovery to check the schedule and storage receipts.'
         : kind === 'recovery_stale'
-        ? 'No passing recovery test is recent enough for your saved age limit. Open Backup & Recovery and test a verified copy with its recovery words.'
+        ? 'No passing recovery test is recent enough for your saved age limit. Open Backup & Recovery and test a verified copy with its recovery key.'
         : 'Backup health could not be checked from saved receipts. Open Backup & Recovery to check the history and server clock.';
       let accepted = false;
       try { accepted = await options.notify({ title: 'Backup health needs attention', text, link_url: '#settings/backup' }, alert.id); }

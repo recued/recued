@@ -7,6 +7,7 @@ import { isCollectionReadGrantedForDispatch, wrapRecipeRunResult, type ChatToolH
 import { DOCUMENT_READ_RECIPE_ID, registerResumedRunFinisher } from './resumed-run-finishers.js';
 import type { ExecuteResponse } from './types.js';
 import { isWatchedFolderCollection, parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
+import { sourceCitation, sourceCitationHint } from './chat-source-citations.js';
 import { watchedFileSelection } from './folder-file-attachments.js';
 
 const object = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -194,14 +195,17 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       }
       const offset = Number(args.offset ?? 0);
       const page = readerPage(text, offset);
-      return { ok: true, result: { status: !text.trim() ? 'empty_extraction' : page === null ? 'invalid_offset' : 'read',
+      const citation = page?.body.trim() ? sourceCitation({ kind: 'file', file_ref: fileRef, collection_slug: watched?.slug ?? 'received',
+        ...(contentHash ? { content_hash: contentHash } : {}) }, String(record.hot_fields.filename ?? 'Document'), read_version, Date.now()) : undefined;
+      return { ok: true, ...(citation ? { source_citations: [citation] } : {}), result: { status: !text.trim() ? 'empty_extraction' : page === null ? 'invalid_offset' : 'read',
         file_ref: args.file_ref, ...(contentHash ? { content_hash: contentHash } : {}), read_version, filename: record.hot_fields.filename,
         converter: converter ?? 'text', cached: cached !== undefined, body: page?.body ?? '', offset,
         next_offset: page?.next_offset ?? null,
+        ...(citation ? sourceCitationHint(citation) : {}),
         text_incomplete: page === null || page.next_offset !== null,
         extraction_complete: direct && text.trim().length > 0,
         warnings: direct ? [] : ['Conversion may omit images, tables, annotations or layout. No page or sheet locations are asserted by this reader.'],
-        hint: text.trim() ? 'Continue using next_offset and this read_version, keeping the same converter. Cite the original file_ref and content_hash. Reading all extracted text does not prove complete extraction. Keep conclusions that depend on missing content provisional.'
+        hint: text.trim() ? 'Continue using next_offset and this read_version, keeping the same converter. Cite the returned source_ref as a Markdown link, keeping content_hash as the version reference. Reading all extracted text does not prove complete extraction. Keep conclusions that depend on missing content provisional.'
           : 'No usable text was extracted. Try Docling for OCR, or ask for a readable copy. Do not infer that the attachment contains no requirements.',
       } };
     };

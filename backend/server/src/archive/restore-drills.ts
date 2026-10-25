@@ -90,7 +90,7 @@ export const createRestoreDrills = (options: {
     },
     start(input: { operation_id: string; backup_operation_id: string; recoveryKey: string }): ArchiveRestoreDrill {
       const id = archiveImportOperationId(input?.operation_id), backupId = archiveImportOperationId(input?.backup_operation_id);
-      if (!id || !backupId || typeof input.recoveryKey !== 'string' || !isValidRecoveryKey(input.recoveryKey)) throw new RpcError('invalid_args', 'Choose a backup, a new drill identifier, and its 24 recovery words.', 400);
+      if (!id || !backupId || typeof input.recoveryKey !== 'string' || !isValidRecoveryKey(input.recoveryKey)) throw new RpcError('invalid_args', 'Choose a backup, a new drill identifier, and its 24-word recovery key.', 400);
       if (stopped || options.canRun?.() === false) throw new RpcError('conflict', 'Wait for the server to finish maintenance before starting a drill.', 409);
       const prior = history().find(row => row.operation_id === id);
       if (prior) throw new RpcError('conflict', 'This drill identifier was already used. Check recovery drill history.', 409);

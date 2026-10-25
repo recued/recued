@@ -1,4 +1,25 @@
+import {
+  FTS_STOPWORDS,
+  absentFromAll,
+  boundedEditDistance,
+  mergeSpellingChecks,
+  spellingMaxDistance,
+  type FtsWordCheck,
+} from '@recued/fts';
+
 import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
+import { situationPersonName } from './situations/model-projection.js';
+import {
+  AssetTypeError,
+  assetTypeIssueText,
+  assetTypeIssues,
+  assetTypeNeedsHolder,
+  describeAssetType,
+  listAssetTypes,
+  unknownAssetTypeText,
+  type AssetTypes,
+  type AssetTypeWords,
+} from './situations/asset-types.js';
 import { calendarChatUpdateInput } from './collections/calendar/chat-update-input.js';
 /** D-137 Trio #A — Chat tool handler wiring.
  *
@@ -39,6 +60,7 @@ import { calendarChatUpdateInput } from './collections/calendar/chat-update-inpu
 import {
   calendarDayMs,
   COMMITMENT_DIRECTION_SET,
+  isAssetDate,
   isReadableCollection,
   OP_ENTITY_COLLECTION,
   TIER1_CLASSIFICATIONS,
@@ -66,6 +88,7 @@ import {
   type ExecutionSource,
   type ChatConfidenceEnvelope,
   type ChatContactCandidate,
+  type ChatContactRecord,
   type ChatDealCandidate,
   type ChatAccountCandidate,
   type CrmConnectionFreshness,
@@ -73,6 +96,8 @@ import {
   type ChatDispatchResult,
   type ConnectionMcpAnnotationState,
   type ContactAliasPlatform,
+  type ContactContributionSource,
+  type ContactRecord,
   type CrmAlias,
   type DishWebhookDoorChange,
   type EnrichmentScope,
@@ -106,7 +131,7 @@ import type {
 } from '@recued/storage';
 import { recipeDateArgumentIssue } from './date-argument-format.js';
 import { unambiguousDateMs } from './storage/work-entity-store.js';
-import type { ContactStore } from './storage/contact-store.js';
+import { isMentionOnlyEmail, type ContactStore } from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
 import type { CollectionRegistry } from './collections/registry.js';
@@ -161,6 +186,16 @@ import {
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import { createStoreBackedMemoryWriteAdapter } from './memory-write-adapter.js';
+import { authoringContractId } from './grant-governing-contract.js';
+import {
+  checkOwnEntry,
+  currentVersionOf,
+  forgetOwnEntry,
+  forgottenIds,
+  liveReplacementOf,
+  memoryRowAuthor,
+  withRevisionLock,
+} from './memory-revision.js';
 import { emitMemoryUser } from './events/emit-sites.js';
 import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
 import type { EventBus } from './events/bus.js';
@@ -206,7 +241,8 @@ import { missingPacksOfRefusal } from './install-offers/needed-packs.js';
 import type { InstalledRecipeScheduler } from './schedule-installed-recipe.js';
 import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
 import { calendarAddressOf } from './collections/calendar/provider.js';
-import { parseInstantWithOffset } from '@recued/transforms';
+import { eventWhen, parseInstantWithOffset } from '@recued/transforms';
+import { utcOffsetLabel } from './chat-clock.js';
 
 /** Executor closure shape. `chat-tool-handlers` calls this rather than
  *  importing `handleExecute` directly so tests can substitute a fake
@@ -482,6 +518,9 @@ export interface ChatToolHandlerDeps {
    *  bus-wired dispatchers exist. Absent ⇒ the tool reports `execution_error`
    *  rather than silently doing nothing. */
   getWorkEntityCrudDeps?: () => WorkEntityCrudRpcDeps | undefined;
+  /** D-325 (2026-10-24) — the asset types `work.type` describes and `work.create`
+   *  names (`asset-types.ts`). Absent ⇒ both report `execution_error`. */
+  getAssetTypes?: () => AssetTypes | undefined;
   /** Slice 2 — the calendar write dispatchers behind `calendar.create` /
    *  `calendar.update` (`calendarStack.kernelDispatchers.*`). The SAME
    *  verified-then-reflected pair the reception booking seam and the
@@ -901,7 +940,7 @@ const isNumber = (v: unknown): v is number =>
  *  marker before egress. The marker is a runtime-only field read by FIELD NAME
  *  (`PII_ENTITY_MARKER_KEY`) by the resolver + strip, so it does not widen the
  *  candidate's typed contract. Mutates + returns the freshly-built candidate. */
-const markEntity = <T extends ChatContactCandidate | ChatDealCandidate | ChatAccountCandidate>(
+const markEntity = <T extends ChatContactCandidate | ChatContactRecord | ChatDealCandidate | ChatAccountCandidate>(
   candidate: T,
   entity_id: 'contact' | 'deal' | 'account',
 ): T => {
@@ -925,6 +964,8 @@ const projectLocalContact = (
   if (isString(row['name'])) candidate.name = row['name'];
   if (isString(row['identity_status'])) candidate.lifecycle_stage = row['identity_status'];
   if (isNumber(row['last_interaction'])) candidate.recent_activity_at = row['last_interaction'];
+  if (isString(row['phone'])) candidate.phone = row['phone'];
+  if (isString(row['company'])) candidate.company = row['company'];
   return markEntity(candidate, 'contact');
 };
 
@@ -942,6 +983,9 @@ const projectPlatformContact = (
   if (isString(meta['name'])) candidate.name = meta['name'];
   if (isString(meta['lifecycle_stage'])) candidate.lifecycle_stage = meta['lifecycle_stage'];
   if (isNumber(meta['recent_activity_at'])) candidate.recent_activity_at = meta['recent_activity_at'];
+  // The canonical keys every contact reconciler writes (`CRM_RECALL_SEED_FIELDS`).
+  if (isString(meta['phone'])) candidate.phone = meta['phone'];
+  if (isString(meta['company'])) candidate.company = meta['company'];
   return markEntity(candidate, 'contact');
 };
 
@@ -1138,6 +1182,99 @@ const buildPlatformContactSource = (
   },
 });
 
+/** How many contacts each candidate lookup of the name spelling check reads,
+ *  and how many close names the hint offers. */
+const CONTACT_SPELLING_CANDIDATES = 300;
+const CONTACT_SPELLING_NAMES = 3;
+
+/** The names on file a name lookup that found no one comes close to.
+ *
+ *  ⛔ FULL NAMES, NEVER A WORD OF ONE. The chat's privacy layer swaps the names
+ *  on file for placeholders in everything the model reads, matching WHOLE names;
+ *  a surname lifted out of one could slip through as the real word. A full name
+ *  is swapped like any other, and a placeholder the model then searches with is
+ *  turned back into the name before the search runs (`restoreChatAiResult`).
+ *
+ *  ⛔ ASKED OF THE SAME SOURCES, NEVER THE LIVE CRM. Absence is "this word alone
+ *  finds no one" in the local graph and the bound CRM mirrors — the fan-out's
+ *  own sources, behind their own read fences — and candidates are those sources'
+ *  answers for the word's first and last three letters (a name lookup is a
+ *  substring match). The live escalation is a vendor call made on the owner's
+ *  credentials; a spelling hint must not spend one.
+ *
+ *  ⛔ FAILS CLOSED: a source that failed (fenced, unreachable) may hold the name,
+ *  so a partial read anywhere means no hint. */
+const contactNameRespellings = async (
+  query: string,
+  sources: ReadonlyArray<ScopeSearchSource<ScopeSearchArgs, ChatContactCandidate>>,
+): Promise<{ typed: string[]; names: string[] } | undefined> => {
+  const lookup = (needle: string, limit: number) => runScopeSearchFanout({ query: needle, limit }, sources);
+  const typed: string[] = [];
+  const close = new Map<string, { name: string; distance: number }>();
+  // A name's words, split as the names on file are below ("O'Brian", "Smith-Jnes");
+  // a part holding a digit or an "@" is a number or an address, not a name.
+  const words = query.split(/\s+/u)
+    .filter((part) => !/[\p{N}@]/u.test(part))
+    .flatMap((part) => part.split(/[^\p{L}\p{M}]+/u));
+  const seen = new Set<string>();
+  for (const word of words) {
+    const term = word.toLowerCase();
+    const max = spellingMaxDistance([...term].length);
+    if (max === 0 || seen.has(term) || FTS_STOPWORDS.has(term)) continue;
+    seen.add(term);
+    const alone = await lookup(term, 1);
+    if (alone.partial === true) return undefined;
+    if (alone.candidates.length > 0) continue;
+    typed.push(word);
+    for (const needle of new Set([term.slice(0, 3), term.slice(-3)])) {
+      const near = await lookup(needle, CONTACT_SPELLING_CANDIDATES);
+      if (near.partial === true) return undefined;
+      for (const candidate of near.candidates) {
+        const name = candidate.record.name?.trim();
+        if (name === undefined || name.length === 0) continue;
+        let distance = max + 1;
+        for (const token of name.split(/[^\p{L}\p{M}]+/u)) {
+          if (token.length > 0) distance = Math.min(distance, boundedEditDistance(term, token.toLowerCase(), max));
+        }
+        // 0 would mean the name holds the word, which the lookup just denied.
+        if (distance === 0 || distance > max) continue;
+        const key = name.toLowerCase();
+        const prior = close.get(key);
+        if (prior === undefined || distance < prior.distance) close.set(key, { name, distance });
+      }
+    }
+  }
+  if (typed.length === 0 || close.size === 0) return undefined;
+  const names = [...close.values()]
+    .sort((a, b) => (a.distance - b.distance) || a.name.localeCompare(b.name))
+    .slice(0, CONTACT_SPELLING_NAMES)
+    .map((c) => c.name);
+  return { typed, names };
+};
+
+/** ⚠ Model-facing. A name on file reaches the model as a placeholder
+ *  (`pii.PersonN`), so it cannot judge the spelling itself: the hint says the
+ *  search already did, and names the reading the answer begins with. Measured:
+ *  "If that is who the owner meant" left that judgement to a model that could not
+ *  make it, and it asked the owner to respell instead. Several close names are
+ *  the owner's to choose between. */
+const contactSpellingHint = (r: { typed: string[]; names: string[] }): string => {
+  const quoted = (xs: readonly string[]): string => xs.length < 2
+    ? `"${xs[0] ?? ''}"`
+    : `${xs.slice(0, -1).map((x) => `"${x}"`).join(', ')} or "${xs.at(-1) ?? ''}"`;
+  const typed = quoted(r.typed);
+  const names = r.names.map((n) => `"${n}"`);
+  const judged = 'Names can reach you as placeholders, so do not judge the spelling yourself: this search '
+    + 'already compared them.';
+  if (names.length === 1) {
+    return `No contact's name holds ${typed}, but one contact's name is a close spelling of it: ${names[0]}. `
+      + `${judged} Search again with the query ${names[0]}, then answer from that contact, beginning by `
+      + `telling the owner you read ${typed} as ${names[0]}: it may be a different person.`;
+  }
+  return `No contact's name holds ${typed}, but these contacts' names are close spellings of it: `
+    + `${names.join(', ')}. ${judged} Ask the owner which of them they meant, naming each.`;
+};
+
 const createContactSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -1192,9 +1329,138 @@ const createContactSearchHandler =
       });
       const clamped = clampScopeSearchResult({ ...result, candidates: escalated.candidates }, limit);
       const augmented = augmentWithConfidenceShape(clamped, recencyKeyForContact);
-      return { ok: true, result: { ...augmented, crm_freshness: escalated.crm_freshness } };
+      // A NAME lookup that found no one, anywhere, with every source answering:
+      // the closest names on file (`contactNameRespellings`).
+      const respelled = query !== undefined && email === undefined && phone === undefined
+        && company === undefined && alias === undefined
+        && clamped.candidates.length === 0 && result.partial !== true
+        ? await contactNameRespellings(query, sources)
+        : undefined;
+      return {
+        ok: true,
+        result: {
+          ...augmented,
+          crm_freshness: escalated.crm_freshness,
+          ...(respelled !== undefined ? { hint: contactSpellingHint(respelled) } : {}),
+        },
+      };
     } catch (e) {
       return executionError(errMessage(e));
+    }
+  };
+
+// ────────────────────────────────────────────────────────────────
+// contact.read — one address-book contact's full record
+// ────────────────────────────────────────────────────────────────
+
+/** The provenance map's key (a contribution KIND) → the `ChatContactRecord` field it
+ *  fills. Two differ (`org` → company, `address` → mailing_address), which is why
+ *  it is a table (`CONTACT_MATCH_FIELD_CONTRIBUTION_KIND` records the same lesson).
+ *  `photo` is never read by an agent. */
+const CONTACT_READ_SOURCE_FIELDS: Readonly<Record<string, keyof ChatContactRecord>> = {
+  name: 'name', org: 'company', title: 'title', address: 'mailing_address', birthday: 'birthday', phone: 'phone',
+};
+
+/** ⚠ Model-facing — each provenance rung in words, so a guessed company reads as a
+ *  guess. */
+const CONTACT_SOURCE_WORDS: Readonly<Record<ContactContributionSource, string>> = {
+  manual: 'typed by the owner',
+  user_confirmed: 'confirmed by the owner',
+  vendor_meta: 'a CRM',
+  contact_book: "the owner's contact book",
+  derived: 'mail or calendar',
+  ai_inferred: 'an AI guess',
+  domain_inferred: 'a guess from the email domain',
+};
+
+const isoFromMs = (ms: unknown): string | undefined =>
+  isNumber(ms) && ms > 0 ? new Date(ms).toISOString() : undefined;
+
+/** One address-book contact as an agent reads it: `contact.get`'s record, less
+ *  what `ChatContactRecord` says an agent must not see. */
+const projectContactRecord = (row: ContactRecord): ChatContactRecord => {
+  const record: ChatContactRecord = {
+    target_id: row.email,
+    email: isMentionOnlyEmail(row.email) ? null : row.email,
+  };
+  if (isString(row.name)) record.name = row.name;
+  if (isString(row.phone)) record.phone = row.phone;
+  if (isString(row.company)) record.company = row.company;
+  if (isString(row.title)) record.title = row.title;
+  if (isString(row.birthday)) record.birthday = row.birthday;
+  if (isString(row.anniversary)) record.anniversary = row.anniversary;
+  if (row.relationship !== undefined) record.relationship = row.relationship;
+  if (row.mailing_address !== undefined) record.mailing_address = row.mailing_address;
+  if (row.privacy_marks !== undefined && row.privacy_marks.length > 0) record.privacy_marks = row.privacy_marks;
+  if (isString(row.identity_status)) record.lifecycle_stage = row.identity_status;
+  const firstSeen = isoFromMs(row.first_seen);
+  if (firstSeen !== undefined) record.first_seen_at = firstSeen;
+  const lastInteraction = isoFromMs(row.last_interaction);
+  if (lastInteraction !== undefined) record.last_interaction_at = lastInteraction;
+  if (isNumber(row.interaction_count)) record.interaction_count = row.interaction_count;
+  const sources: Record<string, string> = {};
+  for (const [kind, field] of Object.entries(CONTACT_READ_SOURCE_FIELDS)) {
+    const source = row.projection_provenance?.[kind]?.source;
+    // Only for a value the record shows: the source of an absent value explains nothing.
+    if (source !== undefined && record[field] !== undefined) sources[field] = CONTACT_SOURCE_WORDS[source] ?? source;
+  }
+  if (Object.keys(sources).length > 0) record.sources = sources;
+  return markEntity(record, 'contact');
+};
+
+/** ⚠ Model-facing — what the catalog description leaves out to stay small, said only
+ *  when this record has it. */
+const contactReadNotes = (record: ChatContactRecord): string | undefined => {
+  const notes: string[] = [];
+  if (record.privacy_marks !== undefined) {
+    const marks = record.privacy_marks.map((mark) => mark.replace('_', ' ')).join(' and ');
+    notes.push(`The owner marked this contact ${marks}: do not suggest reaching out unless the owner asks.`);
+  }
+  if (record.birthday?.startsWith('--') === true || record.anniversary?.startsWith('--') === true) {
+    notes.push('A date written --MM-DD has no known year.');
+  }
+  return notes.length > 0 ? notes.join(' ') : undefined;
+};
+
+/** ⚠ Model-facing. */
+const CONTACT_READ_NOT_FOUND = 'No contact in the owner\'s address book has this target_id. A CRM '
+  + 'record\'s target_id (it starts with the CRM\'s name) is not in the address book: its details come '
+  + 'from that CRM\'s own tools. Otherwise pass the `target_id` of a contact.search candidate.';
+
+/** ⛔ The ADDRESS BOOK ONLY, so the table's `data.contact` fence covers all of it: a
+ *  CRM record is never read here, and never resolved to the owner's contact through
+ *  its link (D-205 keeps that edge moot by never projecting it). */
+const createContactReadHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw) => {
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+    const targetId = typeof args.target_id === 'string' ? args.target_id.trim() : '';
+    if (targetId.length === 0) return invalidArgs('target_id is required');
+    // A read that could not run is not one that found nothing (`withExplicitEmpty`).
+    const failed = (reason: string): ChatDispatchResult => ({
+      ok: true,
+      result: { contacts: [], partial: true, partial_failures: [{ source: 'local', reason }] },
+    });
+    const store = deps.getContactStore();
+    if (!store) return failed('contact store unavailable');
+    try {
+      // An email reads the survivor of any merge; anything else may be a contact id,
+      // which `contact.get` reads too.
+      let row: ContactRecord | null;
+      if (targetId.includes('@')) {
+        let canonical = targetId;
+        try { canonical = store.resolveCanonicalEmail(targetId).canonical_email; } catch { /* a broken chain: read the row itself */ }
+        row = store.get(canonical);
+      } else {
+        row = store.getByContactIdResolved(targetId);
+      }
+      if (row === null) return { ok: true, result: { contacts: [], hint: CONTACT_READ_NOT_FOUND } };
+      const record = projectContactRecord(row);
+      const notes = contactReadNotes(record);
+      return { ok: true, result: { contacts: [record], ...(notes !== undefined ? { hint: notes } : {}) } };
+    } catch (e) {
+      return failed(errMessage(e));
     }
   };
 
@@ -1227,6 +1493,73 @@ const createContactSearchHandler =
  *  exists to avoid. False "there may be more" is cheap; false "that is all" is
  *  the failure being fixed. */
 const filledQuota = (returned: number, quota: number): boolean => returned >= quota;
+
+/** What a mail or calendar search did with words no record holds, and the
+ *  closest word on file for each — the hint a `mail.search` / `calendar.search`
+ *  result carries.
+ *
+ *  ⛔⛔ THESE SEARCHES RARELY COME BACK EMPTY, WHICH IS WHY THEY NEED THIS MORE
+ *  THAN `work.search` DOES. On a miss a store retries over only the words its
+ *  index holds (`relaxToPresentPrefixTokens`), so "Castelanos invoice" quietly
+ *  becomes "invoice" and returns every invoice, from every sender, looking like
+ *  an answer. No row says the name was dropped; this does, and names the
+ *  spelling on file when one is close enough (`checkQuerySpelling`). Without a
+ *  close word it still says the rows are not about the dropped word — an invoice
+ *  from a stranger must not be answered with someone else's.
+ *
+ *  🔑 SAFE TO SUGGEST FROM THESE INDEXES. A caller reaches the handler only past
+ *  the collection read fence (`wrapCollectionFence`) and never sphere-limited
+ *  (`wrapSphereFence` refuses those outright), and the handler reads every row of
+ *  every store it searches, so a word in their index is one this caller could
+ *  have searched for itself.
+ *
+ *  ⛔ FAILS CLOSED. A store that cannot check its words, or throws trying, ends
+ *  it: it may hold the word, and "no email holds X" would then be false.
+ *
+ *  ⚠ No rows and nothing close: undefined, so the explicit empty says it
+ *  (`withExplicitEmpty`). ⚠ Model-facing — `chat-prompt-optimization-log.md`. */
+const collectionSearchSpellingHint = (
+  stores: ReadonlyArray<Pick<Collection, 'checkSpelling'>>,
+  query: string,
+  noun: { one: string; many: string },
+  returnedRows: boolean,
+): string | undefined => {
+  const checks: FtsWordCheck[][] = [];
+  for (const store of stores) {
+    if (store.checkSpelling === undefined) return undefined;
+    try {
+      checks.push(store.checkSpelling(query));
+    } catch {
+      return undefined;
+    }
+  }
+  const absent = absentFromAll(checks);
+  if (absent.length === 0) return undefined;
+  const corrections = mergeSpellingChecks(checks);
+  if (!returnedRows && corrections.length === 0) return undefined;
+  const quoted = (words: readonly string[]): string => words.length < 2
+    ? `"${words[0] ?? ''}"`
+    : `${words.slice(0, -1).map((w) => `"${w}"`).join(', ')} or "${words.at(-1) ?? ''}"`;
+  const parts = [returnedRows
+    ? `No ${noun.one} holds ${quoted(absent)}, so the results below match only the other words in the query.`
+    : `No ${noun.one} holds ${quoted(absent)}.`];
+  if (returnedRows && corrections.length === 0) {
+    parts.push(`Do not answer as if they were about ${quoted(absent)}.`);
+  }
+  for (const c of corrections) {
+    parts.push(`"${c.word}" is in ${c.records} ${c.records === 1 ? noun.one : noun.many}.`);
+  }
+  const [only] = corrections;
+  if (corrections.length === 1 && only !== undefined) {
+    parts.push(`If that is who or what the owner meant, search again for "${only.word}", and begin `
+      + `your answer by telling the owner you read "${only.typed}" as "${only.word}": it may be a `
+      + 'different name.');
+  } else if (corrections.length > 1) {
+    parts.push('If those are who or what the owner meant, search again with them, and begin your '
+      + 'answer by telling the owner how you read their words: they may be different names.');
+  }
+  return parts.join(' ');
+};
 
 /** Each mailbox a `mail.search` result covers, by the `collection_slug` its
  *  matches carry, with the address it signed in as and its provider.
@@ -1394,7 +1727,7 @@ const createMailSearchHandler =
               record_id: r.record_id,
               hot_fields: r.hot_fields,
               received_at: r.received_at,
-              ...mailEvidenceMetadata(c.slug, r.record_id, r.received_at),
+              ...mailEvidenceMetadata(c.slug, r.record_id, r.received_at, ctx?.time_zone),
               ...(typeof r.body_inline === 'string' && r.body_inline.length > 0
                 ? { preview: r.body_inline.slice(0, LIST_PREVIEW_CHARS) }
                 : {}),
@@ -1433,7 +1766,7 @@ const createMailSearchHandler =
               // the reader cannot tell a refusal from the acceptance that
               // followed it. The list path carried this all along.
               ...(typeof m.received_at === 'number' ? { received_at: m.received_at } : {}),
-              ...mailEvidenceMetadata(c.slug, m.record_id, m.received_at),
+              ...mailEvidenceMetadata(c.slug, m.record_id, m.received_at, ctx?.time_zone),
               rank: m.rank,
               // ⛔⛔ THE BODY MUST SURVIVE THIS PROJECTION, and it is the reason
               // the row is worth anything. `snippet` is a window centred on the
@@ -1468,7 +1801,7 @@ const createMailSearchHandler =
               record_id: r.record_id,
               hot_fields: r.hot_fields,
               received_at: r.received_at,
-              ...mailEvidenceMetadata(c.slug, r.record_id, r.received_at),
+              ...mailEvidenceMetadata(c.slug, r.record_id, r.received_at, ctx?.time_zone),
               // ⛔⛔ THE LIST PATH RETURNED NO BODY, WHICH MADE THREAD-FOLLOWING
               // USELESS. Measured: told how to follow a conversation, the model
               // did it correctly — `query: null, filters: { thread_id }` — and
@@ -1497,6 +1830,11 @@ const createMailSearchHandler =
       const truncated = aggregated.slice(0, limit);
       // Fan-out overshoot is itself evidence of more.
       if (aggregated.length > limit) moreAvailable = true;
+      // Words no mailbox holds — never for a search narrowed to one mailbox,
+      // whose missing word may be in another.
+      const hint = query && slug === undefined
+        ? collectionSearchSpellingHint(collections, query, { one: 'email', many: 'emails' }, truncated.length > 0)
+        : undefined;
       // D-237 P1 — the verdict rides out with the records it qualifies, exactly
       // as D-236 made it ride `collection.list`. An empty `matches` here is an
       // ABSENCE, and an absence is only a fact once you know the source was
@@ -1512,6 +1850,7 @@ const createMailSearchHandler =
             collections,
             (deps.now ?? Date.now)(),
           ),
+          ...(hint !== undefined ? { hint } : {}),
         },
       };
     } catch (e) {
@@ -1529,6 +1868,24 @@ const createMailSearchHandler =
  *  table on a `table` property. Codex review P2 fold (2026-05-12). */
 const isCalendarCollection = (c: Collection): c is CalendarCollection =>
   'table' in c && (c as Partial<CalendarCollection>).table !== undefined;
+
+/** When an event happens on the turn's clock, written beside the epoch-ms
+ *  `start_at` / `end_at` it is read from: `2026-08-27 06:40–07:40 (UTC-07:00)`,
+ *  or `2026-12-24, all day` (an all-day event is stored as the UTC midnight of
+ *  its day, which converted by hand west of UTC reads as the day before).
+ *
+ *  ⛔ Left to convert epoch ms itself, the model named the wrong day: bench 175
+ *  (2026-10-24) said "Aug 26" for a meeting at 13:40 UTC on Aug 27 in 8 of its
+ *  60 conversations. The zone is the one the turn's `current_date` is stamped in; absent
+ *  when the dispatch carries none (an MCP caller keeps its own clock). */
+const eventWhenOnTurnClock = (hot: unknown, zone: string | undefined): string | undefined => {
+  if (zone === undefined || hot === null || typeof hot !== 'object') return undefined;
+  const when = eventWhen({ event: hot, time_zone: zone });
+  if (when === null) return undefined;
+  if (when.time === 'All day') return when.text;
+  const offset = utcOffsetLabel(when.start, zone);
+  return offset ? `${when.text} (${offset})` : when.text;
+};
 
 const createCalendarSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
@@ -1583,10 +1940,12 @@ const createCalendarSearchHandler =
           });
           if (filledQuota(calMatches.length, perCollectionLimit)) moreAvailable = true;
           for (const m of calMatches) {
+            const when = eventWhenOnTurnClock(m.hot, ctx.time_zone);
             aggregated.push({
               collection_slug: c.slug,
               record_id: m.record_id,
               hot_fields: m.hot,
+              ...(when !== undefined ? { when } : {}),
               rank: m.rank,
               // Calendar's own description, hydrated from the row.
               ...(typeof m.body === 'string' ? { body: m.body } : {}),
@@ -1606,12 +1965,14 @@ const createCalendarSearchHandler =
             limit: perCollectionLimit,
           });
           for (const r of rows) {
+            const when = eventWhenOnTurnClock(r.hot, ctx.time_zone);
             aggregated.push({
               collection_slug: c.slug,
               // Exact Data/collection.get address. `source_id` is provider
               // native and cannot round-trip through the generic explorer.
               record_id: r.record_id,
               hot_fields: r.hot,
+              ...(when !== undefined ? { when } : {}),
               received_at: r.received_at,
             });
           }
@@ -1620,6 +1981,11 @@ const createCalendarSearchHandler =
       const truncated = aggregated.slice(0, limit);
       // Fan-out overshoot is itself evidence of more.
       if (aggregated.length > limit) moreAvailable = true;
+      const hint = query
+        ? collectionSearchSpellingHint(
+          collections, query, { one: 'calendar event', many: 'calendar events' }, truncated.length > 0,
+        )
+        : undefined;
       // D-237 P1 — calendar reads its own `CalendarCollectionTable` rather than
       // the `collection.list` path, exactly as `calendar-dispatcher.ts` does, so
       // the verdict is DERIVED here from the same `health()` rather than
@@ -1638,6 +2004,7 @@ const createCalendarSearchHandler =
             collections,
             (deps.now ?? Date.now)(),
           ),
+          ...(hint !== undefined ? { hint } : {}),
         },
       };
     } catch (e) {
@@ -1754,7 +2121,7 @@ export const projectAuditEntryForMcp = (
 
 /** D-198 §3 — the `core.memory.read` grant op governing the shared-read half of
  *  memory.search (the `user_memory` pool union). */
-const MEMORY_READ_OP_ID = 'core.memory.read';
+export const MEMORY_READ_OP_ID = 'core.memory.read';
 
 /** D-198 §3 — admit the `user_memory` union portion of a memory.search. The
  *  audit portion stays owner-trusted (unchanged); the pool's durable memories
@@ -1824,12 +2191,19 @@ interface MemorySearchEntry {
   truncated: boolean;
   ts: number;
   event_at?: number;
+  /** D-198 §10 — present on an entry YOU saved: the ones you may replace
+   *  (`memory.write` `replaces`) or forget (`memory.forget`). */
+  by_you?: true;
+  /** D-198 §10 — on a by-id fetch of an entry a newer version replaced: that
+   *  version's id. Recall pages never carry replaced entries. */
+  replaced_by?: string;
 }
 
 const projectMemoryEntry = (
   r: UserMemoryRow,
   body: string | undefined,
   truncated: boolean,
+  author?: string,
 ): MemorySearchEntry => ({
   memory_id: r.memory_id,
   origin_actor: r.origin_actor,
@@ -1841,6 +2215,7 @@ const projectMemoryEntry = (
   truncated,
   ts: r.ts,
   ...(r.event_at !== undefined ? { event_at: r.event_at } : {}),
+  ...(author !== undefined && memoryRowAuthor(r) === author ? { by_you: true as const } : {}),
 });
 
 /** Effective (bistemporal) time — real-world `event_at` when the row carries one,
@@ -2014,6 +2389,94 @@ const projectFileView = (v: DataFileView): ChatFileRow => ({
   ...(v.folder !== undefined ? { folder: v.folder } : {}),
 });
 
+/** How many files each candidate lookup of the file spelling check reads. */
+const FILE_SPELLING_CANDIDATES = 300;
+
+/** The words of a file's name and folder path as written. `CastellanosLease`
+ *  splits too: file names are often written that way. */
+const fileNameWords = (filename: string, path: string): string[] =>
+  `${filename}\n${path}`.replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2')
+    .split(/[^\p{L}\p{N}\p{M}]+/u)
+    .filter((word) => word.length > 0);
+
+/** A query term no file name or folder holds, the closest word one does, and
+ *  how many files hold that word (a floor when `capped`). */
+type FileRespelling = { typed: string; word: string; files: number; capped: boolean };
+
+/** "Did you mean" for a file search, from the words of the file names and
+ *  folders the same search reaches.
+ *
+ *  ⛔ NOT THE CONTENT INDEX. `file.search` matches a term as a substring of a
+ *  file's NAME and PATH (`scoreFileNeedle`), never its text. So "absent" is
+ *  asked of the search itself (the term alone finds nothing), and a suggestion
+ *  is a word in a name or folder it can return. The content index would call
+ *  `Castellanos_lease.pdf` absent whenever its text was not indexed, and would
+ *  offer words from inside files that the search cannot find by them.
+ *
+ *  ⚠ CANDIDATES COME FROM TWO SEARCHES, on the term's first three letters and on
+ *  its last three: the names and folders holding either, up to
+ *  `FILE_SPELLING_CANDIDATES` files each. A typo at both ends finds none — the
+ *  stated cost of not reading every file name the owner has, which for a
+ *  mirrored drive can be tens of thousands. A watched folder's index matches
+ *  word STARTS, so there only the first-letters search reaches. */
+const fileSearchRespellings = (
+  rawQuery: string,
+  search: {
+    present: (term: string) => boolean;
+    candidates: (term: string) => ReadonlyArray<{ filename: string; path?: string }>;
+    count: (word: string) => { files: number; capped: boolean };
+  },
+): FileRespelling[] => {
+  const out: FileRespelling[] = [];
+  const seen = new Set<string>();
+  for (const part of rawQuery.split(/\s+/u)) {
+    const typed = part.replace(/^[^\p{L}\p{N}\p{M}]+|[^\p{L}\p{N}\p{M}]+$/gu, '');
+    const term = typed.toLowerCase();
+    if (term.length === 0 || seen.has(term)) continue;
+    seen.add(term);
+    const length = [...term].length;
+    const max = spellingMaxDistance(length);
+    // Words only: a number, a stopword, or a token with punctuation inside it is
+    // not a misspelling of anything.
+    if (max === 0 || !/^[\p{L}\p{M}]+$/u.test(term) || FTS_STOPWORDS.has(term)) continue;
+    if (search.present(term)) continue;
+    const byWord = new Map<string, { word: string; distance: number; files: Set<string> }>();
+    for (const file of search.candidates(term)) {
+      const fileKey = `${file.filename}\n${file.path ?? ''}`;
+      for (const word of new Set(fileNameWords(file.filename, file.path ?? ''))) {
+        const key = word.toLowerCase();
+        if (!/^[\p{L}\p{M}]+$/u.test(key) || Math.abs([...key].length - length) > max) continue;
+        const distance = boundedEditDistance(term, key, max);
+        // The term itself is no correction — and on file means `present` erred.
+        if (distance === 0 || distance > max) continue;
+        const entry = byWord.get(key) ?? { word, distance, files: new Set<string>() };
+        // A capitalised spelling wins, as it does for the indexed stores.
+        if (!/\p{Lu}/u.test(entry.word) && /\p{Lu}/u.test(word)) entry.word = word;
+        entry.files.add(fileKey);
+        byWord.set(key, entry);
+      }
+    }
+    const [best] = [...byWord.values()].sort((a, b) => (a.distance - b.distance)
+      || (b.files.size - a.files.size) || a.word.localeCompare(b.word));
+    if (best !== undefined) out.push({ typed, word: best.word, ...search.count(best.word) });
+  }
+  return out;
+};
+
+/** ⚠ Model-facing — the wording of the indexed stores' hint, naming files. */
+const fileSpellingHint = (respelled: ReadonlyArray<FileRespelling>): string => {
+  const facts = respelled.map((r) => `No file name or folder holds "${r.typed}", but "${r.word}" `
+    + `is in ${r.capped ? 'at least ' : ''}${r.files} file${r.files === 1 ? '' : 's'}.`);
+  const [only] = respelled;
+  const retry = respelled.length === 1 && only !== undefined
+    ? `If that is who or what the owner meant, search again for "${only.word}", and begin your `
+      + `answer by telling the owner you read "${only.typed}" as "${only.word}": it may be a `
+      + 'different name.'
+    : 'If those are who or what the owner meant, search again with them, and begin your answer by '
+      + 'telling the owner how you read their words: they may be different names.';
+  return `${facts.join(' ')} ${retry}`;
+};
+
 const createFileSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -2065,6 +2528,9 @@ const createFileSearchHandler =
     // the thing that widens a search whose whole point is being narrow.
     const scope: 'session' | 'all' = rawScope === 'all' ? 'all' : 'session';
     const query = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
+    // As typed, for a spelling hint to echo: the lower-cased form above is a
+    // string the model did not write.
+    const typedQuery = typeof args.query === 'string' ? args.query.trim() : '';
     const limit = Math.min(
       typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0
         ? Math.floor(args.limit)
@@ -2079,6 +2545,8 @@ const createFileSearchHandler =
     /** How many files matched SOME of a multi-term query that matched none in
      *  full — the cause behind an empty page. 0 when not applicable. */
     let partialTermMatches = 0;
+    // The owner-wide resolver, when this search went through it.
+    let resolver: FileViewResolver | undefined;
     if (scope === 'session') {
       const store = deps.getChatStore?.();
       if (!store || ctx.session_id === undefined) {
@@ -2118,7 +2586,7 @@ const createFileSearchHandler =
       // (blank ⇒ `[]`, because the picker fires per keystroke), and the mirror
       // has no cross-scope LIST. So "list everything" enumerates the CAS space
       // only — stated in the tool description rather than left to be discovered.
-      const resolver = deps.getFileViewResolver?.();
+      resolver = deps.getFileViewResolver?.();
       if (resolver && query.length > 0) {
         const cap = Math.min(FILE_SEARCH_MAX_LIMIT, Math.max(limit, 1));
         rows = resolver.searchFileViews(query, cap).map(projectFileView);
@@ -2142,6 +2610,9 @@ const createFileSearchHandler =
       }
     }
 
+    // What a query was matched against when no resolver answered: the
+    // conversation's files, or the listed received files.
+    const universe = rows;
     const terms = query.split(/\s+/).filter((t) => t.length > 0);
     // ⚠ `resolved` ⇒ the resolver ALREADY applied `scoreFileNeedle` and ranked.
     // Re-filtering here would be the same rule run twice, and re-sorting would
@@ -2213,6 +2684,41 @@ const createFileSearchHandler =
     if (query.length === 0 && !resolved) rows.sort((a, b) => b.received_at - a.received_at);
     const truncated = rows.length > limit;
     rows = rows.slice(0, limit);
+    // An empty page whose term no file name or folder holds: the closest word
+    // one does, from the same search (`fileSearchRespellings`).
+    const owner = resolved ? resolver : undefined;
+    const respelled = rows.length === 0 && query.length > 0
+      ? fileSearchRespellings(typedQuery, owner !== undefined
+        ? {
+          present: (term) => owner.searchFileViews(term, 1).length > 0,
+          candidates: (term) => [
+            ...owner.searchFileViews(term.slice(0, 3), FILE_SPELLING_CANDIDATES),
+            ...owner.searchFileViews(term.slice(-3), FILE_SPELLING_CANDIDATES),
+          ],
+          count: (word) => {
+            const files = owner.searchFileViews(word, FILE_SEARCH_MAX_LIMIT).length;
+            return { files, capped: files >= FILE_SEARCH_MAX_LIMIT };
+          },
+        }
+        : {
+          present: (term) => universe.some((r) => scoreFileNeedle(r.filename, r.path ?? '', term) > 0),
+          candidates: () => universe,
+          count: (word) => ({
+            files: universe.filter((r) => scoreFileNeedle(r.filename, r.path ?? '', word) > 0).length,
+            capped: false,
+          }),
+        })
+      : [];
+    const partialTermsReason = partialTermMatches > 0
+      ? `No file matches ALL of ${JSON.stringify(query)}, but `
+        + `${partialTermMatches} file(s) match some of those words. `
+        + `Search a single distinctive word to see them — do not report `
+        + `that the owner has nothing on this.`
+      : undefined;
+    const noMatchReason = [
+      ...(respelled.length > 0 ? [fileSpellingHint(respelled)] : []),
+      ...(partialTermsReason !== undefined ? [partialTermsReason] : []),
+    ].join(' ');
 
     // D-237 P1 — session scope reads the conversation's attachments THROUGH the
     // file collection (`collection.get`), and a referenced file whose record has
@@ -2234,16 +2740,10 @@ const createFileSearchHandler =
         // full, while files match some of the words, is the shape that made a
         // model report a flat absence 7 runs out of 7 and never mention the
         // relevant files. A COUNT, never the rows.
-        ...(partialTermMatches > 0
-          ? {
-            partial_term_matches: partialTermMatches,
-            no_match_reason:
-              `No file matches ALL of ${JSON.stringify(query)}, but `
-              + `${partialTermMatches} file(s) match some of those words. `
-              + `Search a single distinctive word to see them — do not report `
-              + `that the owner has nothing on this.`,
-          }
-          : {}),
+        ...(partialTermMatches > 0 ? { partial_term_matches: partialTermMatches } : {}),
+        // A term no file name or folder holds comes first: it is the more
+        // specific cause, and the one a retry with different words cannot fix.
+        ...(noMatchReason.length > 0 ? { no_match_reason: noMatchReason } : {}),
         // The scope is stated back on EVERY result, not just when widened. A
         // model that forgot which set it searched will otherwise report an
         // absence it never actually established.
@@ -2280,10 +2780,12 @@ const createMemorySearchHandler =
       // from recall entirely (unlike the transparent feed, which shows a
       // content-cleared tombstone). This is the surface that reaches a granted
       // door, so it must never hand back forgotten content.
-      const redactionStore = deps.getMemoryRedactionStore?.();
-      const redacted = redactionStore
-        ? new Set((await redactionStore.list()).map((r) => r.memory_id))
-        : new Set<string>();
+      const redacted = await forgottenIds(deps.getMemoryRedactionStore?.());
+      // D-198 §10 — the caller's own entries are marked `by_you`, the ones it may
+      // replace or forget.
+      const author = ctx.execution_source
+        ? authoringContractId(ctx.execution_source)
+        : undefined;
 
       // ── memory_id → fetch ONE in full (the escape hatch for a `truncated` hit)
       const memoryId =
@@ -2301,7 +2803,11 @@ const createMemorySearchHandler =
         //   back at 3x `limit_bytes` — and `used_bytes` below measured the real
         //   size, so the result openly reported itself over its own budget.
         const body = overCap ? truncateUtf8(full!, MEMORY_FETCH_ONE_CAP_BYTES) : full;
-        const entry = projectMemoryEntry(resolved.row, body, overCap);
+        const current = await currentVersionOf(store, redacted, memoryId);
+        const entry: MemorySearchEntry = {
+          ...projectMemoryEntry(resolved.row, body, overCap, author),
+          ...(current !== memoryId ? { replaced_by: current } : {}),
+        };
         return {
           ok: true,
           result: {
@@ -2402,9 +2908,24 @@ const createMemorySearchHandler =
         ordered = (await store.list()).sort((a, b) => effectiveTime(b) - effectiveTime(a));
       }
 
+      // D-198 §10 — a REPLACED entry is not current, so no page carries it (the
+      // owner's feed still shows it). A replacement that is itself forgotten no
+      // longer counts: forgetting the newer version brings the older one back.
+      // The listing already holds every row; a ranked page asks per hit.
+      const replaced = new Set<string>();
+      if (query === undefined) {
+        for (const r of ordered) {
+          if (r.replaces !== undefined && !redacted.has(r.memory_id)) replaced.add(r.replaces);
+        }
+      } else {
+        for (const r of ordered) {
+          if (await liveReplacementOf(store, redacted, r.memory_id)) replaced.add(r.memory_id);
+        }
+      }
       const filtered = ordered.filter(
         (r) =>
           !redacted.has(r.memory_id)
+          && !replaced.has(r.memory_id)
           && (since === undefined || effectiveTime(r) >= since)
           && (until === undefined || effectiveTime(r) <= until),
       );
@@ -2449,13 +2970,13 @@ const createMemorySearchHandler =
           const body = resolved?.body;
           if (body !== undefined) {
             used += row.size_bytes;
-            memories.push(projectMemoryEntry(row, body, false));
+            memories.push(projectMemoryEntry(row, body, false, author));
             continue;
           }
         }
         // Didn't fit (or has no body / the blob vanished) → preview + the id.
         if (row.size_bytes > 0) truncatedCount += 1;
-        memories.push(projectMemoryEntry(row, undefined, row.size_bytes > 0));
+        memories.push(projectMemoryEntry(row, undefined, row.size_bytes > 0, author));
       }
 
       const hasMore = filtered.length > offset + page.length;
@@ -2487,7 +3008,7 @@ const createMemorySearchHandler =
 // ────────────────────────────────────────────────────────────────
 
 /** D-198 §3 — the `core.memory.write` grant op the contract governs. */
-const MEMORY_WRITE_OP_ID = 'core.memory.write';
+export const MEMORY_WRITE_OP_ID = 'core.memory.write';
 
 /** Gate a memory write on the governing contract's `core.memory.write` grant
  *  (mirrors `admitVendorWrite`): only `user_self` (owner chat — permissive by
@@ -2522,6 +3043,11 @@ const createMemoryWriteHandler =
     if (summary.length === 0) {
       return invalidArgs('memory.write requires a non-empty summary');
     }
+    // D-198 §10 — `replaces`: the id of an entry YOU saved that this one corrects.
+    const replaces =
+      typeof args.replaces === 'string' && args.replaces.trim().length > 0
+        ? args.replaces.trim()
+        : undefined;
 
     // Grant gate — the enforcement boundary (§3). Owner chat resolves to the
     // permissive owner contract; a door needs `core.memory.write` (default-off).
@@ -2543,31 +3069,114 @@ const createMemoryWriteHandler =
       : undefined;
     if (contractId !== undefined) session.contract_id = contractId;
     const hasSession = session.channel_session_id !== undefined || session.contract_id !== undefined;
+    // D-198 §10 — the author contract, stamped on every row so a later replace or
+    // forget can prove the entry is the caller's own.
+    const author = ctx.execution_source ? authoringContractId(ctx.execution_source) : undefined;
 
-    const adapter = createStoreBackedMemoryWriteAdapter({
-      store,
-      origin_actor: 'contracted_user',
-      ...(hasSession ? { session } : {}),
-    });
-
-    try {
-      const body =
-        typeof args.body === 'string' && args.body.length > 0 ? args.body : undefined;
-      const provenance = Array.isArray(args.provenance_entity_ids)
-        ? args.provenance_entity_ids.filter(
-            (x): x is string => typeof x === 'string' && x.length > 0,
-          )
-        : [];
-      const result = await adapter.write({
+    const body =
+      typeof args.body === 'string' && args.body.length > 0 ? args.body : undefined;
+    const provenance = Array.isArray(args.provenance_entity_ids)
+      ? args.provenance_entity_ids.filter(
+          (x): x is string => typeof x === 'string' && x.length > 0,
+        )
+      : [];
+    const write = (replacing: string | undefined) =>
+      createStoreBackedMemoryWriteAdapter({
+        store,
+        origin_actor: 'contracted_user',
+        ...(hasSession ? { session } : {}),
+        ...(author !== undefined ? { author_contract_id: author } : {}),
+        ...(replacing !== undefined ? { replaces: replacing } : {}),
+      }).write({
         kind: 'chat_memory',
         summary,
         reason_code: 'chat_write',
         ...(body !== undefined ? { payload: body } : {}),
         ...(provenance.length > 0 ? { provenance_entity_ids: provenance } : {}),
       });
-      // Fan a `memory` refresh so paired Memory lenses live-update (§7.7).
-      emitMemoryUser(deps.getEventBus?.(), result.memory_id);
-      return { ok: true, result };
+
+    try {
+      if (replaces === undefined) {
+        const result = await write(undefined);
+        // Fan a `memory` refresh so paired Memory lenses live-update (§7.7).
+        emitMemoryUser(deps.getEventBus?.(), result.memory_id);
+        return { ok: true, result };
+      }
+      // D-198 §10 — check then write under the store's revision lock, so two
+      // writes batched into one turn cannot both replace the same entry.
+      const outcome = await withRevisionLock(store, async () => {
+        const forgotten = await forgottenIds(deps.getMemoryRedactionStore?.());
+        const check = await checkOwnEntry(store, forgotten, replaces, author);
+        if (!check.ok) {
+          return {
+            ok: false as const,
+            refused: check.refusal === 'forgotten'
+              ? `${check.message}, so there is nothing to replace; save a new memory instead`
+              : `${check.message}. Leave it as it is; if it looks wrong, tell the user`,
+          };
+        }
+        const current = await currentVersionOf(store, forgotten, replaces);
+        if (current !== replaces) {
+          return {
+            ok: false as const,
+            refused: `'${replaces}' was already replaced by '${current}'; pass '${current}' as replaces instead`,
+          };
+        }
+        return { ok: true as const, result: await write(replaces) };
+      });
+      if (!outcome.ok) return invalidArgs(outcome.refused);
+      emitMemoryUser(deps.getEventBus?.(), outcome.result.memory_id);
+      return { ok: true, result: { ...outcome.result, replaces } };
+    } catch (e) {
+      return executionError(errMessage(e));
+    }
+  };
+
+/** The longest `memory.forget` reason kept for the owner to read. */
+const MEMORY_FORGET_REASON_MAX = 200;
+
+/** D-198 §10 — `memory.forget`: an agent forgets an entry it saved, and the
+ *  earlier versions that entry replaced. Gated by `core.memory.write`, like the
+ *  write it reverses. Recorded on the redaction overlay with the forgetting
+ *  contract, so the owner sees who forgot what and can restore it — which is
+ *  why it stays `unknown` (no plan approval) like `memory.write`. */
+const createMemoryForgetHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const store = deps.getUserMemoryStore?.();
+    const redactions = deps.getMemoryRedactionStore?.();
+    if (!store || !redactions) return executionError('memory store unavailable');
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+    const memoryId = typeof args.memory_id === 'string' ? args.memory_id.trim() : '';
+    if (memoryId.length === 0) {
+      return invalidArgs('memory.forget requires the memory_id of an entry you saved');
+    }
+    const stated = typeof args.reason === 'string' ? args.reason.trim() : '';
+    const reason = stated.length > 0 ? stated.slice(0, MEMORY_FORGET_REASON_MAX) : undefined;
+
+    if (!admitMemoryWrite(deps.getOpAdmissionGate?.(), ctx.execution_source)) {
+      return {
+        ok: false,
+        reason: 'classification_blocked',
+        detail: 'memory.forget is not granted to this contract (it needs the memory write grant)',
+      };
+    }
+    const author = ctx.execution_source ? authoringContractId(ctx.execution_source) : undefined;
+    try {
+      const outcome = await withRevisionLock(store, () => forgetOwnEntry({
+        store,
+        redactions,
+        memory_id: memoryId,
+        author,
+        ...(reason !== undefined ? { reason } : {}),
+        now: (deps.now ?? Date.now)(),
+      }));
+      if (!outcome.ok) {
+        return invalidArgs(`${outcome.message}. Leave it as it is; if it should go, tell the user`);
+      }
+      if (outcome.result.versions > 0) emitMemoryUser(deps.getEventBus?.(), memoryId);
+      return { ok: true, result: outcome.result };
     } catch (e) {
       return executionError(errMessage(e));
     }
@@ -3527,7 +4136,7 @@ export const createChatTier2Dispatch =
 // ────────────────────────────────────────────────────────────────
 
 /** The `core.work-entity.read` grant op governing the Tier-1 work READ tools. */
-const WORK_ENTITY_READ_OP_ID = 'core.work-entity.read';
+export const WORK_ENTITY_READ_OP_ID = 'core.work-entity.read';
 
 /** Admit a `work.search` / `work.read` dispatch on the governing contract's
  *  `core.work-entity.read` grant. A verbatim sibling of `admitMemoryRead` —
@@ -3556,12 +4165,16 @@ const admitWorkEntityRead = (
  *  vocabulary the kernel and the recipes already use
  *  (`core.work-entity.task.create`), and so granting "may add notes" to a door
  *  never also grants "may add commitments". */
-const WORK_ENTITY_CREATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
+export const WORK_ENTITY_CREATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
   task: 'core.work-entity.task.create',
   note: 'core.work-entity.note.create',
   commitment: 'core.work-entity.commitment.create',
   project: 'core.work-entity.project.create',
 };
+/** D-325 (2026-10-24) — `work.create` of an `asset`, and `work.type`, which
+ *  describes a type for that create. An asset is kept apart from
+ *  `WorkCreateKind` because `work.update` does not take one. */
+export const ASSET_CREATE_OP_ID = 'core.work-entity.asset.create';
 
 /** Mirrors {@link admitWorkEntityRead} on the write side — same shape, same
  *  fail-closed posture, different op. The tool is `classification: 'unknown'`
@@ -3570,12 +4183,12 @@ const WORK_ENTITY_CREATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
 const admitWorkEntityCreate = (
   gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
   source: ExecutionSource | undefined,
-  kind: WorkCreateKind,
+  kind: WorkCreateKind | 'asset',
 ): boolean =>
   gate !== undefined
   && source !== undefined
   && (source.actor === 'user_self' || source.actor === 'contracted_user')
-  && gate.isOpGranted(source, WORK_ENTITY_CREATE_OP_ID[kind]);
+  && gate.isOpGranted(source, kind === 'asset' ? ASSET_CREATE_OP_ID : WORK_ENTITY_CREATE_OP_ID[kind]);
 
 /** The narrow slice of `KernelDispatchers` the two calendar write tools need.
  *  Declared here rather than importing the whole dispatcher bag so the chat
@@ -3593,7 +4206,7 @@ export interface CalendarWriteDeps {
   }) => Promise<{ source_id: string }>;
 }
 
-const WORK_ENTITY_UPDATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
+export const WORK_ENTITY_UPDATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
   task: 'core.work-entity.task.update',
   note: 'core.work-entity.note.update',
   commitment: 'core.work-entity.commitment.update',
@@ -3606,7 +4219,7 @@ const WORK_ENTITY_UPDATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
  *  completion bit (mark-done dispatcher + `completed` reactive events)"*.
  *  `handleWorkEntityUpsert` does not carry a `done` field AT ALL — routing a
  *  completion through it would silently drop the claim. */
-const TASK_MARK_DONE_OP_ID = 'core.work-entity.task.mark-done';
+export const TASK_MARK_DONE_OP_ID = 'core.work-entity.task.mark-done';
 
 /** Slice 3 — `work.update`. Two paths behind one tool, because the model should
  *  not have to know which verb the substrate files a change under.
@@ -3775,8 +4388,8 @@ const createWorkUpdateHandler =
     }
   };
 
-const CALENDAR_CREATE_OP_ID = 'core.data.calendar.create';
-const CALENDAR_UPDATE_OP_ID = 'core.data.calendar.update';
+export const CALENDAR_CREATE_OP_ID = 'core.data.calendar.create';
+export const CALENDAR_UPDATE_OP_ID = 'core.data.calendar.update';
 
 /** The shared op-grant gate for every `classification: 'write'` Tier-1 tool —
  *  both calendar writes and `work.update`.
@@ -3941,10 +4554,14 @@ const createWorkCreateHandler =
     if (!args) return invalidArgs('args must be an object');
 
     const kind = args.kind;
+    if (kind === 'asset') return createAssetFromChat(deps, args, ctx);
     if (!isWorkCreateKind(kind)) {
       return invalidArgs(
-        `work.create requires kind to be one of ${WORK_CREATE_KINDS.join(' / ')}`,
+        `work.create requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset'].join(' / ')}`,
       );
+    }
+    for (const name of ['type', 'dates', 'holder_email'] as const) {
+      if (args[name] !== undefined) return invalidArgs(`work.create: \`${name}\` applies to an asset only`);
     }
 
     const title = typeof args.title === 'string' ? args.title.trim() : '';
@@ -4065,6 +4682,167 @@ const createWorkCreateHandler =
     }
   };
 
+const CHAT_ASSET_TYPE_WORDS: AssetTypeWords = {
+  holder: '`holder_email`, the email address of the person it belongs to', describe: 'work.type',
+};
+const ASSET_CREATE_ARGS: ReadonlySet<string> = new Set(['kind', 'type', 'title', 'dates', 'holder_email']);
+
+/** D-325 (2026-10-24) — `work.create` of an `asset`, at the AI's own rank
+ *  (`extracted`): the user said it and the model wrote it down. It goes through
+ *  the create every extracted writer uses, which keeps a typed asset to its type's
+ *  fields and starts its type's own reminders. The checks here only answer first,
+ *  in this tool's words (`holder_email`, `work.type`). */
+const createAssetFromChat = async (
+  deps: ChatToolHandlerDeps,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+): Promise<ChatDispatchResult> => {
+  const crud = deps.getWorkEntityCrudDeps?.();
+  if (!crud) return executionError('work-entity write path unavailable');
+  const other = Object.keys(args).filter((name) => !ASSET_CREATE_ARGS.has(name) && args[name] !== undefined);
+  if (other.length > 0) {
+    return invalidArgs(
+      `work.create: an asset takes \`type\`, \`title\`, \`dates\` and \`holder_email\`, not ${other.map((name) => `\`${name}\``).join(', ')}`,
+    );
+  }
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  if (title.length === 0) {
+    return invalidArgs('work.create requires a non-empty title for an asset: its name, such as "Maya\'s passport"');
+  }
+  if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, 'asset')) {
+    return {
+      ok: false,
+      reason: 'classification_blocked',
+      detail: 'work.create is not granted to this contract for asset (write rejected)',
+    };
+  }
+  const types = deps.getAssetTypes?.();
+  if (!types) return executionError('asset types unavailable');
+  const typeId = typeof args.type === 'string' ? args.type.trim() : args.type;
+  if (typeId !== undefined && (typeof typeId !== 'string' || typeId.length === 0)) {
+    return invalidArgs('work.create: `type` must be an asset type such as `passport`; work.type lists them');
+  }
+  const type = typeId === undefined ? null : types.get(typeId);
+  if (typeId !== undefined && !type) {
+    return invalidArgs(`work.create: ${unknownAssetTypeText(typeId, types, 'work.type')}`);
+  }
+  const dates: Record<string, string> = {};
+  if (args.dates !== undefined) {
+    if (args.dates === null || typeof args.dates !== 'object' || Array.isArray(args.dates)) {
+      return invalidArgs('work.create: `dates` must be an object of dates as YYYY-MM-DD');
+    }
+    for (const [field, value] of Object.entries(args.dates)) {
+      if (!isAssetDate(value)) return invalidArgs(`work.create: \`dates.${field}\` must be a date as YYYY-MM-DD`);
+      dates[field] = value;
+    }
+  }
+  if (!type && Object.keys(dates).length > 0) {
+    return invalidArgs('work.create: an asset with no type keeps no dates. Pass its `type`; work.type lists them.');
+  }
+  let holder: string | undefined;
+  if (args.holder_email !== undefined) {
+    const email = typeof args.holder_email === 'string' ? args.holder_email.trim().toLowerCase() : '';
+    if (!EMAIL_SHAPE.test(email)) {
+      return invalidArgs('work.create: `holder_email` must be an email address — never a name');
+    }
+    // The holder is kept as the Yours picker keeps it: the contact's id, or the
+    // email of someone not in contacts.
+    holder = deps.getContactStore()?.get(email)?.contact_id ?? email;
+  }
+  if (type) {
+    const issues = assetTypeIssues(type, { dates, ...(holder !== undefined ? { holder_contact: holder } : {}) });
+    if (issues) return invalidArgs(`work.create: ${assetTypeIssueText(type, issues, CHAT_ASSET_TYPE_WORDS)}`);
+  }
+  const fields = ['title', ...(type ? ['type'] : []), ...(Object.keys(dates).length > 0 ? ['dates'] : []),
+    ...(holder !== undefined ? ['holder_email'] : [])];
+  try {
+    const { asset } = await crud.dispatchers.assetCreate({
+      name: title,
+      ...(type ? { class_id: type.id } : {}),
+      ...(Object.keys(dates).length > 0 ? { dates } : {}),
+      ...(holder !== undefined ? { holder_contact: holder } : {}),
+      source: {
+        kind: 'extracted',
+        ref: ctx.channel === 'mcp_wire' ? `mcp:${ctx.mcp_token_id ?? 'agent'}` : `chat:${ctx.session_id ?? 'turn'}`,
+      },
+      ...(ctx.execution_source ? { origin_execution_source: ctx.execution_source } : {}),
+    });
+    const on = asset.rules.filter((rule) => rule.enabled && !rule.muted && rule.reaction.notify);
+    const waiting = [...new Set(on.flatMap((rule) =>
+      (rule.when.kind === 'expiry' || rule.when.kind === 'interval') && asset.dates[rule.when.field] == null
+        ? [rule.when.field] : []))];
+    return {
+      ok: true,
+      result: {
+        created: true,
+        kind: 'asset',
+        id: asset.id,
+        ...(type ? { type: type.id } : {}),
+        fields,
+        reminders: on.map((rule) => rule.title),
+        // A clock with no date yet sends nothing until the date is entered.
+        ...(waiting.length > 0 ? { reminders_wait_for: waiting } : {}),
+      },
+    };
+  } catch (e) {
+    if (e instanceof AssetTypeError) {
+      return invalidArgs(`work.create: ${assetTypeIssueText(e.type, e.issues, CHAT_ASSET_TYPE_WORDS)}`);
+    }
+    return executionError(`work.create failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+
+/** D-325 (2026-10-24) — `work.type`: what a type of thing the owner keeps holds,
+ *  so an AI can create one from nothing (the owner: "hint.tool for the create job
+ *  so AI knows what shape the passport obj is"). Chat and the MCP wire carry this
+ *  one tool and its one description. `kind` keeps the call generic; only assets
+ *  have types today. Gated by the asset create's op: a type is described for
+ *  creating one. */
+const createWorkTypeHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+    if (args.kind !== 'asset') {
+      return invalidArgs(
+        'work.type describes `asset` types only; the fields of a task, note, commitment or project are in work.create',
+      );
+    }
+    if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, 'asset')) {
+      return {
+        ok: false,
+        reason: 'classification_blocked',
+        detail: 'work.type is not granted to this contract: it needs the switch that adds things you own',
+      };
+    }
+    const types = deps.getAssetTypes?.();
+    if (!types) return executionError('asset types unavailable');
+    if (args.type === undefined) {
+      return {
+        ok: true,
+        result: {
+          kind: 'asset',
+          types: listAssetTypes(types.list()),
+          note: 'Pass one `type` for its reminders. A thing no type fits is added with no type, and keeps no dates.',
+        },
+      };
+    }
+    const id = typeof args.type === 'string' ? args.type.trim() : '';
+    if (id.length === 0) {
+      return invalidArgs('work.type: `type` is an asset type such as `passport`; omit it to list every type');
+    }
+    const type = types.get(id);
+    if (!type) return invalidArgs(`work.type: ${unknownAssetTypeText(id, types, 'work.type with no `type`')}`);
+    return {
+      ok: true,
+      result: {
+        kind: 'asset',
+        ...describeAssetType(type),
+        note: `Add one with work.create: kind "asset", type "${type.id}", its title${assetTypeNeedsHolder(type) ? ', holder_email' : ''} and dates under these names as YYYY-MM-DD. Leave out a date the user did not give.`,
+      },
+    };
+  };
+
 /** The work-entity read tools' deps, from the chat tools' own (exported for the wiring pin,
  *  `escalation-contract-overlay-wiring.test.ts`). */
 export const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadToolsDeps => ({
@@ -4085,6 +4863,7 @@ export const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityRe
   getOpAdmissionGate: () => deps.getOpAdmissionGate?.(),
   getContractOverlay: () => deps.getContractOverlay?.(),
   getEdgeStore: () => deps.getWorkEntityEdgeStore?.(),
+  personName: id => situationPersonName(deps.getContactStore?.())(id),
 });
 
 const createWorkSearchHandler =
@@ -4300,6 +5079,7 @@ const FAN_OUT_TOOLS: ReadonlySet<string> = new Set(['contact.search']);
  *  a missing entry produces exactly the bare `{hint}` described above and nothing
  *  throws. */
 export const FENCED_EMPTY_CONTAINER: Readonly<Record<string, string>> = {
+  'contact.read': 'contacts',
   'mail.search': 'matches',
   'mail.read': 'messages',
   'document.read': 'documents',
@@ -4394,7 +5174,7 @@ const createRecipeStopHandler =
 
 /** The grant op `recipe.schedule` is governed by (a native op: no recipe step
  *  can schedule another recipe, 2026-10-05). */
-const SCHEDULE_RECIPE_OP_ID = 'core.schedule.recipe';
+export const SCHEDULE_RECIPE_OP_ID = 'core.schedule.recipe';
 
 /** Why `recipe.schedule` is refused for this dispatch, or `undefined` when it is
  *  admitted. Two sources may schedule, both the owner:
@@ -4582,12 +5362,14 @@ export const buildChatTier1Handlers = (
   deps: ChatToolHandlerDeps,
 ): Record<string, Tier1Handler> => wrapSphereFence(wrapCollectionFence(wrapEmptyResults({
   'contact.search': createContactSearchHandler(deps),
+  'contact.read': createContactReadHandler(deps),
   'mail.search': createMailSearchHandler(deps),
   'mail.read': createMailReadHandler(deps),
   'document.read': createDocumentReadHandler(deps),
   'calendar.search': createCalendarSearchHandler(deps),
   'memory.search': createMemorySearchHandler(deps),
   'memory.write': createMemoryWriteHandler(deps),
+  'memory.forget': createMemoryForgetHandler(deps),
   'enrichment.search': createEnrichmentSearchHandler(deps),
   'deal.search': createDealSearchHandler(deps),
   'account.search': createAccountSearchHandler(deps),
@@ -4596,7 +5378,7 @@ export const buildChatTier1Handlers = (
     if (!access) return executionError('Situation query unavailable');
     try {
       const { situationModelProjection } = await import('./situations/model-projection.js');
-      return { ok: true, result: situationModelProjection(await access.read(raw, ctx.execution_source)) };
+      return { ok: true, result: situationModelProjection(await access.read(raw, ctx.execution_source), situationPersonName(deps.getContactStore?.())) };
     } catch (error) {
       const { SituationAccessError } = await import('./situations/access.js');
       if (error instanceof SituationAccessError) return { ok: true, result: { refused: true, hint: error.message } };
@@ -4605,6 +5387,7 @@ export const buildChatTier1Handlers = (
   },
   'work.search': createWorkSearchHandler(deps),
   'work.read': createWorkReadHandler(deps),
+  'work.type': createWorkTypeHandler(deps),
   'work.create': createWorkCreateHandler(deps),
   'calendar.create': createCalendarCreateHandler(deps),
   'calendar.update': createCalendarUpdateHandler(deps),
@@ -4632,7 +5415,7 @@ const wrapSphereFence = (handlers: Record<string, Tier1Handler>, deps: ChatToolH
       try { before = signature(); }
       catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }
     }
-    if (['contact.search', 'mail.search', 'mail.read', 'document.read', 'calendar.search', 'memory.search', 'enrichment.search', 'deal.search', 'account.search', 'file.search'].includes(tool)) {
+    if (['contact.search', 'contact.read', 'mail.search', 'mail.read', 'document.read', 'calendar.search', 'memory.search', 'enrichment.search', 'deal.search', 'account.search', 'file.search'].includes(tool)) {
       if (access) {
         try { if (createReadScope(access, ctx.execution_source).limited) return { ok: true, result: { refused: true, hint: SPHERE_READ_REFUSAL } }; }
         catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }

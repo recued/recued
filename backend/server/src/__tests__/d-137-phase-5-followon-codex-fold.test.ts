@@ -193,7 +193,7 @@ describe('D-137 P5 follow-on Codex P1 fold — handleToolCall gate end-to-end', 
       content: [{ type: 'text' }],
     });
     const text = (result as { content: Array<{ text: string }> }).content[0].text;
-    expect(text).toMatch(/not granted by this token/);
+    expect(text).toMatch(/not granted to this key/);
   });
 
   /** ⛔⛔ REWRITTEN BY DECISION — D-228 slice 6; see the sibling below for why
@@ -216,7 +216,7 @@ describe('D-137 P5 follow-on Codex P1 fold — handleToolCall gate end-to-end', 
     expect(threw).toBeInstanceOf(Error);
     expect((threw as Error).message).toMatch(/Unknown tool/);
     // Crucially, the gate-refusal copy is NOT in the throw message.
-    expect((threw as Error).message).not.toMatch(/not granted by this token/);
+    expect((threw as Error).message).not.toMatch(/not granted to this key/);
   });
 
   /** ⛔⛔ THE OTHER HALF, and the one the interim left open: a caller with

@@ -53,6 +53,9 @@ export type TodayCallers = Pick<BootstrapDataRouteOptions,
     /** §15.4 — `yours.change` for the coded answers on a cluster item and their
      *  Undo. Absent (an older server) → no answer buttons. */
     situationChangeCaller?: (input: Extract<YoursCommand, { action: 'situation.dismiss' | 'situation.restore' }>) => Promise<YoursCommandResult>;
+    /** D-325 §15.7 (2026-10-24) — `yours.change` for Done on a renewal, which only acknowledges
+     *  it. Absent (an older shell) → Done closes as for any task, and the server refuses it. */
+    occurrenceAcknowledgeCaller?: (input: Extract<YoursCommand, { action: 'occurrence.acknowledge' }>) => Promise<YoursCommandResult>;
     /** D-325 §8 — the owner opened an item Today showed. Fire and forget: the link
      *  navigates at once, so this must never hold the route-switch guard. */
     situationOpenedCaller?: (input: Extract<YoursCommand, { action: 'navigation.open' }>) => void;
@@ -312,9 +315,18 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       const close = host.callers.commitmentCloseCaller;
       if (!item?.commitmentId || item.unreachable || !snapshot?.sources.some(source => source.key === item.sourceKey && source.writeCapable) || !close || closingCommitment || edit?.busy
         || host.isDisposed() || !host.isActive()) return;
+      // D-325 §15.7 (2026-10-24) — Done on a renewal acknowledges its reminder: its new date
+      // closes it (Yours → Due), so it stays open, and Today shows it again at its next reminder.
+      const acknowledge = outcome === 'fulfill' && item.renewalOccurrenceId ? host.callers.occurrenceAcknowledgeCaller : undefined;
       const mine = ++sequence;
       closingCommitment = true; error = null; notice = null; undoDismissal = null; host.render();
       try {
+        if (acknowledge) {
+          const result = await acknowledge({ action: 'occurrence.acknowledge', id: item.renewalOccurrenceId! });
+          if (host.isDisposed() || mine !== sequence) return;
+          if (snapshot) snapshot = { ...snapshot, items: snapshot.items.filter(row => row.key !== key) };
+          notice = result.message; host.refreshActive(); return;
+        }
         const { entity } = await close({ id: item.commitmentId, outcome });
         if (host.isDisposed() || mine !== sequence) return;
         if (entity._kind !== 'commitment' || entity.id !== item.commitmentId

@@ -257,23 +257,20 @@ export const mountQuietHoursPanel = (
     declared.setAttribute(QUIET_HOURS_DECLARED_ATTR, '');
     into.appendChild(declared);
 
-    into.appendChild(el(
-      'p',
-      preview.active
-        ? 'Right now you are inside it. This is the stretch you are in:'
-        : 'This is what that means next:',
-    ));
-
+    // D-269 follow-up (2026-10-24) — said in a sentence, with its dates: a time with
+    // no date reads as today. Where the owner is now is said only when it reads
+    // differently there; two identical lines were the same thing said twice.
     for (const row of preview.rows) {
+      if (row.role !== 'authoritative' && !preview.diverged) continue;
       const line = el('p');
       line.setAttribute(QUIET_HOURS_ROW_ATTR, '');
       line.setAttribute(QUIET_HOURS_ROW_ROLE_ATTR, row.role);
-      // ⛔ Asymmetric, like the instant preview: the window is SET in server
-      // time and the browser row translates it. Peers invite editing the wrong
-      // one.
-      const body = `${row.label}: ${row.start_text} → ${row.end_text} · ${row.zone}`;
-      if (row.role === 'authoritative') line.appendChild(el('strong', body));
-      else line.appendChild(el('span', `${body} — right now`));
+      // ⛔ Asymmetric, like the instant preview: the window is SET on Recued's
+      // clock and the other sentence translates it. Peers invite editing the
+      // wrong one.
+      line.textContent = row.role === 'authoritative'
+        ? `${preview.active ? 'It is on now, from' : 'Next, it runs from'} ${row.start_text} until ${row.end_text}, on ${row.label} (${row.zone}).`
+        : `${row.label}, that is ${row.start_text} until ${row.end_text} (${row.zone}).`;
       into.appendChild(line);
     }
 
@@ -426,6 +423,7 @@ export const mountQuietHoursPanel = (
 
     const btn = doc.createElement('button');
     btn.type = 'button';
+    btn.className = 'rx-btn rx-btn-secondary rx-btn-sm';
     btn.setAttribute(QUIET_HOURS_SAVE_ATTR, '');
     const submit = (): void => {
       if (saving || disposed) return;
@@ -449,6 +447,7 @@ export const mountQuietHoursPanel = (
     }
 
     const fields = el('p');
+    fields.className = 'qh-range';
     fields.appendChild(el('span', 'From '));
     fields.appendChild(fromInput);
     fields.appendChild(el('span', ' to '));
@@ -593,8 +592,7 @@ export const QUIET_HOURS_PANEL_STYLES = `
   color: var(--fg-muted);
 }
 [${QUIET_HOURS_PANEL_ATTR}] [${QUIET_HOURS_ROW_ATTR}] {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-  font-size: 12px;
+  max-width: 68ch;
 }
 /* The row that is NOT the server's own clock recedes, so the pair reads as
    "this is what it means" rather than as the same line said twice. */
@@ -619,6 +617,15 @@ export const QUIET_HOURS_PANEL_STYLES = `
   border-radius: 4px;
   background: var(--bg);
   color: var(--fg);
+}
+[${QUIET_HOURS_PANEL_ATTR}] .qh-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[${QUIET_HOURS_PANEL_ATTR}] .qh-range .rx-btn {
+  margin-left: 4px;
 }
 [${QUIET_HOURS_PANEL_ATTR}] input:disabled,
 [${QUIET_HOURS_PANEL_ATTR}] button:disabled {

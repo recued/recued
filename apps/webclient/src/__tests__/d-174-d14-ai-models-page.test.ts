@@ -3973,6 +3973,27 @@ describe('Embeddings and transcription slots — protocol, provider name, and er
     mount.dispose();
   });
 
+  // D-262 § E2.1 — audio is an accepted way for names to leave only because the
+  // owner chose voice, so the card where that choice is made says what it sends.
+  it.each([
+    ['not set up', llmConfig()],
+    ['set up', {
+      ...llmConfig(),
+      transcription_slot: { provider: 'openai', model: 'whisper-1', has_key: true },
+    }],
+  ] as const)('⛔ the transcription card says voice notes leave as audio (%s)', async (_label, config) => {
+    const { host, mount } = mountSlots(config);
+    await mount.whenLoaded();
+
+    const note = 'Voice notes are sent to this provider as audio';
+    expect(hasText(card(host, 'transcription_slot'), note)).toBe(true);
+    expect(hasText(card(host, 'transcription_slot'), 'Recued can hide names it knows in text, but not in a recording.'))
+      .toBe(true);
+    // Only the card that takes recordings says it.
+    expect(hasText(card(host, 'embeddings_slot'), note)).toBe(false);
+    mount.dispose();
+  });
+
   it.each(SLOTS)('$title saved as Anthropic starts on the placeholder and is not saved again', async (s) => {
     const { host, mount, setters } = mountSlots({
       ...llmConfig(),

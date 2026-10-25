@@ -124,6 +124,7 @@ import {
   deriveRunTermination,
   executionSourceContractId,
   executionSourceHasContract,
+  OWNER_CONTRACT_ID,
   isDoorDispatchSource,
   isGatedActionTerminal,
   isAIBatchMode,
@@ -218,6 +219,7 @@ import {
   type AuditEntry,
   type AuditLogStore,
   type CheckpointStore,
+  type Collection,
   type CommitStore,
 } from '@recued/storage';
 import {
@@ -353,6 +355,8 @@ import {
 } from './commit-gateway-wiring.js';
 import type { SharedStore } from './storage/shared-store.js';
 import type { UserMemoryStore } from './user-memory-store.js';
+import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
+import { createDataMemoryLookup } from './data-memory-lookup.js';
 import type { AnnotationStore } from './storage/annotation-store.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
@@ -1049,6 +1053,10 @@ export interface ExecuteHandlerDeps {
   /** Durable owner projection per checkpointed gated step. This is distinct
    * from the MCP invocation-level continuation above. */
   gatedActionStore?: GatedActionStore;
+  /** D-329 §3.4 — the write rules an AI's approvals teach: the resumer keeps each answer to
+   *  a held Tier-1 write, and the chat's and the MCP door's gates spend a live rule's use
+   *  instead of asking. Absent ⇒ every held write asks. */
+  writeRules?: import('./storage/write-rule-store.js').WriteRuleStore;
   /** D-221 — namespaced Records storage and execution authority. Optional for
    * old/dbless harnesses; a Records catalog call fails closed when absent. */
   recordsStore?: RecordsStore;
@@ -1120,6 +1128,11 @@ export interface ExecuteHandlerDeps {
    *  falls through to undefined, the same posture as an unwired
    *  `sharedStore`. */
   userMemoryStore?: UserMemoryStore;
+  /** D-198 §10 — the memory redaction overlay. A forgotten entry (the owner's
+   *  redaction or an agent's `memory.forget`) resolves ABSENT through
+   *  `data.memory.<id>`, as it is absent from recall. Absent ⇒ nothing to honour
+   *  (db-less paths). */
+  memoryRedactionStore?: Collection<MemoryRedactionRecord>;
   /** D-179 P1 — standing-dish store. When provided, a request carrying
    *  `dish_id` resolves the dish and merges its `config_overlay` OVER
    *  install config before dispatch (dish → install → defaults).
@@ -1256,6 +1269,10 @@ export interface ExecuteHandlerDeps {
    * grants, route, and read fence. Production composition wires it whenever a
    * bearer store exists; a bearer-backed resume with no resolver fails closed. */
   approvalResumeAuthority?: ApprovalResumeAuthorityResolver;
+  /** D-329 — the Tier-1 tool registry a held tool call (`Checkpoint.raw_op.tier1_tool`)
+   *  resumes through. A getter: chat builds the registry after these deps. Absent ⇒ such a
+   *  resume fails closed, never runs. */
+  tier1Registry?: () => import('@recued/contracts').InternalToolRegistry | undefined;
   /** D-320 audit — the door a webhook run waiting for approval resumes under when a
    *  re-derive replaced the one it started under (`webhook-resume-door.ts`). Absent ⇒
    *  it resumes under its own, and is refused if that door was revoked. */
@@ -3896,27 +3913,14 @@ const handleExecuteInner = async (
     ? {
         ...(userMemoryStore
           ? {
-              // D-231 — `data.memory.<memory_id>[.field]`. Returns the ROW plus
-              // the resolved body, so a recipe reads `.summary` / `.body` /
-              // `.kind` / `.origin_actor` without a second call. `get()` (not
-              // `getRow()`) because a > 64 KB body lives in CAS and the row
-              // alone carries only a preview.
-              //
-              // ⚠ READ-ONLY, and there is no write path to add: the owner
-              // writes via `memory.create` / `memory.import` and the chat
-              // `memory.write` tool. A recipe that could author here would let
-              // an installed pack forge the owner's own knowledge.
+              // D-231 — `data.memory.<memory_id>[.field]`, read-only; a forgotten
+              // entry resolves absent (D-198 §10). See `data-memory-lookup.ts`.
               dataMemory: {
-                lookup: async (key: string) => {
-                  assertNamespaceScope();
-                  const resolved = await userMemoryStore.get(key);
-                  assertNamespaceScope();
-                  if (!resolved) return null;
-                  return {
-                    ...resolved.row,
-                    ...(resolved.body !== undefined ? { body: resolved.body } : {}),
-                  };
-                },
+                lookup: createDataMemoryLookup(
+                  userMemoryStore,
+                  deps.memoryRedactionStore,
+                  assertNamespaceScope,
+                ),
               },
             }
           : {}),
@@ -4660,8 +4664,14 @@ const handleExecuteInner = async (
                 void deps.auditLog.logActivity({
                   activity_id: `rca_${String(overlayOpId)}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
                   timestamp: Date.now(), action: 'recipe_coverage_admission', target: String(overlayOpId),
+                  // D-327 — the agreement the run was made under, so the Contracts
+                  // page counts one agreement's runs rather than everyone's. A source
+                  // with no contract of its own reaches coverage only through the
+                  // owner arm of `grantingRecipeEntry`, so it is the owner's.
                   detail: JSON.stringify({ granting_recipe: grantedByRecipe,
-                    recipe_id: recipe.recipe_id, run_id: lifecycle_run_id }),
+                    recipe_id: recipe.recipe_id, run_id: lifecycle_run_id,
+                    contract_id: (executionSource && executionSourceContractId(executionSource))
+                      ?? OWNER_CONTRACT_ID }),
                 }).catch(() => {});
               },
             });

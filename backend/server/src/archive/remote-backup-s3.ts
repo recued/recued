@@ -27,6 +27,10 @@ export class RemoteBackupTransferError extends Error {
     super(kind); this.name = 'RemoteBackupTransferError';
   }
 }
+/** Classify cleanup access refusal without retaining a provider response. */
+export class RemoteBackupCleanupDeniedError extends RemoteBackupTransferError {
+  constructor() { super('transfer_unconfirmed'); this.name = 'RemoteBackupCleanupDeniedError'; }
+}
 const fail = (kind: RemoteBackupTransferError['kind'] = 'transfer_unconfirmed'): never => { throw new RemoteBackupTransferError(kind); };
 const unescapeXml = (s: string): string => s.replace(/&quot;/g, '"').replace(/&apos;/g, "'")
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
@@ -99,7 +103,9 @@ export const createS3RemoteBackupTransport = (options: {
   };
   const abort = async (key: string, uploadId: string, signal?: AbortSignal): Promise<void> => {
     const response = await request('DELETE', key, { query: { uploadId }, ...(signal ? { signal } : {}) });
-    const ok = response.ok || response.status === 404; await discard(response); if (!ok) fail();
+    const ok = response.ok || response.status === 404; await discard(response);
+    if (response.status === 403) throw new RemoteBackupCleanupDeniedError();
+    if (!ok) fail();
   };
   const readObject = async (key: string, expected: RemoteArchiveBytes, identity: RemoteObjectIdentity = {}, path?: string, signal?: AbortSignal): Promise<RemoteObjectIdentity> => {
     signal?.throwIfAborted();

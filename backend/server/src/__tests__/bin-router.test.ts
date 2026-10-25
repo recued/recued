@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BootTraceEvent } from '../cli/boot-trace.js';
+import { serverEntry } from './helpers/server-bundle.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..', '..', '..');
@@ -303,7 +304,7 @@ const runServeUntilBanner = (dbPath: string): Promise<{
   stdout: string;
   stderr: string;
   timedOut: boolean;
-}> => new Promise((resolve) => {
+}> => serverEntry().then((entry) => new Promise((resolve) => {
   // ⛔ THE BOOT OWNS ITS INSTALL. `serve` holds the update lease at
   // `dirname(<its binary>)/recued-update.lock` while it starts, and on the
   // default channel under tsx that binary is the Node runtime every spawned boot
@@ -320,9 +321,7 @@ const runServeUntilBanner = (dbPath: string): Promise<{
   const child = spawn(
     process.execPath,
     [
-      '--import',
-      'tsx',
-      binPath,
+      ...entry,
       'serve',
       '--db',
       dbPath,
@@ -355,7 +354,7 @@ const runServeUntilBanner = (dbPath: string): Promise<{
   };
 
   // ⚠ A CEILING, NOT A DEFECT — RAISED 2026-08-10 (D-234 § 234.4 slice 2). This
-  // wall bounds a FULL cold server boot under tsx: D-212 identity-key generation,
+  // wall bounds a FULL cold server boot (under tsx, then): D-212 identity-key generation,
   // SQLite open + migrations, the calendar stack, the MCP transport, then the
   // listener bind. At 10s it was already marginal — the same assertion failed at
   // 10,103ms in a CLEAN-HEAD worktree run earlier that day with none of these
@@ -399,7 +398,7 @@ const runServeUntilBanner = (dbPath: string): Promise<{
     clearTimeout(forceStop);
     resolve({ stdout, stderr, timedOut });
   });
-});
+}));
 
 const stdoutHasJsonRpcId = (stdout: string, id: number): boolean => {
   return stdout
@@ -438,14 +437,14 @@ const runMcpUntilToolsList = (
   stderr: string;
   timedOut: boolean;
   exitCode: number | null;
-}> => new Promise((resolve) => {
+}> => (options.loaderTracePath
+  // A traced boot records which source modules load, so it boots from source.
+  ? Promise.resolve(['--import', 'tsx', '--loader', moduleLoadRecorderPath, binPath])
+  : serverEntry()).then((entry) => new Promise((resolve) => {
   const child = spawn(
     process.execPath,
     [
-      '--import',
-      'tsx',
-      ...(options.loaderTracePath ? ['--loader', moduleLoadRecorderPath] : []),
-      binPath,
+      ...entry,
       '--mcp',
       ...(dbPath !== null ? ['--db', dbPath] : []),
       ...(options.token !== undefined ? ['--token', options.token] : []),
@@ -524,7 +523,7 @@ const runMcpUntilToolsList = (
     clearTimeout(forceStop);
     resolve({ stdout, stderr, timedOut, exitCode: code });
   });
-});
+}));
 
 describe('production router', () => {
   it('prints a version without opening the configured DB path', () => {

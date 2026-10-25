@@ -23,8 +23,12 @@
  *  It is NOT a standalone rpc / ingredient and needs no boot
  *  registration.
  *
- *  Two guards, matching the substrate invariants + the existing
+ *  Three guards, matching the substrate invariants + the existing
  *  internal-writer discipline (`in-doubt-annotation-writer.ts`):
+ *
+ *   0. A closed target list (`ATTACHMENT_TARGET_COLLECTIONS`). The link
+ *      store takes any collection name, so a misspelled target wrote an
+ *      edge no read finds.
  *
  *   1. File-existence (I-1, no dangling links). The `file_id` must
  *      resolve to a live `data.file.received` record before the link
@@ -48,7 +52,7 @@
  *  Spec: D-172 § A.3 / N.3 / D2 / I-1.
  */
 
-import { RpcError } from '@recued/contracts';
+import { RpcError, WORK_ENTITY_KINDS } from '@recued/contracts';
 import type { Link } from '@recued/contracts';
 
 import type { AnnotationRpcDeps } from '../../annotation-handler.js';
@@ -71,12 +75,24 @@ export const ATTACHMENT_LINK_ROLE = 'attachment' as const;
  *  `authored_by` to attribute differently. */
 export const ATTACH_FILE_AUTHOR_ID = 'recued/attach-file';
 
+/** ⛔ What a file can be attached to (D-172 § A.3 / A.5 / A.7, 2026-10-23): a
+ *  mail record, a contact, and every work-entity kind, which a drop
+ *  materializes with its file (D-173 P5). Each is the collection name the
+ *  inline `{{data.<collection>.<id>.links.attachment}}` read looks its links
+ *  up by. The work kinds come from `WORK_ENTITY_KINDS`, never re-spelled, so a
+ *  new kind is attachable once it exists. */
+export const ATTACHMENT_TARGET_COLLECTIONS: ReadonlySet<string> = new Set([
+  'mail',
+  'contact',
+  ...WORK_ENTITY_KINDS,
+]);
+
 export interface AttachFileArgs {
   /** `data.file.received` record id (the file's per-ingest identity). */
   file_id: string;
-  /** The warehouse entity the file belongs to — collection name
-   *  (`'contact'` / `'project'` / `'task'` / `'commitment'` / `'note'`)
-   *  and that record's id. */
+  /** The warehouse entity the file belongs to — one of
+   *  `ATTACHMENT_TARGET_COLLECTIONS` (`'mail'`, `'contact'`, a work kind)
+   *  — and that record's id. */
   to_collection: string;
   to_id: string;
   /** Optional `authored_by_recipe_id` override. Absent → the
@@ -115,7 +131,8 @@ const linkMatchesFile = (
 
 /** Associate a `data.file.received` record to a warehouse entity via a
  *  `role: 'attachment'` link. Idempotent on `(entity, file)`. Throws
- *  `bad_request` on malformed args and `file_not_found` (404) when the
+ *  `bad_request` on malformed args or a target outside
+ *  `ATTACHMENT_TARGET_COLLECTIONS`, and `file_not_found` (404) when the
  *  file record does not exist. */
 export const attachFile = async (
   args: AttachFileArgs,
@@ -127,6 +144,14 @@ export const attachFile = async (
   }
   if (typeof to_collection !== 'string' || to_collection.length === 0) {
     throw new RpcError('bad_request', 'attachFile: to_collection is required', 400);
+  }
+  if (!ATTACHMENT_TARGET_COLLECTIONS.has(to_collection)) {
+    throw new RpcError(
+      'bad_request',
+      `attachFile: a file cannot be attached to '${to_collection}' `
+        + `(one of: ${[...ATTACHMENT_TARGET_COLLECTIONS].join(', ')})`,
+      400,
+    );
   }
   if (typeof to_id !== 'string' || to_id.length === 0) {
     throw new RpcError('bad_request', 'attachFile: to_id is required', 400);

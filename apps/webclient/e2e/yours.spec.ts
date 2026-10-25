@@ -5,6 +5,7 @@ import { openChatHistory } from './helpers/chat-history.js';
 declare global { interface Window {
   __assetChatCalls: Array<{ method: string; args: Record<string, unknown> }>;
   __assetRuleWrites: import('@recued/contracts').YoursCommand[];
+  __occurrenceRenewals: import('@recued/contracts').YoursCommand[];
   __assetFactWrites: import('@recued/contracts').YoursCommand[];
   __navigationOpens: import('@recued/contracts').YoursCommand[];
   __assetHandoffWrites: import('@recued/contracts').YoursCommand[];
@@ -20,6 +21,15 @@ const captureAssetChatCalls = (page: Page) => page.evaluate(() => {
 });
 
 installFullAppHooks();
+
+const showAssetFilters = async (route: Locator) => {
+  const filters = route.locator('[data-yours-disclosure="Filters"]');
+  if (!await filters.evaluate(node => (node as HTMLDetailsElement).open)) await filters.locator('summary').click();
+};
+
+const assetSection = async (route: Locator, name: 'Overview' | 'Rules' | 'Files' | 'Activity') => {
+  await route.getByRole('navigation', { name: 'Asset sections', exact: true }).getByRole('link', { name, exact: true }).click();
+};
 
 test('Asset cards show task counts and authoritative due dates with estimates kept explicit', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
@@ -107,15 +117,15 @@ const missingFactCards = async (page: Page, flags = '') => {
 
 test('Asset filters select missing facts and overdue dates from the owner snapshot', async ({ page }) => {
   const route = await missingFactCards(page); const filter = route.getByLabel('Show assets', { exact: true });
-  await filter.selectOption('missing_facts');
+  await showAssetFilters(route); await filter.selectOption('missing_facts');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
   await expect(route.locator('[data-yours-asset="card-missing"]')).toContainText('Missing facts (4)');
-  await filter.selectOption('overdue');
+  await showAssetFilters(route); await filter.selectOption('overdue');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
   await expect(route.locator('[data-yours-asset="card-renewal"]')).toContainText('Overdue: Renew cover');
-  await filter.selectOption(''); await expect(route.locator('[data-yours-asset-count]')).toHaveText('6 assets');
+  await showAssetFilters(route); await filter.selectOption(''); await expect(route.locator('[data-yours-asset-count]')).toHaveText('6 assets');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(6);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
 });
@@ -126,7 +136,7 @@ for (const [filter, term] of [['missing_facts', 'Workshop / meter #'], ['overdue
     const route = page.locator('[data-recued-yours]');
     await expect(route.locator('[data-yours-asset]')).toHaveCount(50);
     await expect(route.locator('[data-yours-asset] h3').first()).toHaveText('clear cover 54');
-    await route.getByLabel('Show assets', { exact: true }).selectOption(filter);
+    await showAssetFilters(route); await route.getByLabel('Show assets', { exact: true }).selectOption(filter);
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('56 matching assets');
     await route.getByLabel('Find assets', { exact: true }).fill(term);
     await route.getByLabel('Find assets', { exact: true }).press('Enter');
@@ -168,7 +178,7 @@ for (const [sphere, term] of [['personal', 'overdue cover'], ['professional', 'W
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('171 assets');
     await expect(route.locator('[data-yours-asset] h3').first()).toHaveText('clear cover 54');
     await route.getByLabel('Find assets', { exact: true }).fill(term);
-    await route.getByLabel('Asset sphere', { exact: true }).selectOption(sphere);
+    await showAssetFilters(route); await route.getByLabel('Asset sphere', { exact: true }).selectOption(sphere);
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('55 matching assets');
     await expect(route.locator('[data-yours-asset]')).toHaveCount(50);
     const firstIds = await route.locator('[data-yours-asset]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-yours-asset')));
@@ -188,7 +198,7 @@ for (const [sphere, term] of [['personal', 'overdue cover'], ['professional', 'W
     await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue(term);
     await route.getByRole('link', { name: 'Previous', exact: true }).click();
     await expect(route.locator('[data-yours-asset]')).toHaveCount(50);
-    await route.getByLabel('Asset sphere', { exact: true }).selectOption('');
+    await showAssetFilters(route); await route.getByLabel('Asset sphere', { exact: true }).selectOption('');
     await expect(page).toHaveURL(new RegExp(`#yours/assets/search/${encodeURIComponent(term)}$`, 'u'));
     await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue(term);
   });
@@ -199,20 +209,20 @@ test('Asset sphere filters compose with attention and search and reset the page 
   await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_pages&yours_asset_spheres#yours/assets/filter/missing_facts/sphere/professional/search/${encodeURIComponent(term)}/page/2`);
   const route = page.locator('[data-recued-yours]');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(5);
-  await route.getByRole('link', { name: 'View all assets', exact: true }).click();
+  await route.getByRole('link', { name: 'Remove attention filter', exact: true }).click();
   await expect(route.getByLabel('Show assets', { exact: true })).toHaveValue('');
   await expect(route.getByLabel('Asset sphere', { exact: true })).toHaveValue('professional');
   await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue(term);
   await expect(route.locator('[data-yours-asset]')).toHaveCount(50);
-  await route.getByLabel('Show assets', { exact: true }).selectOption('overdue');
+  await showAssetFilters(route); await route.getByLabel('Show assets', { exact: true }).selectOption('overdue');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('0 matching assets');
   await route.getByLabel('Find assets', { exact: true }).fill('overdue cover');
-  await route.getByLabel('Asset sphere', { exact: true }).selectOption('personal');
+  await showAssetFilters(route); await route.getByLabel('Asset sphere', { exact: true }).selectOption('personal');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('55 matching assets');
   await expect(route.getByLabel('Show assets', { exact: true })).toHaveValue('overdue');
   await route.getByRole('link', { name: 'Next', exact: true }).click();
   await expect(route.locator('[data-yours-asset]')).toHaveCount(5);
-  await route.getByLabel('Asset sphere', { exact: true }).selectOption('professional');
+  await showAssetFilters(route); await route.getByLabel('Asset sphere', { exact: true }).selectOption('professional');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('0 matching assets');
   await expect(route.getByText('No assets match these filters.', { exact: true })).toBeVisible();
   await expect(route.getByRole('link', { name: 'Previous', exact: true })).toHaveCount(0);
@@ -251,7 +261,7 @@ for (const filter of ['', 'missing_facts'] as const) {
     await expect(route.locator('[data-yours-asset-count]')).toHaveCount(0);
     await expect(route.getByRole('navigation', { name: 'Pages', exact: true })).toHaveCount(0);
     await expect(page).toHaveURL(/\/sphere\/professional\/page\/2$/u);
-    await route.getByLabel('Asset sphere', { exact: true }).selectOption('');
+    await showAssetFilters(route); await route.getByLabel('Asset sphere', { exact: true }).selectOption('');
     await expect(route.getByLabel('Show assets', { exact: true })).toHaveValue(filter);
     await expect(route.locator('[data-yours-asset]')).toHaveCount(50);
     await expect(route.locator('[data-yours-asset-count]')).toHaveText(filter ? '56 matching assets' : '171 assets');
@@ -320,7 +330,7 @@ test('Asset filters clear an earlier read error only after a successful retry', 
 for (const method of ['yours.read', 'contact.list'] as const) {
   test(`Asset filters preserve a search draft when a pending ${method} finishes`, async ({ page }) => {
     const route = await missingFactCards(page);
-    await route.getByLabel('Show assets', { exact: true }).selectOption('missing_facts');
+    await showAssetFilters(route); await route.getByLabel('Show assets', { exact: true }).selectOption('missing_facts');
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
     await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
     const before = await page.evaluate(rpc => window.__app.rpcCallCount(rpc), method);
@@ -345,7 +355,7 @@ test('Asset filters report assets that could not be checked and keep all assets 
   await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_unavailable#yours/assets/filter/overdue`);
   const route = page.locator('[data-recued-yours]'); await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
   await expect(route.getByText('1 asset could not be checked. Choose All assets to review it.', { exact: true })).toBeVisible();
-  await route.getByRole('link', { name: 'View all assets', exact: true }).click();
+  await route.getByRole('link', { name: 'Remove attention filter', exact: true }).click();
   await expect(route.locator('[data-yours-asset]')).toHaveCount(6);
 });
 
@@ -354,7 +364,7 @@ test('Asset filters never present an older server unfiltered page as filtered re
   const route = page.locator('[data-recued-yours]');
   await expect(route.getByText('Asset filters are unavailable on this server. Choose All assets to view your assets.', { exact: true })).toBeVisible();
   await expect(route.locator('[data-yours-asset]')).toHaveCount(0); await expect(route.locator('[data-yours-asset-count]')).toHaveCount(0);
-  await route.getByRole('link', { name: 'View all assets', exact: true }).click();
+  await route.getByRole('link', { name: 'Remove attention filter', exact: true }).click();
   await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
   await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue('Boiler');
 });
@@ -570,7 +580,7 @@ test('An open task proof can close names the +done address to forward the proof 
     + 'to ana+done@example.test from that same mailbox, then accept the proposal it makes here.');
   // A server that names no address says nothing about it.
   await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
-  await expect(page.getByRole('heading', { name: 'Open', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
   await expect(page.locator('[data-yours-proof-addresses]')).toHaveCount(0);
 });
 
@@ -637,7 +647,7 @@ test('Manual reading adds a new typed field that can immediately be used by a ru
   await form.getByRole('button', { name: 'Save reading', exact: true }).click(); await expect(form).toHaveCount(0);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([{ action: 'asset.update', id: 'passport',
     patch: { readings: { temperature: { value: -5.25, unit: '°C', as_of: asOf, evidence: [] } } } }]);
-  await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   await form.getByLabel('When', { exact: true }).selectOption('objective');
   await form.getByLabel('Asset reading', { exact: true }).selectOption('temperature');
   await expect(form.getByLabel('Reading unit', { exact: true })).toHaveValue('°C');
@@ -673,7 +683,7 @@ test('Manual condition requires an explicit state and can later record a confirm
 
 test('Manual condition adds a field without replacing a part relationship or inherited facts', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=parts#yours/asset/boiler`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Record condition', exact: true }).click();
+  const route = page.locator('[data-recued-yours]'); await route.getByLabel('More actions for facts', { exact: true }).click(); await route.getByRole('button', { name: 'Record condition', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await expect(form.getByLabel('Field name', { exact: true })).toBeVisible();
   await form.getByLabel('Field name', { exact: true }).fill('heating_fault');
   await form.getByLabel('What you observed', { exact: true }).selectOption('present');
@@ -683,7 +693,7 @@ test('Manual condition adds a field without replacing a part relationship or inh
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([{ action: 'asset.update', id: 'boiler',
     patch: { observations: { heating_fault: { active: true, certainty: 'confirmed', as_of: asOf, evidence: [], source: 'owner' } } } }]);
   await expect(route.getByRole('link', { name: 'Belongs to House', exact: true })).toBeVisible();
-  await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   await expect(form.getByLabel('When', { exact: true })).toHaveValue('condition');
   await expect(form.getByLabel('Asset condition', { exact: true }).locator('option:checked')).toHaveText('Heating fault · Active');
   expect(await page.evaluate(() => window.__assetRuleWrites)).toEqual([]);
@@ -691,12 +701,12 @@ test('Manual condition adds a field without replacing a part relationship or inh
 
 test('Manual reading uses a saved rule unit when the current value is still unknown', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('When', { exact: true }).selectOption('objective');
   await form.getByLabel('Asset reading', { exact: true }).selectOption('battery');
   await form.getByLabel('Reading unit', { exact: true }).fill('%'); await form.getByLabel('Target', { exact: true }).fill('20');
   await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
-  await route.locator('[data-yours-reading="battery"]').getByRole('button', { name: 'Update reading', exact: true }).click();
+  await assetSection(route, 'Overview'); await route.locator('[data-yours-reading="battery"]').getByRole('button', { name: 'Update reading', exact: true }).click();
   await expect(form.getByLabel('Value', { exact: true })).toHaveValue('');
   await expect(form.getByLabel('Unit', { exact: true })).toHaveValue('%');
   await expect(form.getByLabel('Unit', { exact: true })).toHaveJSProperty('readOnly', true);
@@ -764,7 +774,7 @@ test.describe('Observation times around daylight saving changes', () => {
 
 test('Unknown reading units stay separate from known readings and retain their own draft', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('When', { exact: true }).selectOption('objective');
   await expect(form.getByLabel('Reading unit', { exact: true })).toHaveValue('km');
   await form.getByLabel('Asset reading', { exact: true }).selectOption('battery');
@@ -785,7 +795,7 @@ test('Schedule proposals expose only schedule edits and retain the original rule
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/proposals`);
   const route = page.locator('[data-recued-yours]');
   const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review renewal reminders', exact: true }) });
-  await card.getByRole('button', { name: 'Edit', exact: true }).click(); const form = route.locator('[data-yours-editor]');
+  await card.getByRole('button', { name: 'Review change', exact: true }).click(); const form = route.locator('[data-yours-editor]');
   await expect(form.getByLabel('Remind before (for example 6 months, 1 week)', { exact: true })).toBeFocused();
   for (const name of ['Title', 'When', 'Asset date', 'Consequence', 'Expiry', 'Creates', 'Notify']) await expect(form.getByLabel(name, { exact: true })).toBeDisabled();
   await form.getByLabel('Remind before (for example 6 months, 1 week)', { exact: true }).fill('3 weeks');
@@ -795,7 +805,7 @@ test('Schedule proposals expose only schedule edits and retain the original rule
     payload: { asset_id: 'passport', rule_id: 'renew', schedule: { before: [{ amount: 3, unit: 'weeks' }], on_day: false } } }]);
   await route.getByRole('link', { name: 'Assets', exact: true }).click();
   await route.getByRole('link', { name: 'Open asset', exact: true }).click();
-  await route.locator('article').filter({ has: page.getByRole('heading', { name: 'Renew', exact: true }) }).getByRole('button', { name: 'Edit rule', exact: true }).click();
+  await assetSection(route, 'Rules'); await route.locator('article').filter({ has: page.getByRole('heading', { name: 'Renew', exact: true }) }).getByRole('button', { name: 'Edit rule', exact: true }).click();
   await expect(form.getByLabel('Title', { exact: true })).toHaveValue('Renew');
   await expect(form.getByLabel('Remind before (for example 6 months, 1 week)', { exact: true })).toHaveValue('6 months, 3 months, 1 months');
 });
@@ -803,7 +813,7 @@ test('Schedule proposals expose only schedule edits and retain the original rule
 test('Schedule proposals with a missing rule stay on the proposal and explain the stale target', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields&yours_missing_rule#yours/proposals`);
   const route = page.locator('[data-recued-yours]');
-  await route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review renewal reminders', exact: true }) }).getByRole('button', { name: 'Edit', exact: true }).click();
+  await route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review renewal reminders', exact: true }) }).getByRole('button', { name: 'Review change', exact: true }).click();
   await expect(route.getByRole('alert')).toHaveText('Rule not found. Refresh this proposal.');
   await expect(route.locator('[data-yours-editor]')).toHaveCount(0);
   expect(await page.evaluate(() => window.__assetRuleWrites)).toEqual([]);
@@ -813,7 +823,7 @@ test('Returning from a class rule keeps protection for the unsaved class draft',
   await page.goto(`${HARNESS_URL}?yours=demo#yours/assets/classes`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Create class', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('Name', { exact: true }).fill('Membership draft');
-  await form.getByLabel('Dates fields (comma-separated)', { exact: true }).fill('expires_on');
+  await form.getByRole('button', { name: 'Add date field', exact: true }).click(); await form.getByLabel('Date field name', { exact: true }).fill('Expires on');
   await form.getByRole('button', { name: 'Add preset rule', exact: true }).click();
   await form.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Membership draft');
@@ -825,8 +835,8 @@ test('Returning from a class rule keeps protection for the unsaved class draft',
 
 test('Asset date rules choose named facts and keep an unknown date unknown', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 });
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]');
   await expect(form.getByLabel('Asset date', { exact: true })).toContainText('Issued on · Unknown');
   await expect(form.getByLabel('Target', { exact: true })).toBeHidden();
@@ -846,20 +856,20 @@ test('Asset date rules choose named facts and keep an unknown date unknown', asy
 });
 
 test('Interval rules save the chosen last-done fact without supplying a missing date', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('When', { exact: true }).selectOption('interval');
   await form.getByLabel('Asset date', { exact: true }).selectOption('last_serviced_on');
   await form.getByLabel('Interval amount', { exact: true }).fill('3'); await form.getByLabel('Interval unit', { exact: true }).selectOption('weeks');
   await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
   expect(await page.evaluate(() => window.__assetRuleWrites)).toMatchObject([{ action: 'rule.save', rule: {
     when: { kind: 'interval', field: 'last_serviced_on', every: { amount: 3, unit: 'weeks' } } } }]);
-  expect(await route.locator('dt').filter({ hasText: /^last serviced on$/ }).evaluate(element => element.nextElementSibling?.textContent)).toBe('Unknown');
+  expect(await route.locator('dt').filter({ hasText: /^Last serviced on$/ }).evaluate(element => element.nextElementSibling?.textContent)).toBe('Unknown');
   expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.upsert'))).toBe(0);
 });
 
 test('Date rules keep an explicit earlier deadline in the advanced options', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport/view/rules`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Edit rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.locator('[data-yours-rule-more]>summary').click();
   await form.getByLabel('Date offset before its field (blank for the field date)', { exact: true }).fill('2');
@@ -874,8 +884,8 @@ test('Date rules keep an explicit earlier deadline in the advanced options', asy
 });
 
 test('Rule kinds retain draft values and ignore invalid controls from inactive kinds', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); const when = form.getByLabel('When', { exact: true });
   await when.selectOption('interval'); await form.getByLabel('Asset date', { exact: true }).selectOption('last_serviced_on');
   await form.getByLabel('Interval amount', { exact: true }).fill('-2');
@@ -893,8 +903,8 @@ test('Rule kinds retain draft values and ignore invalid controls from inactive k
 });
 
 test('Reading rules require a target and use the actual reading unit, including a zero target', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('When', { exact: true }).selectOption('objective');
   await expect(form.getByLabel('Asset reading', { exact: true })).toContainText('Odometer · 9000 km');
   await expect(form.getByLabel('Reading unit', { exact: true })).toHaveValue('km');
@@ -908,8 +918,8 @@ test('Reading rules require a target and use the actual reading unit, including 
 });
 
 test('An unknown reading can define a target without inventing a current value', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('When', { exact: true }).selectOption('objective');
   await form.getByLabel('Asset reading', { exact: true }).selectOption('battery');
   await expect(form.locator('[data-yours-rule-fact-hint]')).toContainText('The reading is unknown.');
@@ -926,7 +936,7 @@ test('An unknown reading can define a target without inventing a current value',
 });
 
 test('Editing a reading rule preserves its advanced settings and existing delivery behavior', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/rules`);
   const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'Service by distance', exact: true }) });
   await card.getByRole('button', { name: 'Edit rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await expect(form.locator('[data-yours-rule-more]')).not.toHaveAttribute('open');
@@ -939,8 +949,8 @@ test('Editing a reading rule preserves its advanced settings and existing delive
 });
 
 test('Condition rules select recorded conditions without treating unknown as active', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('When', { exact: true }).selectOption('condition');
   await expect(form.getByLabel('Asset condition', { exact: true })).toContainText('Damage · Unknown');
   await expect(form.locator('[data-yours-rule-fact-hint]')).toContainText('No active condition has been assumed.');
@@ -952,7 +962,7 @@ test('Condition rules select recorded conditions without treating unknown as act
 
 test('An asset without facts explains what to add and cannot save an empty selector', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=parts#yours/asset/boiler`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]');
   await expect(form.locator('[data-yours-rule-fact-hint]')).toHaveText('No dates on this asset yet. Add one in Edit asset before saving this kind of rule.');
   await form.getByRole('button', { name: 'Save', exact: true }).click();
@@ -966,8 +976,8 @@ test('An asset without facts explains what to add and cannot save an empty selec
 });
 
 test('Invalid advanced values are revealed and notices cannot retain action repeats', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); await assetSection(route, 'Rules'); await route.getByRole('button', { name: 'Add rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); const more = form.locator('[data-yours-rule-more]');
   await more.locator('summary').click(); await form.getByLabel('Repeat after (blank for none)', { exact: true }).fill('0');
   await more.locator('summary').click(); await form.getByRole('button', { name: 'Save', exact: true }).click();
@@ -984,7 +994,7 @@ test('Invalid advanced values are revealed and notices cannot retain action repe
 });
 
 test('Stopping a safety clock still requires the existing explicit confirmation', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport/view/rules`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Edit rule', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('Notify', { exact: true }).uncheck();
   page.once('dialog', dialog => dialog.dismiss()); await form.getByRole('button', { name: 'Save', exact: true }).click();
@@ -997,7 +1007,7 @@ test('Stopping a safety clock still requires the existing explicit confirmation'
 test('Editing a proposed asset rule saves its draft without enabling or applying it', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review issue-date check', exact: true }) });
-  await card.getByRole('button', { name: 'Edit', exact: true }).click(); const form = route.locator('[data-yours-editor]');
+  await card.getByRole('button', { name: 'Review change', exact: true }).click(); const form = route.locator('[data-yours-editor]');
   await expect(form.getByLabel('Asset date', { exact: true })).toHaveValue('issued_on');
   await form.locator('[data-yours-rule-more]>summary').click();
   await expect(form.getByLabel('Enabled', { exact: true })).toBeDisabled();
@@ -1154,26 +1164,32 @@ test('Data offers the sphere filter over loaded records only', async ({ page }) 
   await page.goto(`${HARNESS_URL}?yours=demo&settle_reads=1#data/commitment`);
   await expect(page.getByLabel('Data sphere', { exact: true })).toBeVisible();
 });
-test('Connections changes a source default sphere through the owner control', async ({ page }) => {
+test('Connections places a source in Personal or Work on the lane that holds it', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo&settle_reads=1#connections/mail`);
-  let panel = page.locator('[data-source-spheres]'); await panel.getByText('Default spheres', { exact: true }).click();
-  await panel.getByLabel('Source to place', { exact: true }).selectOption('calendar:work'); await expect(panel.getByLabel('Source sphere', { exact: true })).toHaveValue('professional');
-  await panel.getByLabel('Source sphere', { exact: true }).selectOption('personal'); await panel.getByRole('button', { name: 'Save source sphere', exact: true }).click();
-  await expect(panel.getByRole('button', { name: 'Save source sphere', exact: true })).toBeEnabled();
-  await page.evaluate(() => { location.hash = '#connections/calendar'; }); panel = page.locator('[data-source-spheres]'); await panel.getByText('Default spheres', { exact: true }).click();
-  await panel.getByLabel('Source to place', { exact: true }).selectOption('calendar:work'); await expect(panel.getByLabel('Source sphere', { exact: true })).toHaveValue('personal');
+  // Each lane offers only its own sources: the calendar is placed on Calendar.
+  let row = page.locator('[data-source-sphere-row="mail:personal"]'); await expect(row).toBeVisible();
+  await expect(page.locator('[data-source-sphere-row="calendar:work"]')).toHaveCount(0);
+  await page.evaluate(() => { location.hash = '#connections/calendar'; });
+  row = page.locator('[data-source-sphere-row="calendar:work"]'); await expect(row.getByRole('radio', { name: 'Work', exact: true })).toBeChecked();
+  await row.getByRole('radio', { name: 'Personal', exact: true }).check();
+  // A change waits for Save, and says it widens what Personal access covers.
+  await expect(row).toContainText('Anything you have shared for Personal items will include them');
+  await row.getByRole('button', { name: 'Save', exact: true }).click(); await expect(row.getByRole('status')).toContainText('Saved');
+  await page.evaluate(() => { location.hash = '#connections/mail'; }); await expect(page.locator('[data-source-sphere-row="mail:personal"]')).toBeVisible();
+  await page.evaluate(() => { location.hash = '#connections/calendar'; });
+  await expect(page.locator('[data-source-sphere-row="calendar:work"]').getByRole('radio', { name: 'Personal', exact: true })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 test('Learning proposals have working edits and annual tasks are reviewed in Contracts', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo&learning=1&contracts=paged#yours/proposals`);
   let route = page.locator('[data-recued-yours]');
   const ranking = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Review passport ranking', exact: true }) });
-  await ranking.getByRole('button', { name: 'Edit', exact: true }).click();
+  await ranking.getByRole('button', { name: 'Review change', exact: true }).click();
   let form = page.locator('[data-yours-editor]'); await form.getByLabel('Ranking factor (0.5 to 1.5)', { exact: true }).fill('1.4'); await form.getByRole('button', { name: 'Save', exact: true }).click();
-  await ranking.getByRole('button', { name: 'Edit', exact: true }).click(); await expect(form.getByLabel('Ranking factor (0.5 to 1.5)', { exact: true })).toHaveValue('1.4');
+  await ranking.getByRole('button', { name: 'Review change', exact: true }).click(); await expect(form.getByLabel('Ranking factor (0.5 to 1.5)', { exact: true })).toHaveValue('1.4');
   await form.getByRole('button', { name: 'Cancel', exact: true }).click();
   const relation = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Relate trips to travel documents', exact: true }) });
-  await relation.getByRole('button', { name: 'Edit', exact: true }).click();
+  await relation.getByRole('button', { name: 'Review change', exact: true }).click();
   await form.getByLabel('Related asset class', { exact: true }).selectOption('passport'); await form.getByRole('button', { name: 'Save', exact: true }).click();
   await route.getByRole('link', { name: 'Review standing task in Contracts', exact: true }).click();
   const panel = page.locator('[data-standing-tasks]'); await expect(panel.getByRole('heading', { name: 'An annual task? · Buy flowers', exact: true })).toBeVisible();
@@ -1256,7 +1272,8 @@ test('A typed search is not an unsaved change when leaving Yours', async ({ page
 });
 test('Episodes lists stored episodes only and keeps a cited derived episode only after an owner correction', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo#yours/episodes`);
-  let route = page.locator('[data-recued-yours]'); await expect(route.getByRole('heading', { name: 'Memory exclusions', exact: true })).toBeVisible();
+  let route = page.locator('[data-recued-yours]'); await expect(route.locator('summary').filter({ hasText: /^Memory exclusions$/u })).toBeVisible();
+  await route.locator('[data-yours-disclosure="Last time in your overview"]>summary').click();
   await expect(route.getByRole('button', { name: 'Accept this rate', exact: true })).toBeDisabled();
   // P44 — never a derived lifelog: the list shows nothing assembled, and never asks for it.
   await expect(route.getByText('Assembled for this view.', { exact: false })).toHaveCount(0);
@@ -1267,10 +1284,12 @@ test('Episodes lists stored episodes only and keeps a cited derived episode only
   await form.getByLabel('Notes', { exact: true }).fill('We visited the museum that afternoon.'); await form.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(route.getByText('We visited the museum that afternoon.', { exact: true })).toBeVisible();
   await expect(route.getByText('Assembled for this view.', { exact: false })).toHaveCount(0);
+  await route.locator('[data-yours-disclosure="Memory exclusions"]>summary').click();
   await route.getByLabel('Person to exclude', { exact: true }).selectOption('ana'); await route.getByRole('button', { name: 'Add exclusion', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'Person: Ana', exact: true })).toBeVisible();
   await route.getByRole('button', { name: 'Remove exclusion', exact: true }).click(); await expect(route.getByRole('heading', { name: 'Person: Ana', exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await route.getByLabel('More actions for Las Vegas trip', { exact: true }).click();
   await route.getByRole('button', { name: 'Delete and stop suggesting', exact: true }).click(); await expect(route.getByRole('heading', { name: 'Las Vegas trip', exact: true })).toHaveCount(0);
 });
 test('An annual occasion keeps its date notice and offers an editable habit with its own due offset', async ({ page }) => {
@@ -1279,14 +1298,14 @@ test('An annual occasion keeps its date notice and offers an editable habit with
   let form = page.locator('[data-yours-editor]'); await form.getByLabel('Name', { exact: true }).fill('Ana birthday');
   await form.getByLabel('Annual date (MM-DD)', { exact: true }).fill('10-24'); await form.getByLabel('Person', { exact: true }).selectOption('ana');
   await form.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(route.getByText('Notice · 1 weeks, on the day', { exact: true })).toBeVisible();
+  await expect(route.getByText('Notice · 1 week before; on the day', { exact: true })).toBeVisible();
   await route.getByRole('button', { name: 'Add habit', exact: true }).click(); form = page.locator('[data-yours-editor]');
   await form.getByLabel('Title', { exact: true }).fill('Buy flowers'); await form.getByLabel('Due before the occasion (blank for the occasion date)', { exact: true }).fill('2');
   await form.getByLabel('Remind before the due date', { exact: true }).fill('1 week');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await form.getByRole('button', { name: 'Save', exact: true }).click();
   const habit = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Buy flowers', exact: true }) }).last();
-  await expect(habit.getByText('Task · 1 weeks, on the day', { exact: true })).toBeVisible();
+  await expect(habit.getByText('Task · 1 week before; on the day', { exact: true })).toBeVisible();
   await habit.getByRole('button', { name: 'Edit occasion rule', exact: true }).click();
   await expect(page.locator('[data-yours-editor]').getByLabel('Due before the occasion (blank for the occasion date)', { exact: true })).toHaveValue('2');
 });
@@ -1296,7 +1315,7 @@ test('Yours has five working tabs, Classes within Assets, and same-route address
   await expect(nav.getByRole('link')).toHaveCount(5);
   await expect(route.getByRole('heading', { name: 'Ana’s passport' })).toBeVisible();
   await nav.getByRole('link', { name: 'Proposals', exact: true }).click();
-  await expect(route.getByRole('heading', { name: 'What is read' })).toBeVisible();
+  await expect(route.locator('summary').filter({ hasText: /^What is read$/u })).toBeVisible();
   await expect(route.getByRole('heading', { name: 'LG television' })).toBeVisible();
   await nav.getByRole('link', { name: 'Assets', exact: true }).click();
   await route.getByRole('link', { name: 'Classes', exact: true }).click();
@@ -1431,6 +1450,7 @@ test('An occasion shows its suggestions and history, and an episode cited there 
   await cited('museum').getByRole('button', { name: 'Hide', exact: true }).click();
   await expect(cited('museum')).toHaveCount(0); await expect(cited('dinner')).toBeVisible();
   await page.evaluate(() => { location.hash = '#yours/episodes'; });
+  await route.locator('[data-yours-disclosure="Memory exclusions"]>summary').click();
   await expect(route.getByText('Episode: Museum afternoon', { exact: true })).toBeVisible();
   await expect(route.getByText(/^Episode: /u)).toHaveCount(1);
   await page.goto(`${HARNESS_URL}?yours=demo&data=contacts&contact_history=1&occasion_history=1&settle_reads=1#data/contact`);
@@ -1456,6 +1476,7 @@ test('Settings → Privacy → Learning turns last time on and off and links to 
   await expect(panel.getByRole('button', { name: 'Allow last time', exact: true })).toBeFocused();
   await page.evaluate(() => { location.hash = '#yours/episodes'; });
   const recall = page.locator('[data-recued-yours]');
+  await recall.locator('[data-yours-disclosure="Last time in your overview"]>summary').click();
   await expect(recall.getByText('Off. A kind of offer reaches your overview only after at least five scored candidates', { exact: false })).toBeVisible();
   await expect(recall.getByRole('button', { name: 'Allow last time', exact: true })).toBeVisible();
 });
@@ -1532,8 +1553,14 @@ test('The asset header says when its holder is no longer in your contacts', asyn
 test('A part shows what it inherits without saving it as its own, and a new asset keeps its class audience', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=parts#yours/asset/boiler`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
-  let form = page.locator('[data-yours-editor]'); const audience = form.getByLabel('Audience', { exact: true });
-  await expect(audience).toHaveValue(''); await expect(audience.locator('option:checked')).toHaveText('Same as House (Household)');
+  let form = page.locator('[data-yours-editor]'); const audience = form.getByLabel('Who sees its reminders', { exact: true });
+  await expect(audience).toHaveValue(''); await expect(audience.locator('option:checked')).toHaveText('Same as House (Me and my household)');
+  // Shared through the house, with nowhere set up to take it: the form says so and where to fix it.
+  const where = form.locator('[data-yours-audience-hint]');
+  await expect(where).toHaveText('No household group is set up yet, so its reminders reach only you for now. Set up household reminders');
+  await expect(where.getByRole('link', { name: 'Set up household reminders', exact: true })).toHaveAttribute('href', '#settings/notifications');
+  await audience.selectOption('owner'); await expect(where).toBeHidden(); await audience.selectOption('');
+  await expect(where).toContainText('reach only you for now');
   await expect(form.getByLabel('Exact address', { exact: true })).toHaveValue('');
   await expect(form.getByLabel('Exact address', { exact: true })).toHaveAttribute('placeholder', '1 Main Street');
   await expect(form.getByText('Place: Home, from House. Add a place below to give this one its own.', { exact: true })).toBeVisible();
@@ -1542,11 +1569,11 @@ test('A part shows what it inherits without saving it as its own, and a new asse
   // The house changes; the boiler follows, because the save above copied nothing into it.
   await page.evaluate(() => { location.hash = '#yours/asset/house'; });
   await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
-  await form.getByLabel('Audience', { exact: true }).selectOption('owner'); await form.getByLabel('Exact address', { exact: true }).fill('2 Side Street');
+  await form.getByLabel('Who sees its reminders', { exact: true }).selectOption('owner'); await form.getByLabel('Exact address', { exact: true }).fill('2 Side Street');
   await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
   await page.evaluate(() => { location.hash = '#yours/asset/boiler'; });
   await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
-  await expect(form.getByLabel('Audience', { exact: true }).locator('option:checked')).toHaveText('Same as House (Only me)');
+  await expect(form.getByLabel('Who sees its reminders', { exact: true }).locator('option:checked')).toHaveText('Same as House (Only me)');
   await expect(form.getByLabel('Exact address', { exact: true })).toHaveAttribute('placeholder', '2 Side Street');
   await form.getByRole('button', { name: 'Cancel', exact: true }).click(); await expect(form).toHaveCount(0);
   // A new asset leaves its audience to the class unless the owner picks one.
@@ -1554,12 +1581,101 @@ test('A part shows what it inherits without saving it as its own, and a new asse
   await route.getByRole('button', { name: 'Create asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
   await form.getByLabel('Name', { exact: true }).fill('Garage boiler'); await form.getByLabel('Type (optional)', { exact: true }).selectOption('boiler');
   await form.getByText('More details (optional)', { exact: true }).click();
-  await expect(form.getByLabel('Passport nationality (two-letter country code, if needed for travel)', { exact: true })).not.toBeVisible();
-  await expect(form.getByLabel('Audience', { exact: true }).locator('option:checked')).toHaveText('Class default (Household)');
+  await expect(form.getByLabel('Passport nationality (optional)', { exact: true })).not.toBeVisible();
+  await expect(form.getByLabel('Who sees its reminders', { exact: true }).locator('option:checked')).toHaveText('Class default (Me and my household)');
+  // The class's default counts as shared, so the new asset says where its reminders go too.
+  await expect(form.locator('[data-yours-audience-hint]')).toContainText('reach only you for now');
   await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
   await page.evaluate(() => { location.hash = '#yours/asset/new-1'; });
   await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
-  await expect(page.locator('[data-yours-editor]').getByLabel('Audience', { exact: true })).toHaveValue('household');
+  await expect(page.locator('[data-yours-editor]').getByLabel('Who sees its reminders', { exact: true })).toHaveValue('household');
+});
+
+test('An asset shared with the household says which group its reminders go to', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=parts&household=group#yours/asset/boiler`);
+  const route = page.locator('[data-recued-yours]');
+  await expect(route.getByText('Boiler · Active · Shared with your household (same as House)', { exact: true })).toBeVisible();
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
+  let form = page.locator('[data-yours-editor]'); const where = form.locator('[data-yours-audience-hint]');
+  await expect(where).toHaveText('Its reminders also go to Family on Telegram.');
+  // Its own "Only me" says nothing; going back to the house's sharing reads the house, not "only me".
+  await form.getByLabel('Who sees its reminders', { exact: true }).selectOption('owner');
+  await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
+  await expect(route.getByText('Boiler · Active · Only you', { exact: true })).toBeVisible();
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
+  await expect(form.locator('[data-yours-audience-hint]')).toBeHidden();
+  await form.getByLabel('Who sees its reminders', { exact: true }).selectOption('');
+  await expect(form.locator('[data-yours-audience-hint]')).toHaveText('Its reminders also go to Family on Telegram.');
+});
+
+test('A visa keeps the country it is for, in its own field, which a passport does not show', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/assets`);
+  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Create asset', exact: true }).click();
+  let form = page.locator('[data-yours-editor]'); const visaFor = form.getByLabel('Visa valid for', { exact: true });
+  await form.getByLabel('Name', { exact: true }).fill('Ana’s Japan visa'); await form.getByLabel('Type (optional)', { exact: true }).selectOption('visa');
+  await form.getByLabel('Holder', { exact: true }).selectOption('ana'); await form.getByText('More details (optional)', { exact: true }).click();
+  await expect(visaFor).toBeVisible();
+  await expect(form.getByLabel('Passport nationality (optional)', { exact: true })).not.toBeVisible();
+  // A name is not a code: the form says what it wants rather than saving "JA".
+  await visaFor.fill('Ja'); await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(form).toHaveCount(1); await expect(visaFor).toHaveValue('Ja');
+  await visaFor.fill('jp'); await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
+  await page.evaluate(() => { location.hash = '#yours/asset/new-1'; });
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
+  await expect(form.getByLabel('Visa valid for', { exact: true })).toHaveValue('Japan');
+  // Not among the free settings rows, where a second copy could disagree with it.
+  expect(await form.getByLabel('Settings field name', { exact: true }).evaluateAll(inputs => inputs.map(input => (input as HTMLInputElement).value))).not.toContain('valid_for');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.evaluate(() => { location.hash = '#yours/asset/passport'; });
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
+  await expect(page.locator('[data-yours-editor]').getByLabel('Visa valid for', { exact: true })).not.toBeVisible();
+});
+
+test('A passport keeps a nationality only as a country code, as a visa keeps its country', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
+  let form = page.locator('[data-yours-editor]');
+  const nationality = form.getByLabel('Passport nationality (optional)', { exact: true });
+  // Two letters that name no country would reach the trip check and an AI as a nationality.
+  await nationality.fill('Ja'); await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(route.getByRole('alert')).toHaveText('Choose a country from the suggestions, or enter a valid two-letter country code.');
+  await expect(form).toHaveCount(1); await expect(nationality).toHaveValue('Ja');
+  await nationality.fill('cn'); await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
+  await expect(form.getByLabel('Passport nationality (optional)', { exact: true })).toHaveValue('China');
+});
+
+test('A visa can be tied to a passport, chosen among passports only, and says what tying does', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/assets`);
+  const route = page.locator('[data-recued-yours]');
+  // Something to search past: a boiler of Ana's is not a passport.
+  await route.getByRole('button', { name: 'Create asset', exact: true }).click(); let form = page.locator('[data-yours-editor]');
+  await form.getByLabel('Name', { exact: true }).fill('Ana’s boiler'); await form.getByLabel('Type (optional)', { exact: true }).selectOption('boiler');
+  await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
+  await page.evaluate(() => { location.hash = '#yours/assets'; });
+  await route.getByRole('button', { name: 'Create asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
+  await form.getByLabel('Name', { exact: true }).fill('Ana’s Japan visa'); await form.getByLabel('Type (optional)', { exact: true }).selectOption('visa');
+  await form.getByLabel('Holder', { exact: true }).selectOption('ana'); await form.getByText('More details (optional)', { exact: true }).click();
+  await expect(form.getByText('Retiring that passport then retires the visa too. A trip check lists the traveller’s visas either way.', { exact: false })).toBeVisible();
+  const picker = form.getByRole('combobox', { name: 'Tied to passport', exact: true });
+  await picker.fill('Ana'); await expect(form.getByRole('option', { name: /Ana’s passport/ })).toBeVisible();
+  await expect(form.getByRole('option', { name: /Ana’s boiler/ })).toHaveCount(0);
+  await form.getByRole('option', { name: /Ana’s passport/ }).click();
+  await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
+  await page.evaluate(() => { location.hash = '#yours/asset/new-2'; });
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
+  await expect(form.getByRole('combobox', { name: 'Tied to passport', exact: true })).toHaveValue('Ana’s passport');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  // A parent that is no passport is the owner's own choice: the empty picker leaves it be.
+  await route.getByRole('button', { name: 'Change parent', exact: true }).click();
+  const parent = route.getByRole('combobox', { name: 'Parent asset', exact: true });
+  await parent.fill('boiler'); await route.getByRole('option', { name: /Ana’s boiler/ }).click();
+  await route.getByRole('button', { name: 'Save parent', exact: true }).click();
+  await expect(route.getByRole('link', { name: 'Belongs to Ana’s boiler', exact: true })).toBeVisible();
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
+  await expect(form.getByRole('combobox', { name: 'Tied to passport', exact: true })).toHaveValue('');
+  await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
+  await expect(route.getByRole('link', { name: 'Belongs to Ana’s boiler', exact: true })).toBeVisible();
 });
 
 test('Asset details save typed preferences, anchors and dated value history', async ({ page }) => {
@@ -1666,11 +1782,24 @@ test.describe('Asset fact row focus', () => {
   });
 });
 
-test('Occurrences closes the original commitment through its semantic action', async ({ page }) => {
+test('Due says each task’s deadline in words, and a renewal asks for its new date instead of closing on Done', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/occurrences`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Done', exact: true }).click();
+  const route = page.locator('[data-recued-yours]');
+  // The tab reads "Due" at its old address, and a task says when it is due, not its stored values.
+  await expect(page.getByRole('navigation', { name: 'Yours', exact: true }).getByRole('link', { name: 'Due', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(route.getByRole('heading', { name: 'Due', exact: true })).toBeVisible();
+  await expect(route.getByText('Due Apr 17, 2027', { exact: true })).toBeVisible();
+  // §15.7 (2026-10-24) — a passport's renewal is done by its new date: Done alone kept the old one.
+  const date = route.getByLabel('New expiry date', { exact: true });
+  await expect(date).toHaveAttribute('min', '2027-04-18');
+  await route.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(route.locator('[data-yours-error]')).toHaveText('Enter a date after 2027-04-17');
+  await date.fill('2037-04-17');
+  await route.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'Renew · Ana’s passport' })).toHaveCount(0);
-  expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.commitment.fulfill'))).toBe(1);
+  expect(await page.evaluate(() => window.__occurrenceRenewals)).toEqual([
+    { action: 'occurrence.renewed', id: 'passport-occurrence', on: '' }, { action: 'occurrence.renewed', id: 'passport-occurrence', on: '2037-04-17' }]);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.commitment.fulfill'))).toBe(0);
 });
 
 test('a receipt proposal becomes an asset only after acceptance and leaves the waiting lane', async ({ page }) => {
@@ -1691,12 +1820,14 @@ test('sphere chips on assets, occurrences, occasions and episodes can be changed
     await chip.getByRole('button', { name: 'Change', exact: true }).click(); await expect(chip.locator('summary')).toContainText('Work · placed by you');
     await chip.locator('summary').click(); await chip.getByRole('button', { name: 'Reset', exact: true }).click(); await expect(chip.locator('summary')).toContainText('Unsorted');
     const filterLabel = tab === 'assets' ? 'Asset sphere' : 'Sphere on this page';
+    if (tab === 'assets') await showAssetFilters(route);
     await route.getByLabel(filterLabel, { exact: true }).selectOption('professional'); await expect(card).not.toBeVisible();
+    if (tab === 'assets') await showAssetFilters(route);
     await route.getByLabel(filterLabel, { exact: true }).selectOption('unsorted'); await expect(card).toBeVisible();
   }
 });
 
-test('Today shows Coming up and attached situation values, and Done closes the original occurrence', async ({ page }) => {
+test('Today shows Coming up and attached situation values, and Done on a renewal only acknowledges it', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#today`);
   const today = page.locator('[data-today-view]'); const coming = today.locator('[data-today-group="coming_up"]');
   await expect(coming.getByRole('link', { name: 'Renew · Ana’s passport', exact: true })).toHaveAttribute('href', '#yours/asset/passport');
@@ -1710,8 +1841,13 @@ test('Today shows Coming up and attached situation values, and Done closes the o
   await expect(today.locator('[data-today-unmatched]')).toContainText('Unmatched replies');
   await expect(today.getByRole('link', { name: 'Connect a phone channel' })).toHaveAttribute('href', '#connections');
   await coming.getByRole('button', { name: 'Done: Renew · Ana’s passport', exact: true }).click();
+  // §15.7 (2026-10-24) — a press does not renew a passport: Done acknowledges its reminder, and
+  // the task stays open until its new date is entered.
+  await expect(today.locator('[data-today-task-notice]')).toHaveText(
+    'Noted. It stays open until its new date is entered under Yours → Due, and Today shows it again at its next reminder.');
   await expect(coming.getByRole('link', { name: 'Renew · Ana’s passport', exact: true })).toHaveCount(0);
-  expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.commitment.fulfill'))).toBe(1);
+  expect(await page.evaluate(() => window.__occurrenceRenewals)).toEqual([{ action: 'occurrence.acknowledge', id: 'passport-occurrence' }]);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.commitment.fulfill'))).toBe(0);
 });
 
 // D-325 Option A — a bill on Today links to its own facts, and opening it from Today tells the
@@ -1730,8 +1866,8 @@ test('Today links a bill to its own facts and reports opening it from Today', as
 
 const overviewPanel = (page: Page) => page.locator('[data-situation-delivery]');
 const overviewTime = (page: Page) => overviewPanel(page).getByLabel('Time', { exact: true });
-const overviewDraftPrompt = 'Discard the unsaved overview schedule?';
-const overviewWorkPrompt = 'An overview action is still in progress. Leave Settings anyway?';
+const overviewDraftPrompt = 'Discard the unsaved digest settings?';
+const overviewWorkPrompt = 'A digest action is still in progress. Leave Settings anyway?';
 const openOverviewSettings = async (page: Page, width: number) => {
   await page.setViewportSize({ width, height: 900 });
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
@@ -1823,7 +1959,7 @@ for (const width of [390, 1280]) {
         await page.evaluate(() => window.__app.holdRpcResponses?.('yours.change'));
         if (phase === 'confirmation') await page.evaluate(() => window.__app.holdRpcResponses?.('yours.delivery'));
         const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
-        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
         await expect(overviewTime(page)).toBeDisabled(); const original = await overviewTime(page).elementHandle();
         if (phase === 'confirmation') {
           expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
@@ -1850,7 +1986,7 @@ for (const width of [390, 1280]) {
       await openOverviewTimezone(page, width); if (kind === 'save') await overviewTime(page).fill('10:30');
       await page.evaluate(() => { window.__app.holdRpcResponses?.('yours.change'); window.__app.holdRpcResponses?.('yours.delivery'); });
       const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
-      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
       const original = await overviewTime(page).elementHandle();
       const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
       for (const phase of ['write', 'confirmation'] as const) {
@@ -1863,24 +1999,24 @@ for (const width of [390, 1280]) {
         }
       }
       expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery'))).toBe(1);
-      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Overview schedule saved.' : 'Checked.');
+      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Digest settings saved.' : 'Checked.');
       expect(await overviewWouldBlockUnload(page)).toBe(false); await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page);
       expect(dialogs).toEqual([overviewWorkPrompt, overviewWorkPrompt]);
       expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(1);
     });
   }
 
-  for (const field of ['Overview', 'Weekly day', 'Time', 'Day-of notes'] as const) {
+  for (const field of ['How often', 'Day', 'Time', 'Also send a note on the day something is due'] as const) {
     test(`Coming up reverted ${field} leaves without an unsaved warning at ${width}px`, async ({ page }) => {
       await openOverviewSettings(page, width); const control = overviewPanel(page).getByLabel(field, { exact: true });
       const original = await control.elementHandle();
-      if (field === 'Overview') await control.selectOption('daily');
-      else if (field === 'Weekly day') await control.selectOption('4');
+      if (field === 'How often') await control.selectOption('daily');
+      else if (field === 'Day') await control.selectOption('4');
       else if (field === 'Time') await control.fill('10:30');
       else await control.uncheck();
       expect(await overviewWouldBlockUnload(page)).toBe(true);
-      if (field === 'Overview') await control.selectOption('weekly');
-      else if (field === 'Weekly day') await control.selectOption('1');
+      if (field === 'How often') await control.selectOption('weekly');
+      else if (field === 'Day') await control.selectOption('1');
       else if (field === 'Time') await control.fill('08:00');
       else await control.check();
       expect(await overviewWouldBlockUnload(page)).toBe(false);
@@ -1893,17 +2029,17 @@ for (const width of [390, 1280]) {
 
   test(`Coming up partial reverts stay guarded until the whole schedule is restored at ${width}px`, async ({ page }) => {
     await openOverviewSettings(page, width); const panel = overviewPanel(page);
-    await panel.getByLabel('Overview', { exact: true }).selectOption('daily');
-    await panel.getByLabel('Weekly day', { exact: true }).selectOption('4');
-    await overviewTime(page).fill('10:30'); await panel.getByLabel('Day-of notes', { exact: true }).uncheck();
-    await panel.getByLabel('Overview', { exact: true }).selectOption('weekly');
-    await panel.getByLabel('Weekly day', { exact: true }).selectOption('1'); await overviewTime(page).fill('08:00');
+    await panel.getByLabel('Day', { exact: true }).selectOption('4');
+    await panel.getByLabel('How often', { exact: true }).selectOption('daily');
+    await overviewTime(page).fill('10:30'); await panel.getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
+    await panel.getByLabel('How often', { exact: true }).selectOption('weekly');
+    await panel.getByLabel('Day', { exact: true }).selectOption('1'); await overviewTime(page).fill('08:00');
     expect(await overviewWouldBlockUnload(page)).toBe(true);
     const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
     await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
     await expect(page).toHaveURL(/#settings\/notifications$/u);
-    await expect(panel.getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
-    await panel.getByLabel('Day-of notes', { exact: true }).check(); expect(await overviewWouldBlockUnload(page)).toBe(false);
+    await expect(panel.getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
+    await panel.getByLabel('Also send a note on the day something is due', { exact: true }).check(); expect(await overviewWouldBlockUnload(page)).toBe(false);
     expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
     await page.reload(); await page.waitForFunction(() => window.__app?.ready === true); await expect(overviewTime(page)).toHaveValue('08:00');
     expect(dialogs).toEqual([overviewDraftPrompt]); expect(await overviewWouldBlockUnload(page)).toBe(false);
@@ -1918,7 +2054,7 @@ for (const width of [390, 1280]) {
         for (let step = 0; step < index; step++) await page.keyboard.press('ArrowRight');
       };
       await selectSegment(); await page.keyboard.press('Backspace'); const original = await field.elementHandle();
-      const frequency = overviewPanel(page).getByLabel('Overview', { exact: true });
+      const frequency = overviewPanel(page).getByLabel('How often', { exact: true });
       await frequency.selectOption('daily'); await frequency.selectOption('weekly');
       expect(await field.evaluate((input: HTMLInputElement) => input.validity.badInput && input.value === '')).toBe(true);
       expect(await overviewWouldBlockUnload(page)).toBe(true);
@@ -1973,8 +2109,8 @@ for (const width of [390, 1280]) {
     await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
     await expect(page).toHaveURL(/#settings\/notifications$/u);
     expect(await original!.evaluate(node => node.isConnected)).toBe(true);
-    await overviewPanel(page).getByRole('button', { name: 'Save overview schedule', exact: true }).press('Enter');
-    await expect(overviewPanel(page).getByRole('status')).toHaveText('Overview schedule saved.');
+    await overviewPanel(page).getByRole('button', { name: 'Save digest settings', exact: true }).press('Enter');
+    await expect(overviewPanel(page).getByRole('status')).toHaveText('Digest settings saved.');
     await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     expect(dialogs).toEqual([overviewDraftPrompt]);
   });
@@ -1982,9 +2118,9 @@ for (const width of [390, 1280]) {
   test(`Coming up navigation keeps an unsaved schedule when leaving is declined at ${width}px`, async ({ page }) => {
     await openOverviewSettings(page, width);
     const panel = overviewPanel(page), field = overviewTime(page);
-    await panel.getByLabel('Overview', { exact: true }).selectOption('daily');
-    await panel.getByLabel('Weekly day', { exact: true }).selectOption('4');
-    await panel.getByLabel('Day-of notes', { exact: true }).uncheck();
+    await panel.getByLabel('Day', { exact: true }).selectOption('4');
+    await panel.getByLabel('How often', { exact: true }).selectOption('daily');
+    await panel.getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
     await field.fill('10:30'); await field.focus(); const original = await field.elementHandle();
     const dialogs: string[] = []; let accept = false;
     page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
@@ -1992,9 +2128,9 @@ for (const width of [390, 1280]) {
     await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
     await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(field).toBeFocused();
     await expect(field).toHaveValue('10:30');
-    await expect(panel.getByLabel('Overview', { exact: true })).toHaveValue('daily');
-    await expect(panel.getByLabel('Weekly day', { exact: true })).toHaveValue('4');
-    await expect(panel.getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
+    await expect(panel.getByLabel('How often', { exact: true })).toHaveValue('daily');
+    await expect(panel.getByLabel('Day', { exact: true })).toHaveValue('4');
+    await expect(panel.getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
     expect(await original!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
     accept = true; await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     expect(dialogs).toEqual([overviewDraftPrompt, overviewDraftPrompt]);
@@ -2008,8 +2144,8 @@ for (const width of [390, 1280]) {
     await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     await page.evaluate(() => window.__app.setHash('#settings/notifications')); await expect(overviewTime(page)).toHaveValue('08:00');
     await overviewTime(page).fill('10:30');
-    await overviewPanel(page).getByRole('button', { name: 'Save overview schedule', exact: true }).press('Enter');
-    await expect(overviewPanel(page).getByRole('status')).toHaveText('Overview schedule saved.');
+    await overviewPanel(page).getByRole('button', { name: 'Save digest settings', exact: true }).press('Enter');
+    await expect(overviewPanel(page).getByRole('status')).toHaveText('Digest settings saved.');
     expect(await overviewWouldBlockUnload(page)).toBe(false);
     await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     expect(dialogs).toEqual([]);
@@ -2023,7 +2159,7 @@ for (const width of [390, 1280]) {
       const before = await page.evaluate(() => ({ writes: window.__app.rpcCallCount('yours.change'), reads: window.__app.rpcCallCount('yours.delivery') }));
       const original = await overviewTime(page).elementHandle();
       const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
-      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
       await expect(overviewTime(page)).toBeDisabled(); expect(await overviewWouldBlockUnload(page)).toBe(true);
       await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewWorkPrompt]);
       await expect(page).toHaveURL(/#settings\/notifications$/u);
@@ -2034,7 +2170,7 @@ for (const width of [390, 1280]) {
       await expect(page).toHaveURL(/#settings\/notifications$/u);
       expect(await original!.evaluate(node => node.isConnected && node === document.querySelector('[data-situation-delivery] input[name="time"]'))).toBe(true);
       expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery'))).toBe(1);
-      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Overview schedule saved.' : 'Checked.');
+      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Digest settings saved.' : 'Checked.');
       expect(await overviewWouldBlockUnload(page)).toBe(false);
       expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(before.writes + 1);
       await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
@@ -2049,7 +2185,7 @@ for (const width of [390, 1280]) {
         const original = await overviewTime(page).elementHandle();
         const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
         if (phase === 'confirmation') await page.evaluate(() => window.__app.holdRpcResponses?.('yours.delivery'));
-        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
         await expect(overviewTime(page)).toBeDisabled();
         if (phase === 'confirmation') {
           expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
@@ -2100,24 +2236,76 @@ for (const width of [390, 1280]) {
   }
 }
 
-test('Approval & notifications saves the overview schedule and shows its last sent values', async ({ page }) => {
+test('Approval & notifications reads as channels, what you are told about, its timing, then the household', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const section = page.locator('[data-recued-settings-section="notifications"]');
+  await expect(section.locator('h3')).toHaveText(['Channels', 'Your secret phrase', 'What you are notified about', 'Digest', 'Quiet hours', 'Reminders for shared assets']);
+  await expect(section.locator('[data-household-delivery] h4')).toHaveText(['Post them in a Telegram group', 'Show their tasks on a Home Assistant to-do list']);
+  // The card names its assets and links to them, so it reads as the assets' setting.
+  const shared = section.locator('[data-household-shared]');
+  await expect(shared).toHaveText('No asset is shared yet. To share one, edit it in your assets and set Who sees its reminders to Me and my household.');
+  await shared.getByRole('link', { name: 'your assets', exact: true }).click();
+  await expect(page.locator('[data-recued-yours]')).toBeVisible();
+});
+
+test('Approval & notifications says first, not in a footnote, when nothing reaches your phone', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready&phone=none#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const callout = page.locator('[data-recued-notifications-phone-callout]');
+  await expect(callout).toContainText('Nothing reaches your phone yet.');
+  await expect(callout.getByRole('link', { name: 'Connections', exact: true })).toHaveAttribute('href', '#connections');
+  // It sits above every channel, where the page is read first.
+  const top = (await callout.boundingBox())!.y; const list = (await page.locator('[data-recued-notifications-panel] .notif-list').boundingBox())!.y;
+  expect(top).toBeLessThan(list);
+  // ⛔ With Telegram on and carrying no reminder, "turn on a channel" would be wrong: it says why.
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready&phone=telegram#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(callout).toHaveText('Reminders don’t reach your phone yet. Telegram is on, but its connection isn’t set to reach only you: check it in Connections.');
+  await expect(callout.getByRole('link', { name: 'Connections', exact: true })).toHaveAttribute('href', '#connections');
+});
+
+test('Approval & notifications offers a Home Assistant connection’s to-do lists by name', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready&household_lists=1#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const panel = page.locator('[data-household-delivery]');
+  await panel.getByLabel('Home Assistant connection', { exact: true }).selectOption('0');
+  const menu = panel.getByLabel('To-do list', { exact: true });
+  await expect(menu.locator('option')).toHaveText(['Choose a list', 'Chores', 'Household']);
+  await expect(panel.getByLabel('To-do list ID', { exact: true })).toBeHidden();
+  await menu.selectOption('todo.chores'); await panel.getByRole('button', { name: 'Save to-do list', exact: true }).click();
+  await expect(panel.locator('[data-household-status]')).toHaveText('Home Assistant list saved.');
+  // Read again after the save, the menu shows the list that was saved.
+  await expect(menu).toHaveValue('todo.chores');
+});
+
+test('Approval & notifications names the shared assets, each opening its asset', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=parts&notifications=ready#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const shared = page.locator('[data-recued-settings-section="notifications"] [data-household-shared]');
+  await expect(shared).toHaveText('Shared now: House. To change one, edit it in your assets.');
+  await shared.getByRole('link', { name: 'House', exact: true }).click();
+  await expect(page.locator('[data-recued-yours]').getByRole('heading', { name: 'House', exact: true, level: 2 })).toBeVisible();
+});
+
+test('Approval & notifications saves the digest settings and shows its last sent values', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   const panel = page.locator('[data-situation-delivery]');
-  await panel.getByLabel('Overview', { exact: true }).selectOption('daily');
-  await panel.getByLabel('Weekly day', { exact: true }).selectOption('4');
+  await panel.getByLabel('Day', { exact: true }).selectOption('4');
+  await panel.getByLabel('How often', { exact: true }).selectOption('daily');
   await panel.getByLabel('Time', { exact: true }).fill('10:30');
-  await panel.getByLabel('Day-of notes', { exact: true }).uncheck();
+  await panel.getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
   await panel.getByRole('button', { name: 'Send now', exact: true }).focus(); await page.keyboard.press('Enter');
   await expect(panel.getByRole('status')).toContainText('Checked.');
-  await expect(panel.getByLabel('Overview', { exact: true })).toHaveValue('daily');
-  await expect(panel.getByLabel('Weekly day', { exact: true })).toHaveValue('4');
+  await expect(panel.getByLabel('How often', { exact: true })).toHaveValue('daily');
+  await expect(panel.getByLabel('Day', { exact: true })).toHaveValue('4');
   await expect(panel.getByLabel('Time', { exact: true })).toHaveValue('10:30');
-  await expect(panel.getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
-  await panel.getByRole('button', { name: 'Save overview schedule', exact: true }).focus(); await page.keyboard.press('Enter');
-  await expect(panel.getByRole('status')).toHaveText('Overview schedule saved.');
-  await expect(panel.getByRole('button', { name: 'Save overview schedule', exact: true })).toBeFocused();
+  await expect(panel.getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
+  await panel.getByRole('button', { name: 'Save digest settings', exact: true }).focus(); await page.keyboard.press('Enter');
+  await expect(panel.getByRole('status')).toHaveText('Digest settings saved.');
+  await expect(panel.getByRole('button', { name: 'Save digest settings', exact: true })).toBeFocused();
   await expect(panel.getByLabel('Time', { exact: true })).toHaveValue('10:30');
-  await expect(panel.getByLabel('Overview', { exact: true })).toHaveValue('daily');
+  await expect(panel.getByLabel('How often', { exact: true })).toHaveValue('daily');
   await panel.getByRole('button', { name: 'Send now', exact: true }).click();
   await panel.getByText('What it sent', { exact: true }).click(); await expect(panel).toContainText('Lisbon trip · Passport expiry');
 });
@@ -2129,17 +2317,34 @@ for (const width of [390, 1280]) {
     await page.waitForFunction(() => window.__app?.ready === true);
     await expect(page.locator('[data-household-delivery]').getByRole('button', { name: 'Save household Telegram', exact: true })).toBeEnabled();
   };
-  for (const label of ['Household group', 'Other member user IDs', 'Home Assistant connection', 'To-do entity ID'] as const) {
+  // A destination's details show only once it is on, so a detail field is
+  // reverted on a saved destination rather than beside Off.
+  const switchOn = async (page: Page, kind: 'telegram' | 'home_assistant') => {
+    const panel = page.locator('[data-household-delivery]');
+    if (kind === 'telegram') {
+      await panel.getByLabel('Household group', { exact: true }).selectOption('0');
+      await panel.getByRole('button', { name: 'Save household Telegram', exact: true }).click();
+      await expect(panel.locator('[data-household-status]')).toHaveText('Household Telegram saved.');
+    } else {
+      await panel.getByLabel('Home Assistant connection', { exact: true }).selectOption('0');
+      await panel.getByLabel('To-do list ID', { exact: true }).fill('todo.household');
+      await panel.getByRole('button', { name: 'Save to-do list', exact: true }).click();
+      await expect(panel.locator('[data-household-status]')).toHaveText('Home Assistant list saved.');
+    }
+  };
+  for (const label of ['Household group', 'Home Assistant connection', 'To-do list ID'] as const) {
     test(`Household draft reverting ${label} leaves without an unsaved warning at ${width}px`, async ({ page }) => {
       await openHousehold(page); const field = page.locator('[data-household-delivery]').getByLabel(label, { exact: true });
+      const detail = label === 'To-do list ID' ? 'home_assistant' : null;
+      if (detail) await switchOn(page, detail);
       const initial = await field.inputValue(), original = await field.elementHandle(); expect(await overviewWouldBlockUnload(page)).toBe(false);
       if (label === 'Household group' || label === 'Home Assistant connection') await field.selectOption(initial === '' ? '0' : '');
-      else await field.fill(label === 'Other member user IDs' ? '3003' : 'todo.edited');
+      else await field.fill('todo.edited');
       expect(await overviewWouldBlockUnload(page)).toBe(true);
       if (label === 'Household group' || label === 'Home Assistant connection') await field.selectOption(initial);
       else await field.fill(initial);
       expect(await overviewWouldBlockUnload(page)).toBe(false); expect(await original!.evaluate(node => node.isConnected)).toBe(true);
-      expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(detail ? 1 : 0);
       const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
       await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([]);
     });
@@ -2147,53 +2352,64 @@ for (const width of [390, 1280]) {
 
   test(`Household draft partial reverts protect the other form until both are restored at ${width}px`, async ({ page }) => {
     await openHousehold(page); const panel = page.locator('[data-household-delivery]');
-    const group = panel.getByLabel('Household group', { exact: true }), members = panel.getByLabel('Other member user IDs', { exact: true });
-    const connection = panel.getByLabel('Home Assistant connection', { exact: true }), entity = panel.getByLabel('To-do entity ID', { exact: true });
-    const before = { group: await group.inputValue(), members: await members.inputValue(), connection: await connection.inputValue(), entity: await entity.inputValue() };
-    await group.selectOption('0'); await members.fill('3003'); await connection.selectOption('0'); await entity.fill('todo.edited');
-    await group.selectOption(before.group); await members.fill(before.members); expect(await overviewWouldBlockUnload(page)).toBe(true);
+    const group = panel.getByLabel('Household group', { exact: true });
+    const connection = panel.getByLabel('Home Assistant connection', { exact: true }), entity = panel.getByLabel('To-do list ID', { exact: true });
+    const before = { group: await group.inputValue(), connection: await connection.inputValue(), entity: await entity.inputValue() };
+    await group.selectOption('0'); await connection.selectOption('0'); await entity.fill('todo.edited');
+    await group.selectOption(before.group); expect(await overviewWouldBlockUnload(page)).toBe(true);
     const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
     await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual(['Discard the unsaved household delivery settings?']);
     await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(entity).toHaveValue('todo.edited'); await expect(connection).toHaveValue('0');
-    await connection.selectOption(before.connection); expect(await overviewWouldBlockUnload(page)).toBe(true);
-    await entity.fill(before.entity); expect(await overviewWouldBlockUnload(page)).toBe(false);
+    await entity.fill(before.entity); expect(await overviewWouldBlockUnload(page)).toBe(true);
+    await connection.selectOption(before.connection); expect(await overviewWouldBlockUnload(page)).toBe(false);
     expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
-    await page.reload(); await page.waitForFunction(() => window.__app?.ready === true); await expect(members).toHaveValue(before.members);
+    await page.reload(); await page.waitForFunction(() => window.__app?.ready === true); await expect(group).toHaveValue(before.group);
     expect(dialogs).toEqual(['Discard the unsaved household delivery settings?']); expect(await overviewWouldBlockUnload(page)).toBe(false);
     await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toHaveLength(1);
   });
 }
 
-test('Household Telegram saves an enrolled group and member ids separately from private channels', async ({ page }) => {
+test('Household Telegram saves an enrolled group, separately from private channels, as a group that only reads', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
-  const panel = page.locator('[data-household-delivery]'); await panel.getByLabel('Household group', { exact: true }).selectOption('0');
-  await panel.getByLabel('Other member user IDs', { exact: true }).fill('1002, 1003');
+  const panel = page.locator('[data-household-delivery]'); const telegram = panel.locator('[data-household-telegram]');
+  // D-325 §15.7 (2026-10-24) — the group only receives: nobody to add, invite or let answer.
+  await expect(telegram).toContainText('Nobody answers them there: you mark them done in Recued.');
+  await panel.getByLabel('Household group', { exact: true }).selectOption('0');
   const save = panel.getByRole('button', { name: 'Save household Telegram', exact: true }); await save.focus(); await page.keyboard.press('Enter');
   await expect(panel.getByRole('status')).toHaveText('Household Telegram saved.'); await expect(save).toBeFocused();
-  await expect(panel.getByLabel('Other member user IDs', { exact: true })).toHaveValue('1002, 1003');
+  await expect(telegram.getByRole('button')).toHaveText(['Save household Telegram']); await expect(telegram.locator('input')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(1);
   await panel.getByLabel('Household group', { exact: true }).selectOption(''); await save.click();
   await expect(panel.getByRole('status')).toHaveText('Household Telegram saved.');
   await expect(panel.getByLabel('Household group', { exact: true })).toHaveValue('');
 });
-
 test('Household lists preserve the other delivery form’s unsaved selection', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   const panel = page.locator('[data-household-delivery]');
-  await panel.getByLabel('Household group', { exact: true }).selectOption('0'); await panel.getByLabel('Other member user IDs', { exact: true }).fill('1002');
-  await panel.getByLabel('Home Assistant connection', { exact: true }).selectOption('0'); await panel.getByLabel('To-do entity ID', { exact: true }).fill('todo.household');
-  await panel.getByRole('button', { name: 'Save household list', exact: true }).click();
-  await expect(panel.locator('[data-household-status]')).toHaveText('Household Home Assistant saved.');
-  await expect(panel.getByLabel('Household group', { exact: true })).toHaveValue('0'); await expect(panel.getByLabel('Other member user IDs', { exact: true })).toHaveValue('1002');
+  await panel.getByLabel('Household group', { exact: true }).selectOption('0');
+  await panel.getByLabel('Home Assistant connection', { exact: true }).selectOption('0'); await panel.getByLabel('To-do list ID', { exact: true }).fill('todo.household');
+  await panel.getByRole('button', { name: 'Save to-do list', exact: true }).click();
+  await expect(panel.locator('[data-household-status]')).toHaveText('Home Assistant list saved.');
+  await expect(panel.getByLabel('Household group', { exact: true })).toHaveValue('0');
   await panel.getByRole('button', { name: 'Save household Telegram', exact: true }).click();
   await expect(panel.locator('[data-household-status]')).toHaveText('Household Telegram saved.');
-  await expect(panel.getByLabel('To-do entity ID', { exact: true })).toHaveValue('todo.household');
+  await expect(panel.getByLabel('To-do list ID', { exact: true })).toHaveValue('todo.household');
 });
 
+test('Household catches up on a group chosen elsewhere while Settings was away', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const group = page.locator('[data-household-delivery]').getByLabel('Household group', { exact: true });
+  await expect(group).toHaveValue('');
+  await page.evaluate(() => { location.hash = '#yours/assets'; }); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+  await page.evaluate(() => { window.__householdFixture!.setGroup(true); location.hash = '#settings/notifications'; });
+  await expect(group).toHaveValue('0');
+});
 test('An owner class draft adds and edits a typed rule without changing an asset', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/assets/classes`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Create class', exact: true }).click();
   let form = route.locator('[data-yours-editor]'); await form.getByLabel('Name', { exact: true }).fill('Membership');
-  await form.getByLabel('Class id', { exact: true }).fill('membership'); await form.getByLabel('Dates fields (comma-separated)', { exact: true }).fill('expires_on');
+  await form.getByRole('button', { name: 'Add date field', exact: true }).click(); await form.getByLabel('Date field name', { exact: true }).fill('Expires on');
   await form.getByRole('button', { name: 'Add preset rule', exact: true }).click();
   form = route.locator('[data-yours-editor]'); await form.getByLabel('Title', { exact: true }).fill('Renew membership');
   await form.getByLabel('Asset date', { exact: true }).selectOption('expires_on'); await form.getByRole('button', { name: 'Keep rule in draft', exact: true }).click();
@@ -2203,7 +2419,7 @@ test('An owner class draft adds and edits a typed rule without changing an asset
 });
 
 test('An asset attaches an existing file, opens the real preview, and removes only the reference', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Browse files', exact: true }).click();
   // `files` is the Data tab's name; an unknown tab falls back to Contacts.
   await expect(route.getByRole('link', { name: 'Upload a receipt, photo or certificate in Files', exact: true })).toHaveAttribute('href', '#data/files');
@@ -2237,14 +2453,14 @@ test('An asset attaches an existing file, opens the real preview, and removes on
   await expect(attachment).toContainText('October 2026');
   await route.getByRole('button', { name: 'Preview file', exact: true }).click();
   const preview = page.getByRole('dialog', { name: 'File preview', exact: true }); await expect(preview).toContainText('Passport receipt');
-  await preview.getByRole('button', { name: 'Close preview', exact: true }).click(); await route.getByRole('button', { name: 'Remove attachment', exact: true }).click();
+  await preview.getByRole('button', { name: 'Close preview', exact: true }).click(); await route.getByLabel('More actions for attached file', { exact: true }).click(); await route.getByRole('button', { name: 'Remove attachment', exact: true }).click();
   await expect(route.getByText('No attached files.', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.__app.rpcCallCount('data.file.mutate'))).toBe(0);
 });
 
 test('Unavailable file metadata can be retried without losing document edits or downloading content', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 });
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=retry#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=retry#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]'); const attachment = route.locator('[data-yours-document]');
   await expect(attachment).toContainText('File details unavailable.');
   await attachment.getByRole('button', { name: 'Retry file details', exact: true }).click();
@@ -2266,18 +2482,18 @@ test('Unavailable file metadata can be retried without losing document edits or 
 });
 
 for (const mode of ['missing', 'mismatch']) test(`A ${mode} file stays removable and does not display another file’s metadata`, async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=${mode}#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=${mode}#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]'); const attachment = route.locator('[data-yours-document]');
   await expect(attachment).toContainText('File details unavailable.');
   await expect(attachment).not.toContainText('Unrelated private file');
   await expect(attachment.getByRole('heading', { name: 'Attached file', exact: true })).toBeVisible();
-  await attachment.getByRole('button', { name: 'Remove attachment', exact: true }).click();
+  await attachment.getByLabel('More actions for attached file', { exact: true }).click(); await attachment.getByRole('button', { name: 'Remove attachment', exact: true }).click();
   await expect(route.getByText('No attached files.', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.__app.rpcCallCount('data.file.mutate'))).toBe(0);
 });
 
 test('An ordinary asset edit preserves document details updated after its form opened', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=ready&yours_concurrent_document=1#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=ready&yours_concurrent_document=1#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]');
   await route.getByRole('button', { name: 'Document details', exact: true }).click();
   await route.getByLabel('Purpose (optional)', { exact: true }).fill('Earlier manual');
@@ -2292,7 +2508,7 @@ test('An ordinary asset edit preserves document details updated after its form o
 });
 
 test('Older file search responses cannot replace the latest results', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]'); const method = 'data.file.attachments.list';
   await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
   const before = await page.evaluate(rpc => window.__app.rpcCallCount(rpc), method);
@@ -2320,7 +2536,7 @@ test('Older file search responses cannot replace the latest results', async ({ p
 test('Late file metadata cannot replace a document draft', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=ready#yours/assets`);
   await page.waitForFunction(() => window.__app?.ready);
-  await page.evaluate(() => { window.__app.holdRpcResponses?.('data.file.attachments.get'); location.hash = '#yours/asset/passport'; });
+  await page.evaluate(() => { window.__app.holdRpcResponses?.('data.file.attachments.get'); location.hash = '#yours/asset/passport/view/files'; });
   const route = page.locator('[data-recued-yours]');
   await expect(route.getByText('Loading file details…', { exact: true })).toBeVisible();
   await route.getByRole('button', { name: 'Document details', exact: true }).click();
@@ -2333,7 +2549,7 @@ test('Late file metadata cannot replace a document draft', async ({ page }) => {
 });
 
 test('File browsing appends each page once and resets pagination for a new search', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_pages=1#yours/asset/passport`);
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_file_pages=1#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]');
   await route.getByRole('button', { name: 'Browse files', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'Passport receipt.txt', exact: true })).toBeVisible();
@@ -2350,7 +2566,7 @@ test('File browsing appends each page once and resets pagination for a new searc
 test('Late file metadata cannot revive an asset page after navigation', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=ready#yours/assets`);
   await page.waitForFunction(() => window.__app?.ready);
-  await page.evaluate(() => { window.__app.holdRpcResponses?.('data.file.attachments.get'); location.hash = '#yours/asset/passport'; });
+  await page.evaluate(() => { window.__app.holdRpcResponses?.('data.file.attachments.get'); location.hash = '#yours/asset/passport/view/files'; });
   const route = page.locator('[data-recued-yours]');
   await expect(route.getByText('Loading file details…', { exact: true })).toBeVisible();
   await page.evaluate(() => { location.hash = '#yours/assets'; });
@@ -2487,13 +2703,13 @@ test('Asset relationship search reports read failures and capped matches', async
 
 test('Relationship proposal review resolves saved assets beyond page one and preserves them on save', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=relations#yours/proposals`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Edit', exact: true }).click();
+  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Review change', exact: true }).click();
   const primary = route.getByRole('combobox', { name: 'Asset', exact: true }); const related = route.getByRole('combobox', { name: 'Related asset', exact: true });
   await expect(primary).toHaveValue('Kitchen boiler'); await expect(related).toHaveValue('Mountain cabin');
   await related.fill('Garden'); await route.getByRole('option', { name: /Garden flat/ }).click();
   await route.getByRole('button', { name: 'Save proposal', exact: true }).click();
   await expect(route.locator('[data-yours-editor]')).toHaveCount(0);
-  await route.getByRole('button', { name: 'Edit', exact: true }).click();
+  await route.getByRole('button', { name: 'Review change', exact: true }).click();
   await expect(primary).toHaveValue('Kitchen boiler'); await expect(related).toHaveValue('Garden flat');
   await primary.fill('Garden'); await route.getByRole('option', { name: /Garden flat/ }).click();
   await expect(related).toHaveValue('');
@@ -2507,10 +2723,10 @@ test('Relationship proposal review resolves saved assets beyond page one and pre
 test('A late saved-asset label cannot replace a relationship search query', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=relations#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const method = 'yours.read';
-  await expect(route.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  await expect(route.getByRole('button', { name: 'Review change', exact: true })).toBeVisible();
   await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
   const before = await page.evaluate(rpc => window.__app.rpcCallCount(rpc), method);
-  await route.getByRole('button', { name: 'Edit', exact: true }).click();
+  await route.getByRole('button', { name: 'Review change', exact: true }).click();
   const primary = route.getByRole('combobox', { name: 'Asset', exact: true });
   await primary.fill('Mountain');
   await expect.poll(() => page.evaluate(rpc => window.__app.rpcCallCount(rpc), method)).toBeGreaterThanOrEqual(before + 4);
@@ -2526,10 +2742,10 @@ test('A late saved-asset label cannot replace a relationship search query', asyn
 test('A delayed saved-asset lookup cannot undo a chosen reference', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=relations#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const method = 'yours.read';
-  await expect(route.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  await expect(route.getByRole('button', { name: 'Review change', exact: true })).toBeVisible();
   await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
   const before = await page.evaluate(rpc => window.__app.rpcCallCount(rpc), method);
-  await route.getByRole('button', { name: 'Edit', exact: true }).click();
+  await route.getByRole('button', { name: 'Review change', exact: true }).click();
   const related = route.getByRole('combobox', { name: 'Related asset', exact: true });
   await related.fill('Garden');
   await expect.poll(() => page.evaluate(rpc => window.__app.rpcCallCount(rpc), method)).toBe(before + 4);

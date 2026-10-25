@@ -21,7 +21,7 @@ const initial = (): RehearsalView => ({ target, label: 'Fixture automation', sup
   time_zone: 'UTC', interval_ms: kind === 'timer' ? 300_000 : null, current: initialConfiguration(), revision: query.has('seed') ? 1 : 0,
   live_digest: 'basis-1', draft: query.has('seed') ? { revision: 1, digest: 'draft-1', base_digest: 'basis-1', created_at: Date.now(), document: document() } : null,
   drafts: query.has('seed') ? [{ revision: 1, title: 'Saved automation scenarios', created_at: Date.now() }] : [], qualification: null, history: [] });
-interface Fixture { view: RehearsalView; applied: number; calls: Array<{ method: string; args: unknown }>; receipts: Record<string, RehearsalMutation> }
+interface Fixture { view: RehearsalView; applied: number; calls: Array<{ method: string; args: unknown }>; receipts: Record<string, RehearsalMutation>; deletions?: Record<string, { revision: number }> }
 const state: Fixture = JSON.parse(sessionStorage.getItem(storageKey) ?? 'null') ?? { view: initial(), applied: 0, calls: [], receipts: {} };
 const clone = <T>(value: T): T => structuredClone(value), persist = () => sessionStorage.setItem(storageKey, JSON.stringify(state));
 const trigger = (configuration = state.view.current): EventTrigger => ({ trigger_id: target.id, recipe_id: 'fixture-recipe', publisher_id: 'core', dish_id: 'fixture-dish',
@@ -105,7 +105,12 @@ const call: Conn<ServerRpcRegistry> = async (method: keyof ServerRpcRegistry, ra
     return result as never;
   }
   if (method === 'automation.rehearsal.delete') {
-    state.view.revision++; state.view.draft = null; state.view.drafts = []; state.view.history = []; state.view.qualification = null; persist(); return { revision: state.view.revision } as never;
+    const input = args as { request_id: string }, previous = state.deletions?.[input.request_id];
+    if (previous) return clone(previous) as never;
+    state.view.revision++; state.view.draft = null; state.view.drafts = []; state.view.history = []; state.view.qualification = null;
+    const result = { revision: state.view.revision }; (state.deletions ??= {})[input.request_id] = result; persist();
+    if (scenario === 'lost-delete') throw new Error('Delete reply lost. Retry the recorded request.');
+    return result as never;
   }
   throw new Error('Unexpected rehearsal fixture call: ' + method);
 };

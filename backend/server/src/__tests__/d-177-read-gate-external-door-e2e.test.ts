@@ -250,7 +250,7 @@ describe('D-177 read-gate — external-door transport fences recued_dataTimeline
     expect(fenceSources).toHaveLength(0);
     expect(response.result?.isError).toBe(true);
     expect(response.result?.content?.[0]?.text).toContain(
-      "not granted by this token's per-tool checklist",
+      'not granted to this key',
     );
   });
 });
@@ -391,7 +391,7 @@ describe('D-187 token-lifecycle — a dead bound contract kill-switches the nati
     expect(response.result?.isError).toBe(true);
     expect(response.result?.content?.[0]?.text).toContain('no longer live');
     expect(response.result?.content?.[0]?.text).not.toContain(
-      'per-tool checklist',
+      'not granted to this key',
     );
     expect(loader).not.toHaveBeenCalled();
     expect(fenceSources).toHaveLength(0);

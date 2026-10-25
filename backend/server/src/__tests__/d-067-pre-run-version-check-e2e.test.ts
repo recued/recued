@@ -47,18 +47,11 @@ const recipeWithPin = (recipe_id: string, pin: number): RecipeDefinition =>
     output: { sidebar: [] },
   }) as unknown as RecipeDefinition;
 
-const connectAndRegister = (port: number, instanceId: string): Promise<WebSocket> =>
+const connectClient = (port: number): Promise<WebSocket> =>
   new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=test-realm`);
     ws.on('error', reject);
-    ws.on('open', () => {
-      ws.send(JSON.stringify({ type: 'register', instance_id: instanceId }));
-      const onMsg = (data: unknown) => {
-        const m = JSON.parse(String(data));
-        if (m.type === 'registered') { ws.off('message', onMsg); resolve(ws); }
-      };
-      ws.on('message', onMsg);
-    });
+    ws.on('open', () => resolve(ws));
   });
 
 const rpcExecute = (
@@ -97,7 +90,7 @@ describe('D-067 pre-run compatibility check (wired)', () => {
       executeDeps: { recipeStore, executorConfig: { manifests }, baseVault: {} },
     });
     server.wsServer.maxInstances = 0;
-    ws = await connectAndRegister(server.port, 'ext-d067');
+    ws = await connectClient(server.port);
   });
 
   afterAll(async () => {

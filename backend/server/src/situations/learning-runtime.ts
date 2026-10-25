@@ -1,7 +1,8 @@
 import { setImmediate } from 'node:timers/promises';
 import type Database from 'better-sqlite3';
 import { assetDateAt, calendarDayMs, evaluateAssetRuleClock, occasionNextDate, nextAnnualDate, isAssetDate,
-  type AssetRule, type EpisodeInput, type Occasion, type ProactiveProposal, type ProactiveProposalInput, type SituationFact, type SituationRef, type Sphere } from '@recued/contracts';
+  type AssetRule, type EpisodeInput, type Occasion, type ProactiveProposal, type ProactiveProposalInput, type SituationFact, type SituationRef, type Sphere,
+  type TripDetails } from '@recued/contracts';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
 import { createOccurrenceReminderStore } from '../storage/occurrence-reminder-store.js';
@@ -13,7 +14,8 @@ import type { SphereStore } from '../storage/sphere-store.js';
 import type { SituationStore } from '../storage/situation-store.js';
 import { publishProposalEvents } from './proposal-events.js';
 import { collectProposalMeasures, recordDigestResponse } from './measures.js';
-import type { EpisodeRuntime } from './episode-runtime.js';
+import { PRIVATE, type EpisodeRuntime } from './episode-runtime.js';
+import { countryPlace } from './country-place.js';
 import { clockLearningProposals, kindLearningPool, kindRankingFloor, kindRankingProposal, learningDigest, learningPool, LEARNING_LOOKBACK_MS, RELATION_LOOKBACK_MS, relationKey, relationOfferKey,
   type ClockLearningSignal, type LearningTarget, type ServiceLearningSignal } from './learning.js';
 
@@ -21,6 +23,11 @@ const DAY = 86_400_000;
 const identity = (ref: SituationRef) => JSON.stringify([ref.collection, ref.id]);
 const habitRuleId = (class_id = 'activity') => `habit_${class_id.toLowerCase().replace(/[^a-z0-9_]/gu, '_').slice(0, 55)}`;
 const samePeople = (left: readonly string[], right: readonly string[]) => left.length > 0 && left.length === right.length && [...left].sort().every((person, index) => person === [...right].sort()[index]);
+/** "07-12" as the owner reads it: "12 July". */
+const dayWords = (month_day: string): string => {
+  const [month, day] = month_day.split('-').map(Number);
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(Date.UTC(2000, month! - 1, day!));
+};
 const nearAnnualDate = (left: string, right: string) => { const a = calendarDayMs(`2000-${left}`); const b = calendarDayMs(`2000-${right}`);
   if (a === null || b === null) return false; const days = Math.abs(a - b) / DAY; return Math.min(days, 366 - days) <= 14; };
 export interface ProactiveLearningDeps {
@@ -169,6 +176,7 @@ export const createProactiveLearning = (deps: ProactiveLearningDeps) => {
           if (proposal.kind === 'ranking') valid &&= store.weight(String(payload.learning_pool)) === payload.baseline_weight;
         }
         if (Array.isArray(payload.episode_ids)) valid &&= memoryEvidenceAllowed(payload.episode_ids, proposal.kind === 'habit');
+        if (Array.isArray(payload.trip_refs)) valid &&= tripEvidenceAllowed(payload.trip_refs);
         if (proposal.kind === 'habit') valid &&= habitEvidenceAllowed(proposal);
         if (proposal.kind === 'habit' && typeof payload.occasion_id === 'string') {
           const occasion = history.occasion(payload.occasion_id); valid &&= !!occasion && occasionAllowed(occasion) && learningDigest(occasion.rules) === payload.baseline_occasion_hash;
@@ -200,6 +208,76 @@ export const createProactiveLearning = (deps: ProactiveLearningDeps) => {
           proposal_class: `trip-relation:${group.target_class}:${group.sphere ?? 'unsorted'}` } });
     }
   };
+  /** A trip's details and days, while its record is there and not cancelled. */
+  const tripRecord = (ref: SituationRef): { trip: TripDetails; title: string; from?: number; to?: number } | null => {
+    if (ref.collection === 'booking') {
+      const row = deps.work.readBooking(ref.id);
+      if (!row || row.deleted_at != null || row.lifecycle_state === 'cancelled') return null;
+      const trip = trips.get(ref) ?? tripFromSource(ref, row.source_extension_blob);
+      return trip ? { trip, title: row.title, from: row.slot_start_at, to: row.slot_end_at } : null;
+    }
+    const trip = deps.tripExists?.(ref) === true ? trips.get(ref) : null;
+    return trip ? { trip, title: '' } : null;
+  };
+  /** A trip suggestion stands while "last time" is on and the trips it cites are
+   * still there, all to one country. */
+  const tripEvidenceAllowed = (refs: unknown): boolean => {
+    if (!memoryOn() || !Array.isArray(refs) || refs.length < 2 || refs.length > 10) return false;
+    const countries = refs.map(value => { const ref = value as SituationRef | null;
+      return ref && typeof ref.collection === 'string' && typeof ref.id === 'string' ? tripRecord(ref)?.trip.destination_country : undefined; });
+    return countries.every(country => country !== undefined && country === countries[0]);
+  };
+  /** P16 asks the owner about what recurs. A booked trip is a plan, never proof the
+   * owner went (§4.7), so it makes no episode; two trips to one country about a year
+   * apart still ask one question, and only the owner's yes makes the occasion. */
+  const tripOccasionOffers = () => {
+    if (!memoryOn() || stopped || !deps.isVaultUnlocked()) return;
+    const ended: Array<{ ref: SituationRef; country: string; from: number; to: number; sphere?: Sphere }> = [];
+    const consider = (ref: SituationRef) => {
+      const found = tripRecord(ref); const country = found?.trip.destination_country; if (!found || !country) return;
+      const from = found.trip.entry_on ? calendarDayMs(found.trip.entry_on) : found.from ?? null;
+      const to = found.trip.exit_on ? calendarDayMs(found.trip.exit_on)! + DAY - 1 : found.to ?? null;
+      if (from === null || to === null || to > now()) return;
+      // The suppression list and the hidden people cover every memory-based offer (P17, P21).
+      if (found.trip.travellers.some(person => deps.excludedPerson?.(person)) || PRIVATE.test(found.title)) return;
+      if (history.suppressed({ id: `trip:${identity(ref)}`, when: { from, to }, where: countryPlace(country), people: found.trip.travellers, class_id: 'trip' })) return;
+      ended.push({ ref, country, from, to, ...(scope(ref) ? { sphere: scope(ref) } : {}) });
+    };
+    for (let offset = 0; ; offset += 500) {
+      const page = deps.work.listByKind('booking', { offset, limit: 500, sync_states: ['live', 'stale_unreachable'] });
+      for (const row of page) consider({ collection: 'booking', id: row.id });
+      if (page.length < 500) break;
+    }
+    for (const collection of ['calendar', 'mail_fact']) for (const id of trips.subjects(collection)) consider({ collection, id });
+    const groups = new Map<string, typeof ended>();
+    for (const trip of ended) {
+      const key = JSON.stringify(['trip', trip.country, trip.sphere ?? 'unsorted']); const group = groups.get(key) ?? []; group.push(trip); groups.set(key, group);
+    }
+    for (const [groupKey, group] of groups) {
+      group.sort((a, b) => b.from - a.from); const latest = group[0]!;
+      const prior = group.slice(1).find(row => { const days = (latest.from - row.from) / DAY; return days >= 330 && days <= 400; });
+      if (!prior || latest.to < now() - 400 * DAY) continue;
+      const month_day = assetDateAt(latest.from, deps.timeZone()).slice(5); const where = countryPlace(latest.country);
+      if (history.occasions(10000).some(row => row.where?.key === where.key && scope({ collection: 'occasion', id: row.id }) === latest.sphere
+        && nearAnnualDate(row.month_day, month_day))) continue;
+      // One question per country and season, as for episodes: answered, it is not asked
+      // again; still open, it gives way to this one, which cites the newer trip.
+      const same = proposals.list({ kind: 'occasion', limit: 10000 }).filter(row => {
+        const asked = row.payload.occasion as { sphere?: string; month_day?: unknown; where?: { key: string } } | undefined;
+        return row.origin === 'learner' && Array.isArray(row.payload.trip_refs) && asked?.where?.key === where.key
+          && (asked.sphere ?? 'unsorted') === (latest.sphere ?? 'unsorted') && typeof asked.month_day === 'string' && nearAnnualDate(asked.month_day, month_day);
+      });
+      if (same.some(row => row.state === 'accepted' || row.state === 'dismissed')) continue;
+      const input: ProactiveProposalInput = { kind: 'occasion', key: `learning:occasion:${learningDigest([groupKey, month_day])}`, title: `Does this recur? · Trip to ${where.name}`,
+        explanation: `Two trips to ${where.name} were booked about a year apart. Confirm an annual occasion around ${dayWords(month_day)}?`,
+        confidence: 'low', origin: 'learner', sources: [prior.ref, latest.ref],
+        payload: { occasion: { title: `Trip to ${where.name}`, month_day, people: [], where, class_id: 'trip', ...(latest.sphere ? { sphere: latest.sphere } : {}),
+          muted: false, rules: [] }, trip_refs: [prior.ref, latest.ref], proposal_class: 'occasion:trip' } };
+      if (!proposals.allows(input)) continue;
+      deps.db.transaction(() => { const proposal = proposals.ensure(input, now()); if (proposal.state !== 'proposed') return;
+        for (const row of same) if (row.state === 'proposed' && row.id !== proposal.id) proposals.outcome(row.id, 'retracted', now()); })();
+    }
+  };
   const memoryOffers = async () => {
     if (!deps.episodes || !memoryOn()) return;
     const epoch = proposals.setting('history.epoch', 0); const episodes = (await deps.episodes.ownerEpisodes()).filter(row => row.id && row.when.to <= now() && deps.episodes!.episodeInputAllowed(row));
@@ -208,6 +286,9 @@ export const createProactiveLearning = (deps: ProactiveLearningDeps) => {
     for (const episode of episodes) {
       const subject = episode.people.length ? ['people', [...episode.people].sort()] : episode.where ? ['place', episode.where.key] : null;
       if (!subject) continue;
+      // A stay on a trip to a known country recurs as that trip, which `tripOccasionOffers`
+      // asks about: asking about its hotel too would be a second question for one habit.
+      if (episode.subjects.some(ref => tripRecord(ref)?.trip.destination_country)) continue;
       const key = JSON.stringify([episode.class_id ?? 'activity', episode.sphere ?? 'unsorted', subject]); const group = groups.get(key) ?? []; group.push(episode); groups.set(key, group);
     }
     for (const [groupKey, group] of groups) {
@@ -228,7 +309,7 @@ export const createProactiveLearning = (deps: ProactiveLearningDeps) => {
       });
       if (same.some(row => row.state === 'accepted' || row.state === 'dismissed')) continue;
       const input: ProactiveProposalInput = { kind: 'occasion', key: `learning:occasion:${learningDigest([groupKey, month_day])}`, title: `Does this recur? · ${latest.title}`,
-        explanation: `Two concrete episodes with the same ${latest.people.length ? 'people' : 'place'} are about a year apart. Confirm an annual occasion around ${month_day}?`,
+        explanation: `Two concrete episodes with the same ${latest.people.length ? 'people' : 'place'} are about a year apart. Confirm an annual occasion around ${dayWords(month_day)}?`,
         confidence: 'low', origin: 'learner', sources: [{ collection: 'episode', id: prior.id! }, { collection: 'episode', id: latest.id! }],
         payload: { occasion: { title: latest.title, month_day, people: latest.people, ...(latest.where ? { where: latest.where } : {}), class_id: latest.class_id,
           ...(latest.sphere ? { sphere: latest.sphere } : {}), muted: false, rules: [] }, episode_ids: [prior.id, latest.id], proposal_class: `occasion:${latest.class_id ?? 'activity'}` } };
@@ -310,10 +391,10 @@ export const createProactiveLearning = (deps: ProactiveLearningDeps) => {
       // caught up) withdraws the offer it made, unless the owner edited it.
       for (const old of offered) if (old.payload.item_kind === kind && old.edited_at === undefined) proposals.outcome(old.id, 'retracted', now());
     }
-    relationOffers(); await memoryOffers(); refreshPending(); publishProposalEvents(proposals, deps.situations, deps.spheres);
+    relationOffers(); await memoryOffers(); tripOccasionOffers(); refreshPending(); publishProposalEvents(proposals, deps.situations, deps.spheres);
   };
   return {
-    store, targetOf, refreshPending, memoryEvidenceAllowed, habitEvidenceAllowed, tick: () => running ??= run().finally(() => { running = undefined; }),
+    store, targetOf, refreshPending, memoryEvidenceAllowed, habitEvidenceAllowed, tripEvidenceAllowed, tick: () => running ??= run().finally(() => { running = undefined; }),
     allowsOccasion: (occasion: Occasion) => { const next = occasionNextDate(occasion, assetDateAt(now(), deps.timeZone())); return !!next && occasionAllowed(occasion, calendarDayMs(next)!); },
     async stop() { stopped = true; await running; },
     tripExists: currentTrip,

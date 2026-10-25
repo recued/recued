@@ -46,7 +46,11 @@ import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 // Inputs
 // ────────────────────────────────────────────────────────────────
 
+export type ApprovalLinkFormValues = Partial<Record<'visitor_name' | 'visitor_email' | 'comment' | 'answer' | 'decision' | 'option_id', string>>;
+
 export interface ApprovalLinkRenderInput {
+  readonly submitted?: ApprovalLinkFormValues;
+  readonly error_message?: string;
   /** Visitor-facing display name (typically Mary's first name or
    *  handle). */
   readonly display_name: string;
@@ -115,14 +119,14 @@ const renderFooter = (trust_footer?: string | null): string => {
 // Per-action-kind form bodies
 // ────────────────────────────────────────────────────────────────
 
-const renderPickTimeBody = (options: ReadonlyArray<ApprovalLinkOption>): string => {
+const renderPickTimeBody = (options: ReadonlyArray<ApprovalLinkOption>, values: ApprovalLinkFormValues): string => {
   const opts = options
-    .map((o, idx) => {
+    .map((o) => {
       const description = o.description !== undefined && o.description.length > 0
         ? `<span class="rcp-option-desc">${htmlEscape(o.description)}</span>`
         : '';
       return `<label class="rcp-option">
-<input type="radio" name="option_id" value="${htmlEscape(o.id)}"${idx === 0 ? '' : ''} required>
+<input type="radio" name="option_id" value="${htmlEscape(o.id)}"${values.option_id === o.id ? ' checked' : ''} required>
 <span class="rcp-option-label">${htmlEscape(o.label)}</span>${description}
 </label>`;
     })
@@ -133,71 +137,71 @@ ${opts}
 </fieldset>`;
 };
 
-const renderConfirmAttendanceBody = (): string =>
+const renderConfirmAttendanceBody = (values: ApprovalLinkFormValues): string =>
   `<fieldset class="rcp-fieldset">
 <legend class="rcp-legend">Will you attend?</legend>
 <label class="rcp-option">
-<input type="radio" name="answer" value="yes" required>
+<input type="radio" name="answer" value="yes"${values.answer === 'yes' ? ' checked' : ''} required>
 <span class="rcp-option-label">Yes</span>
 </label>
 <label class="rcp-option">
-<input type="radio" name="answer" value="no" required>
+<input type="radio" name="answer" value="no"${values.answer === 'no' ? ' checked' : ''} required>
 <span class="rcp-option-label">No</span>
 </label>
 </fieldset>`;
 
-const renderApproveWordingBody = (completion = false,quote = false): string =>
+const renderApproveWordingBody = (completion: boolean,quote: boolean, values: ApprovalLinkFormValues): string =>
   completion ? `<div class="rcp-field">
 <label for="rcp-comment">Corrections (required when requesting changes)</label>
-<textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}" required></textarea>
+<textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}" required>${htmlEscape(values.comment ?? '')}</textarea>
 </div>
 <button type="submit" name="decision" value="approve" formnovalidate class="rcp-button rcp-button-primary">Accept completion</button>
 <button type="submit" name="decision" value="reject" class="rcp-button">Request corrections</button>`
   : `<fieldset class="rcp-fieldset">
 <legend class="rcp-legend">Your decision</legend>
 <label class="rcp-option">
-<input type="radio" name="decision" value="approve" required>
+<input type="radio" name="decision" value="approve"${values.decision === 'approve' ? ' checked' : ''} required>
 <span class="rcp-option-label">${quote ? 'Accept this quote' : 'Approve'}</span>
 </label>
 <label class="rcp-option">
-<input type="radio" name="decision" value="reject" required>
+<input type="radio" name="decision" value="reject"${values.decision === 'reject' ? ' checked' : ''} required>
 <span class="rcp-option-label">${quote ? 'Decline this quote' : 'Suggest changes'}</span>
 </label>
 </fieldset>
 <div class="rcp-field">
 <label for="rcp-comment">${quote ? 'Reason or proposed changes (optional)' : 'Comments (optional)'}</label>
-<textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}"></textarea>
+<textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}">${htmlEscape(values.comment ?? '')}</textarea>
 </div>`;
 
-const renderAnswerQuestionBody = (): string =>
+const renderAnswerQuestionBody = (values: ApprovalLinkFormValues): string =>
   `<div class="rcp-field">
 <label for="rcp-answer">Your answer</label>
-<textarea id="rcp-answer" name="answer" rows="6" maxlength="${APPROVAL_LINK_VISITOR_ANSWER_MAX}" required></textarea>
+<textarea id="rcp-answer" name="answer" rows="6" maxlength="${APPROVAL_LINK_VISITOR_ANSWER_MAX}" required>${htmlEscape(values.answer ?? '')}</textarea>
 </div>`;
 
-const renderUploadDocBody = (): string =>
+const renderUploadDocBody = (values: ApprovalLinkFormValues): string =>
   `<div class="rcp-field">
 <label for="rcp-answer">Acknowledgement</label>
 <p class="rcp-meta">This action requires a file upload via the companion drop link. Type a confirmation note here once you've sent the file; the recipient will receive both records together.</p>
-<textarea id="rcp-answer" name="answer" rows="4" maxlength="${APPROVAL_LINK_VISITOR_ANSWER_MAX}" required></textarea>
+<textarea id="rcp-answer" name="answer" rows="4" maxlength="${APPROVAL_LINK_VISITOR_ANSWER_MAX}" required>${htmlEscape(values.answer ?? '')}</textarea>
 </div>`;
 
 const renderActionBody = (
   action_kind: ApprovalLinkActionKind,
   options: ReadonlyArray<ApprovalLinkOption> | undefined,
-  completion = false,quote = false,
+  completion = false,quote = false, values: ApprovalLinkFormValues = {},
 ): string => {
   switch (action_kind) {
     case 'pick_time':
-      return renderPickTimeBody(options ?? []);
+      return renderPickTimeBody(options ?? [],values);
     case 'confirm_attendance':
-      return renderConfirmAttendanceBody();
+      return renderConfirmAttendanceBody(values);
     case 'approve_wording':
-      return renderApproveWordingBody(completion,quote);
+      return renderApproveWordingBody(completion,quote,values);
     case 'answer_question':
-      return renderAnswerQuestionBody();
+      return renderAnswerQuestionBody(values);
     case 'upload_doc':
-      return renderUploadDocBody();
+      return renderUploadDocBody(values);
   }
 };
 
@@ -206,7 +210,7 @@ const renderActionBody = (
 // ────────────────────────────────────────────────────────────────
 
 const renderVisitorIdentityFields = (
-  constraints: ApprovalLinkVisitorFieldConstraints,
+  constraints: ApprovalLinkVisitorFieldConstraints, values: ApprovalLinkFormValues,
 ): string => {
   const requiredAttr = (req: 'required' | 'optional'): string =>
     req === 'required' ? ' required' : '';
@@ -214,10 +218,10 @@ const renderVisitorIdentityFields = (
     req === 'required' ? ' <span class="rcp-required">*</span>' : ' (optional)';
   const emailValue = constraints.require_email_match
     ? ` value="${htmlEscape(constraints.require_email_match)}" readonly`
-    : '';
+    : ` value="${htmlEscape(values.visitor_email ?? '')}"`;
   return `<div class="rcp-field">
 <label for="rcp-visitor-name">Your name${mark(constraints.name)}</label>
-<input id="rcp-visitor-name" name="visitor_name" type="text" maxlength="${APPROVAL_LINK_VISITOR_NAME_MAX}"${requiredAttr(constraints.name)}>
+<input id="rcp-visitor-name" name="visitor_name" type="text" maxlength="${APPROVAL_LINK_VISITOR_NAME_MAX}" value="${htmlEscape(values.visitor_name ?? '')}"${requiredAttr(constraints.name)}>
 </div>
 <div class="rcp-field">
 <label for="rcp-visitor-email">Your email${mark(constraints.email)}</label>
@@ -246,9 +250,24 @@ ${renderFooter()}
 `;
 };
 
+/** The dispatcher has no customer-visible terms to disclose for an inactive
+ * link. Keep expiry and revocation indistinguishable and offer a next step. */
+export const renderApprovalLinkUnavailableHtml = (): string => `${renderHead('Link unavailable')}
+<body>
+<div class="rcp-shell">
+<div class="rcp-card">
+<h1 class="rcp-name">This link is unavailable</h1>
+<p class="rcp-tagline">Ask the business that sent it for a new link.</p>
+${renderFooter()}
+</div>
+</div>
+</body>
+</html>
+`;
+
 /** Substrate-defined consumed-already body — emitted on the second
  *  presentation of a single-use approval token. Distinct from the
- *  generic 410-Gone JSON the dispatcher emits at the cache layer
+ *  neutral unavailable page the dispatcher emits at the cache layer
  *  because the visitor reached the handler via a valid bearer + an
  *  intent that has since been consumed. */
 export const renderApprovalLinkAlreadyConsumedHtml = (input: {
@@ -273,9 +292,11 @@ ${renderFooter()}
 };
 
 export const renderApprovalLinkHtml = (input: ApprovalLinkRenderInput): string => {
-  const body = renderActionBody(input.action_kind, input.options, input.completion,input.quote);
-  const identityFields = renderVisitorIdentityFields(input.visitor_field_constraints);
-  return `${renderHead(`Response requested — ${input.display_name}`)}
+  // A disabled first submit button blocks implicit Enter from contact fields.
+  // Completion requires an explicit action; its Accept button must not default.
+  const body = renderActionBody(input.action_kind, input.options, input.completion,input.quote,input.submitted);
+  const identityFields = renderVisitorIdentityFields(input.visitor_field_constraints,input.submitted ?? {});
+  return `${renderHead(`${input.error_message ? 'Check your response' : 'Response requested'} — ${input.display_name}`)}
 <body>
 <div class="rcp-shell">
 <div class="rcp-card">
@@ -283,12 +304,18 @@ export const renderApprovalLinkHtml = (input: ApprovalLinkRenderInput): string =
 <div>
 <h1 class="rcp-name">Response requested — ${htmlEscape(input.display_name)}</h1>
 <p class="rcp-tagline">${htmlEscape(input.prompt)}</p>
+${input.error_message ? `<section class="rcp-error-summary" role="alert" id="rcp-error" tabindex="-1" autofocus>
+<h2>Check your response</h2>
+<p>${htmlEscape(input.error_message)}</p>
+<a href="#rcp-response-form">Fix your response</a>
+</section>` : ''}
 ${input.context_summary.length > 0 ? `<p class="rcp-context">${htmlEscape(input.context_summary)}</p>` : ''}
 <p class="rcp-meta">${htmlEscape(input.expiry_display)}</p>
 </div>
 </div>
-<form class="rcp-form" method="POST" action="/reception/approve/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
+<form id="rcp-response-form" tabindex="-1" class="rcp-form"${input.error_message ? ' aria-describedby="rcp-error"' : ''} method="POST" action="/reception/approve/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
+${input.completion ? '<button type="submit" hidden disabled aria-hidden="true" tabindex="-1"></button>' : ''}
 ${identityFields}
 ${body}
 ${input.completion ? '' : `<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>`}
@@ -341,6 +368,7 @@ ${renderFooter()}
 export const renderApprovalLinkErrorHtml = (input: {
   display_name: string;
   message: string;
+  recovery_url?: string;
 }): string => {
   return `${renderHead(`Couldn’t submit — ${input.display_name}`)}
 <body>
@@ -350,6 +378,7 @@ export const renderApprovalLinkErrorHtml = (input: {
 <div>
 <h1 class="rcp-name">Couldn’t submit response</h1>
 <p class="rcp-tagline">${htmlEscape(input.message)}</p>
+${input.recovery_url ? `<a class="rcp-button" href="${htmlEscape(input.recovery_url)}" rel="noreferrer">Review request again</a>` : ''}
 </div>
 </div>
 ${renderFooter()}

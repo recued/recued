@@ -66,6 +66,10 @@ ${FILE_PICK_STYLES}
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
 }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-title { margin: 0; font-size: 20px; font-weight: 600; }
+/* A finger's height on a phone. ⛔ Only as tall as its text. */
+@media (max-width: 640px) {
+  [${MAIL_ROUTE_HOST_ATTR}] .mail-route-header > a { display: inline-flex; align-items: center; min-height: 44px; }
+}
 [${MAIL_ROUTE_HOST_ATTR}] a { color: var(--accent); }
 [${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] { display: grid; gap: 12px; justify-items: start; }
 [${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] h2 { margin: 0; font-size: 18px; }

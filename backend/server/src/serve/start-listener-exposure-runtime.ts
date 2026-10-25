@@ -18,6 +18,7 @@ export interface ListenerHttpServerRef {
 }
 
 export interface StartListenerExposureRuntimeOptions {
+  readonly bootTrace?: import('../cli/boot-trace.js').BootTrace;
   readonly listener: ComposeListenersOptions;
   readonly exposure: Omit<
     ComposeServeExposureOptions,
@@ -41,12 +42,15 @@ export interface ListenerExposureRuntimeResult extends ComposeListenersResult {
 export const startListenerExposureRuntime = async (
   options: StartListenerExposureRuntimeOptions,
 ): Promise<ListenerExposureRuntimeResult> => {
+  options.bootTrace?.mark('listeners-compose-start');
   const listeners = await composeListeners({
     ...options.listener,
   });
+  options.bootTrace?.mark('listeners-compose-complete');
 
   options.publishWsHandleForLockout(listeners.serverHandlerSet.wsHandle);
 
+  options.bootTrace?.mark('exposure-start');
   await composeServeExposure({
     ...options.exposure,
     listenerCoordinator: listeners.listenerCoordinator,
@@ -58,6 +62,7 @@ export const startListenerExposureRuntime = async (
     hasPublicAddress: () =>
       options.listener.storage.publicAddress.ownBaseUrls().length > 0,
   });
+  options.bootTrace?.mark('exposure-complete');
 
   const actualPort = listeners.server.port;
   options.publishHttpServer({ close: () => listeners.server.close() });

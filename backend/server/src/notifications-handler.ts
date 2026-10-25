@@ -29,6 +29,7 @@ import {
   type NotificationSetBridgeModeResult,
   type NotificationSetChannelResult,
   type NotificationSetVerificationPhraseResult,
+  type ReminderDestinationIssue,
   type ServerRpcRegistry,
 } from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
@@ -36,6 +37,7 @@ import { NOTIFICATION_CHANNEL_NAMES } from '@recued/contracts';
 
 import type { ServerEventInput } from './events/bus.js';
 import type { WsClient } from './ws-server.js';
+import { reachesPhone } from './situations/reminder-destinations.js';
 
 // D-192 seam 10 — from contracts (structural channels + every declared chat
 // transport), so a new transport is accepted here with no edit.
@@ -64,20 +66,34 @@ export interface NotificationRpcDeps {
   emit?: (event: ServerEventInput) => void;
 }
 
+/** D-325 §15.7 amendment — whether a reminder reaches the owner's phone, by the rule Yours'
+ *  `phone_ready` reads, and why each channel that is on carries none, so Settings says it
+ *  where the owner looks first. A lookup that fails leaves both unsaid rather than failing
+ *  the read or the switch it rides on. */
+const phoneReach = async (deps: NotificationRpcDeps): Promise<{
+  reaches_phone?: boolean; reminder_issues?: ReminderDestinationIssue[];
+}> => {
+  try {
+    const { destinations, issues } = await deps.block.getReminderDestinations();
+    return { reaches_phone: reachesPhone(destinations), reminder_issues: issues.map(({ channel, reason }) => ({ channel, reason })) };
+  } catch { return {}; }
+};
+
 export const handleNotificationsDescribe = async (
   deps: NotificationRpcDeps,
 ): Promise<{
   rows: ReadonlyArray<NotificationChannelToggleView>;
   verification_phrase?: string;
+  reaches_phone?: boolean;
+  reminder_issues?: ReadonlyArray<ReminderDestinationIssue>;
 }> => {
   const rows = await deps.block.describeNotificationChannels();
+  const phone = await phoneReach(deps);
   // R31 — surface the current verification phrase alongside the matrix
   // so the panel renders it as a panel-level setting (the phrase is set
   // via `set_verification_phrase` but `describe` is the only read path).
   const settings = await deps.block.getNotificationSettings();
-  return settings.verification_phrase !== undefined
-    ? { rows, verification_phrase: settings.verification_phrase }
-    : { rows };
+  return { rows, ...(settings.verification_phrase !== undefined ? { verification_phrase: settings.verification_phrase } : {}), ...phone };
 };
 
 export const handleNotificationsSetChannel = async (
@@ -108,7 +124,11 @@ export const handleNotificationsSetChannel = async (
       'notifications.set_channel: patch must specify notification, approval or a connection',
     );
   }
-  return deps.block.setNotificationChannelMode(args.channel, args.patch);
+  const result = await deps.block.setNotificationChannelMode(args.channel, args.patch);
+  if (!result.ok) return result;
+  // A switch can change whether reminders reach a phone; the confirmation says so, so
+  // Settings needs no second read.
+  return { ...result, ...await phoneReach(deps) };
 };
 
 export const handleNotificationsSetVerificationPhrase = async (

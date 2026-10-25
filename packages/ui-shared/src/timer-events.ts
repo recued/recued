@@ -7,8 +7,9 @@
  *  becomes the clause that says what makes the recipe run, worded from what
  *  the watcher really does:
  *
- *    time-relative  fires once per record per offset ("30 minutes before each
- *                   calendar event starts");
+ *    time-relative  fires once per record per offset, and again when the
+ *                   record's date moves ("30 minutes before each calendar
+ *                   event starts");
  *    http           the page's content changed.
  *
  *  (The calendar, mail, file, webhook and recipe watchers were retired on

@@ -1,6 +1,8 @@
 import { BACKUP_WATCHDOG_ISSUE_TEXT, type BackupWatchdogDrillStart, type BackupWatchdogDrillUpdate, type BackupWatchdogSave, type BackupWatchdogStatus } from '@recued/contracts';
 import { formatClientDateTime } from '@recued/ui-shared';
 import { mountBackupWatchdogDrill } from './backup-watchdog-drill-panel.js';
+import { createBackupFormValidation, isBackupWatchdogUrl } from './backup-form-validation.js';
+import { createBackupStatusRefresh, type BackupStatusRefreshOutcome } from './backup-status-refresh.js';
 
 export interface BackupWatchdogPorts {
   get(): Promise<BackupWatchdogStatus>;
@@ -20,8 +22,14 @@ const COPY: Record<BackupWatchdogStatus['state'], string> = {
   drill_paused: 'Pings are temporarily paused for your monitor alert drill.',
 };
 /** The ping URL is a write-only draft. Polls never populate or replace it. */
-export const mountBackupWatchdog = (options: { host: HTMLElement; document: Document; ports: BackupWatchdogPorts }) => {
+export const mountBackupWatchdog = (options: {
+  host: HTMLElement; document: Document; ports: BackupWatchdogPorts;
+  now?: () => number;
+  onRefreshPendingChange?: (pending: boolean) => void;
+  onAttentionChange?: (attention: boolean) => void;
+}) => {
   const { host, document: doc, ports } = options;
+  const validation = createBackupFormValidation(doc, 'backup-watchdog');
   const make = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) => {
     const node = doc.createElement(tag); if (text !== undefined) node.textContent = text; return node;
   };
@@ -32,35 +40,61 @@ export const mountBackupWatchdog = (options: { host: HTMLElement; document: Docu
   enabled.setAttribute('data-backup-watchdog-enabled', ''); label.appendChild(enabled); host.appendChild(label);
   const urlLabel = make('label', 'Success-ping URL '), url = make('input'); url.type = 'password'; url.autocomplete = 'off'; url.spellcheck = false;
   url.placeholder = 'HTTPS URL, entered once'; url.setAttribute('data-backup-watchdog-url', ''); urlLabel.appendChild(url); host.appendChild(urlLabel);
-  host.appendChild(make('p', 'Use a Healthchecks-compatible HTTPS success URL with no query, fragment, or login. The URL is stored encrypted and is never shown again. No recovery words are needed. Pings start after a verified backup is within its age limit and no backup checks need attention. Enabled S3 checks need a complete passing scan.'));
+  validation.field(url, host, 'url', () => {
+    const value = url.value.trim();
+    if (!value) return current && current.state !== 'unavailable' && enabled.checked && !current.configured
+      ? 'Enter the monitor success-ping URL once.' : undefined;
+    return isBackupWatchdogUrl(value) ? undefined : 'Use an HTTPS success-ping URL on port 443 with no query, fragment, or login (up to 2048 bytes).';
+  });
+  host.appendChild(make('p', 'Use a Healthchecks-compatible HTTPS success URL with no query, fragment, or login. The URL is stored encrypted and is never shown again. Your recovery key is not needed. Pings start after a verified backup is within its age limit and no backup checks need attention. Enabled S3 checks need a complete passing scan.'));
   host.appendChild(make('p', 'Pausing this server, its backup schedule, or these pings stops the signal. Pause the external monitor too for planned downtime. A ping does not prove that an alert reached you.'));
-  const save = make('button', 'Save monitor'), remove = make('button', 'Remove monitor');
-  for (const [button, name] of [[save, 'save'], [remove, 'remove']] as const) {
+  const save = make('button', 'Save monitor'), remove = make('button', 'Remove monitor'), discard = make('button', 'Discard changes');
+  for (const [button, name] of [[save, 'save'], [remove, 'remove'], [discard, 'discard']] as const) {
     button.type = 'button'; button.className = 'rx-btn rx-btn-secondary'; button.disabled = true;
     button.setAttribute(`data-backup-watchdog-${name}`, ''); host.appendChild(button);
   }
-  const status = make('p'), receipt = make('p'), feedback = make('p');
-  for (const [node, name] of [[status, 'status'], [receipt, 'receipt'], [feedback, 'feedback']] as const) {
+  const status = make('p'), receipt = make('p'), feedback = make('p'), draftStatus = make('p');
+  for (const [node, name] of [[draftStatus, 'draft-status'], [status, 'status'], [receipt, 'receipt'], [feedback, 'feedback']] as const) {
     node.setAttribute(`data-backup-watchdog-${name}`, ''); node.setAttribute('role', 'status'); host.appendChild(node);
   }
-  let current: BackupWatchdogStatus | undefined, disposed = false, busy = false, loading = false, dirty = false;
-  let generation = 0, editVersion = 0, timer: ReturnType<typeof setTimeout> | undefined;
+  const refreshStatus = createBackupStatusRefresh({ host, document: doc, prefix: 'backup-watchdog',
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.onRefreshPendingChange ? { onPendingChange: options.onRefreshPendingChange } : {}),
+  });
+  let current: BackupWatchdogStatus | undefined, confirmedEnabled: boolean | undefined, disposed = false, busy = false, loading = false;
+  let setupFeedback: 'saved' | 'removed' | undefined;
+  let generation = 0, refreshAfterAction = false, timer: ReturnType<typeof setTimeout> | undefined;
+  const hasDraft = () => enabled.checked !== (confirmedEnabled ?? false) || url.value !== '';
   const drillHost = ports.drill ? make('div') : undefined;
   if (drillHost) host.appendChild(drillHost);
   const drill = drillHost ? mountBackupWatchdogDrill({ host: drillHost, document: doc,
     start: input => drillWrite(input), update: input => drillWrite(input),
   }) : undefined;
   const buttons = () => {
+    const changed = hasDraft(), discardDisabled = disposed || busy || !changed;
+    if (!disposed && discardDisabled && doc.activeElement === discard) enabled.focus();
+    discard.disabled = discardDisabled;
+    draftStatus.textContent = changed ? 'Unsaved monitor changes.' : 'No unsaved monitor changes.';
     save.disabled = disposed || busy || !current || current.state === 'unavailable';
     remove.disabled = save.disabled || !current?.configured;
-    drill?.render(current, busy || disposed, dirty);
+    if (setupFeedback) feedback.textContent = changed
+      ? `${setupFeedback === 'removed' ? 'Monitor removed.' : 'Monitor setup saved.'} Your newer edits still need saving.`
+      : setupFeedback === 'removed' ? 'Monitor removed. Pause or remove its external check too.' : 'Monitor setup saved. Check its first ping and alert route on the monitor host.';
+    validation.refresh(); drill?.render(current, busy || disposed, changed);
   };
-  const unavailable = () => { current = undefined; status.textContent = COPY.unavailable; receipt.textContent = ''; buttons(); };
-  const render = (value: BackupWatchdogStatus) => {
+  const clearSetupFeedback = () => {
+    if (setupFeedback !== undefined) { setupFeedback = undefined; feedback.textContent = ''; }
+  };
+  const unavailable = () => { options.onAttentionChange?.(true); current = undefined; status.textContent = COPY.unavailable; receipt.textContent = ''; buttons(); };
+  const render = (value: BackupWatchdogStatus, keepEnabled = enabled.checked !== (confirmedEnabled ?? false)) => {
     if (!value || !Object.hasOwn(COPY, value.state) || typeof value.enabled !== 'boolean' || typeof value.configured !== 'boolean'
       || (value.last_acknowledged_at !== undefined && (!Number.isSafeInteger(value.last_acknowledged_at) || value.last_acknowledged_at < 0))) throw new Error('Invalid monitor status');
+    options.onAttentionChange?.(['blocked', 'failed', 'unavailable'].includes(value.state));
     current = value;
-    if (!dirty && value.state !== 'unavailable') enabled.checked = value.enabled;
+    if (value.state !== 'unavailable') {
+      confirmedEnabled = value.enabled;
+      if (!keepEnabled) enabled.checked = value.enabled;
+    }
     url.placeholder = value.configured ? 'Leave blank to keep the saved URL' : 'HTTPS URL, entered once';
     const issue = value.issue && Object.hasOwn(BACKUP_WATCHDOG_ISSUE_TEXT, value.issue) ? BACKUP_WATCHDOG_ISSUE_TEXT[value.issue] : '';
     status.textContent = COPY[value.state] + (issue ? ` ${issue}` : '');
@@ -70,21 +104,30 @@ export const mountBackupWatchdog = (options: { host: HTMLElement; document: Docu
   };
   const refresh = async (): Promise<void> => {
     if (disposed || busy || loading) return;
-    loading = true; const ownGeneration = generation;
-    try { const value = await ports.get(); if (!disposed && generation === ownGeneration) render(value); }
+    loading = true; refreshAfterAction = false; const ownGeneration = generation;
+    let outcome: BackupStatusRefreshOutcome = 'superseded'; refreshStatus.start();
+    try { const value = await ports.get(); if (!disposed && generation === ownGeneration) {
+      render(value); outcome = value.state === 'unavailable' ? 'failure' : 'success';
+    } }
     catch { if (!disposed && generation === ownGeneration) {
-      unavailable();
+      unavailable(); outcome = 'failure';
     } }
     finally { loading = false; if (!disposed) {
       if (timer !== undefined) clearTimeout(timer);
-      if (generation !== ownGeneration && !busy) void refresh();
-      else timer = setTimeout(() => { void refresh(); }, 10_000);
+      if (refreshAfterAction) {
+        refreshStatus.waitForAction();
+        if (!busy) void refresh();
+      } else {
+        refreshStatus.finish(outcome);
+        timer = setTimeout(() => { void refresh(); }, 10_000);
+      }
     } }
   };
-  for (const input of [enabled, url]) for (const event of ['input', 'change']) input.addEventListener(event, () => { dirty = true; editVersion++; buttons(); });
+  for (const input of [enabled, url]) for (const event of ['input', 'change']) input.addEventListener(event, () => { if (disposed) return; clearSetupFeedback(); buttons(); });
   const drillWrite = (input: BackupWatchdogDrillStart | BackupWatchdogDrillUpdate) => {
     if (disposed || busy || !current || current.state === 'unavailable' || !ports.drill) return;
-    busy = true; generation++; buttons(); feedback.textContent = 'Updating the alert drill…';
+    busy = true; generation++; refreshAfterAction = true; refreshStatus.waitForAction();
+    setupFeedback = undefined; buttons(); feedback.textContent = 'Updating the alert drill…';
     void (async () => {
       try {
         const value = 'action' in input ? await ports.drill!.update(input) : await ports.drill!.start(input);
@@ -98,19 +141,20 @@ export const mountBackupWatchdog = (options: { host: HTMLElement; document: Docu
   };
   const submit = (forget: boolean) => {
     if (disposed || busy || !current || current.state === 'unavailable') return;
-    const ping_url = url.value.trim();
-    if (!forget && enabled.checked && !current.configured && !ping_url) { feedback.textContent = 'Enter the monitor success-ping URL once.'; return; }
+    const ping_url = url.value.trim(), submittedEnabled = enabled.checked;
+    if (!forget && !validation.validate()) { clearSetupFeedback(); return; }
+    validation.reset();
     const input: BackupWatchdogSave = forget ? { enabled: false, forget: true }
       : { enabled: enabled.checked, ...(ping_url ? { ping_url } : {}) };
-    busy = true; generation++; const submitted = editVersion; buttons(); feedback.textContent = forget ? 'Removing the monitor…' : 'Saving the monitor…';
+    busy = true; generation++; refreshAfterAction = true; refreshStatus.waitForAction();
+    setupFeedback = undefined; buttons(); feedback.textContent = forget ? 'Removing the monitor…' : 'Saving the monitor…';
     void (async () => {
       try {
         const value = await ports.save(input); if (disposed) return;
         if (value.enabled !== input.enabled || value.state === 'unavailable' || (forget ? value.configured : input.enabled && !value.configured)) throw new Error('Unconfirmed monitor setup');
-        dirty = editVersion !== submitted;
-        render(value);
-        if (!dirty) url.value = '';
-        feedback.textContent = dirty ? 'Monitor setup saved. Your newer edits still need saving.' : forget ? 'Monitor removed. Pause or remove its external check too.' : 'Monitor setup saved. Check its first ping and alert route on the monitor host.';
+        if (url.value.trim() === ping_url) url.value = '';
+        setupFeedback = forget ? 'removed' : 'saved';
+        render(value, enabled.checked !== submittedEnabled);
       } catch { if (!disposed) {
         unavailable(); feedback.textContent = 'Monitor setup could not be confirmed. Refresh before trying again.';
       } }
@@ -118,6 +162,10 @@ export const mountBackupWatchdog = (options: { host: HTMLElement; document: Docu
     })();
   };
   save.addEventListener('click', () => submit(false)); remove.addEventListener('click', () => submit(true));
+  discard.addEventListener('click', () => {
+    if (disposed || busy || !hasDraft()) return;
+    enabled.checked = confirmedEnabled ?? false; url.value = ''; validation.reset(); clearSetupFeedback(); enabled.focus(); buttons();
+  });
   void refresh();
-  return { refresh, dispose(): void { disposed = true; generation++; url.value = ''; buttons(); if (timer !== undefined) clearTimeout(timer); } };
+  return { refresh, dispose(): void { disposed = true; generation++; url.value = ''; validation.dispose(); refreshStatus.dispose(); drill?.dispose(); buttons(); if (timer !== undefined) clearTimeout(timer); } };
 };

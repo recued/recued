@@ -345,6 +345,28 @@ describe('POST /auth/pair client_tokens issuance', () => {
     expect(pairedInstances.get('typo-iid')?.kind).toBe('webclient');
   });
 
+  it('a code pairing that names no device is refused, and the code still pairs one that does', async () => {
+    // ⛔ It issued a working bearer with no Devices row: nobody could see or
+    // revoke it, and a single-use code was enough to get one.
+    const code = pairing.refreshCode();
+    const issuedBefore = clientTokens.list({ include_revoked: true }).length;
+    const bad = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, clientKind: 'webclient' }),
+    });
+    expect(bad.status).toBe(400);
+    expect(clientTokens.list({ include_revoked: true })).toHaveLength(issuedBefore);
+
+    const retry = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, clientKind: 'webclient', instanceId: 'named-iid' }),
+    });
+    expect(retry.status).toBe(200);
+    expect(pairedInstances.get('named-iid')?.kind).toBe('webclient');
+  });
+
   it('a malformed JSON body is a 400, not a 500', async () => {
     // `readJsonBody` throws on a syntax error and the outer handler had no arm
     // for it, so the failure fell to the catch-all: a 500 whose message was the
@@ -388,6 +410,32 @@ describe('POST /auth/pair client_tokens issuance', () => {
     expect(err.error?.code).toBe('instance_revoked');
     // Still revoked — never resurrected.
     expect(pairedInstances.isRevoked(iid)).toBe(true);
+
+    // ⛔ …and the refusal did not use the code up: the honest retry under a
+    // fresh identity pairs with the same one (it used to get `invalid_code`).
+    const retry = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code2, clientKind: 'webclient', instanceId: 'fresh-after-revoke-iid' }),
+    });
+    expect(retry.status).toBe(200);
+  });
+
+  it('refuses a non-string displayName before the code is used', async () => {
+    // It threw at the roster insert — a 500, AFTER the code was used.
+    const code = pairing.refreshCode();
+    const bad = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, clientKind: 'webclient', instanceId: 'name-typo-iid', displayName: true }),
+    });
+    expect(bad.status).toBe(400);
+    const retry = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, clientKind: 'webclient', instanceId: 'name-typo-iid', displayName: 'Laptop' }),
+    });
+    expect(retry.status).toBe(200);
   });
 
   it('rejects an oversized /auth/pair body with 413 before validation', async () => {
@@ -409,5 +457,58 @@ describe('POST /auth/pair client_tokens issuance', () => {
       body: JSON.stringify({ code, clientKind: 'webclient', instanceId: 'post-413-iid' }),
     });
     expect(ok.status).toBe(200);
+  });
+});
+
+describe('POST /auth/pair bounds failed attempts', () => {
+  // ⛔ No limit: ~990 wrong codes a second, and the real code still worked
+  // after 3,000 misses.
+  let server: RunningServer | undefined;
+  let pairing: ReturnType<typeof createPairingManager>;
+  let db: Database.Database;
+  let clock = 1_000_000;
+
+  beforeAll(async () => {
+    pairing = createPairingManager({ realmToken: 'legacy-realm-token' });
+    db = new Database(':memory:');
+    server = await startServer(0, {
+      executeDeps: {
+        recipeStore: createRecipeStore('/nonexistent'),
+        executorConfig: { manifests: createManifestRegistry('/nonexistent') },
+        baseVault: {},
+      },
+      pairing,
+      clientTokens: createClientTokenStore(db, { argon2_params: FAST_ARGON2 }),
+      pairedInstances: createPairedInstancesStore(db),
+      now: () => clock,
+    });
+  });
+
+  afterAll(async () => {
+    await server?.close();
+    db.close();
+  });
+
+  const post = (code: string, instanceId: string) =>
+    fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, clientKind: 'webclient', instanceId }),
+    });
+
+  it('refuses a source past its limit without checking, even the right code, until the cooldown ends', async () => {
+    const real = pairing.refreshCode();
+    for (let i = 0; i < 10; i += 1) {
+      expect((await post('ZZZZZZZZ', 'guesser')).status).toBe(401);
+    }
+    const refused = await post('ZZZZZZZZ', 'guesser');
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get('retry-after')).toBe('60');
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe('too_many_attempts');
+    // Not checked — so not used up either.
+    expect((await post(real, 'owner-device')).status).toBe(429);
+
+    clock += 61_000;
+    expect((await post(real, 'owner-device')).status).toBe(200);
   });
 });

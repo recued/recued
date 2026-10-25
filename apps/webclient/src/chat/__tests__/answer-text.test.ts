@@ -1,3 +1,4 @@
+import type { ChatSourceCitation } from '@recued/contracts';
 import { describe, expect, it } from 'vitest';
 import { answerTextSegments, renderAnswerText } from '../answer-text.js';
 
@@ -34,9 +35,9 @@ const doc = {
   createTextNode: (text: string) => makeNode('#text', text),
 } as unknown as Document;
 
-const paint = (text: string): FakeNode => {
+const paint = (text: string, sources: readonly ChatSourceCitation[] = []): FakeNode => {
   const host = makeNode('DIV');
-  renderAnswerText(doc, host as unknown as HTMLElement, text);
+  renderAnswerText(doc, host as unknown as HTMLElement, text, sources);
   return host;
 };
 
@@ -58,7 +59,7 @@ describe('Chat answer citations', () => {
     ]);
   });
 
-  it('links calendar and file records, and several citations in one answer', () => {
+  it('preserves calendar and file record links', () => {
     const calendar = '#data/calendar/record/work/event-1';
     const file = '#data/files/record/received/file-9';
     expect(answerTextSegments(`[Meeting](${calendar}) and [offer](${file})`)).toEqual([
@@ -122,4 +123,28 @@ it('never executes HTML inside emphasis and leaves code notation literal', () =>
   const code = '```md\n## Heading\n**bold**\n```';
   expect(paint(code).textContent).toBe(code);
   expect(paint('\\**literal**').children.map(n => n.tagName)).not.toContain('STRONG');
+});
+
+const source: ChatSourceCitation = { kind: 'asset', id: `src_${'a'.repeat(24)}`, asset_id: 'asset:a/with(parenthesis)',
+  label: 'Saved hose', read_at: 1000, read_version: 'b'.repeat(64) };
+const documentSource: ChatSourceCitation = { kind: 'file', id: `src_${'c'.repeat(24)}`, file_ref: `file:${'1'.repeat(32)}`,
+  collection_slug: 'received', label: 'Note.txt', read_at: 1001, read_version: 'd'.repeat(64) };
+
+it('builds asset and file links only from this answer’s typed source catalog', () => {
+  expect(answerTextSegments(`[hose](#source/${source.id}) and [note](#source/${documentSource.id})`, [source, documentSource])).toEqual([
+    { kind: 'link', label: 'hose', href: '#yours/asset/asset%3Aa%2Fwith(parenthesis)' },
+    { kind: 'text', text: ' and ' },
+    { kind: 'link', label: 'note', href: '#data/files/record/received/file%3A11111111111111111111111111111111' },
+  ]);
+  for (const prose of [`[unknown](#source/src_${'e'.repeat(24)})`, '[guessed](#yours/asset/asset%3Aa)',
+    `[unsupported](#source/${source.id}/extra)`]) {
+    expect(answerTextSegments(prose, [source]).every(s => s.kind === 'text')).toBe(true);
+  }
+  expect(answerTextSegments(`[uncited](#source/${source.id})`)).toEqual([{ kind: 'text', text: `[uncited](#source/${source.id})` }]);
+});
+
+it('never treats a catalog label or extra href as HTML or a destination', () => {
+  const label = '<img src=x onerror=alert(1)>';
+  const host = paint(`[${label}](#source/${source.id})`, [{ ...source, href: 'javascript:alert(1)' } as ChatSourceCitation]);
+  expect(shape(host)).toEqual([{ link: label, href: '#yours/asset/asset%3Aa%2Fwith(parenthesis)', children: 0 }]);
 });

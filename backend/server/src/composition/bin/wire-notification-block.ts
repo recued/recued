@@ -667,10 +667,10 @@ export const composeNotificationBlock = (
     readinessProbe,
     connectionRosterProbe,
     plainConnectionProbe,
-    authorizeReminderOrigin: (destination, origin, reply) => {
+    authorizeReminderOrigin: (destination, origin) => {
       const rows = connectionStore ? typeof connectionStore.list === 'function' ? connectionStore.list({ kind: 'notification' })
         : [connectionStore.get('notification', destination.connection_name ?? '')].filter((row): row is NonNullable<typeof row> => row !== null) : [];
-      return authorizeReminderOrigin(destination, origin, rows, createHouseholdDeliveryStore(db), reply, deps.mailboxAddress);
+      return authorizeReminderOrigin(destination, origin, rows, createHouseholdDeliveryStore(db), deps.mailboxAddress);
     },
     resolveReminderDestinations: async settings => resolveOwnerReminderDestinations({ settings,
       isHousehold: row => createHouseholdDeliveryStore(db).isHousehold(row),

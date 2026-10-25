@@ -23,6 +23,7 @@ import { CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE } from '@recued/contracts';
 import { TOOLS_SEARCH_TOOL_NAME } from '../chat-tools-search-name.js';
 import { handleSend } from '../chat-handler.js';
 import { RECALL_SEARCH_TOOL_NAME } from '../chat-recall-search-tool.js';
+import { isMcpWireRegistryTool } from '../mcp-server.js';
 import type { AuditLogStore } from '@recued/storage';
 import type { EventBus } from '../events/bus.js';
 import type { KeyManager } from '../key-manager.js';
@@ -192,6 +193,10 @@ const expectedChatDepsKeys = [
   'selfSignature',
   'planApprovalStore',
   'inboundTokenStore',
+  // D-327 — which contracts are their key's whole authority. A missing wiring
+  // must be a red: without it the key rpcs would accept a checklist, a second
+  // key or a chat setting on a key whose agreement never reads them.
+  'keyAgreement',
   // D-171 slice 2c — the grant checklist's catalog source (a closure over
   // `internalRegistry.list()`).
   'catalogProvider',
@@ -376,6 +381,17 @@ describe('composeChatOrchestrator', () => {
     expect(
       bundle.chatDeps.catalogProvider?.().map((entry) => entry.name) ?? [],
     ).not.toContain(RECALL_SEARCH_TOOL_NAME);
+  });
+
+  it('keeps chat\'s recipe.stop in the registry and out of the door grant catalog', async () => {
+    // On the MCP wire the stop is the protocol utility `recued_stopRecipe`, so a
+    // door is never offered a grant for chat's twin of it.
+    const { compose } = await importComposerWithOrchestratorSpy();
+    const bundle = compose(buildDeps());
+    expect(bundle.internalRegistry.getByName('recipe.stop')).toMatchObject({ name: 'recipe.stop', tier: 1 });
+    expect(
+      bundle.chatDeps.catalogProvider?.().map((entry) => entry.name) ?? [],
+    ).not.toContain('recipe.stop');
   });
 
   it('D-318 step 5 — tells each listener of a settled run, with chat’s own sink, until it stops', async () => {
@@ -670,7 +686,7 @@ describe('composeChatOrchestrator', () => {
     const grantCatalog = bundle.chatDeps.catalogProvider?.() ?? [];
     expect(grantCatalog.every((e) => e.tier !== 3)).toBe(true);
     expect(grantCatalog).toEqual(
-      bundle.internalRegistry.list().filter((e) => e.tier !== 3),
+      bundle.internalRegistry.list().filter(isMcpWireRegistryTool),
     );
   });
 
@@ -707,7 +723,7 @@ describe('composeChatOrchestrator', () => {
     // Additive: a strict superset of the registry-only view.
     const registryOnly = bundle.internalRegistry
       .list()
-      .filter((e) => e.tier !== 3);
+      .filter(isMcpWireRegistryTool);
     for (const e of registryOnly) expect(names.has(e.name)).toBe(true);
     expect(catalog.length).toBeGreaterThan(registryOnly.length);
   });
@@ -730,7 +746,7 @@ describe('composeChatOrchestrator', () => {
     const provided = bundle.chatDeps.catalogProvider?.() ?? [];
     expect(provided.every((e) => e.tier !== 3)).toBe(true);
     expect(provided).toEqual(
-      bundle.internalRegistry.list().filter((e) => e.tier !== 3),
+      bundle.internalRegistry.list().filter(isMcpWireRegistryTool),
     );
     expect(bundle.chatDeps).not.toHaveProperty('auditLog');
 

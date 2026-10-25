@@ -122,6 +122,20 @@ describe('memory.search — match / top_margin agent guidance', () => {
     expect(write).not.toMatch(/a fact, decision, preference/i);
   });
 
+  /** ⛔ D-198 §10 — AN ENTRY THE AGENT DID NOT SAVE IS NOT ITS TO CORRECT, AND A
+   *  SECOND ENTRY BESIDE IT IS NOT A CORRECTION. Told "fix that" about the owner's
+   *  own entry, a live model saved the corrected fact as a NEW entry in 1 of 7
+   *  runs and offered to in 3 more, which leaves recall with both. With this
+   *  sentence: 0 and 0 of 7, each pointing at the Memory view (bench task 381,
+   *  qwen3.7-plus, 2026-10-23). Scoped to SAVING, like the rule above: it says
+   *  nothing about using what the entry says. */
+  it("⛔ points the agent at the Memory view for an entry it did not save, instead of a contradicting second entry", () => {
+    const write = TIER1_TOOL_DESCRIPTORS['memory.write'].description;
+    expect(write).toMatch(/An entry without `by_you` is the user's or another agent's, and you cannot change it/);
+    expect(write).toMatch(/instead of saving a second entry that contradicts it/i);
+    expect(write).toMatch(/change it in the Memory view/);
+  });
+
   /** ⛔ THE EXAMPLE IS THE RULE THE MODEL ACTUALLY FOLLOWS. `summary`'s sample
    *  must name something that HAPPENED; a running value there teaches exactly
    *  what the description forbids one sentence earlier. */

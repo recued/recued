@@ -4,6 +4,7 @@ import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 installFullAppHooks();
 type Surface = 'recipes' | 'packs';
 const recipeId = (surface: Surface) => surface === 'recipes' ? 'autorun-live-1' : 'installed-mail-digest';
+const returnTail = (surface: Surface) => surface === 'recipes' ? '/return/recipes/autorun-live-1' : '/return/packs/installed-mail';
 const run = async (page: Page, surface: Surface, useDialog = false) => {
   if (surface === 'recipes' && !useDialog) {
     await page.locator('[data-recued-recipes-action="run-defaults"]').click();
@@ -43,9 +44,9 @@ for (const surface of ['recipes', 'packs'] as const) {
     test(`${surface} opens its exact run in Logs by keyboard at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       const panel = await openResult(page, surface);
-      const link = panel.getByRole('link', { name: 'Open this run in Logs', exact: true });
+      const link = panel.getByRole('link', { name: 'Review run', exact: true });
       const runId = `run-${recipeId(surface)}-1`;
-      await expect(link).toHaveAttribute('href', `#logs/${runId}`);
+      await expect(link).toHaveAttribute('href', `#logs/${runId}${returnTail(surface)}`);
       expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(width === 375 ? 44 : 36);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await link.focus();
@@ -53,7 +54,7 @@ for (const surface of ['recipes', 'packs'] as const) {
       await link.scrollIntoViewIfNeeded();
       await page.screenshot({ path: test.info().outputPath('result-run-link.png') });
       await page.keyboard.press('Enter');
-      await expect(page).toHaveURL(new RegExp(`#logs/${runId}$`));
+      await expect(page).toHaveURL(new RegExp(`#logs/${runId}${returnTail(surface)}$`));
       const detail = page.locator('[data-recued-logs-detail]');
       await expect(detail).toContainText(runId);
       await expect(detail).toContainText(recipeId(surface));
@@ -64,7 +65,7 @@ for (const surface of ['recipes', 'packs'] as const) {
 
   test(`${surface} omits the exact-run link on an unaudited response`, async ({ page }) => {
     const panel = await openResult(page, surface, false);
-    await expect(panel.getByRole('link', { name: 'Open this run in Logs', exact: true })).toHaveCount(0);
+    await expect(panel.getByRole('link', { name: 'Review run', exact: true })).toHaveCount(0);
     await expect(panel.getByRole('button', { name: 'Copy run summary', exact: true })).toBeVisible();
   });
 
@@ -73,9 +74,9 @@ for (const surface of ['recipes', 'packs'] as const) {
     const amount = panel.locator('[data-recued-recipes-result-grid-cell="0:amount"]');
     await amount.fill('125.00');
     await expect(panel.locator('.recipes-result-grid-status')).toHaveText('1 row · Unsaved changes');
-    const link = panel.getByRole('link', { name: 'Open this run in Logs', exact: true });
+    const link = panel.getByRole('link', { name: 'Review run', exact: true });
     const target = (await link.getAttribute('href'))!;
-    const runId = target.slice('#logs/'.length);
+    const runId = target.slice('#logs/'.length).split('/return/')[0]!;
     const previousHash = new URL(page.url()).hash;
     const executeCalls = await page.evaluate(() => window.__app.rpcCallCount('execute'));
     const declinePrompt = new Promise<string>(resolve => page.once('dialog', async dialog => {
@@ -101,10 +102,10 @@ for (const surface of ['recipes', 'packs'] as const) {
 
 test('running again replaces the Logs target with the current response anchor', async ({ page }) => {
   const panel = await openResult(page, 'recipes');
-  const link = panel.getByRole('link', { name: 'Open this run in Logs', exact: true });
-  await expect(link).toHaveAttribute('href', '#logs/run-autorun-live-1-1');
+  const link = panel.getByRole('link', { name: 'Review run', exact: true });
+  await expect(link).toHaveAttribute('href', '#logs/run-autorun-live-1-1/return/recipes/autorun-live-1');
   await run(page, 'recipes');
-  await expect(link).toHaveAttribute('href', '#logs/run-autorun-live-1-2');
+  await expect(link).toHaveAttribute('href', '#logs/run-autorun-live-1-2/return/recipes/autorun-live-1');
   await link.click();
   await expect(page.locator('[data-recued-logs-detail]')).toContainText('run-autorun-live-1-2');
 });

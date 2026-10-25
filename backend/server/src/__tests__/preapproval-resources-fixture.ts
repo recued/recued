@@ -1,9 +1,11 @@
 /** Local SQLite and real host composition. No provider account or network IO. */
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import { createAuditLogStore, createCheckpointStore, createCommitStore, type AuditEntry } from '@recued/storage';
@@ -52,17 +54,47 @@ import { handleFileRead } from '../collections/file/file-read-handler.js';
 
 export const resourceFixtureDisposers: (() => void | Promise<void>)[] = [];
 
-/** How long a crash test gives its child: a whole nested test run that builds this fixture and
- *  kills itself at the commit boundary. The child's own test gets the same limit, since the
- *  project's 30 s default would otherwise end it first.
- *  ⚠ Was 60 s. A full sweep runs at the lowest CPU priority, and at load 15–18 with memory in
- *  swap the child's start-up alone went past it: the parent killed it before it wrote its state,
- *  and 13 cases across the four crash files failed with "expected false to be true"
- *  (`d660df789`, 2026-10-22). They take about 12 s each alone, 14–27 s in a quiet sweep and
- *  about 50 s in that one. */
+/** How long a crash test gives its child: a writer process that builds this fixture and kills
+ *  itself at the commit boundary (`runCrashWriter`). A writer takes about 1 s alone, 2 s when
+ *  tsx's cache is empty, so the limit is only there to report a hang.
+ *  ⚠ Each writer used to be a nested vitest run, which started vitest and transformed the
+ *  fixture's ~1,000 source modules again in every case: 4.4 s a case alone, 14–27 s in a quiet
+ *  sweep and about 50 s at load 15–18, where a 60 s limit ended 13 cases before their writers
+ *  had written any state (`d660df789`, 2026-10-22). */
 export const CRASH_WRITER_LIMIT_MS = 180_000;
 /** A crash case's own timeout: the child's limit, then reopening and checking what it left. */
 export const CRASH_CASE_TIMEOUT_MS = CRASH_WRITER_LIMIT_MS + 60_000;
+
+const root = resolve(import.meta.dirname, '../../../..');
+
+/** Runs a crash test's writer module in a process of its own: tsx loads it against the package
+ *  sources, as vitest does, and `request` is its input. Resolves once that process is gone. A
+ *  writer kills itself with SIGKILL at its crash point, so the signal is what says it got there;
+ *  what it printed is kept in `<dir>/expected-crash.log`. */
+export const runCrashWriter = async (writer: URL, dir: string, request: object) => {
+  const input = join(dir, 'request.json'); writeFileSync(input, JSON.stringify(request));
+  const child = spawn(process.execPath, ['--import', pathToFileURL(join(root, 'node_modules/tsx/dist/loader.mjs')).href,
+    fileURLToPath(writer), input],
+  { cwd: root, env: { ...process.env, TSX_TSCONFIG_PATH: join(root, 'tsconfig.test.json') }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let trace = ''; child.stdout.on('data', bytes => { trace += String(bytes); }); child.stderr.on('data', bytes => { trace += String(bytes); });
+  let stopped = false;
+  const timer = setTimeout(() => { stopped = true; child.kill('SIGKILL'); }, CRASH_WRITER_LIMIT_MS);
+  const signal = await new Promise<NodeJS.Signals | null>((done, reject) => {
+    child.once('error', reject); child.once('close', (_code, signal) => done(signal));
+  });
+  clearTimeout(timer); writeFileSync(join(dir, 'expected-crash.log'), trace);
+  return { stopped, signal, trace };
+};
+
+/** A writer module's entry. When this process was started on `moduleUrl`, runs `write` on the
+ *  request its test passed. A writer that returns or throws instead of dying disposes of its
+ *  fixtures, as a test's afterEach would, and exits with the error. */
+export const crashWriterMain = async <Request>(moduleUrl: string, write: (request: Request) => Promise<void>) => {
+  if (!process.argv[1] || realpathSync(process.argv[1]) !== realpathSync(fileURLToPath(moduleUrl))) return;
+  try { await write(JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as Request); } finally {
+    for (const dispose of resourceFixtureDisposers.splice(0).reverse()) await dispose();
+  }
+};
 
 const owner = { publisher: 'core', pack_slug: 'reviewed-notes' };
 const binding = (action: RecordsAction): RecordsExecutionBinding => ({ kind: 'core.records', action,

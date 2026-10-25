@@ -68,6 +68,7 @@ import {
   resumeRawOp,
   type RawOpResumeOutcome,
 } from './raw-op-dispatch.js';
+import { recordWriteRuleAnswer } from './write-rules.js';
 import { projectRunResultForAgent } from './run-result-agent-projection.js';
 import { finishResumedRun } from './resumed-run-finishers.js';
 import type { McpActionStore } from './mcp-action-store.js';
@@ -1125,6 +1126,9 @@ export const createPreflightResumer = (
           // The concurrent winner still owns the result. A skipped duplicate
           // must not close its saved call while the provider is still running.
           if (outcome.kind === 'skipped' && outcome.reason === 'resume_already_in_flight') return;
+          // D-329 §3.4 — the owner said yes to a held Tier-1 write: its rule key learns it
+          // (once per run, however often the answer is told).
+          recordWriteRuleAnswer(executeDeps, checkpoint, 'approved');
           await settleRawMcpAction(actionStoreFor(executeDeps), checkpoint, outcome);
           await settleRawGatedAction(
             gatedActionStoreFor(executeDeps),
@@ -1770,6 +1774,8 @@ export const createPreflightResumer = (
       // (the answer handler's trailing `delete` consumes the checkpoint).
       if (checkpoint.raw_op !== undefined) {
         await denyRawOp(checkpoint);
+        // D-329 §3.4 — a refusal holds back its key's suggestion for the window.
+        recordWriteRuleAnswer(deps.getExecuteDeps(), checkpoint, 'refused');
         const actionStore = actionStoreFor(deps.getExecuteDeps());
         await updateMcpAction(actionStore, checkpoint.run_id, (actions) =>
           actions.finish(checkpoint.run_id, {

@@ -37,6 +37,12 @@ export interface ArchiveRemoteBackup {
   verified_at?: number;
   issue?: ArchiveRemoteIssue;
   retention_pending?: boolean;
+  /** Cleanup of an unconfirmed multipart upload still awaits acknowledgment.
+   * Derived from server-only receipt data; never exposes the provider upload ID. */
+  multipart_cleanup_pending?: boolean;
+  /** Allowlisted access failure from the last cleanup attempt. Only exposed
+   * while cleanup is pending; no raw provider response or upload identifier. */
+  multipart_cleanup_issue?: 'permission_denied';
 }
 
 /** One server-owned schedule. Times are explicit UTC, including weekly day
@@ -89,7 +95,7 @@ export type ArchiveRestoreDrillIssue = 'interrupted' | 'retrieval_failed' | 'res
 export const ARCHIVE_RESTORE_DRILL_ISSUE_TEXT: Record<ArchiveRestoreDrillIssue, string> = {
   interrupted: 'The server stopped before this drill finished. Start a new drill to try again.',
   retrieval_failed: 'The remote copy could not be retrieved and verified.',
-  restore_failed: 'The archive could not be restored. Check its recovery words and server version.',
+  restore_failed: 'The archive could not be restored. Check its recovery key and server version.',
   integrity_failed: 'The recovered database or its referenced blobs failed a check.',
   insufficient_storage: 'The server does not have enough free disk space for this drill.',
   cleanup_failed: 'The test failed to remove its temporary realm.',

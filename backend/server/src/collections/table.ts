@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 import {
+  checkQuerySpelling,
   createFtsTable,
   dropFtsTable,
   hasUnspacedScript,
@@ -42,6 +43,7 @@ import {
   FTS_REINDEX_PAGE,
   indexRecord as ftsIndexRecord,
   deleteRecord as ftsDeleteRecord,
+  type FtsWordCheck,
 } from '@recued/fts';
 import { isActor } from '@recued/contracts';
 import type {
@@ -100,6 +102,10 @@ export interface CollectionTable {
   /** FTS5 body search. CAS-stored records are not indexed and never
    *  appear here (documented limit — matches `shared_store`). */
   search(query: CollectionSearchQuery): CollectionSearchMatch[];
+  /** Each plain word of a search checked against THIS table's index: present,
+   *  or the closest word a record here holds (`checkQuerySpelling`). The
+   *  substrate of "did you mean" — it never changes what `search` returns. */
+  checkSpelling(query: string): FtsWordCheck[];
 
   /** Exact `COUNT(*)` of rows whose SCALAR `field` hot-field equals `value`,
    *  compared case-insensitively over ASCII after trimming (`LOWER(TRIM(...))`
@@ -1724,6 +1730,7 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
         .all(input.after ?? '', input.expression, Math.max(1, Math.min(500, input.limit ?? 200))) as Row[]).map(rowToRecord);
     },
     search,
+    checkSpelling: (query: string): FtsWordCheck[] => checkQuerySpelling(db, ftsName, query),
     countByAddress,
     neighbours,
     ensureAddressIndex,

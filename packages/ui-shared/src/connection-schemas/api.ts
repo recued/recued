@@ -96,7 +96,7 @@ export const apiSchema: ConnectionSchema = {
       label: 'Auth Type',
       type: 'select',
       options: AUTH_TYPES,
-      optionLabels: { managed_oauth: 'OAuth broker (optional)' },
+      optionLabels: { managed_oauth: 'OAuth broker (Nango)' },
     },
     // Bearer
     {
@@ -190,32 +190,8 @@ export const apiSchema: ConnectionSchema = {
       type: 'secret',
       showWhen: ifAuth('query'),
     },
-    // OAuth2 refresh
-    {
-      key: 'auth.refresh_token',
-      label: 'Refresh Token',
-      type: 'secret',
-      // Filled by the OAuth dance (`applyVendorOAuthResultValues`), never typed.
-      autofilled: true,
-      showWhen: ifAuth('oauth2_refresh'),
-      // ⚠ Stays REQUIRED — the connection genuinely cannot work without one, and
-      // marking it optional would let an owner save a connection that can never
-      // mint an access token. But the old help ("the adapter mints fresh access
-      // tokens automatically") described what the ADAPTER does with the value,
-      // never how the owner GETS it — so a required secret field with a `*`
-      // read as "go and obtain this yourself", when the normal path fills it
-      // for you: `applyVendorOAuthResultValues` writes `auth.refresh_token`
-      // from the dance's result (`vendors/index.ts`), for any vendor.
-      //
-      // The registered vendor schemas already say this (SharePoint: "populated
-      // automatically by the in-app OAuth dance"); the GENERIC form — the one
-      // an unknown vendor lands on, where nobody can look the answer up — did
-      // not.
-      help:
-        'Recued fills this in when you click Authorize below. Only paste one yourself if '
-        + 'you already have one for this app. Recued then uses it to get '
-        + 'fresh keys as it needs them.',
-    },
+    // OAuth2 refresh. The app's details come first; its refresh token, which
+    // Authorize fills in, comes after the scopes (below).
     {
       key: 'auth.client_id',
       label: 'Client ID',
@@ -297,6 +273,33 @@ export const apiSchema: ConnectionSchema = {
       showWhen: ifAuth('oauth2_refresh'),
       placeholder: 'read write',
       help: 'What to ask permission for, separated by spaces. You can leave this empty.',
+    },
+    // Last of the OAuth fields: Authorize fills it, so it is not the first thing
+    // a new connection's form asks for, and validation reaches it last.
+    {
+      key: 'auth.refresh_token',
+      label: 'Refresh Token',
+      type: 'secret',
+      // Filled by the OAuth dance (`applyVendorOAuthResultValues`), never typed.
+      autofilled: true,
+      showWhen: ifAuth('oauth2_refresh'),
+      // ⚠ Stays REQUIRED — the connection genuinely cannot work without one, and
+      // marking it optional would let an owner save a connection that can never
+      // mint an access token. But the old help ("the adapter mints fresh access
+      // tokens automatically") described what the ADAPTER does with the value,
+      // never how the owner GETS it — so a required secret field with a `*`
+      // read as "go and obtain this yourself", when the normal path fills it
+      // for you: `applyVendorOAuthResultValues` writes `auth.refresh_token`
+      // from the dance's result (`vendors/index.ts`), for any vendor.
+      //
+      // The registered vendor schemas already say this (SharePoint: "populated
+      // automatically by the in-app OAuth dance"); the GENERIC form — the one
+      // an unknown vendor lands on, where nobody can look the answer up — did
+      // not.
+      help:
+        'Recued fills this in when you click Authorize below. Only paste one yourself if '
+        + 'you already have one for this app. Recued then uses it to get '
+        + 'fresh keys as it needs them.',
     },
   ],
   probe: { description: 'After saving, Recued tests service reachability. A protected read is needed to confirm access to your data.' },

@@ -62,6 +62,16 @@ const requireRegisteredClient = (client: WsClient): void => {
   }
 };
 
+/** ⛔ A rotated bearer is a working credential. It goes only to a connection
+ *  authenticated under the token it replaces; every other subscriber gets the
+ *  event with the bearer blanked, as a replay does. Sent to all, any paired
+ *  client could sign in as the rotated device — and stay in after its own
+ *  revocation. */
+const eventForClient = (event: ServerEvent, client: WsClient): ServerEvent =>
+  event.kind === 'token.rotated' && event.target_token_id !== client.client_token_id
+    ? { ...event, bearer: '' }
+    : event;
+
 /** Thin wrapper around `bus.subscribe` that builds the per-client
  *  push closure. Exported so ws-server can also call it
  *  programmatically (e.g. for the auto-default-subscription on a
@@ -73,7 +83,7 @@ export const wireEventSubscription = (
 ) => {
   const id = deps.subscriberId(client);
   const ack = deps.bus.subscribe(id, req, (event) => {
-    deps.pushToClient(client, { type: 'server_event', event });
+    deps.pushToClient(client, { type: 'server_event', event: eventForClient(event, client) });
   });
   return { ack, id };
 };

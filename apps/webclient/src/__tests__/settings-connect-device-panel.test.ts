@@ -403,10 +403,10 @@ describe('D-273 follow-on — the pairing step', () => {
     expect(text).not.toMatch(/\?url=/);
   });
 
-  it('⚠ warns that the first device also sets up the recovery words', () => {
+  it('⚠ warns that the first device also sets up the recovery key', () => {
     // The one surprise worth naming up front: the first pair is enrolment, and
     // the words it shows are the only copy of them.
-    expect(pairingText(mount())).toContain('recovery words');
+    expect(pairingText(mount())).toContain('recovery key');
   });
 
   it('⛔ appears ONCE, after both cards — not per card', () => {

@@ -65,7 +65,7 @@ import {
   isExecutionSource,
   executionSourceContractId,
 } from '@recued/contracts';
-import { installOffersOf, type InstallOffer } from '@recued/contracts';
+import { chatSourceCitationsOf, type ChatSourceCitation, installOffersOf, type InstallOffer } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
 import {
   base64ToBytes,
@@ -446,6 +446,8 @@ export const ensureChatSchema = (db: Database.Database): void => {
       execution_turn_id          TEXT,
       execution_blob_encrypted   TEXT,
       execution_updated_at       INTEGER,
+      hold_run_id                TEXT,
+      hold_lapsed_at             INTEGER,
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
       FOREIGN KEY (message_id) REFERENCES chat_messages (message_id) ON DELETE SET NULL
     );
@@ -487,9 +489,14 @@ export const ensureChatSchema = (db: Database.Database): void => {
   if (!planCols.has('retry_of_plan_id')) {
     db.exec('ALTER TABLE chat_plans ADD COLUMN retry_of_plan_id TEXT');
   }
+  // D-329 — a Tier-1 write's proposal and the hold whose ask it answers.
+  if (!planCols.has('hold_run_id')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_run_id TEXT');
+  if (!planCols.has('hold_lapsed_at')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_lapsed_at INTEGER');
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_chat_plans_retry_origin
       ON chat_plans (session_id, retry_of_plan_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_chat_plans_hold_run
+      ON chat_plans (hold_run_id) WHERE hold_run_id IS NOT NULL;
   `);
 };
 
@@ -647,7 +654,7 @@ const aadForMessage = (session_id: string, message_id: string): Uint8Array =>
   );
 
 const aadForMessageField = (
-  field: 'candidates' | 'tool_calls' | 'reply_to',
+  field: 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations',
   session_id: string,
   message_id: string,
 ): Uint8Array =>
@@ -726,7 +733,7 @@ export const decodeChatContentFromStorage = async (
 
 const encodeChatMessageFieldForStorage = async (
   plaintextValue: string,
-  field: 'candidates' | 'tool_calls' | 'reply_to',
+  field: 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations',
   identity: { session_id: string; message_id: string },
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -743,7 +750,7 @@ const encodeChatMessageFieldForStorage = async (
 
 const decodeChatMessageFieldFromStorage = async (
   blob: string,
-  field: 'candidates' | 'tool_calls' | 'reply_to',
+  field: 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations',
   identity: { session_id: string; message_id: string },
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -1217,6 +1224,15 @@ const messageFromRow = async (
   const data_diagnosis_resolution =
     parseDataDiagnosisResolution(row.metadata_blob);
   const install_offers = installOffersOf(parseMessageMetadataObject(row.metadata_blob).install_offers);
+  let source_citations: ChatSourceCitation[] = [];
+  const storedSources = parseMessageMetadataObject(row.metadata_blob).source_citations_encrypted;
+  if (role === 'assistant' && typeof storedSources === 'string') {
+    try {
+      source_citations = chatSourceCitationsOf(JSON.parse(await decodeChatMessageFieldFromStorage(
+        storedSources, 'source_citations', { session_id: row.session_id, message_id: row.message_id }, getKey,
+      )));
+    } catch (error) { if (error instanceof ChatVaultLockedError) throw error; }
+  }
   let reply_to: ChatReplyReference | undefined;
   const storedReply = parseMessageMetadataObject(row.metadata_blob).reply_to_encrypted;
   if (typeof storedReply === 'string') {
@@ -1249,6 +1265,7 @@ const messageFromRow = async (
       ? { data_diagnosis_resolution }
       : {}),
     ...(install_offers.length > 0 ? { install_offers } : {}),
+    ...(source_citations.length > 0 ? { source_citations } : {}),
     contributor: CHAT_CONTRIBUTOR_SET.has(
       row.contributor as ChatSessionContributor,
     )
@@ -1318,6 +1335,8 @@ export interface AppendMessageInput {
   /** D-323 — the marketplace offers the turn's last `tools.search` returned.
    *  Kept in `metadata_blob`, beside the other optional extras. */
   install_offers?: readonly InstallOffer[];
+  /** Native read provenance, encrypted with this exact assistant message. */
+  source_citations?: readonly ChatSourceCitation[];
   /** Server-normalized, evidence-only diagnosis grounding. Stored in the
    * existing message metadata column so both turn rows survive hydration. */
   data_diagnosis?: ChatDataDiagnosisContext;
@@ -2678,6 +2697,10 @@ export const createChatStore = (
     const reply_to_encrypted = reply_to ? await encodeChatMessageFieldForStorage(
       JSON.stringify(reply_to), 'reply_to', identity, getKey,
     ) : undefined;
+    const sources = input.role === 'assistant' ? chatSourceCitationsOf(input.source_citations) : [];
+    const source_citations_encrypted = sources.length ? await encodeChatMessageFieldForStorage(
+      JSON.stringify(sources), 'source_citations', identity, getKey,
+    ) : undefined;
     // D-323 — checked again here: a store keeps only what the reader accepts.
     const install_offers = installOffersOf(input.install_offers ?? []);
     const row = {
@@ -2699,11 +2722,12 @@ export const createChatStore = (
       attachments_blob: input.attachments && input.attachments.length > 0
         ? JSON.stringify(input.attachments)
         : null,
-      metadata_blob: input.data_diagnosis || input.tool_call || reply_to_encrypted || install_offers.length > 0
+      metadata_blob: input.data_diagnosis || input.tool_call || reply_to_encrypted || source_citations_encrypted || install_offers.length > 0
         ? JSON.stringify({
             ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
             ...(input.tool_call ? { tool_call: input.tool_call } : {}),
             ...(reply_to_encrypted ? { reply_to_encrypted } : {}),
+            ...(source_citations_encrypted ? { source_citations_encrypted } : {}),
             ...(install_offers.length > 0 ? { install_offers } : {}),
           })
         : null,
@@ -2767,6 +2791,7 @@ export const createChatStore = (
         : {}),
       ...(reply_to ? { reply_to } : {}),
       ...(install_offers.length > 0 ? { install_offers } : {}),
+      ...(sources.length > 0 ? { source_citations: sources } : {}),
       contributor,
       ...(input.turn_id ? { turn_id: input.turn_id } : {}),
       ts,

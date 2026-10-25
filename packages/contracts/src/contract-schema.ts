@@ -30,7 +30,7 @@
 // `contract_definition.door_types` value_shape below is DERIVED from it, because spelling
 // the members out a second time is exactly how `'reception'` ended up in the const and not
 // in the schema — which made `ContractStore.put` reject every reception door.
-import { DOOR_TYPES, USAGE_CAP_PERIODS } from './contract-definition.js';
+import { DOOR_TYPES, KEY_AUTHORITIES, USAGE_CAP_PERIODS } from './contract-definition.js';
 
 // ════════════════════════════════════════════════════════════════
 // Dispatch roles — the `applies_to` vocabulary
@@ -640,6 +640,7 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       'display_name',
       'scope',
       'door_execution_policy',
+      'key_authority',
       'read_spheres',
       'door_types',
       'max_risk_without_approval',
@@ -673,6 +674,10 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       display_name: 'string',
       scope: 'contract_scope',
       door_execution_policy: 'door_execution_policy?',
+      // D-327 — DERIVED FROM `KEY_AUTHORITIES`, for the reason `door_types`
+      // below records: a hand-spelled enum is a second source of truth, and the
+      // real store rejects every row carrying a member the string lacks.
+      key_authority: `enum:${KEY_AUTHORITIES.join('|')}?`,
       read_spheres: 'enum:personal|professional[]?',
       // D-187 §6 + D-196 — the level-1 door-type axis.
       // Optional array-of-enum: absent / `[]` = wildcard (any door type — the

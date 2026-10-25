@@ -340,8 +340,9 @@ const setupMount = (
 
 const rowFor = (host: FakeElement, _slug: string): FakeElement => {
   // The panel is DETAIL-only now — the delete confirm strip + the body-grant /
-  // overlap disclosure render in the (auto-opened) detail's identity section
-  // (appendPackActions' target), not a list row. Only one pack's detail shows.
+  // overlap disclosure render inside the (auto-opened) detail's identity section,
+  // in its actions group (appendPackActions' target), not a list row. Only one
+  // pack's detail shows.
   const identity = findByAttrValue(host, 'data-recued-packs-detail-section', 'identity');
   expect(identity).not.toBeNull();
   return identity!;
@@ -699,12 +700,16 @@ describe('D-145 Slice G - DOM position invariant', () => {
     );
     const heading = deleteBodyHeadingFor(foundationRow);
     const list = deleteBodyListFor(foundationRow);
-    const footerIndex = foundationRow.children.findIndex(
+    // Order is read among the strip's own siblings: it is drawn where appendPackActions
+    // draws, which the organized detail workspace (`a16c0d770`) put in an actions group.
+    const strip = warning?.parent ?? null;
+    expect(strip).not.toBeNull();
+    const footerIndex = strip!.children.findIndex(
       (child) => child.tagName === 'FOOTER',
     );
-    const foundationWarningIndex = foundationRow.children.indexOf(warning!);
-    const headingIndex = foundationRow.children.indexOf(heading!);
-    const listIndex = foundationRow.children.indexOf(list!);
+    const foundationWarningIndex = strip!.children.indexOf(warning!);
+    const headingIndex = strip!.children.indexOf(heading!);
+    const listIndex = strip!.children.indexOf(list!);
 
     expect(foundationWarningIndex).toBeGreaterThanOrEqual(0);
     expect(headingIndex).toBeGreaterThanOrEqual(0);
@@ -723,9 +728,11 @@ describe('D-145 Slice G - DOM position invariant', () => {
     const regularRow = rowFor(withoutWarning.host, 'regular-pack');
     const regularHeading = deleteBodyHeadingFor(regularRow);
     const regularList = deleteBodyListFor(regularRow);
-    const regularHeadingIndex = regularRow.children.indexOf(regularHeading!);
-    const regularListIndex = regularRow.children.indexOf(regularList!);
-    const regularFooterIndex = regularRow.children.findIndex(
+    const regularStrip = regularHeading?.parent ?? null;
+    expect(regularStrip).not.toBeNull();
+    const regularHeadingIndex = regularStrip!.children.indexOf(regularHeading!);
+    const regularListIndex = regularStrip!.children.indexOf(regularList!);
+    const regularFooterIndex = regularStrip!.children.findIndex(
       (child) => child.tagName === 'FOOTER',
     );
 

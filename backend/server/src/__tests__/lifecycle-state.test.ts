@@ -187,6 +187,16 @@ describe('LifecycleStateMachine', () => {
     expect(events).toEqual(['booting→running']);
   });
 
+  it('an observer that unsubscribes itself does not make the next one miss the change', () => {
+    // The machine walked its live list, so the splice skipped the observer after it.
+    const events: string[] = [];
+    const once = machine.onStateChange(() => { events.push('once'); once(); });
+    machine.onStateChange((p, n) => events.push(`${p}→${n}`));
+    machine.transition('running');
+    machine.transition('draining');
+    expect(events).toEqual(['once', 'booting→running', 'running→draining']);
+  });
+
   it('observer exception does not break subsequent observers or state flow', () => {
     const events: string[] = [];
     machine.onStateChange(() => { throw new Error('boom'); });

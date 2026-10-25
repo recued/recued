@@ -18,11 +18,13 @@ import { join, relative, resolve, sep } from 'path';
  *  and a test that makes a socket makes it under tmpdir().
  *  ⚠ Once per run: this file is evaluated once per project (see below), so the
  *  folder is remembered on the process like the scans further down.
- *  ⛔ A RUN STARTED BY A TEST SHARES ITS PARENT'S FOLDER. The crash tests start a
- *  vitest of their own that writes a database and dies, then read it back; with
- *  a folder of its own that child deleted the database on its way out. The
- *  parent names its folder in the environment, and a child that inherits the
- *  name uses that folder as it is: the parent deletes it when the whole run ends. */
+ *  ⛔ A RUN STARTED BY A TEST SHARES ITS PARENT'S FOLDER. The crash tests started a
+ *  vitest of their own that wrote a database and died, then read it back; with
+ *  a folder of its own that child deleted the database on its way out. Their
+ *  writers are tsx processes now (2026-10-23) and no test starts a vitest, but one
+ *  that did would lose its files the same way. The parent names its folder in the
+ *  environment, and a child that inherits the name uses that folder as it is: the
+ *  parent deletes it when the whole run ends. */
 const RUN_TEMP_PREFIX = 'rvt-';
 const RUN_TEMP_OWNER = '.run-pid';
 const RUN_TEMP_ENV = 'RECUED_TEST_RUN_TEMP';

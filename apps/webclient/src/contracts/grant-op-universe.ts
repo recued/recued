@@ -44,8 +44,13 @@ export interface GrantUniverseEntry {
   packSlug?: string;
   /** Ops only — the risk tier (drives the badge + "asks" mark). */
   risk_tier?: string;
-  /** Topics only — the author description. */
+  /** What the switch does, for the hover text: Recued's own text for a kernel op,
+   *  an AI tool or a data switch (`grantSwitchText`), the pack author's for a pack
+   *  op, the topic's or the recipe's own description otherwise. */
   description?: string;
+  /** A few plain words shown beside the switch ("Create a task"), when Recued wrote
+   *  them. Absent for a pack op, a recipe and a topic. */
+  title?: string;
   authorDefault: boolean;
   /** Ops only — the container reads granting this op TRANSITIVELY admits
    *  (`work_entity_sources[].source_dependencies[]`, D-192 Slice 7): granting a
@@ -112,6 +117,9 @@ export const catalogOpUniverseEntries = (
         ingredientId: ing.ingredient_id,
         ...(ing.pack_slug !== undefined ? { packSlug: ing.pack_slug } : {}),
         risk_tier: op.risk_tier,
+        ...(op.description !== undefined && op.description.length > 0
+          ? { description: op.description }
+          : {}),
         authorDefault: op.risk_tier === 'read',
         ...(op.also_reads !== undefined && op.also_reads.length > 0
           ? { also_reads: op.also_reads }

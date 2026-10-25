@@ -78,6 +78,7 @@ import { captureResourceReview } from '@recued/contracts';
 
 import { dateFormatIssue } from './date-argument-format.js';
 import type { InstallOffer } from '@recued/contracts';
+import { answerSourceCitations } from './chat-source-citations.js';
 import { installOffersFromToolResults } from './install-offers/turn-offers.js';
 import { bindMailWorkChatTools } from './mail-work-chat-plan.js';
 import { resolveRecallCorpusScopeForSource } from './chat-recall-scope.js';
@@ -98,6 +99,7 @@ import {
   type ChatModelHint,
   type ChatModelRoutingLayer,
   type ChatPlanExecutionReceipt,
+  type ChatPlanProposal,
   type ChatPickerTarget,
   type ChatSession,
   type ChatTailMessage,
@@ -261,6 +263,7 @@ import type {
   ExecutionCaseProposalCritic,
 } from './execution-case-critic.js';
 import { parseBrief } from './chat-rolling-brief.js';
+import type { CurrentAssetAttachment } from './chat-asset-fresh-read.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
 
@@ -870,6 +873,10 @@ export const broadcastEmitterFromBus = (bus: EventBus): ChatBroadcastEmitter => 
 });
 
 export interface ChatOrchestratorDeps {
+  /** Current canonical attachment membership; no authority to read its bytes. */
+  currentAssetAttachment?: CurrentAssetAttachment;
+  /** Authorized local version probe; returns no new source values to Chat. */
+  revalidateAssetRead?: (id: string, version: string, ctx: ChatDispatchContext) => Promise<boolean>;
   /** Per-pair chat session/message store. */
   chatStore: ChatStore;
   /** D-269 step 1 — the server's own resolved IANA zone for the `current_date`
@@ -1122,6 +1129,29 @@ export interface ChatOrchestratorDeps {
    *  dbless harness path); the orchestrator dispatches every tool
    *  through the registry as before. */
   planApprovalStore?: planApprovalModule.PlanApprovalStore;
+  /** D-329 — hold a fresh Tier-1 write proposal behind the approval ask every channel
+   *  shows (`holdTier1Call`), under the `run_id` its proposal was stored with. The card then
+   *  answers that ask, and approving it anywhere runs the call at once, with no re-issue.
+   *  `held: false` means nothing was written: the proposal drops the link and stays the plain
+   *  card, whose approval the next re-issue spends. A throw keeps the link, so a hold that may
+   *  exist is never also approvable as a plain card. Absent ⇒ the plain card. */
+  holdTier1Write?: (call: {
+    readonly tool: string;
+    readonly args: Record<string, unknown>;
+    readonly plan_id: string;
+    readonly run_id: string;
+    /** The conversation it came from: a messenger's source names none. */
+    readonly session_id: string;
+    readonly execution_source: ExecutionSource;
+    readonly contract_snapshot?: ContractSnapshot;
+  }) => Promise<{ readonly held: true } | { readonly held: false; readonly reason: string }>;
+  /** D-329 §3.4 — spend one use of a live write rule that stands in for this Tier-1 write's
+   *  ask (`useWriteRule`). Absent, or no rule ⇒ the write is held as above. */
+  useWriteRule?: (
+    source: ExecutionSource,
+    tool: string,
+    args: unknown,
+  ) => { readonly rule_id: string; readonly uses_remaining: number } | undefined;
   getResourceReview?: () => import('@recued/contracts').ResourceReviewHooks | undefined;
   validateLocalMutation?: (source: ExecutionSource, tool: string) => void;
   /** D-160 Stage 3 — the live first-party middleware registry (built in
@@ -1387,6 +1417,14 @@ export interface MessengerTurnInput {
  *  by `ExecutionSource['chat']` but has no per-call variance. Mirrors
  *  the `STDIO_MCP_*` constants in `mcp-server.ts`. */
 const LOCAL_CHAT_USER_ID = 'local';
+
+/** D-329 — what the model reads after a Tier-1 write is held: it went to the owner, it
+ *  runs by itself once approved, and its outcome is posted in the chat. Before D-329 the
+ *  approval waited for the conversation to ask again; a model told nothing new would still
+ *  send it again, raising a second ask for a write the first one already ran. */
+export const HELD_WRITE_AWAITING_DETAIL =
+  'It was sent to the owner for approval and runs by itself once they approve it; '
+  + 'the outcome is posted in this chat. Do not call it again.';
 
 /** D-153 P2.C — build the channel-shaped `ExecutionSource` for a chat
  *  dispatch. Today the orchestrator's only chat surface is the local
@@ -1785,11 +1823,13 @@ const buildInternalDispatchCtx = (
   contract_snapshot?: ContractSnapshot,
   dispatch_depth?: number,
   turn_state?: Map<string, unknown>,
+  time_zone?: string,
 ): ChatDispatchContext => ({
   channel: 'internal_function_call' as ChatDispatchChannel,
   session_id,
   turn_id,
   ...(turn_state !== undefined ? { turn_state } : {}),
+  ...(time_zone !== undefined ? { time_zone } : {}),
   // D-177 P5a — the chat turn rides the source (N.10 `turn_id` plumbing),
   // so every commit a Tier 1/2/3 dispatch writes carries its origin turn.
   // (The messenger variant carries no turn_id — its D-177 origin unit is
@@ -1908,6 +1948,9 @@ export interface OrchestratorDispatch {
     dispatch_depth?: number;
     /** Framework-owned process-local state for this cooperative turn. */
     turn_state?: Map<string, unknown>;
+    /** The turn's clock zone (`ChatDispatchContext.time_zone`), set by the turn
+     *  executor on every dispatch it makes. */
+    time_zone?: string;
     get_retained_candidates?: () => readonly RetainedAliasCandidate[];
   }): Promise<ChatDispatchResult>;
 }
@@ -2503,6 +2546,7 @@ export const createChatOrchestrator = (
     llm_gateway_tool_usage,
     dispatch_depth,
     turn_state,
+    time_zone,
     get_retained_candidates,
   }) => {
     // D-219 — ONE builder for every `chat_tool_call` detail on this path.
@@ -2541,6 +2585,7 @@ export const createChatOrchestrator = (
       contract_snapshot,
       dispatch_depth,
       turn_state,
+      time_zone,
     );
     const registryEntry = deps.registry.getByName(tool_name);
     if (registryEntry === null && deps.rawOpSource !== undefined) {
@@ -2556,9 +2601,9 @@ export const createChatOrchestrator = (
     // explanation-only turns. Enforce that at the final tool boundary, before
     // approval lookup/consumption: prompt wording alone cannot prevent a
     // model-emitted write from matching an unrelated still-valid approval for
-    // the same arguments, and it cannot stop `unknown` tools that skip the
-    // approval card by design (`memory.write`, `work.create`) when mail being
-    // read asks for them. Unknown classifications fail closed; only an
+    // the same arguments, and it cannot stop an `unknown` tool (`recipe.run`,
+    // which holds only what its recipe's own gates hold) when mail being
+    // read asks for it. Unknown classifications fail closed; only an
     // explicit `read` may run.
     if (read_only === true && entry?.classification !== 'read') {
       const result: ChatDispatchResult = {
@@ -2641,6 +2686,45 @@ export const createChatOrchestrator = (
       const saved = await persistPlanExecution(consumedPlanId, execution);
       if (saved?.status === 'completed' && saved.local_receipt) confirmedLocalExecution = saved;
       return saved;
+    };
+    /** D-329 — raise the hold a Tier-1 write proposal was stored with. Nothing written
+     *  drops the link, so the plain card's re-issue applies; a throw keeps it, because a
+     *  hold that may exist must never also be approvable as a plain card. */
+    const holdProposal = async (
+      proposal: ChatPlanProposal,
+      run_id: string,
+    ): Promise<ChatPlanProposal> => {
+      let outcome: Awaited<ReturnType<NonNullable<ChatOrchestratorDeps['holdTier1Write']>>>;
+      try {
+        outcome = await deps.holdTier1Write!({
+          tool: tool_name,
+          args: arg_values as Record<string, unknown>,
+          plan_id: proposal.plan_id,
+          run_id,
+          session_id,
+          execution_source: internalDispatchCtx.execution_source!,
+          ...(internalDispatchCtx.contract_snapshot !== undefined
+            ? { contract_snapshot: internalDispatchCtx.contract_snapshot }
+            : {}),
+        });
+      } catch (error) {
+        console.error(
+          `[chat] holding ${tool_name} for plan ${proposal.plan_id} failed; its card waits for the ask`,
+          error,
+        );
+        return proposal;
+      }
+      if (outcome.held) return proposal;
+      console.warn(
+        `[chat] ${tool_name} was not held (${outcome.reason}); plan ${proposal.plan_id} is a plain card`,
+      );
+      try {
+        const unlinked = await deps.planApprovalStore?.unlinkHold?.(proposal.plan_id, run_id);
+        if (unlinked !== undefined && unlinked.hold === undefined) return unlinked;
+      } catch (error) {
+        console.error(`[chat] plan ${proposal.plan_id} kept a hold that was never raised`, error);
+      }
+      return proposal;
     };
 
     // D-137 P3 § A.11 — plan-approval gate. When a write tool is
@@ -2749,6 +2833,37 @@ export const createChatOrchestrator = (
         retry_of_plan_id === undefined
           ? approvedForCurrentDispatch
           : undefined;
+      // D-329 — a Tier-1 write is held behind the ask every approval channel shows, so
+      // approving it anywhere runs it, with nothing to send again.
+      //
+      // ⚠ THE OWNER'S OWN CHATS ONLY — the app's and a messenger's. A resume re-reads the
+      // asker's authority (`approvalResumeAuthority`), which has no resolver for a chat
+      // under a contract (a household member's, a self-restricted one): held, its write
+      // would be refused once approved. Those keep the plain card, which their own next
+      // message spends under their own turn's authority.
+      const holdSource = internalDispatchCtx.execution_source;
+      const holdsTier1 = deps.holdTier1Write !== undefined
+        && entry.tier === 1
+        && planApprovalModule.requiresPlanApproval(entry)
+        && arg_values !== null && typeof arg_values === 'object' && !Array.isArray(arg_values)
+        && holdSource !== undefined
+        && holdSource.actor === 'user_self'
+        && (holdSource.channel === 'chat' || holdSource.channel === 'messenger')
+        && executionSourceContractId(holdSource) === undefined;
+      const sameTurnPending = sameTurn !== undefined && sameTurn.status === 'proposed';
+      // D-329 — asked again in a later turn while its ask is still out, it is that ask: a
+      // second one would reach every channel twice for one write.
+      const pendingHeld = approved === undefined && !sameTurnPending && holdsTier1
+        && retry_of_plan_id === undefined
+        ? await deps.planApprovalStore.findPendingHeld?.(session_id, tool_name, argsHash)
+        : undefined;
+      // D-329 §3.4 — a standing write rule the owner accepted stands in for the ask and
+      // spends one use. Never while an ask for this very call is out: approving that one
+      // later would run it a second time.
+      const ruledBy = approved === undefined && !sameTurnPending && pendingHeld === undefined
+        && holdsTier1 && retry_of_plan_id === undefined
+        ? deps.useWriteRule?.(holdSource!, tool_name, arg_values)
+        : undefined;
       if (approved) {
         // Spend the approval AT the dispatch decision — before the
         // dispatch runs, so a failed dispatch consumes it too and
@@ -2800,6 +2915,14 @@ export const createChatOrchestrator = (
           }),
         );
         // Fall through to normal dispatch below.
+      } else if (ruledBy !== undefined) {
+        void safeLogActivity(
+          deps.auditLog,
+          'write_rule_used',
+          `${session_id}:${turn_id}:${tool_name}`,
+          JSON.stringify({ rule_id: ruledBy.rule_id, uses_remaining: ruledBy.uses_remaining, tier }),
+        );
+        // Fall through to normal dispatch below, with no card: the rule is the yes.
       } else {
         // No consumable approval — pause behind a card. Re-emit the
         // same turn's still-proposed plan for reconnect /
@@ -2808,9 +2931,8 @@ export const createChatOrchestrator = (
         // proposal otherwise — including when the same turn holds a
         // spent (consumed / TTL-expired) approval: that grant is
         // used up, so this dispatch is a new ask, not a re-emit.
-        const reEmit =
-          sameTurn && sameTurn.status === 'proposed' ? sameTurn : undefined;
-        const proposal =
+        const reEmit = sameTurnPending ? sameTurn : pendingHeld;
+        let proposal =
           reEmit ??
           planApprovalModule.buildPlanProposal({
             session_id,
@@ -2831,6 +2953,10 @@ export const createChatOrchestrator = (
         if (!reEmit) {
           const resourceReview = deps.getResourceReview?.()?.capture(tool_name, arg_values as Record<string, unknown>);
           if (resourceReview) proposal.resource_review = resourceReview;
+          // Stored WITH its hold, before the hold is raised: an ask may be out from
+          // the moment it is, and a proposal without the link would also be approvable
+          // as a plain card, so the write could run twice.
+          if (holdsTier1) proposal = { ...proposal, hold: { run_id: mintId() } };
           await deps.planApprovalStore.put(proposal);
           void safeLogActivity(
             deps.auditLog,
@@ -2843,13 +2969,19 @@ export const createChatOrchestrator = (
               ...(proposal.retry_of_plan_id !== undefined
                 ? { retry_of_plan_id: proposal.retry_of_plan_id }
                 : {}),
+              ...(proposal.hold !== undefined ? { hold_run_id: proposal.hold.run_id } : {}),
             }),
           );
+          if (proposal.hold !== undefined) {
+            proposal = await holdProposal(proposal, proposal.hold.run_id);
+          }
         }
         safeBroadcast(deps.broadcast, {
           kind: 'chat.plan_proposed',
           session_id,
-          turn_id,
+          // The proposal's own turn: a held ask re-shown from a later turn keeps
+          // the card it already has.
+          turn_id: proposal.turn_id,
           plan_id: proposal.plan_id,
           ...(proposal.retry_of_plan_id !== undefined
             ? { retry_of_plan_id: proposal.retry_of_plan_id }
@@ -2860,11 +2992,14 @@ export const createChatOrchestrator = (
           args: proposal.args,
           args_hash: proposal.args_hash,
           created_at: proposal.created_at,
+          ...(proposal.hold !== undefined ? { held: true as const } : {}),
         });
         const result: ChatDispatchResult = {
           ok: false,
           reason: 'awaiting_approval',
-          detail: `plan_id=${proposal.plan_id}`,
+          detail: proposal.hold !== undefined
+            ? `plan_id=${proposal.plan_id}. ${HELD_WRITE_AWAITING_DETAIL}`
+            : `plan_id=${proposal.plan_id}`,
         };
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
@@ -3571,6 +3706,9 @@ export const createChatOrchestrator = (
           picker_target,
           dispatch_peer_name: params.dispatch_peer_name,
           ...(params.mail_work ? { mail_work: params.mail_work } : {}),
+          ...(directOwnerRecallSurface && picker_target === 'self' && !params.read_only
+            && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id
+            ? { prefetch_selected_asset: true as const } : {}),
           execution_source: params.execution_source,
           ...(chatSystemPrompt !== undefined
             ? {
@@ -3587,6 +3725,7 @@ export const createChatOrchestrator = (
           dispatch_depth: params.dispatch_depth,
           available_tools: availableTools,
           content,
+          ...(picker_target === 'self' ? { source_citations: streamSessionStore.sourceCitations(session_id) } : {}),
           correction_context: correctionContext,
           ...(indexContext ? { index_context: indexContext } : {}),
           ...(priorToolPointers
@@ -3621,6 +3760,18 @@ export const createChatOrchestrator = (
         {
           ...(executeAiCallForTurn ? { executeAiCall: executeAiCallForTurn } : {}),
           registry: deps.registry,
+          ...(params.assert_active ? { assertActive: params.assert_active } : {}),
+          ...(directOwnerRecallSurface && deps.currentAssetAttachment ? { currentAssetAttachment: deps.currentAssetAttachment } : {}),
+          ...(directOwnerRecallSurface && deps.revalidateAssetRead ? {
+            revalidateAssetRead: async (id: string, version: string, zone: string) => {
+              params.assert_active?.();
+              const current = await deps.revalidateAssetRead!(id, version, buildInternalDispatchCtx(
+                session_id, turn_id, params.execution_source, params.contract_snapshot,
+                params.dispatch_depth, streamState, zone));
+              params.assert_active?.();
+              return current;
+            },
+          } : {}),
           // D-167 — the AUTHORITATIVE per-turn recall signal for the rolling
           // brief. Same function the PII egress is wired with, over the same
           // scratch, so the brief's skip and the egress's refusal cannot
@@ -4371,6 +4522,7 @@ export const createChatOrchestrator = (
       ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
       retained_alias_candidates: getRetainedCandidates(),
       ...(assistantProvenance ? { provenance: assistantProvenance } : {}),
+      source_citations: answerSourceCitations(picker_target, turnResult.tool_results, streamSessionStore.sourceCitations(input.session_id), assistantContent),
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
@@ -4597,6 +4749,7 @@ export const createChatOrchestrator = (
         execution_source: inbound.source, turn_id, ts: Math.max(now(), inbound.ts + 1),
         ...(result?.tool_calls ? { tool_calls: result.tool_calls } : {}),
         ...(result?.provenance ? { provenance: result.provenance } : {}),
+        source_citations: answerSourceCitations(picker_target, result?.tool_results, streamSessionStore.sourceCitations(session_id), text),
         // D-323 — the offers the turn's calls came back with, as a web app
         // turn's answer carries them; the messenger bridge and the email door
         // send them as plain lines. (A messenger answer carried none until

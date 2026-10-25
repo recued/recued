@@ -55,7 +55,7 @@ import {
   type RunsSessionGrantListCaller,
   type RunsSessionGrantRevokeCaller,
 } from '../logs/bootstrap-logs-route.js';
-import type { ChatPlanAddress } from '../shell/route.js';
+import type { ChatPlanAddress, RunReviewWorkspace } from '../shell/route.js';
 
 type LogsRouteSubscribe = NonNullable<
   Parameters<typeof bootstrapLogsRoute>[0]['subscribe']
@@ -294,6 +294,7 @@ const mountRoute = (overrides: {
   initialRecipeId?: string;
   chatReturn?: ChatPlanAddress;
   receptionReturn?: string;
+  workspaceReturn?: RunReviewWorkspace;
   replaceState?: (
     data: unknown,
     unused: string,
@@ -345,6 +346,7 @@ const mountRoute = (overrides: {
       ? { initialRecipeId: overrides.initialRecipeId }
       : {}),
     ...(overrides.receptionReturn !== undefined ? {receptionReturn:overrides.receptionReturn} : {}),
+    ...(overrides.workspaceReturn !== undefined ? { workspaceReturn: overrides.workspaceReturn } : {}),
     ...(overrides.chatReturn !== undefined
       ? { chatReturn: overrides.chatReturn }
       : {}),
@@ -361,7 +363,7 @@ const clickLogsAction = (shell: FakeEl, action: string): void => {
     getAttribute: (name: string) => name === 'data-recued-logs-action' ? action : null,
   }) };
   for (const listener of shell.listeners.get('click') ?? []) {
-    listener({ target } as unknown as Event);
+    listener({ target, preventDefault: vi.fn() } as unknown as Event);
   }
 };
 
@@ -414,9 +416,7 @@ describe('D-174 P5 - Runs route', () => {
     expect(shell.innerHTML).toContain(LOGS_ROUTE_STATUS_ATTR);
     expect(shell.innerHTML).toContain(LOGS_ROUTE_POLICY_ATTR);
     expect(shell.innerHTML).toContain(LOGS_ROUTE_LOAD_MORE_ATTR);
-    expect(shell.innerHTML).toContain(
-      `${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"`,
-    );
+    expect(shell.innerHTML).not.toContain(LOGS_ROUTE_DETAIL_ATTR);
     expect(shell.innerHTML).toContain(
       'aria-label="Open run detail for Send digest (run-1)"',
     );
@@ -461,7 +461,7 @@ describe('D-174 P5 - Runs route', () => {
     expect(detailHtml).toContain(
       `${LOGS_ROUTE_DETAIL_HEADING_ATTR}="run-1" tabindex="-1"`,
     );
-    expect(detailHtml).toContain('Audit detail');
+    expect(detailHtml).toContain('Run link');
     expect(detailHtml).toContain('href="#recipes/mail%2Fsend-digest"');
     expect(detailHtml).toContain(
       'data-recued-reference-id="mail/send-digest"',
@@ -498,6 +498,7 @@ describe('D-174 P5 - Runs route', () => {
       recipe_id: 'mail/send-digest',
       since: NOW - 24 * 60 * 60 * 1000,
     });
+    rig.route.closeRun();
     expect(rig.root.children[0]?.innerHTML).toContain('data-risk="blocked"');
 
     rig.route.dispose();
@@ -832,9 +833,9 @@ describe('D-174 P5 - Runs route', () => {
     const html = rig.root.children[0]?.innerHTML ?? '';
 
     // Columnar table headers.
-    expect(html).toContain('<th scope="col">Status</th>');
+    expect(html).toContain('<th scope="col">Outcome</th>');
     expect(html).toContain('<th scope="col">Policy</th>');
-    expect(html).toContain('data-label="Status"');
+    expect(html).toContain('data-label="Outcome"');
 
     // Status chip is color-coded by tone — `ok` for succeeded, `off` (danger)
     // for failed — and carries the label, not a glyph.
@@ -1662,6 +1663,19 @@ const mountActive = (overrides: {
 };
 
 describe('D-181 slice 5b — Runs Active section', () => {
+  for (const queued_call_id of [undefined, '']) {
+    it(`keeps queued entries read-only without a usable queue identity (${String(queued_call_id)})`, async () => {
+      const rig = mountActive({ activeResponse: {
+        entries: [queuedEntry({ run_id: 'parent-run', queued_call_id })], lanes: [],
+      } });
+      await rig.route.whenLoaded();
+      expect(rig.html()).not.toContain('kill-run');
+      expect(rig.html()).not.toContain('cancel-call');
+      expect(rig.html()).not.toContain('promote-call');
+      rig.route.dispose();
+    });
+  }
+
   it('renders the execution.active list with lanes, a run Kill control, and queued Cancel/Promote controls', async () => {
     const rig = mountActive();
     await rig.route.whenLoaded();
@@ -2132,13 +2146,13 @@ describe('R17 — Active peek-strip (default #logs view)', () => {
     ]);
     await rig.route.whenLoaded();
     const html = rig.html();
-    expect(html).toContain('2 running');
+    expect(html).toContain('2 active entries');
     expect(html).toContain('logs-peek-row');
     // Glance-only — acting on a run happens in the console.
     expect(html).not.toContain('kill-run');
     expect(html).not.toContain('promote-call');
     // The manage link deep-links to the console.
-    expect(html).toContain('manage ▸');
+    expect(html).toContain('Manage active work');
     expect(html).toContain('href="#logs/active"');
     rig.route.dispose();
   });
@@ -2149,14 +2163,14 @@ describe('R17 — Active peek-strip (default #logs view)', () => {
     const rig = mountPeek(many);
     await rig.route.whenLoaded();
     const html = rig.html();
-    expect(html).toContain('5 running');
+    expect(html).toContain('5 active entries');
     expect(html).toContain('href="#logs/active"');
     // Capped — no inline rows when busy, so History is never buried.
     expect(html).not.toContain('logs-peek-row');
     rig.route.dispose();
   });
 
-  it('console view (#logs/active) renders the full Active section with a back link', async () => {
+  it('console view (#logs/active) renders the full Active section with shared History navigation', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const route = bootstrapLogsRoute({
@@ -2179,7 +2193,7 @@ describe('R17 — Active peek-strip (default #logs view)', () => {
     expect(html).toContain('kill-run');
     // Back to the History view.
     expect(html).toContain('href="#logs"');
-    expect(html).toContain('← Logs');
+    expect(html).toContain('aria-label="Log views"');
     // The console has no History table or filters.
     expect(html).not.toContain('logs-table');
     expect(html).not.toContain(LOGS_ROUTE_PEEK_ATTR);
@@ -2841,6 +2855,21 @@ describe('D-237 P2 residual — the all-refused run is visible to a reader', () 
       expect(projectRunYieldNotice(y(-1, -1))).toBeUndefined();
     });
 
+    it('uses the same tally validation in history and full review', () => {
+      for (const invalid of [
+        y(2.5, 0.5),
+        y(Number.MAX_SAFE_INTEGER + 1, 1),
+        { ...y(2, 1), steps_run: -1 },
+        { ...y(2, 1), steps_skipped: 0.5 },
+        { ...y(Number.NaN, 0), stopped_at: 'stop' },
+      ]) {
+        expect(projectRunYieldNotice(invalid)).toBeUndefined();
+        expect(projectRunOutcomeSummary(runDetail('succeeded', 'allowed', {
+          errors: [], runYield: invalid,
+        }))).not.toHaveProperty('yieldNotice');
+      }
+    });
+
     it('names the step a stop_when ended the run at, so it does not read as an ordinary run', () => {
       const notice = projectRunYieldNotice({ ...y(0, 0), stopped_at: 'no_new_mail' });
       expect(notice?.kind).toBe('stopped');
@@ -2886,6 +2915,229 @@ describe('Customer approval handoff',()=>{
     await rig.route.openRun('other-run');
     html=rig.root.children[0]?.innerHTML??'';
     expect(html).not.toContain('data-logs-reception-return');
+    rig.route.dispose();
+  });
+});
+
+
+describe('Run review workspace continuity', () => {
+  it('shows one dedicated workspace with decisions and collapsed technical evidence', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).toContain('Back to history');
+    expect(html).toContain('Approvals and decisions');
+    expect(html).toContain('Initiated by');
+    expect(html).toContain('Trigger source');
+    expect(html).toContain('<details class="logs-technical" data-recued-logs-technical="run-1">');
+    expect(html).not.toContain('data-recued-logs-filter=');
+    expect(html).not.toContain('<table class="logs-table"');
+    expect(html).not.toContain('SECRET_OUTPUT_SHOULD_NOT_RENDER');
+    expect(html).not.toContain('super-secret-token');
+    rig.route.closeRun();
+    expect(rig.root.children[0]!.innerHTML).toContain('<table class="logs-table"');
+    expect(rig.root.children[0]!.innerHTML).not.toContain(LOGS_ROUTE_DETAIL_ATTR);
+    rig.route.dispose();
+  });
+
+  it('rejects a late detail when Back has returned to history', async () => {
+    const pending = deferred<{ run: RunDetail }>();
+    const rig = mountRoute({ getCaller: () => pending.promise });
+    await rig.route.whenLoaded();
+    const opening = rig.route.openRun('run-1');
+    rig.route.closeRun();
+    pending.resolve({ run: runDetail() });
+    await opening;
+    expect(rig.route.getSelectedRun()).toBeNull();
+    expect(rig.root.children[0]!.innerHTML).not.toContain(LOGS_ROUTE_DETAIL_ATTR);
+    rig.route.dispose();
+  });
+
+  it('rejects a response for another run and recovers from a missing run', async () => {
+    const getCaller = vi.fn<RunsGetCaller>()
+      .mockResolvedValueOnce({ run: { ...runDetail(), audit: { ...runDetail().audit, run_id: 'other' } } })
+      .mockResolvedValueOnce({ run: null } as unknown as Awaited<ReturnType<RunsGetCaller>>)
+      .mockResolvedValueOnce({ run: runDetail() });
+    const rig = mountRoute({ getCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+    expect(rig.route.getSelectedRun()).toBeNull();
+    expect(rig.root.children[0]!.innerHTML).toContain('The server returned a different run.');
+    await rig.route.openRun('run-1');
+    expect(rig.root.children[0]!.innerHTML).toContain('Run not found.');
+    await rig.route.openRun('run-1');
+    expect(rig.route.getSelectedRun()?.audit.run_id).toBe('run-1');
+    rig.route.dispose();
+  });
+
+  it('restores filtered pages after a remount using fresh authorized reads', async () => {
+    const cursor = { last_started_at: NOW - 1_000, last_run_id: 'run-1' };
+    const listCaller = vi.fn<RunsListCaller>(async query => query.cursor === undefined
+      ? { runs: [runRow()], next_cursor: cursor }
+      : { runs: [runRow({ run_id: 'run-2' })] });
+    const rig = mountRoute({ listCaller, initialRecipeId: 'mail/send-digest' });
+    await rig.route.whenLoaded();
+    await rig.route.setFilters({ status: 'failed' });
+    await rig.route.loadMore();
+    await rig.route.openRun('run-1');
+    rig.route.dispose();
+    listCaller.mockClear();
+    const remounted = bootstrapLogsRoute({
+      root: rig.root as unknown as HTMLElement,
+      document: rig.doc as unknown as Document,
+      listCaller, getCaller: rig.getCaller,
+      initialRecipeId: 'mail/send-digest', now: () => NOW,
+    });
+    await remounted.whenLoaded();
+    expect(remounted.getFilters().status).toBe('failed');
+    expect(remounted.getRuns().map(run => run.run_id)).toEqual(['run-1', 'run-2']);
+    expect(listCaller.mock.calls.map(([query]) => query)).toEqual([
+      { limit: 25, recipe_id: 'mail/send-digest', status: ['failed'] },
+      { limit: 25, recipe_id: 'mail/send-digest', status: ['failed'], cursor },
+    ]);
+    remounted.dispose();
+  });
+
+  it('keeps unapplied drafts separate from a background refresh and a remount', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    const shell = rig.root.children[0]!;
+    for (const listener of shell.listeners.get('change') ?? []) {
+      listener({ target: { value: 'failed', getAttribute: () => 'status' } } as unknown as Event);
+    }
+    await rig.route.refresh();
+    expect(rig.listCaller).toHaveBeenLastCalledWith({ limit: 25 });
+    expect(rig.route.getFilters().status).toBe('failed');
+    await rig.route.openRun('run-1');
+    rig.route.dispose();
+    const remounted = bootstrapLogsRoute({
+      root: rig.root as unknown as HTMLElement,
+      document: rig.doc as unknown as Document,
+      listCaller: rig.listCaller, getCaller: rig.getCaller,
+    });
+    await remounted.whenLoaded();
+    expect(remounted.getFilters().status).toBe('failed');
+    expect(rig.listCaller).toHaveBeenLastCalledWith({ limit: 25 });
+    remounted.dispose();
+  });
+
+  it('scopes continuity to the original connection caller', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    await rig.route.setFilters({ status: 'failed' });
+    rig.route.dispose();
+    const nextCaller = vi.fn<RunsListCaller>(async () => ({ runs: [] }));
+    const otherServer = bootstrapLogsRoute({
+      root: rig.root as unknown as HTMLElement,
+      document: rig.doc as unknown as Document,
+      listCaller: nextCaller,
+    });
+    await otherServer.whenLoaded();
+    expect(otherServer.getFilters().status).toBe('all');
+    expect(nextCaller).toHaveBeenCalledWith({ limit: 25 });
+    otherServer.dispose();
+  });
+});
+
+
+describe('Run review audit: outcome and evidence cohesion', () => {
+  for (const status of ['failed', 'in_doubt', 'cancelled', 'killed', 'awaiting_approval', 'awaiting_peer'] as const) {
+    for (const failed of [3, 12]) {
+      it(`${status} reports ${failed} refused items without asserting a successful finish`, () => {
+        const result = projectRunOutcomeSummary(runDetail(status, 'allowed', {
+          runYield: { steps_run: 2, steps_skipped: 0, items_total: 12, items_failed: failed },
+        }));
+        expect(result.yieldNotice?.message).toContain(failed === 12 ? 'All 12' : '3 of 12');
+        expect(result.yieldNotice?.message).not.toMatch(/finished without an error|rest went through/);
+      });
+    }
+    it(`${status} does not turn a recorded stop marker into a final outcome`, () => {
+      expect(projectRunYieldNotice({ steps_run: 2, steps_skipped: 0, items_total: 0, items_failed: 0, stopped_at: 'stop' }, status)).toBeUndefined();
+    });
+  }
+});
+
+
+describe('History management refresh ordering', () => {
+  it('queues broadcasts behind a submitted filter instead of restoring the old query', async () => {
+    const pending = deferred<{ runs: RunFeedRow[] }>();
+    let filteredReads = 0;
+    const listCaller = vi.fn<RunsListCaller>(async query => {
+      if (query.status?.[0] === 'failed') {
+        filteredReads += 1;
+        if (filteredReads === 1) return pending.promise;
+        return { runs: [runRow({ status: 'failed' })] };
+      }
+      return { runs: [runRow()] };
+    });
+    const handlers = new Map<string, () => void>();
+    const subscribe: LogsRouteSubscribe = (kind, listener) => {
+      handlers.set(kind, listener as () => void);
+      return () => { handlers.delete(kind); };
+    };
+    const rig = mountRoute({ listCaller, subscribe });
+    await rig.route.whenLoaded();
+    const applying = rig.route.setFilters({ status: 'failed' });
+    handlers.get('session_lifecycle')?.();
+    handlers.get('notification.ask_closed')?.();
+    expect(listCaller).toHaveBeenCalledTimes(2);
+    pending.resolve({ runs: [runRow({ status: 'failed' })] });
+    await applying;
+    await vi.waitFor(() => expect(listCaller).toHaveBeenCalledTimes(3));
+    expect(listCaller.mock.calls.slice(-2).map(([query]) => query.status)).toEqual([['failed'], ['failed']]);
+    expect(rig.route.getFilters().status).toBe('failed');
+    rig.route.dispose();
+  });
+});
+
+
+for (const [label, tally] of [
+  ['Partial result', { steps_run: 2, steps_skipped: 0, items_total: 12, items_failed: 3 }],
+  ['All items failed', { steps_run: 2, steps_skipped: 0, items_total: 12, items_failed: 12 }],
+  ['Stopped early', { steps_run: 2, steps_skipped: 0, items_total: 0, items_failed: 0, stopped_at: 'nothing_new' }],
+] as const) {
+  it(`keeps the ${label} outcome when history opens full review`, () => {
+    const result = projectRunOutcomeSummary(runDetail('succeeded', 'allowed', { errors: [], runYield: tally }));
+    expect(result.title).toBe(label);
+    expect(result.detail).not.toContain('and it worked');
+  });
+}
+
+describe('Run review workspace origins', () => {
+  it('keeps the source on read refresh and drops it when selecting another run', async () => {
+    const replaceState = vi.fn();
+    const rig = mountRoute({ initialRunId: 'run-1', replaceState,
+      workspaceReturn: { surface: 'recipes', recipeId: 'source/recipe' },
+      getCaller: async ({ run_id }) => {
+        const detail = runDetail();
+        return { run: { ...detail, audit: { ...detail.audit, run_id } } };
+      },
+    });
+    const html = () => rig.root.children[0]?.innerHTML ?? '';
+    await rig.route.whenLoaded();
+    expect(html()).toContain('data-logs-workspace-return="recipes"');
+    expect(html()).toContain('href="#recipes/source%2Frecipe"');
+    expect(html()).toContain('href="#logs/run-1/return/recipes/source%2Frecipe"');
+    await rig.route.refresh();
+    expect(html()).toContain('Back to Recipe');
+    await rig.route.openRun('run-2');
+    expect(html()).not.toContain('data-logs-workspace-return');
+    expect(replaceState.mock.calls.at(-1)?.[2]).toBe('#logs/run-2');
+    rig.route.dispose();
+  });
+
+  it('retains a safe source exit for a missing record without inventing recovery actions', async () => {
+    const rig = mountRoute({ initialRunId: 'run-missing',
+      workspaceReturn: { surface: 'packs', packId: 'my-pack' },
+      getCaller: async () => { throw new Error('This recorded run was not found.'); },
+    });
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Back to Pack');
+    expect(html).toContain('href="#packs/my-pack"');
+    expect(html).not.toContain('kill-run');
+    expect(html).not.toContain('local-undo');
     rig.route.dispose();
   });
 });

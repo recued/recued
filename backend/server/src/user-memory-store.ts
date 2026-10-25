@@ -93,6 +93,16 @@ export interface UserMemoryRow {
   /** D-198 Slice 4 — the governing contract of a `writeAuthored` row (the door /
    *  owner contract under which the AI wrote). Absent on owner-direct rows. */
   contract_id?: string;
+  /** D-198 §10 — the contract the writing agent acted under (`authoringContractId`):
+   *  a door's own contract, or the owner contract for the owner's own chat, which
+   *  `contract_id` never carries. Only an agent writing under the same contract may
+   *  replace or forget this row. Absent on owner-direct rows and on rows written
+   *  before §10 (a door's earlier rows fall back to `contract_id`). */
+  author_contract_id?: string;
+  /** D-198 §10 — the entry this row REPLACES: an earlier version by the same author.
+   *  The replaced row is never modified; recall skips it while this row is not
+   *  forgotten. */
+  replaces?: string;
 }
 
 export interface UserMemoryCreateInput {
@@ -118,6 +128,11 @@ export interface UserMemorySession {
 export interface UserMemoryAuthoredInput extends UserMemoryCreateInput {
   origin_actor: Actor;
   session?: UserMemorySession;
+  /** D-198 §10 — the author contract, stamped by the AI write path. */
+  author_contract_id?: string;
+  /** D-198 §10 — the earlier entry this one replaces. The caller has already
+   *  checked it is the same author's current version (`memory-revision.ts`). */
+  replaces?: string;
 }
 
 export interface UserMemoryUpdateInput {
@@ -177,6 +192,9 @@ export interface UserMemoryStore {
    *  uses this to order + filter its hits, then `get`s bodies for the few that
    *  actually fit its byte budget. */
   getRow(memory_id: string): Promise<UserMemoryRow | null>;
+  /** D-198 §10 — every row whose `replaces` names `memory_id` (normally 0 or 1).
+   *  Indexed on a db-backed store; the in-memory harness scans. */
+  replacementsOf(memory_id: string): Promise<UserMemoryRow[]>;
   list(): Promise<UserMemoryRow[]>;
   /** ⛔ A BOUNDED PAGE OF THE FEED, newest-effective-time first.
    *
@@ -489,7 +507,7 @@ export const createUserMemoryStore = (
    *  ⚠ Feature-detected, so the in-memory collection that backs tests keeps
    *  working through the `list()` fallback below. */
   const queryable = isFieldQueryable(collection) ? collection : undefined;
-  queryable?.ensureFieldIndexes(['blob_hash']);
+  queryable?.ensureFieldIndexes(['blob_hash', 'replaces']);
 
   /** The feed's ordering index. Same feature-detect, same reason: the in-memory
    *  collection keeps working through the sort-in-JS fallback in `listWindow`. */
@@ -652,6 +670,8 @@ export const createUserMemoryStore = (
     if (input.session?.contract_id !== undefined) {
       row.contract_id = input.session.contract_id;
     }
+    if (input.author_contract_id !== undefined) row.author_contract_id = input.author_contract_id;
+    if (input.replaces !== undefined) row.replaces = input.replaces;
     await collection.set(row.memory_id, row);
     indexRow(row.memory_id, row.summary, input.body);
     return row;
@@ -673,6 +693,12 @@ export const createUserMemoryStore = (
 
     async getRow(memory_id) {
       return collection.get(memory_id);
+    },
+
+    async replacementsOf(memory_id) {
+      return queryable
+        ? queryable.queryByField({ equals: { replaces: memory_id } })
+        : (await collection.list()).filter((r) => r.replaces === memory_id);
     },
 
     async list() {

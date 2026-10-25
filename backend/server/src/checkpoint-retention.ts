@@ -60,6 +60,7 @@ import {
   type CheckpointStore,
 } from '@recued/storage';
 import type { GatedActionRecord, GatedActionStore } from './gated-action-store.js';
+import type { McpActionStore } from './mcp-action-store.js';
 import { carriedFromPausedRun } from './execution/paused-run-carry.js';
 
 /** Fixed grace for the garbage-collection half — generous against any
@@ -133,6 +134,14 @@ export interface CheckpointRetentionDeps {
   /** Optional observer after a stale awaiting-approval run is durably retired.
    * Used by additive learners that had deferred closure while the run was held. */
   onExpired?: (terminalEntry: AuditEntry) => Promise<void> | void;
+  /** D-329 — the AI app's view of a raw-op hold (`recued_actionStatus`). An expiry settles it
+   *  `cancelled`: without this it stayed `awaiting_approval` until a status read found no
+   *  checkpoint and reported `in_doubt`, "the side effect may have occurred", for a call that
+   *  never ran. Absent ⇒ that read is all an app gets. */
+  mcpActionStore?: Pick<McpActionStore, 'finish'>;
+  /** D-329 — told after a raw-op hold expired, its receipt settled and its checkpoint gone:
+   *  the chat settles a held write's card and tells its conversation. Advisory. */
+  onRawOpExpired?: (checkpoint: Checkpoint) => Promise<void> | void;
 }
 
 export interface CheckpointRetentionResult {
@@ -497,8 +506,20 @@ export const createCheckpointRetention = (
           if (settled === null || !isGatedActionTerminal(settled.status)) {
             throw new Error('raw-op expiry receipt did not reach a terminal state');
           }
+          // Before the checkpoint goes, while a failure here still retries the row.
+          await deps.mcpActionStore?.finish(checkpoint.run_id, {
+            status: 'cancelled',
+            status_message: 'The approval expired before anyone answered it; nothing ran.',
+            result: { status: 'cancelled', code: 'RECIPE_APPROVAL_TIMEOUT', expired: true,
+              message: 'The owner did not answer the approval in time, so the call was not run. Ask again to try again.' },
+          });
           await deps.checkpointStore.delete(checkpoint.checkpoint_id);
           result.expired++;
+          try {
+            await deps.onRawOpExpired?.(checkpoint);
+          } catch {
+            // The expiry is already durable; telling the chat is advisory.
+          }
         } catch (e) {
           console.warn(
             `[checkpoint-retention] raw-op retention failed for checkpoint `

@@ -1,5 +1,6 @@
 /** D-325: reminder transport receipts. The question and answer remain in AskStore.
  * These rows own only immutable destinations, send attempts and withdrawal jobs. */
+import type { ReminderDestinationIssueReason } from '@recued/contracts';
 import type { Collection } from '@recued/storage';
 import type { NewPendingAsk } from './ask-store.js';
 import type { ChannelName, InboundReply, NotificationMessage } from './types.js';
@@ -12,20 +13,39 @@ export interface AskDeliveryDestination {
   connection_name?: string;
   connection_enrolled_at?: number;
   recipient?: string;
+  /** The one sender who may answer here, when the connection names one (D-238).
+   *  Absent, an answer from the owner's own conversation is the owner's: a
+   *  reminder is a notification, never an approval (D-325 §15.7, 2026-10-24). */
   expected_sender?: string;
-  /** Only a separately enrolled household reminder may authorize more than
-   * the owner. Approval asks and private reminders never use this list. */
+  /** A household copy only receives: it is posted without buttons and nothing
+   *  sent back from it answers (D-325 §15.7, 2026-10-24). Groups stored before
+   *  may still carry an `allowed_senders` list, which nothing reads. */
   audience?: 'household';
-  allowed_senders?: string[];
   /** Email's original sending mailbox; changing a connection's sender is not
    * permission to send an existing question from a different account. */
   sender_source?: string;
 }
 
+/** D-325 §15.7 (2026-10-24) — a destination that only receives: posted without buttons,
+ *  and nothing sent back from it answers. The household's copy; and an owner destination
+ *  with no principal (D-238) in a conversation others may be in: a Slack channel, Discord,
+ *  Teams. Only Teams records a principal at enrolment, so elsewhere the owner cannot be
+ *  told from the others. Private by construction, and so answered without one: the app,
+ *  the Browser Bridge, a Telegram private chat (an owner destination is never a group),
+ *  a WhatsApp number and a Slack direct message. ⛔ A channel added later only receives
+ *  until it is listed here. Worked out from the destination, never stored, so a reminder
+ *  posted before this rule is held to it too. */
+export const receivesOnly = (destination: Pick<AskDeliveryDestination, 'audience' | 'channel' | 'recipient' | 'expected_sender'>): boolean =>
+  destination.audience === 'household' || destination.expected_sender === undefined && !(
+    destination.channel === 'ui' || destination.channel === 'bridge' || destination.channel === 'whatsapp'
+    || destination.channel === 'telegram' && destination.recipient?.startsWith('-') === false
+    || destination.channel === 'slack' && destination.recipient?.startsWith('D') === true);
+
 export interface AskDestinationResolution {
   destinations: AskDeliveryDestination[];
-  issues: { channel: ChannelName; reason: 'choice_required' | 'connection_missing' | 'adapter_unavailable'
-    | 'configuration_invalid' | 'principal_missing' }[];
+  /** Each channel that is on but carries no reminder, and why: Settings words
+   *  these reasons, so they are declared once in contracts. */
+  issues: { channel: ChannelName; reason: ReminderDestinationIssueReason }[];
 }
 
 export interface AskDeliveryInput {
@@ -43,7 +63,8 @@ export interface AskDeliveryInput {
 }
 
 export type AskDeliveryOutcome =
-  | { outcome: 'delivered'; provider_message_id?: string; presentation?: 'buttons' | 'text' }
+  /** `notice`: posted with no buttons and no answer hint, to a copy that only receives. */
+  | { outcome: 'delivered'; provider_message_id?: string; presentation?: 'buttons' | 'text' | 'notice' }
   /** `permanent`: this destination can never take the envelope (its pinned
    *  connection is gone or was replaced, or no durable adapter exists), so no
    *  retry follows. */
@@ -156,5 +177,5 @@ export interface AskDeliveryEnvelope {
 
 export interface AskDeliveryReceipt extends AskDeliveryEnvelope {
   provider_message_id?: string;
-  presentation?: 'buttons' | 'text';
+  presentation?: 'buttons' | 'text' | 'notice';
 }

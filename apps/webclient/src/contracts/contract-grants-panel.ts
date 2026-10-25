@@ -37,6 +37,8 @@
 
 import {
   KERNEL_OP_REGISTRY,
+  isGrantableKernelOp,
+  isRegisteredKernelOp,
   OWNER_CONTRACT_ID,
   PEER_ASK_LABEL_MAX,
   OP_ENTITY_COLLECTION,
@@ -47,9 +49,11 @@ import {
   SITUATION_HISTORY_COLLECTIONS,
   situationHistoryGrantEntry,
   TIER1_TOOL_DESCRIPTORS,
-  TIER1_TOOL_ENTITY,
+  TIER1_TOOL_GUIDE,
   TIER1_TOOL_NAMES,
   collectionGrantEntry,
+  grantSwitchText,
+  toolsNeedingSwitch,
   recipeGrantEntry,
   opGrantEntry,
   parseGrantEntry,
@@ -63,7 +67,9 @@ import {
   type ContractDefinitionView,
   type EnrichmentTopic,
   type GrantEntryKind,
+  type GrantSwitchText,
   type RegistryDescribeRpcOutput,
+  type Tier1ToolGuide,
   type SetContractDoorTypesRequest,
 } from '@recued/contracts';
 
@@ -167,6 +173,8 @@ export type GrantRecipeListCaller = () => Promise<{
  *  so their absence from `could` is UNKNOWN rather than "does not use it". */
 export type GrantRecipeOpUsageCaller = (args: {
   window_days?: number;
+  /** D-327 — count only the runs made under this agreement. */
+  contract_id?: string;
 }) => Promise<{
   operations: ReadonlyArray<{
     operation_id: string;
@@ -206,6 +214,12 @@ export type GrantCliReachabilitySetCaller = (
 // The entry universe
 // ════════════════════════════════════════════════════════════════
 
+/** The title + hover text Recued wrote for a switch, as universe fields. */
+const switchTextFields = (
+  text: GrantSwitchText | undefined,
+): Pick<GrantUniverseEntry, 'title' | 'description'> =>
+  text === undefined ? {} : { title: text.title, description: text.summary };
+
 /** Build the entry universe for the two tabs. Ops span the compiled-in kernel
  *  registry (`core.*`), the Tier-1 chat primitives (`primitive.*` — D-228 slice
  *  5), and the installed pack catalog; entities span the static readable
@@ -228,19 +242,29 @@ const buildUniverse = (
 ): GrantUniverseEntry[] => {
   const entries: GrantUniverseEntry[] = [];
 
-  // ⛔⛔ ONE GROUP PER ENTITY, ACROSS BOTH REGISTRIES. Kernel ops and Tier-1 chat
-  // primitives are the same grant KIND ('op') and now share the same `entity` axis,
-  // so `core.storage.file.read` and `file.search` land under one "Files" heading. The
-  // previous split — `Kernel · storage` versus `Assistant · always-on tools` — is what
-  // let an owner revoke one file control while another kept admitting, and made
-  // "always-on" read as a policy when those rows are ordinary revocable grants.
+  // ⛔⛔ THE AI TOOLS HEAD THEIR OWN GROUP, AND EACH ONE NAMES WHAT ELSE IT NEEDS
+  // (D-327 follow-on, owner ruling 2026-10-24).
+  //
+  // They were filed under their entity beside the kernel ops (`file.search` under
+  // "Files" with `core.storage.file.read`), because the split before that —
+  // `Kernel · storage` versus `Assistant · always-on tools` — let an owner revoke one
+  // file control while another kept admitting, and made "always-on" read as a policy.
+  // The cure for that was never the grouping: it was saying how the controls JOIN.
+  // So each AI tool now carries its `needs` (`TIER1_TOOL_GUIDE`, pinned against the
+  // handlers by `d-327-tool-needs.test.ts`), shown and switchable under the tool, and
+  // a needed switch says which tools need it in its hover text.
+  //
+  // 🔑 WHY A GROUP OF THEIR OWN. On an AI app's agreement these are the controls that
+  // matter first: they are what the app sees as tools, and a recipe the agreement
+  // allows runs its steps without their own switches (D-247). Mixed in by entity,
+  // `work.create` sat among a dozen `core.work-entity.*` steps and the owner could not
+  // tell which of the two a working app needed ("for the work/work-entity requirement
+  // it is unclear").
   //
   // ⛔ THE SORT IS LOAD-BEARING, NOT COSMETIC. `renderKindGroup` groups by RUN-LENGTH
-  // (`if (entry.group !== currentGroup)` opens a new sub-section), so it relies on
-  // same-group entries being ADJACENT. Grouping by domain happened to satisfy that
-  // because the registry is written domain-by-domain; grouping by entity does not —
-  // `core.storage.file.*` and `file.search` come from different loops. Without this
-  // sort the panel renders "Files" twice and neither section looks wrong on its own.
+  // (`if (entry.group !== currentGroup)` opens a new sub-section), so same-group
+  // entries must be ADJACENT, and the kernel ops and the AI tools come from different
+  // loops. Without the sort a heading renders twice and neither copy looks wrong.
   const opEntries: GrantUniverseEntry[] = [];
   for (const k of KERNEL_OP_REGISTRY) {
     let entry_key: string;
@@ -256,6 +280,7 @@ const buildUniverse = (
       group: OP_ENTITY_LABEL[k.entity],
       risk_tier: k.risk,
       authorDefault: k.risk === 'read',
+      ...switchTextFields(grantSwitchText(entry_key)),
     });
   }
   // ⚠ `authorDefault` comes from `TIER1_TOOL_DESCRIPTORS`, never from the name.
@@ -269,12 +294,18 @@ const buildUniverse = (
       entry_key: primitiveGrantEntry(name),
       kind: 'op',
       label: name,
-      group: OP_ENTITY_LABEL[TIER1_TOOL_ENTITY[name]],
+      group: CONTRACT_GRANTS_AI_TOOLS_GROUP,
       risk_tier: descriptor.classification === 'read' ? 'read' : 'write',
       authorDefault: descriptor.classification === 'read',
+      ...switchTextFields(TIER1_TOOL_GUIDE[name]),
     });
   }
-  opEntries.sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+  const aiToolsFirst = (e: GrantUniverseEntry): number =>
+    e.group === CONTRACT_GRANTS_AI_TOOLS_GROUP ? 0 : 1;
+  opEntries.sort((a, b) =>
+    aiToolsFirst(a) - aiToolsFirst(b)
+    || a.group.localeCompare(b.group)
+    || a.label.localeCompare(b.label));
   entries.push(...opEntries);
 
   // The installed-pack-catalog op slice — shared with the by-PACK view.
@@ -324,13 +355,15 @@ const buildUniverse = (
       // (owner-default-only). A hardcoded `false` here made the UI
       // report mail/calendar/etc as un-granted while the gate admitted them.
       authorDefault: true,
+      ...switchTextFields(grantSwitchText(collectionGrantEntry(collection))),
     });
   }
   // D-325 P17 — read only through the situation query, but a contract can be
   // given them here. The owner-only default leaves every door off until then.
   for (const collection of SITUATION_HISTORY_COLLECTIONS) {
     entries.push({ entry_key: situationHistoryGrantEntry(collection), kind: 'collection', label: collection,
-      group: 'Episodes & occasions', authorDefault: true });
+      group: 'Episodes & occasions', authorDefault: true,
+      ...switchTextFields(grantSwitchText(situationHistoryGrantEntry(collection))) });
   }
 
   for (const t of registry?.topics ?? []) {
@@ -396,10 +429,29 @@ export const CONTRACT_GRANTS_AXIS_NOTE =
 export const CONTRACT_GRANTS_ALSO_READS_ATTR = 'data-recued-contract-grants-also-reads';
 /** The explicit-vs-default source marker on a cell. Carries `data-source`. */
 export const CONTRACT_GRANTS_SOURCE_ATTR = 'data-recued-contract-grants-source';
-/** D-247 D11 — the "The AI cannot call this itself — still used by … · ran N×" line on an op
- *  row whose grant is off. Carries `data-could` (the static list) and `data-ran`
- *  (the count), so a test can assert BOTH halves rather than a rendered string. */
+/** D-247 D11 — the "Still runs inside a recipe allowed here: … · Ran N times" line
+ *  on an op row whose grant is off. Carries `data-could` (the ids of the recipes
+ *  allowed here that could reach it) and `data-ran` (this agreement's run count),
+ *  so a test can assert BOTH halves rather than a rendered string. */
 export const CONTRACT_GRANTS_STILL_USED_ATTR = 'data-recued-contract-grants-still-used';
+/** D-327 follow-on — the plain title beside a switch's id ("Create a task"). */
+export const CONTRACT_GRANTS_TITLE_ATTR = 'data-recued-contract-grants-title';
+/** D-327 follow-on — the "Also needs" line under an AI tool. Carries `data-entry`
+ *  (the tool's entry key). */
+export const CONTRACT_GRANTS_NEEDS_ATTR = 'data-recued-contract-grants-needs';
+/** D-327 follow-on — one switch in that line: a button that turns the switch on or
+ *  off in place, the same switch as its own row. Carries `data-entry` (the needed
+ *  switch), `data-tool` and `data-effective`. */
+export const CONTRACT_GRANTS_NEED_ATTR = 'data-recued-contract-grants-need';
+/** D-327 follow-on — the group the AI tools head, above every entity group. */
+export const CONTRACT_GRANTS_AI_TOOLS_GROUP = 'AI tools';
+export const CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR = 'data-recued-contract-grants-ai-tools-note';
+/** ⛔ Says that the tools need OTHER switches, because that is what an owner could
+ *  not tell: switching `work.create` on alone adds nothing to an agreement that grants
+ *  nothing by default. */
+export const CONTRACT_GRANTS_AI_TOOLS_NOTE =
+  'An AI app, or your own chat, calls these by name. Recipes never do. '
+  + 'Under each tool are the other switches it needs. You can switch them on right there.';
 
 // ════════════════════════════════════════════════════════════════
 // Helpers
@@ -492,6 +544,15 @@ export interface MountContractGrantsPanelOptions {
    * author defaults), and CLI entries are omitted because their separate
    * cli_reachability rows are not part of that stamped grant list. */
   explicitGrantRowsOnly?: boolean;
+  /** D-327 — an agreement that is its key's whole authority. Absent rows render
+   *  OFF, as on a customer template (the agreement grants nothing by default,
+   *  `usesExplicitOnlyGrantDefaults`), but local-tool rows stay: their own
+   *  allowlist is already off by default and is how this agreement's recipes
+   *  reach a local tool. Kernel ops that are kept off every door
+   *  (`isGrantableKernelOp` false: `core.ai.*` and the push-side ops) are not
+   *  listed — the grant write refuses them for this agreement, so a switch would
+   *  only ever fail. */
+  keyAgreement?: boolean;
   /** D-247 D11 — recipe→op usage for the op row. Absent ⇒ the row renders without
    *  the "still used by / ran N×" line, which is the honest degradation: no line
    *  at all rather than a line claiming zero. */
@@ -609,6 +670,10 @@ export const mountContractGrantsPanel = (
   }>();
   /** The window the counts describe, or null when nothing was read. */
   let recipeOpUsageWindowDays: number | null = null;
+  /** D-327 — the Recipes-tab rows by bare recipe id. `could` names a recipe by its
+   *  id and the ledger by `<publisher>/<id>` (or the owner's `recipe.` entry key),
+   *  so this is the join from those to a row the page can test and name. */
+  let recipesById = new Map<string, GrantUniverseEntry[]>();
   // entry_keys with a write in flight — the cell renders disabled while running.
   const pendingCells = new Set<string>();
   const operationFilterDebounceMs = opts.operationFilterDebounceMs ?? 250;
@@ -619,6 +684,11 @@ export const mountContractGrantsPanel = (
   let peerLabelError: string | null = null;
   let peerLabelAdding = false;
   const renderedCellToggles = new Map<string, HTMLInputElement>();
+  /** `<tool entry>::<needed entry>` → the button in that tool's "Also needs" line,
+   *  so a click keeps its focus across the re-render it causes. */
+  const renderedNeedButtons = new Map<string, HTMLButtonElement>();
+  /** Every universe entry by key, rebuilt each render, for the "Also needs" line. */
+  let entryByKey = new Map<string, GrantUniverseEntry>();
 
   const opsRoot = doc.createElement('div');
   opsRoot.setAttribute(CONTRACT_GRANTS_HOST_ATTR, '');
@@ -667,7 +737,10 @@ export const mountContractGrantsPanel = (
   // ── derivation (the ONE resolver — matches the gate; shared with the
   //    by-PACK view via grant-op-universe.ts) ──────────────────────────
   const effective = (entry: GrantUniverseEntry): 'on' | 'off' => {
-    if (opts.explicitGrantRowsOnly === true) {
+    if (
+      opts.explicitGrantRowsOnly === true
+      || (opts.keyAgreement === true && entry.cli === undefined)
+    ) {
       return state.grants.get(entry.entry_key) === true ? 'on' : 'off';
     }
     return effectiveGrantState(entry, contractId, state.grants, state.cliRows);
@@ -676,6 +749,65 @@ export const mountContractGrantsPanel = (
     const entry = state.universe.find((e) => e.entry_key === entryKey);
     if (entry === undefined) return state.grants.has(entryKey);
     return hasExplicitGrant(entry, state.grants, state.cliRows);
+  };
+  /** D-327 — the recipes named in `could` that this agreement allows, by row. */
+  const allowedRecipesAmong = (ids: readonly string[]): GrantUniverseEntry[] => {
+    const out: GrantUniverseEntry[] = [];
+    for (const id of new Set(ids)) {
+      for (const entry of recipesById.get(id) ?? []) {
+        if (effective(entry) === 'on') out.push(entry);
+      }
+    }
+    return out;
+  };
+  /** The name the Recipes tab shows for a covering grant (`<publisher>/<id>`, or the
+   *  owner's `recipe.<publisher>/<id>` entry key); the id when no row has it. */
+  const recipeNameForGrant = (grant: string): string => {
+    const wire = grant.startsWith('recipe.') ? parseGrantEntry(grant).value : grant;
+    const id = wire.slice(wire.indexOf('/') + 1);
+    const entry = (recipesById.get(id) ?? []).find(
+      (e) => parseGrantEntry(e.entry_key).value === wire,
+    );
+    return entry?.label ?? id;
+  };
+  /** The AI tool behind a `primitive.<tool>` row, or undefined for any other row. */
+  const aiToolGuideFor = (entry: GrantUniverseEntry): Tier1ToolGuide | undefined => {
+    if (entry.kind !== 'op' || !entry.entry_key.startsWith('primitive.')) return undefined;
+    const tool = entry.entry_key.slice('primitive.'.length);
+    return Object.prototype.hasOwnProperty.call(TIER1_TOOL_GUIDE, tool)
+      ? (TIER1_TOOL_GUIDE as Readonly<Record<string, Tier1ToolGuide>>)[tool]
+      : undefined;
+  };
+  /** A row's hover text: what it does, and how it joins up with the AI tools. */
+  const hoverTextFor = (entry: GrantUniverseEntry): string => {
+    const lines: string[] = [];
+    if (entry.description !== undefined && entry.description.length > 0) lines.push(entry.description);
+    const guide = aiToolGuideFor(entry);
+    if (guide !== undefined) {
+      if (guide.needs.length > 0) {
+        lines.push('Also needs:');
+        for (const need of guide.needs) {
+          const name = grantSwitchText(need.entry)?.title ?? need.entry;
+          lines.push(`• ${name} (${need.entry})${need.when !== undefined ? `, ${need.when}` : ''}`);
+        }
+      }
+      if (guide.note !== undefined) lines.push(guide.note);
+    } else {
+      // Tools that need it for the same reason share one phrase:
+      // "work.search, work.read (for tasks)".
+      const groups: Array<{ when: string | undefined; tools: string[] }> = [];
+      for (const user of toolsNeedingSwitch(entry.entry_key)) {
+        const group = groups.find((g) => g.when === user.when);
+        if (group === undefined) groups.push({ when: user.when, tools: [user.tool] });
+        else group.tools.push(user.tool);
+      }
+      if (groups.length > 0) {
+        lines.push(`AI tools that need this: ${groups
+          .map((g) => `${g.tools.join(', ')}${g.when === undefined ? '' : ` (${g.when})`}`)
+          .join('; ')}.`);
+      }
+    }
+    return lines.join('\n');
   };
   const entriesOfKind = (kind: GrantEntryKind): GrantUniverseEntry[] =>
     state.universe.filter((e) => e.kind === kind);
@@ -687,6 +819,8 @@ export const mountContractGrantsPanel = (
       entry.label,
       entry.entry_key,
       entry.group,
+      entry.title ?? '',
+      entry.description ?? '',
       entry.ingredientId ?? '',
       entry.risk_tier ?? '',
       entry.cli?.ingredientId ?? '',
@@ -765,7 +899,27 @@ export const mountContractGrantsPanel = (
     const name = doc.createElement('span');
     name.className = 'cg-cell-name';
     name.textContent = entry.label;
-    rowLabel.appendChild(name);
+
+    // D-327 follow-on — the owner's words under the id, and the whole sentence on
+    // hover. The id stays the name: it is what the docs, the MCP tool list and the
+    // audit trail call the switch.
+    // ⚠ UNDER, NOT BESIDE: side by side the two shared one line, and on a phone the
+    // id broke mid-word ("recipe.sche dule") to make room for its own title.
+    if (entry.title !== undefined) {
+      const text = doc.createElement('span');
+      text.className = 'cg-cell-text';
+      text.appendChild(name);
+      const title = doc.createElement('span');
+      title.setAttribute(CONTRACT_GRANTS_TITLE_ATTR, '');
+      title.className = 'cg-cell-title';
+      title.textContent = entry.title;
+      text.appendChild(title);
+      rowLabel.appendChild(text);
+    } else {
+      rowLabel.appendChild(name);
+    }
+    const hover = hoverTextFor(entry);
+    if (hover !== '') rowLabel.title = hover;
 
     // D-192 Slice 7 — disclose the container reads granting this op TRANSITIVELY
     // admits (e.g. Linear "Create issues" also reads `team.search` to resolve the
@@ -790,36 +944,60 @@ export const mountContractGrantsPanel = (
     // rendering a bare "off" is then a FALSE STATEMENT, and the owner deciding
     // whether to revoke is the person it misleads.
     //
+    // ⛔ ONLY RECIPES ALLOWED HERE (D-327). Coverage rides the recipe grant of the
+    // agreement the run is made under (`grantingRecipeEntry`), so a recipe this
+    // agreement does not allow cannot run the op through it. Naming every
+    // installed recipe that could reach the op put the line on nearly every row
+    // an owner switched off, about recipes that could not run there at all.
+    // ⚠ An older agreement keeps its recipes on its key, which this page does not
+    // read; its recipe rows read off, so it shows no line rather than a guess.
+    //
     // ⛔ BOTH HALVES OR NEITHER. The static list answers "which recipes COULD
-    // reach this"; the count answers "which runs DID". A row with only the first
-    // cannot tell a recipe that ran this morning from one that has not run since
-    // it was installed — which is most of what the decision needs.
+    // reach this"; the count answers "which runs DID", and it counts this
+    // agreement's runs only. A row with only the first cannot tell a recipe that
+    // ran this morning from one that has not run since it was installed.
     //
     // ⛔ RETENTION IS NOT HISTORY. `data.audit` evicts oldest-first, so the copy
     // says "in the last N days" and never "never used". And when the evidence was
     // not read at all, this renders NOTHING rather than a zero.
     if (entry.kind === 'op' && eff === 'off') {
       const usage = recipeOpUsage.get(entry.entry_key);
-      if (usage !== undefined && (usage.could.length > 0 || usage.count > 0)) {
+      const allowed = usage === undefined ? [] : allowedRecipesAmong(usage.could);
+      if (usage !== undefined && (allowed.length > 0 || usage.count > 0)) {
+        const days = recipeOpUsageWindowDays ?? 30;
         const used = doc.createElement('span');
         used.setAttribute(CONTRACT_GRANTS_STILL_USED_ATTR, '');
-        used.setAttribute('data-could', usage.could.join(','));
+        used.setAttribute(
+          'data-could',
+          allowed.map((e) => parseGrantEntry(e.entry_key).value).join(','),
+        );
         used.setAttribute('data-ran', String(usage.count));
         used.className = 'cg-still-used';
+        const allowedNames = allowed.map((e) => e.label);
+        const ranVia = usage.recipes
+          .map(recipeNameForGrant)
+          .filter((name) => !allowedNames.includes(name));
         const parts: string[] = [];
-        if (usage.could.length > 0) parts.push(`still used by: ${usage.could.join(', ')}`);
+        if (allowedNames.length > 0) {
+          parts.push(
+            allowedNames.length === 1
+              ? `Still runs inside a recipe allowed here: ${allowedNames[0]}.`
+              : `Still runs inside ${allowedNames.length} recipes allowed here: ${allowedNames.join(', ')}.`,
+          );
+        }
         parts.push(
           usage.count > 0
-            ? `ran ${usage.count}× in the last ${recipeOpUsageWindowDays ?? 30} days`
-              + (usage.recipes.length > 0 ? `, via ${usage.recipes.join(', ')}` : '')
-            : `not run in the last ${recipeOpUsageWindowDays ?? 30} days`,
+            ? `Ran ${usage.count === 1 ? 'once' : `${usage.count} times`} here in the last ${days} days`
+              + (ranVia.length > 0 ? `, inside ${ranVia.join(', ')}.` : '.')
+            : `Not run here in the last ${days} days.`,
         );
-        used.textContent = `The AI cannot call this itself — ${parts.join(' · ')}`;
+        used.textContent = parts.join(' ');
         used.title =
-          'Switching an operation off stops the AI calling it ITSELF. Recipes you '
-          + 'said yes to may still use it, and each of those still asks you. '
-          + `The counts cover the last ${recipeOpUsageWindowDays ?? 30} days only — `
-          + 'older runs are thrown away, so "not run" does not mean "never used".';
+          'Switching an operation off stops the AI using it on its own. A recipe allowed '
+          + 'here can still run it as one of its steps, and asks you first like any other '
+          + 'step that changes something. To stop that too, switch the recipe off under '
+          + `Recipes. Runs older than ${days} days are not kept, so "not run" covers the `
+          + `last ${days} days only.`;
         rowLabel.appendChild(used);
       }
     }
@@ -833,6 +1011,70 @@ export const mountContractGrantsPanel = (
 
     renderedCellToggles.set(entry.entry_key, box);
     parent.appendChild(rowLabel);
+
+    const guide = aiToolGuideFor(entry);
+    if (guide !== undefined && (guide.needs.length > 0 || guide.note !== undefined)) {
+      parent.appendChild(renderNeeds(entry, guide));
+    }
+  };
+
+  // ── render: what else an AI tool needs (D-327 follow-on) ──────────────
+  //
+  // ⛔ OUTSIDE THE ROW'S <label>, NOT INSIDE IT. A button nested in the label of
+  // another control is interactive content inside a label, which screen readers
+  // announce as one confusing control; as a sibling it is its own button.
+  //
+  // ⛔ THE SAME SWITCH AS ITS OWN ROW, NOT A COPY. A click runs `runToggle` on the
+  // needed entry, so the line and the row below can never disagree.
+  const renderNeeds = (tool: GrantUniverseEntry, guide: Tier1ToolGuide): HTMLElement => {
+    const line = doc.createElement('div');
+    line.setAttribute(CONTRACT_GRANTS_NEEDS_ATTR, '');
+    line.setAttribute('data-entry', tool.entry_key);
+    line.className = 'cg-needs';
+    if (guide.needs.length > 0) {
+      const label = doc.createElement('span');
+      label.className = 'cg-needs-label';
+      label.textContent = 'Also needs:';
+      line.appendChild(label);
+    }
+    for (const need of guide.needs) {
+      const target = entryByKey.get(need.entry);
+      const on = target !== undefined && effective(target) === 'on';
+      const name = grantSwitchText(need.entry)?.title ?? need.entry;
+      const button = doc.createElement('button');
+      button.setAttribute('type', 'button');
+      button.setAttribute(CONTRACT_GRANTS_NEED_ATTR, '');
+      button.setAttribute('data-entry', need.entry);
+      button.setAttribute('data-tool', tool.entry_key);
+      button.setAttribute('data-effective', on ? 'on' : 'off');
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      button.className = 'cg-need';
+      // A need for one kind of item is named by its title alone ("Your tasks"); a
+      // condition the title does not say is shown with it ("to list attachments").
+      const when = need.when !== undefined && need.kind === undefined ? ` (${need.when})` : '';
+      button.textContent = `${on ? '✓' : '+'} ${name}${when}`;
+      if (target === undefined) {
+        button.setAttribute('disabled', '');
+        button.title = `${need.entry} is not on this page.`;
+      } else {
+        button.title = `${need.entry} is ${on ? 'on' : 'off'}. Click to switch it ${on ? 'off' : 'on'}.`;
+        if (pendingCells.has(need.entry)) {
+          button.setAttribute('aria-disabled', 'true');
+          button.setAttribute('aria-busy', 'true');
+        } else {
+          button.addEventListener('click', () => { void runToggle(need.entry); });
+        }
+      }
+      renderedNeedButtons.set(`${tool.entry_key}::${need.entry}`, button);
+      line.appendChild(button);
+    }
+    if (guide.note !== undefined) {
+      const note = doc.createElement('span');
+      note.className = 'cg-needs-note';
+      note.textContent = guide.note;
+      line.appendChild(note);
+    }
+    return line;
   };
 
   // ── render: a kind sub-group ────────────────────────────────────────
@@ -867,6 +1109,9 @@ export const mountContractGrantsPanel = (
           subName.className = 'cg-op-ingredient-name';
           subName.textContent = entry.group;
           sub.appendChild(subName);
+          if (entry.group === CONTRACT_GRANTS_AI_TOOLS_GROUP) {
+            appendLine(sub, CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR, 'cg-ai-tools-note', CONTRACT_GRANTS_AI_TOOLS_NOTE);
+          }
           group.appendChild(sub);
           groupBody = sub;
         }
@@ -948,6 +1193,11 @@ export const mountContractGrantsPanel = (
     ) === true
       ? activeElement.getAttribute('data-entry')
       : null;
+    const focusedNeed = activeElement?.hasAttribute?.(CONTRACT_GRANTS_NEED_ATTR) === true
+      ? `${activeElement.getAttribute('data-tool') ?? ''}::${activeElement.getAttribute('data-entry') ?? ''}`
+      : null;
+    entryByKey = new Map(state.universe.map((e) => [e.entry_key, e]));
+    renderedNeedButtons.clear();
     const totalOps = entriesOfKinds(OPS_KINDS).length;
     const matchingOps = visibleEntriesOfKinds(OPS_KINDS).length;
     operationFilterStatus.textContent = operationFilterDraft.trim().toLowerCase()
@@ -1022,6 +1272,16 @@ export const mountContractGrantsPanel = (
         }
       }
     }
+    if (focusedNeed !== null) {
+      const replacement = renderedNeedButtons.get(focusedNeed);
+      if (replacement !== undefined && !replacement.disabled) {
+        try {
+          replacement.focus({ preventScroll: true });
+        } catch {
+          // Reduced/fake DOMs keep focus restoration best-effort.
+        }
+      }
+    }
   };
 
   const applyOperationFilter = (): void => {
@@ -1061,7 +1321,9 @@ export const mountContractGrantsPanel = (
         // D-247 D11 — evidence for the op row. ⚠ NOT part of the load's spine: a
         // failure here must not blank the grant matrix, so it is read
         // best-effort and its absence renders as no line rather than a zero.
-        opts.runRecipeOpUsage ? opts.runRecipeOpUsage({}) : Promise.resolve(undefined),
+        opts.runRecipeOpUsage
+          ? opts.runRecipeOpUsage({ contract_id: contractId })
+          : Promise.resolve(undefined),
         // D-247 — the recipe half of the UNIVERSE. Same optionality as the
         // catalog/registry slices above: a failure drops the slice rather than
         // failing the load, and the Recipes tab then renders its empty note.
@@ -1088,8 +1350,22 @@ export const mountContractGrantsPanel = (
       const recipeList = recipesR.status === 'fulfilled' ? recipesR.value : undefined;
       if (recipesR.status === 'rejected') errors.push(errMessage(recipesR.reason));
       const universe = buildUniverse(catalog, registry, recipeList).filter(
-        (entry) => opts.explicitGrantRowsOnly !== true || entry.cli === undefined,
+        (entry) =>
+          (opts.explicitGrantRowsOnly !== true || entry.cli === undefined)
+          && !(
+            opts.keyAgreement === true
+            && entry.kind === 'op'
+            && isRegisteredKernelOp(entry.label)
+            && !isGrantableKernelOp(entry.label)
+          ),
       );
+      recipesById = new Map();
+      for (const entry of universe) {
+        if (entry.kind !== 'recipe') continue;
+        const wire = parseGrantEntry(entry.entry_key).value;
+        const id = wire.slice(wire.indexOf('/') + 1);
+        recipesById.set(id, [...(recipesById.get(id) ?? []), entry]);
+      }
       if (grantsR.status === 'fulfilled') {
         const known = new Set(universe.map((entry) => entry.entry_key));
         for (const row of grantsR.value.grants) {
@@ -1356,7 +1632,7 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
   font-size: 13px;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-input:focus {
-  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: var(--accent);
 }
@@ -1456,6 +1732,74 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
   font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);
   overflow-wrap: anywhere;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-text {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-text > .cg-cell-name {
+  flex: 0 0 auto;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-title {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-ai-tools-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 0 0 6px;
+  max-width: 62ch;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-needs {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 0 6px 34px;
+  font-size: 11px;
+  color: var(--muted);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-need {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: transparent;
+  padding: 3px 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-need[data-effective='on'] {
+  border-color: var(--accent, var(--fg));
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-need[disabled],
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-need[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: default;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-needs-note {
+  flex-basis: 100%;
+  max-width: 62ch;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-also-reads {
   box-sizing: border-box;

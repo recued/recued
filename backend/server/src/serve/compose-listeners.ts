@@ -114,6 +114,8 @@ import type { DishWebhookDoorChange, TimelineRollup } from '@recued/contracts';
 import type { ContactRpcDeps } from '../contact-handler.js';
 import { createReceptionInboxSubviewStore } from '../storage/reception-inbox-subview-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
+import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
+import { checkAgreementKeyGrant } from '../key-agreement.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
 import { createReceptionCalendarEventSeam } from '../ports/reception/projection/reception-calendar-event.js';
 import { createReceptionBookingMintSeam } from '../ports/reception/projection/reception-booking-mint.js';
@@ -266,6 +268,7 @@ import type { McpPackFirstMintDeps } from '../housekeeping/tasks/mcp-pack-first-
 import { removePackOwnerRulings } from '../pack-inventory.js';
 import { mcpConnectionForPackSlug } from '@recued/ingredient-authoring';
 import { executeLLM } from '@recued/llm';
+import { createHeldPlanAskAnswerer, createHoldExpiredReader } from '../chat-held-writes.js';
 import {
   CONNECTION_SETUP_GUIDE_MANIFEST,
   CONNECTION_SETUP_GUIDE_TIMEOUT_MS,
@@ -391,6 +394,8 @@ export interface ComposeListenersOptions {
     | 'publicEndpointRegistryStoreRef'
     | 'receptionRateLimiterRef'
     | 'ipBlockStoreRef'
+    // D-329 §3.4 — the owner's write-rule rpc.
+    | 'writeRuleStore'
   >;
   app: Pick<
     AppContext,
@@ -1132,6 +1137,21 @@ export const composeListeners = async (
     if (status?.state === 'webhook' && vendorWebhookListener === undefined) return 'not_connected';
     return status?.state ?? 'unknown';
   };
+  // D-329 — a held write's chat card answers its hold's ask, as any approval channel does,
+  // and a card whose hold expired unawares lapses instead of erroring.
+  if (app.chatDeps && execution.notificationBlock) {
+    app.chatDeps.answerHeldPlanAsk = createHeldPlanAskAnswerer(
+      execution.notificationBlock,
+      createHoldExpiredReader({
+        ...(execution.executeDeps.checkpointStore !== undefined
+          ? { checkpointStore: execution.executeDeps.checkpointStore }
+          : {}),
+        ...(execution.executeDeps.gatedActionStore !== undefined
+          ? { gatedActionStore: execution.executeDeps.gatedActionStore }
+          : {}),
+      }),
+    );
+  }
 
   // WatchSource messenger push-source provider — one governance row per
   // enrolled messenger-capable notification connection (slack /
@@ -3763,6 +3783,8 @@ export const composeListeners = async (
       ? {
           contractDeps: {
             store: app.contractStoreRef,
+            // D-329 §3.4 — the write rules an AI's approvals teach.
+            writeRules: storage.writeRuleStore,
             // D-247 D11 — the recipe roster for the op row's STATIC half. Without
             // it `could` is empty everywhere and the row silently degrades to the
             // usage half alone, which is the shape that cannot tell "no recipe
@@ -4268,6 +4290,17 @@ export const composeListeners = async (
       ? {
           contractGrantDeps: {
             store: createContractGrantEntryStore(app.contractStoreRef),
+            // D-327 — see `ContractGrantRpcDeps.checkKeyGrant`. Read at call time:
+            // the chat deps that own the check are composed after this block.
+            checkKeyGrant: (contract_id: string, entry_key: string) =>
+              checkAgreementKeyGrant(
+                {
+                  definitions: createContractDefinitionStore(app.contractStoreRef!),
+                  preflight: app.chatDeps?.preflightExternalToolGrant,
+                },
+                contract_id,
+                entry_key,
+              ),
           },
         }
       : {}),
@@ -5054,7 +5087,24 @@ export const composeListeners = async (
 
   // Start only after every handler and listener dependency has composed. If a
   // later constructor above throws, no polling timer survives failed startup.
-  await messengerIngressSupervisor?.start();
+  // ⛔ The messengers wait for the boot to complete, too: a Slack or Telegram
+  // message goes into the chat, and what the rest of the boot wires (the source
+  // write executor, read-through reads, schedulers) is not there yet, so its
+  // answer would be refused or reduced. The web app's RPC and MCP over HTTP
+  // answer "not ready" until then; messages wait at the vendor meanwhile.
+  let holdMessengerIngress: (() => void) | undefined;
+  if (messengerIngressSupervisor && lifecycle && lifecycle.machine.state !== 'running') {
+    holdMessengerIngress = lifecycle.machine.onStateChange((_prev, next) => {
+      if (next === 'booting') return;
+      holdMessengerIngress?.(); holdMessengerIngress = undefined;
+      if (next !== 'running') return;
+      messengerIngressSupervisor.start().catch((err) => {
+        console.warn('[messenger-ingress] start after boot failed', err);
+      });
+    });
+  } else {
+    await messengerIngressSupervisor?.start();
+  }
   webhookOutboxRuntime?.start();
   savedDataViewAlerts?.start();
   authenticationAlerts?.start();
@@ -5062,6 +5112,8 @@ export const composeListeners = async (
   let closePromise: Promise<void> | undefined;
   const closeServer = (): Promise<void> => {
     if (closePromise) return closePromise;
+    // A boot that ends before `running` never starts the messengers.
+    holdMessengerIngress?.(); holdMessengerIngress = undefined;
     const begin = (stop: () => void | Promise<void>): Promise<void> => {
       try { return Promise.resolve(stop()); }
       catch (err) { return Promise.reject(err); }

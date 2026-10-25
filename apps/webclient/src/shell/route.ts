@@ -277,14 +277,22 @@ export interface ChatPlanAddress {
   readonly dataVerification?: ChatDataVerificationReturn;
 }
 
-/** Durable address for one exact execution run, optionally retaining the Chat
- * action that opened it. The return address is presentation-only: it restores
- * the reviewed plan card but grants no approval or execution authority. */
+/** Closed workspaces that can open an exact run for review. */
+export type RunReviewWorkspace =
+  | { readonly surface: 'recipes'; readonly recipeId: string }
+  | { readonly surface: 'packs'; readonly packId: string }
+  | { readonly surface: 'approvals'; readonly proposalId: string };
+
+/** Durable exact-run address. Return context restores navigation only; it
+ * grants no approval, execution, or recovery authority. */
 export interface LogsRunAddress {
   readonly runId: string;
   readonly returnToChat?: ChatPlanAddress;
   /** A closed Reception customer-work address, bound to this exact run. */
   readonly returnToReception?: string;
+  /** A closed, read-only navigation target. It never carries a decision,
+   * execution request, or provider URL. Bound to this exact run. */
+  readonly returnToWorkspace?: RunReviewWorkspace;
 }
 
 interface SourceRecordAddressBase {
@@ -515,10 +523,31 @@ export const customerWorkReturnHash = (hash: string): string | undefined => {
       || route.segments.length === 3 && !!id && ['overview','activity','billing','followups','closeout'].includes(tab ?? ''));
   return valid ? serializeShellRoute('reception',...route.segments) : undefined;
 };
+const runReviewWorkspaceSegments = (address: RunReviewWorkspace): ReadonlyArray<string> | undefined => {
+  const id = address.surface === 'recipes' ? address.recipeId
+    : address.surface === 'packs' ? address.packId : address.proposalId;
+  if (typeof id !== 'string' || id.trim().length === 0) return undefined;
+  switch (address.surface) {
+    case 'recipes': return ['recipes', id];
+    case 'packs': return ['packs', id];
+    case 'approvals': return ['approvals', 'preapproval', id];
+    default: return undefined;
+  }
+};
+
+export const runReviewWorkspaceHref = (address: RunReviewWorkspace): string | undefined => {
+  const segments = runReviewWorkspaceSegments(address);
+  if (segments === undefined) return undefined;
+  return serializeShellRoute(address.surface, ...segments.slice(1));
+};
+
 const logsRunAddressSegments = (address: LogsRunAddress): ReadonlyArray<string> => {
   if (address.returnToChat !== undefined) return [address.runId,'return','chat',...chatPlanAddressSegments(address.returnToChat)];
   const reception = address.returnToReception === undefined ? undefined : customerWorkReturnHash(address.returnToReception);
-  return [address.runId,...(reception === undefined ? [] : ['return','reception',...parseShellRoute(reception).segments])];
+  if (reception !== undefined) return [address.runId, 'return', 'reception', ...parseShellRoute(reception).segments];
+  const workspace = address.returnToWorkspace === undefined ? undefined
+    : runReviewWorkspaceSegments(address.returnToWorkspace);
+  return [address.runId, ...(workspace === undefined ? [] : ['return', ...workspace])];
 };
 
 export const serializeLogsRunAddress = (
@@ -539,6 +568,17 @@ export const parseLogsRunAddress = (
     || runId === 'recipe'
   ) return null;
   if (route.segments.length === 1) return { runId };
+  if (route.segments[1] === 'return') {
+    const [, , surface, id, proposalId] = route.segments;
+    if (route.segments.length === 4 && typeof id === 'string' && id.trim().length > 0) {
+      if (surface === 'recipes') return { runId, returnToWorkspace: { surface, recipeId: id } };
+      if (surface === 'packs') return { runId, returnToWorkspace: { surface, packId: id } };
+    }
+    if (surface === 'approvals' && id === 'preapproval' && route.segments.length === 5
+      && typeof proposalId === 'string' && proposalId.trim().length > 0) {
+      return { runId, returnToWorkspace: { surface, proposalId } };
+    }
+  }
   if (route.segments[1] === 'return' && route.segments[2] === 'reception') {
     const returnToReception = customerWorkReturnHash(serializeShellRoute('reception',...route.segments.slice(3)));
     return returnToReception === undefined ? null : {runId,returnToReception};

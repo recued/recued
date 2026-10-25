@@ -188,6 +188,51 @@ export const derivedDoorType = (
   DERIVED_DOOR_TYPES.find((t) => doorTypes?.includes(t)) ?? null;
 
 // ════════════════════════════════════════════════════════════════
+// KeyAuthority — D-327: one agreement, one key, one gate
+// ════════════════════════════════════════════════════════════════
+
+/** D-327 — the closed set of `contract_definition.key_authority` values.
+ *
+ *  Before D-327 every inbound key passed TWO gates: its own per-tool checklist
+ *  (`McpInboundTokenRecord.grants`) and its contract's grants, both of which
+ *  had to say yes (D-228 slice 5, "a token can never widen past its
+ *  contract"). The owner ruled that out for an agreement's key (2026-10-24):
+ *  *"1 contract is designed to have 1 key, and that makes the grant unique to
+ *  that contract too, having extra set of gating seems unreasonable."*
+ *
+ *  `'contract'` means the agreement is its key's WHOLE authority:
+ *    - the key's checklist is not read; what the key may call is exactly what
+ *      the agreement's grant rows allow (Ops, Entities, Recipes);
+ *    - the agreement grants NOTHING by default — only an explicit grant row
+ *      allows anything (`usesExplicitOnlyGrantDefaults`).
+ *
+ *  ⛔ THE TWO GO TOGETHER, AND THE SECOND IS NOT OPTIONAL. An ordinary standing
+ *  contract's author defaults are permissive for reads (`opAuthorDefault`'s
+ *  wildcard door: every kernel read, every read primitive, every raw
+ *  collection), and that was safe only because the checklist stood in front —
+ *  `op-admission-gate.ts` says so: "its real gate is the per-token snapshot".
+ *  Dropping the checklist without dropping those defaults would have handed a
+ *  fresh key the owner's mail on day one.
+ *
+ *  A string vocabulary rather than a boolean so the key model it replaces can
+ *  be named later without a second field; absent is that older model. */
+export const KEY_AUTHORITIES = ['contract'] as const;
+
+/** String-literal union derived from {@link KEY_AUTHORITIES}. */
+export type KeyAuthority = (typeof KEY_AUTHORITIES)[number];
+
+/** Predicate — true when `value` is a known {@link KeyAuthority}. */
+export const isKeyAuthority = (value: unknown): value is KeyAuthority =>
+  typeof value === 'string' && (KEY_AUTHORITIES as readonly string[]).includes(value);
+
+/** D-327 — true when this contract is its key's whole authority
+ *  ({@link KEY_AUTHORITIES}). Takes the field alone so the gate, the defaults
+ *  and the UI read one answer. */
+export const isKeyAuthorityContract = (
+  def: { readonly key_authority?: KeyAuthority } | null | undefined,
+): boolean => def?.key_authority === 'contract';
+
+// ════════════════════════════════════════════════════════════════
 // ContractGrantKind — the `contract_definition.grant_kind` discriminator
 // ════════════════════════════════════════════════════════════════
 
@@ -333,6 +378,11 @@ export interface ContractDefinition {
   /** Derived per-run cost boundary for a door. Absent on legacy rows and ordinary
    *  contracts; a dispatch class that requires one must fail closed until re-bound. */
   readonly door_execution_policy?: DoorExecutionPolicy;
+  /** D-327 — `'contract'`: this agreement is its key's WHOLE authority. See
+   *  {@link isKeyAuthorityContract}. Absent on every contract minted before
+   *  D-327, on peer and customer contracts, and on the carriers the issue rpc
+   *  mints for a key named no agreement — those keys keep their own checklist. */
+  readonly key_authority?: KeyAuthority;
   /** D-187 §6 (step 7) — the level-1 DOOR TYPES this contract may back
    *  ({@link DoorType}). EMPTY or ABSENT = wildcard ("any door type") — the same
    *  "empty axis = any" convention {@link ContractScope} uses, and the
@@ -668,6 +718,10 @@ export interface MintContractRequest {
   /** How often `max_uses` refills. Omit for `'total'` — one budget, never
    *  refilled, which is what every contract minted before this field meant. */
   use_period?: UsageCapPeriod;
+  /** D-327 — `'contract'` mints an agreement that is its key's whole
+   *  authority ({@link isKeyAuthorityContract}). The Contracts page's
+   *  "+ New contract" sends it. Standing contracts only. */
+  key_authority?: KeyAuthority;
 }
 
 /** D-187 §6 (step 7 follow-on) — the `collection.contract.setDoorTypes` wire
@@ -681,6 +735,31 @@ export interface MintContractRequest {
 export interface SetContractDoorTypesRequest {
   contract_id: string;
   door_types: ReadonlyArray<DoorType>;
+}
+
+/** D-327 — the `collection.contract.setLimits` wire request: REPLACE an
+ *  agreement's limits IN PLACE (no re-mint, so its `contract_id`, its grant rows,
+ *  its door types and its key all survive). Every field is REQUIRED so a save
+ *  says what it means: `null` clears that limit.
+ *    - `max_uses` — `null` for as many times as you like; otherwise an integer
+ *      ≥ 1 that the count starts again from (a fresh budget, like a mint).
+ *    - `use_period` — how often `max_uses` refills; must be `'total'` when
+ *      `max_uses` is `null` (a period with no count refills nothing).
+ *    - `expiry_at` — `null` for never; otherwise epoch-ms.
+ *  Standing agreements only: a derived reception/webhook door, a customer row
+ *  or a gate-consumed grant keeps the limits its own lifecycle sets. Settings-
+ *  only (`collection.contract.*` is reserved out of MCP). Returns the updated
+ *  {@link ContractDefinitionView}.
+ *
+ *  ⛔ WHY IN PLACE. The retired "door for AI apps" panel changed a key's limits
+ *  by minting a new contract, moving the key to it and revoking the old one —
+ *  which left the old contract's grant rows and door types behind and reset the
+ *  key to defaults without a word. */
+export interface SetContractLimitsRequest {
+  contract_id: string;
+  max_uses: number | null;
+  use_period: UsageCapPeriod;
+  expiry_at: number | null;
 }
 
 /** A {@link ContractDefinition} projected for the rpc + the Settings → Privacy →

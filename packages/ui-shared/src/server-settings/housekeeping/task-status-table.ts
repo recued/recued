@@ -31,6 +31,9 @@ export interface HousekeepingTaskStatusTableProps {
    *  panel wires it; a read-only host omits it (no dead button).
    *  Defaults to false. */
   showRunNow?: boolean;
+  /** Add visual cell labels and explicit table roles for Maintenance's narrow
+   *  card layout. Other hosts retain the original table by default. */
+  responsive?: boolean;
   /** "now" for the relative-time formatter. Tests pass a fixed
    *  timestamp so renders are deterministic. */
   now: number;
@@ -61,10 +64,18 @@ const formatRelative = (then: number, now: number): string => {
 const formatTokens = (total: number): string =>
   total < 1000 ? `${total}` : `${(total / 1000).toFixed(1)}k`;
 
+const tableRole = (responsive: boolean, role: string): string =>
+  responsive ? ` role="${role}"` : '';
+
+const cellLabel = (responsive: boolean, label: string): string => responsive
+  ? `<span class="housekeeping-cell-label" aria-hidden="true">${e(label)}</span>`
+  : '';
+
 const renderRow = (
   status: HousekeepingTaskStatus,
   now: number,
   showRunNow: boolean,
+  responsive: boolean,
 ): string => {
   const state = status.state;
   const lastRun =
@@ -81,16 +92,16 @@ const renderRow = (
     ? `<div class="housekeeping-task-error">${e(state.last_error)}</div>`
     : '';
   return `
-    <tr class="housekeeping-task-row" data-task-id="${e(status.meta.id)}" data-task-status="${e(lastStatus)}">
-      <td class="housekeeping-task-name">
+    <tr class="housekeeping-task-row" data-task-id="${e(status.meta.id)}" data-task-status="${e(lastStatus)}"${tableRole(responsive, 'row')}>
+      <td class="housekeeping-task-name"${tableRole(responsive, 'cell')}>
         <div class="housekeeping-task-id">${e(status.meta.id)}</div>
         <div class="housekeeping-task-desc">${e(status.meta.description)}</div>
       </td>
-      <td class="housekeeping-task-status">${e(STATUS_LABELS[lastStatus])}${errorBlock}</td>
-      <td class="housekeeping-task-last">${e(lastRun)}</td>
-      <td class="housekeeping-task-cost">${e(lastCost)}</td>
+      <td class="housekeeping-task-status"${tableRole(responsive, 'cell')}>${cellLabel(responsive, 'State')}${e(STATUS_LABELS[lastStatus])}${errorBlock}</td>
+      <td class="housekeeping-task-last"${tableRole(responsive, 'cell')}>${cellLabel(responsive, 'Last run')}${e(lastRun)}</td>
+      <td class="housekeeping-task-cost"${tableRole(responsive, 'cell')}>${cellLabel(responsive, 'Cost')}${e(lastCost)}</td>
       ${showRunNow
-        ? `<td class="housekeeping-task-action">${button({
+        ? `<td class="housekeeping-task-action"${tableRole(responsive, 'cell')}>${button({
             label: 'Run now',
             ariaLabel: `Run ${status.meta.id} now`,
             size: 'xs',
@@ -107,6 +118,8 @@ export const renderHousekeepingTaskStatusTable = (
 ): string => {
   const filtered = props.tasks.filter((t) => t.meta.kind === props.kind);
   const showRunNow = props.showRunNow ?? false;
+  const responsive = props.responsive ?? false;
+  const column = responsive ? ' scope="col" role="columnheader"' : '';
   if (filtered.length === 0) {
     const hint =
       props.kind === 'core'
@@ -115,18 +128,18 @@ export const renderHousekeepingTaskStatusTable = (
     return `<p class="housekeeping-task-empty">${e(hint)}</p>`;
   }
   return `
-    <table class="housekeeping-task-table">
-      <thead>
-        <tr>
-          <th>Task</th>
-          <th>State</th>
-          <th>Last run</th>
-          <th>Cost</th>
-          ${showRunNow ? '<th></th>' : ''}
+    <table class="housekeeping-task-table"${responsive ? ' role="table" aria-label="Maintenance tasks"' : ''}>
+      <thead${tableRole(responsive, 'rowgroup')}>
+        <tr${tableRole(responsive, 'row')}>
+          <th${column}>Task</th>
+          <th${column}>State</th>
+          <th${column}>Last run</th>
+          <th${column}>Cost</th>
+          ${showRunNow ? `<th${column}>${responsive ? '<span class="sr-only">Actions</span>' : ''}</th>` : ''}
         </tr>
       </thead>
-      <tbody>
-        ${filtered.map((t) => renderRow(t, props.now, showRunNow)).join('')}
+      <tbody${tableRole(responsive, 'rowgroup')}>
+        ${filtered.map((t) => renderRow(t, props.now, showRunNow, responsive)).join('')}
       </tbody>
     </table>
   `;

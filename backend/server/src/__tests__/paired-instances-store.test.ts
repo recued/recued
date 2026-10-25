@@ -283,3 +283,49 @@ describe('PairedInstancesStore', () => {
     });
   });
 });
+
+// ⛔ Devices could not tell a quiet device from a dead one (a browser that
+// cleared its storage never comes back), and two browsers of one kind read
+// alike. The roster now keeps when each was last here, and the owner's name.
+describe('last seen and rename', () => {
+  it('stamps last_seen_at on an active row only, and a new row starts unseen', () => {
+    store.addOrRefresh({ instance_id: 'a', user_id: 'u', display_name: 'Chrome on macOS', now: 100 });
+    store.addOrRefresh({ instance_id: 'b', user_id: 'u', display_name: 'Chrome on macOS', now: 100 });
+    expect(store.get('a')?.last_seen_at).toBeNull();
+
+    store.noteSeen('a', 500);
+    store.revoke('b', 200);
+    store.noteSeen('b', 600);
+    store.noteSeen('unknown', 700);
+
+    expect(store.get('a')?.last_seen_at).toBe(500);
+    expect(store.get('b')?.last_seen_at).toBeNull();
+  });
+
+  it('renames an active row, and refuses an unknown or revoked one', () => {
+    store.addOrRefresh({ instance_id: 'a', user_id: 'u', display_name: 'Chrome on macOS', now: 100 });
+    store.addOrRefresh({ instance_id: 'b', user_id: 'u', display_name: 'Chrome on macOS', now: 100 });
+    store.revoke('b', 200);
+
+    expect(store.rename('a', 'Work laptop')?.display_name).toBe('Work laptop');
+    expect(store.get('a')?.display_name).toBe('Work laptop');
+    expect(store.rename('b', 'Old phone')).toBeNull();
+    expect(store.get('b')?.display_name).toBe('Chrome on macOS');
+    expect(store.rename('unknown', 'x')).toBeNull();
+  });
+
+  it('adds the column to a roster made before it, reading old rows as unseen', () => {
+    const legacy = new Database(':memory:');
+    legacy.exec(`
+      CREATE TABLE paired_instances (
+        instance_id TEXT NOT NULL PRIMARY KEY, user_id TEXT NOT NULL,
+        display_name TEXT NOT NULL, added_at INTEGER NOT NULL, revoked_at INTEGER
+      );
+      INSERT INTO paired_instances VALUES ('old', 'u', 'Firefox on Linux', 10, NULL);
+    `);
+    const upgraded = createPairedInstancesStore(legacy);
+    expect(upgraded.get('old')?.last_seen_at).toBeNull();
+    upgraded.noteSeen('old', 50);
+    expect(upgraded.get('old')?.last_seen_at).toBe(50);
+  });
+});

@@ -1,3 +1,4 @@
+import { yoursFieldError } from './yours-field-errors.js';
 import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, calendarDayMs, type Asset, type AssetAnchor, type AssetPatch, type AssetValue } from '@recued/contracts';
 
 /** Typed forms preserve source receipts on untouched historical values. Free
@@ -35,7 +36,8 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
     // Document cards own this field. An ordinary asset draft must not write its
     // hidden snapshot back over a document edited by another owner meanwhile.
     if (key === 'attributes') delete values[ASSET_DOCUMENT_DETAILS_ATTRIBUTE];
-    node('p', root, key === 'attributes' ? 'Descriptive notes. Reminder rules use Dates, Readings and Conditions.' : 'Named preferences for this asset and its installed recipes.');
+    node('p', root, (key === 'attributes' ? 'Descriptive notes. Reminder rules use Dates, Readings and Conditions.' : 'Named preferences for this asset and its installed recipes.')
+      + ' AI apps you connect can read them exactly as typed.');
     const add = (name = '', value: unknown = '') => {
       const row = node('article', root); let removed = false;
       const nameField = field(row, `${title} field name`, name);
@@ -49,12 +51,13 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
         getters.push(() => {
           if (removed) return name ? [name, null] : null;
           const next = nameField.value.trim(); if (!next && !input.value.trim()) return null;
-          if (!/^[a-z][a-z0-9_]{0,63}$/u.test(next)) throw new Error(`Use a field name such as colour for ${title.toLowerCase()}`);
-          if (key === 'settings' && next === 'nationality') throw new Error('Use the passport nationality field above');
-          if (key === 'attributes' && next === ASSET_DOCUMENT_DETAILS_ATTRIBUTE) throw new Error('Use Document details on the attached file');
+          if (!/^[a-z][a-z0-9_]{0,63}$/u.test(next)) yoursFieldError(nameField, `Use a field name such as colour for ${title.toLowerCase()}`);
+          if (key === 'settings' && next === 'nationality') yoursFieldError(nameField, 'Use the passport nationality field above');
+          if (key === 'settings' && next === 'valid_for') yoursFieldError(nameField, 'Use the visa country field above');
+          if (key === 'attributes' && next === ASSET_DOCUMENT_DETAILS_ATTRIBUTE) yoursFieldError(nameField, 'Use Document details on the attached file');
           if (name && next !== name) values[name] = null;
-          if (kind.value === 'Number' && (!input.value.trim() || !Number.isFinite(Number(input.value)))) throw new Error(`Enter a real number for ${next}`);
-          if (kind.value === 'Boolean' && !['true', 'false'].includes(input.value.toLowerCase())) throw new Error(`Use true or false for ${next}`);
+          if (kind.value === 'Number' && (!input.value.trim() || !Number.isFinite(Number(input.value)))) yoursFieldError(input, `Enter a real number for ${next}`);
+          if (kind.value === 'Boolean' && !['true', 'false'].includes(input.value.toLowerCase())) yoursFieldError(input, `Use true or false for ${next}`);
           return [next, kind.value === 'Number' ? Number(input.value) : kind.value === 'Boolean' ? input.value.toLowerCase() === 'true' : input.value];
         });
       }
@@ -62,7 +65,8 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
       rowFocus.set(row, nameField.disabled ? remove : nameField);
       return nameField;
     };
-    Object.entries(values).filter(([name]) => key !== 'settings' || name !== 'nationality').forEach(([key, value]) => add(key, value));
+    // Their own fields above the form edit these two settings.
+    Object.entries(values).filter(([name]) => key !== 'settings' || !['nationality', 'valid_for'].includes(name)).forEach(([key, value]) => add(key, value));
     const addButton = button(root, key === 'settings' ? 'Add setting' : 'Add attribute', () => add());
     maps.push(() => { const entries = getters.map(get => get()).filter((row): row is [string, unknown] => row !== null);
       if (new Set(entries.filter(([, value]) => value !== null).map(([key]) => key)).size !== entries.filter(([, value]) => value !== null).length) throw new Error(`Choose distinct ${title.toLowerCase()} field names`);
@@ -81,8 +85,8 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
       const longitude = field(row, 'Longitude', value?.longitude === undefined ? '' : String(value.longitude), 'number'); longitude.step = 'any'; longitude.min = '-180'; longitude.max = '180';
       node('small', row, 'No reminder needs an address or coordinates. AI apps you connect can read them exactly as entered.');
       anchorGetters.push(() => { if (removed) return null;
-        if (Boolean(latitude.value.trim()) !== Boolean(longitude.value.trim())) throw new Error('A place needs both latitude and longitude');
-        if (!name.value.trim() && !address.value.trim() && !latitude.value.trim()) throw new Error('Name the place, give an address or enter coordinates');
+        if (Boolean(latitude.value.trim()) !== Boolean(longitude.value.trim())) yoursFieldError(latitude.value.trim() ? longitude : latitude, 'A place needs both latitude and longitude');
+        if (!name.value.trim() && !address.value.trim() && !latitude.value.trim()) yoursFieldError(name, 'Name the place, give an address or enter coordinates');
         return { kind: 'place', ...(name.value.trim() ? { name: name.value.trim() } : {}), ...(address.value.trim() ? { address: address.value.trim() } : {}),
           ...(latitude.value.trim() ? { latitude: Number(latitude.value), longitude: Number(longitude.value) } : {}) };
       });
@@ -109,7 +113,7 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
     const originalDate = own ? new Date(own.as_of).toISOString().slice(0, 10) : '';
     const asOf = field(row, 'Valued on', originalDate, 'date'); const basis = choice(row, 'Value basis', ['purchase', 'appraisal', 'insured', 'estimate', 'market'], own?.basis ?? 'estimate');
     valueGetters.push(() => { if (removed) return null;
-      const at = calendarDayMs(asOf.value); if (at === null) throw new Error('Enter the actual valuation date');
+      const at = calendarDayMs(asOf.value); if (at === null) yoursFieldError(asOf, 'Enter the actual valuation date');
       const value = { amount: amount.value.trim(), currency: currency.value.trim().toUpperCase(), as_of: own && asOf.value === originalDate ? own.as_of : at,
         basis: basis.value as AssetValue['basis'] };
       const unchanged = own && value.amount === own.amount && value.currency === own.currency && value.as_of === own.as_of && value.basis === own.basis;

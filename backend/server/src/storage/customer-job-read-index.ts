@@ -104,7 +104,12 @@ export const readCustomerJobCandidates = (db: Database.Database,input: {
       `CASE WHEN json_valid(q.quote_json) THEN json_extract(q.quote_json,'$.label') END`,
       `CASE WHEN json_valid(q.quote_json) THEN json_extract(q.quote_json,'$.reference') END`,
       `CASE WHEN json_valid(q.plan_json) THEN json_extract(q.plan_json,'$.invoice_ref') END`];
-    where.push(`EXISTS(SELECT 1 FROM quote_signoffs q WHERE ${customerJobRootSql('q')}=r.job_id
+    // ⛔ `+r.job_id`, NOT `r.job_id`. job_id is a TEXT column, so a bare comparison gives it
+    // TEXT affinity, and SQLite cannot then look the expression index quote_signoffs_job_root
+    // up (it has none): it scanned every sign-off for every root, 2,101 jobs x 10,505
+    // requests in ~55 s (2026-10-23). The unary plus drops the affinity; the root
+    // expression is always text, so the same rows match.
+    where.push(`EXISTS(SELECT 1 FROM quote_signoffs q WHERE ${customerJobRootSql('q')}=+r.job_id
       AND (${fields.map(f => `instr(customer_job_search_text(${f}),?)>0`).join(' OR ')}))`);
     values.push(...fields.map(() => input.search));
   }

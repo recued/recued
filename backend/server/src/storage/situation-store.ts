@@ -3,6 +3,7 @@ import type { SituationRevision, SituationSnapshot, SituationState } from '@recu
 import type { WarehouseEvent, WarehouseEventBus } from '@recued/warehouse-events';
 import type { AssetPlacementReadBatch } from './sphere-store.js';
 import { observeSqliteReadBatch } from './sqlite-read-batch.js';
+import { createSettingsBatch, type SettingsBatchReader } from './settings-batch.js';
 
 export const ensureSituationSchema = (db: Database.Database): void => {
   db.exec(`
@@ -103,6 +104,7 @@ export interface SituationStore {
     isOpen?: () => boolean; cause_source?: string; limit?: number;
   }): Promise<number>;
   readSetting<T>(key: string, fallback: T): T;
+  readSettings?: SettingsBatchReader<'readSetting'>;
   writeSetting(key: string, value: unknown): void;
   measure(name: string, value: number, dimensions: Record<string, string | number | boolean>, at: number, receipt?: string): boolean;
 }
@@ -124,6 +126,9 @@ export const createSituationStore = (db: Database.Database, bus?: Pick<Warehouse
     const row = db.prepare('SELECT value FROM proactive_settings WHERE key=?').get(key) as { value: string } | undefined;
     return row ? JSON.parse(row.value) as T : fallback;
   };
+  const readSettings = createSettingsBatch('readSetting', readSetting, keys =>
+    db.prepare(`SELECT key,value FROM proactive_settings WHERE key IN (${keys.map(() => '?').join(',')})`)
+      .all(...keys) as { key: string; value: string }[]);
   const writeSetting: SituationStore['writeSetting'] = (key, value) => {
     if (!key.trim() || key.length > 200) throw new Error('Invalid proactive setting');
     const encoded = JSON.stringify(value);
@@ -295,7 +300,7 @@ export const createSituationStore = (db: Database.Database, bus?: Pick<Warehouse
       } finally { inFlight.delete(subscriber); }
       return handled;
     },
-    readSetting, writeSetting,
+    readSetting, readSettings, writeSetting,
     measure(name, value, dimensions, at, receipt) {
       if (!readSetting('metrics.opt_in', false) || at < readSetting('metrics.enabled_at', 0) || at < readSetting('metrics.kept_since', 0)) return false;
       if (!/^[a-z][a-z0-9_.]{0,99}$/u.test(name) || !Number.isFinite(value) || !Number.isSafeInteger(at)

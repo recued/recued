@@ -1,5 +1,7 @@
+import { openBackupDisclosure } from './helpers/backup-disclosure.js';
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { applyPreset, type QuietHoursGetResponse, type QuietHoursSetRequest, type ServerTimeZoneGetResponse, type ServerTimeZoneSetRequest } from '@recued/contracts';
+import type { NotificationKindPolicy, NotificationKindPolicySetRequest } from '@recued/contracts';
 import {
   HARNESS_URL, LIST_PREVIEW, SETTINGS_NAV_ITEM, SHARED_REFERENCE, SHARED_REFERENCE_ID,
   installFullAppHooks,
@@ -58,9 +60,10 @@ const openServerAddressEditor = async (page: Page, activation: 'keyboard' | 'poi
   await expect(edit).toBeVisible();
   if (activation === 'keyboard') { await edit.focus(); await page.keyboard.press('Enter'); }
   else await edit.click();
-  const input = row.locator('[data-server-address-input]');
+  const input = row.getByRole('textbox', { name: 'New server address', exact: true });
   await expect(input).toBeVisible();
-  if (activation === 'keyboard') await expect(input).toBeFocused();
+  await expect(input).toBeInViewport({ ratio: 1 });
+  await expect(input).toBeFocused();
   return { row, input, edit, original: await input.inputValue() };
 };
 
@@ -753,6 +756,7 @@ test('Settings Restore keeps a keyboard-owned commit on truthful live status', a
 test('Settings Passport keeps its keyboard-owned export on live status', async ({ page }) => {
   await page.evaluate(() => window.__app.setHash('#settings/backup'));
 
+  await openBackupDisclosure(page, 'identity');
   const start = page.locator(`[${ARCHIVE_PASSPORT_START}]`);
   await start.focus();
   await page.keyboard.press('Enter');
@@ -824,7 +828,7 @@ test('Settings Privacy gives every mobile checkbox a full label target', async (
     (label) => label.getBoundingClientRect().height,
   ));
   expect(heights.length).toBeGreaterThan(0);
-  expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
+  expect(Math.min(...heights)).toBeGreaterThanOrEqual(44);
   expect(await section.evaluate(
     (element) => element.scrollWidth <= element.clientWidth,
   )).toBe(true);
@@ -888,6 +892,7 @@ test('Settings Learning identifies repeated case actions by their owning case', 
 });
 
 test('Settings Learning owns a keyboard Forget through confirmation and removal', async ({ page }) => {
+  await page.clock.install();
   await page.goto(
     `${HARNESS_URL}?privacy=learning-cases&learning_forget_response=slow`,
   );
@@ -914,6 +919,9 @@ test('Settings Learning owns a keyboard Forget through confirmation and removal'
     'Confirm forgetting what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(forget).toBeFocused();
+  // Keep the fixture's delayed reply pending throughout the competing actions.
+  // Real time can expire between protocol round trips, especially in WebKit.
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1_000));
   await page.keyboard.press('Enter');
 
   await expect(forget).toHaveText('Forgetting...');
@@ -955,6 +963,7 @@ test('Settings Learning owns a keyboard Forget through confirmation and removal'
     ),
   ).toBe(1);
 
+  await page.clock.resume();
   const empty = page.locator(`[${LEARNING_CASES_EMPTY}]`);
   await expect(empty).toBeVisible();
   await expect(empty).toHaveAttribute('tabindex', '-1');
@@ -1677,6 +1686,49 @@ test('Settings Server Maintenance dialog owns keyboard focus', async ({ page }) 
   await expect(trigger).toBeFocused();
 });
 
+for (const width of [280, 390, 1280]) {
+  test(`Settings Server Maintenance retains the reclaimed surface after rows reorder at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?settle_reads=1`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => {
+      let reclaimed = false;
+      Object.assign(window, {
+        __connectionsFixture: async (method: string, args: { surface?: string } | undefined) => {
+          if (method === 'server.getStatus') {
+            return { result: { pressure_details: {
+              worst_state: reclaimed ? 'running' : 'pressure_managed',
+              per_surface: [
+                { surface: 'audit', state: 'running', used_bytes: 20, quota_bytes: 100, pct: 20 },
+                { surface: 'cache', state: reclaimed ? 'running' : 'pressure_managed',
+                  used_bytes: reclaimed ? 10 : 90, quota_bytes: 100, pct: reclaimed ? 10 : 90 },
+              ],
+            } } };
+          }
+          if (method === 'server.runPressureReclaim') {
+            reclaimed = true;
+            document.documentElement.setAttribute('data-maintenance-reclaimed', args?.surface ?? '');
+            return { result: { ran: true, bytes_freed: 80 } };
+          }
+          return undefined;
+        },
+      });
+      window.__app.setHash('#settings/server/maintenance');
+    });
+    const rows = page.locator('[data-recued-maintenance-storage] .maintenance-storage-row');
+    await expect(rows.first().getByRole('rowheader')).toHaveText('cache');
+    const cache = rows.filter({ has: page.getByRole('rowheader', { name: 'cache', exact: true }) });
+    const reclaim = cache.getByRole('button', { name: 'Reclaim now', exact: true });
+    await reclaim.focus();
+    await page.keyboard.press('Enter');
+    await expect(rows.first().getByRole('rowheader')).toHaveText('audit');
+    await expect(cache).toContainText('freed 80 B');
+    await expect(reclaim).toBeFocused();
+    await expect(page.locator('html')).toHaveAttribute('data-maintenance-reclaimed', 'cache');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.runPressureReclaim'))).toBe(1);
+  });
+}
+
 test('Settings Updates Check stays owned through failure and retry', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?updates=fail-once-slow-retry`);
@@ -1921,14 +1973,19 @@ test('Settings Account Connect failures return to the exact command', async ({ p
   await expect(connect).toBeFocused();
 });
 
-test('Settings Account conflicts start safely and Cancel returns to Check the connection again', async ({ page }) => {
+test('Settings Account conflicts start safely and Cancel returns to Move', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?account=conflict`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/account'));
 
+  // ⛔ The card read "Bound" beside "Signed in as morgan@…" and another
+  // account's name, and said nothing until Connect was pressed.
+  await expect(page.locator('[data-recued-account-binding-other-account]')).toHaveText(
+    'This server is on another recued.com account, not morgan@example.test. Moving it takes it off that account.',
+  );
   const connect = page.locator('[data-recued-account-binding-connect]');
-  await expect(connect).toHaveText('Check the connection again');
+  await expect(connect).toHaveText('Move it to morgan@example.test');
   await connect.focus();
   await page.keyboard.press('Enter');
 
@@ -1965,7 +2022,7 @@ test('Settings Account Yes, move it owns its pending command and refreshed bindi
   );
   await confirm.focus();
   await page.keyboard.press('Enter');
-  await expect(confirm).toHaveText('Rebinding…');
+  await expect(confirm).toHaveText('Moving…');
   await expect(confirm).toHaveAttribute('aria-disabled', 'true');
   await expect(confirm).toHaveAttribute('aria-busy', 'true');
   await expect(confirm).not.toHaveAttribute('disabled');
@@ -2005,17 +2062,50 @@ test('Settings Account Yes, move it failures return to the exact command', async
   );
   await confirm.focus();
   await page.keyboard.press('Enter');
-  await expect(confirm).toHaveText('Rebinding…');
+  await expect(confirm).toHaveText('Moving…');
   await expect(confirm).toBeFocused();
 
   await expect(page.locator('[data-recued-account-binding-error="action"]'))
     .toHaveText('Account rebind unavailable.');
   await expect(dialog).toBeVisible();
-  await expect(confirm).toHaveText('Yes, move it');
+  await expect(confirm).toHaveText('Yes, move it to morgan@example.test');
   await expect(confirm).not.toHaveAttribute('aria-disabled');
   await expect(confirm).not.toHaveAttribute('aria-busy');
   await expect(confirm).not.toHaveAttribute('disabled');
   await expect(confirm).toBeFocused();
+});
+
+test('Settings Account says why a Connect failed, in words, never its code', async ({ page }) => {
+  // ⛔ The server's own text was shown: "account binding exchange failed
+  // (account_not_authenticated)". The reason rides the error's details.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?account=unbound&account_bind_exchange_failure=account_not_authenticated`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+  await page.locator('[data-recued-account-binding-connect]').click();
+  await expect(page.locator('[data-recued-account-binding-error="action"]'))
+    .toHaveText('Your recued.com sign-in has ended. Sign in again, then try again.');
+  await expect(page.locator('[data-recued-account-binding-panel]')).not.toContainText('account_not_authenticated');
+});
+
+test('Settings Account says that connecting this server makes it the public one', async ({ page }) => {
+  // ⛔ With another of the account's servers holding its web address, "Check
+  // the connection again" moved the address and its certificate here, unsaid.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?account=bound&account_public=elsewhere`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await expect(connect).toHaveText('Make this your public server');
+  await expect(connect).toHaveAccessibleDescription(
+    'Moves morgan.recued.net and its certificate here from your other server.',
+  );
+  await connect.click();
+  await expect(page.locator('[data-recued-account-binding-action-message]'))
+    .toHaveText('This server now holds morgan.recued.net and its certificate.');
+  await expect(connect).toHaveText('Check the connection again');
+  await expect(page.locator('[data-recued-account-binding-public-server-note]')).toHaveCount(0);
 });
 
 test('Settings Account Disconnect starts safely and Cancel returns to its command', async ({ page }) => {
@@ -2280,6 +2370,74 @@ test('Settings Account retry failures return to the exact recovery command', asy
   )).toBe(0);
 });
 
+for (const width of [390, 1280]) {
+  test(`Settings Devices draws "Add a device" like the page's buttons at ${width}px`, async ({ page }) => {
+    // ⛔ It was the browser's default blue link, 78×16, under a table of
+    // full-size buttons.
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?devices=ready`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+    const add = page.locator('[data-recued-settings-devices-add-link] a');
+    const refresh = page.locator('[data-action="refresh-devices"]');
+    await expect(add).toHaveText('Add a device');
+    await expect(refresh).toBeVisible();
+    const look = (node: Element) => {
+      const style = getComputedStyle(node);
+      return { color: style.color, underline: style.textDecorationLine, height: node.getBoundingClientRect().height };
+    };
+    const [mine, theirs] = [await add.evaluate(look), await refresh.evaluate(look)];
+    expect(mine.underline).toBe('none');
+    expect(mine.color).toBe(theirs.color);
+    expect(mine.height).toBeGreaterThanOrEqual(theirs.height);
+    await add.click();
+    await expect(page.locator('[data-recued-connect-device-panel]')).toBeVisible();
+    await expect(page).toHaveURL(/#settings\/server\/connect-device$/);
+  });
+}
+
+for (const width of [390, 1280]) {
+  test(`Settings Devices rows end on one line at ${width}px`, async ({ page }) => {
+    // ⛔ The name cell was a flex box rather than a table cell, so its row
+    // line stopped under the name while the other cells' ran on to the
+    // bottom of the row: 45px apart on a phone.
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?devices=ready`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+    const rows = page.locator('.account-devices-row');
+    await expect(rows).toHaveCount(3);
+    const bottoms = await rows.evaluateAll((trs) => trs.map(
+      (tr) => [...tr.children].map((td) => td.getBoundingClientRect().bottom),
+    ));
+    for (const cells of bottoms) {
+      expect(cells).toHaveLength(4);
+      expect(Math.max(...cells) - Math.min(...cells)).toBeLessThan(1);
+    }
+  });
+}
+
+test('Settings Devices says where this browser revokes its own access, and it is there', async ({ page }) => {
+  // ⛔ Devices said "A device cannot remove itself" while Account & servers
+  // offered "Take access away and forget" for this browser.
+  await page.goto(`${HARNESS_URL}?devices=ready&server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+  const devices = page.locator('#account-devices');
+  await expect(devices).toContainText(
+    'Use a different device to revoke one. To revoke this browser’s own access, open Account & servers and choose Forget.',
+  );
+  await expect(devices).not.toContainText('cannot remove itself');
+
+  await page.locator('[data-recued-account-menu-trigger]').click();
+  const menu = page.locator('[data-recued-account-menu-popover]');
+  await expect(menu).toContainText('Account & servers');
+  const current = menu.locator('[data-recued-server-switcher-item][aria-current="true"]');
+  await current.locator('..').locator('[data-recued-server-switcher-remove]').click();
+  await expect(menu.locator('[data-recued-server-switcher-remove-revoke]'))
+    .toHaveText('Revoke access and forget');
+});
+
 test('Settings device revoke confirmation starts safely and returns to its row', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?devices=ready`);
@@ -2321,6 +2479,42 @@ test('Settings device revoke confirmation starts safely and returns to its row',
   await expect(revoke).toBeFocused();
 });
 
+for (const height of [844, 480]) {
+  test(`Settings devices say when each was last used, and can be renamed at ${height}px height`, async ({ page }) => {
+    // ⛔ A dead entry looked like a quiet one, and two browsers of one kind
+    // read alike, so which one to revoke was a guess.
+    await page.setViewportSize({ width: 390, height });
+    await page.goto(`${HARNESS_URL}?devices=ready`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+
+    const laptop = page.locator('.account-devices-row[data-instance-id="device-laptop"]');
+    const desktop = page.locator('.account-devices-row[data-instance-id="device-desktop"]');
+    await expect(laptop).toContainText('Last used 1 hour ago');
+    await expect(desktop).toContainText('Offline');
+
+    const rename = laptop.getByRole('button', { name: 'Rename Travel laptop (device-laptop)' });
+    await rename.click();
+    const field = page.getByRole('textbox', { name: 'New name for this device' });
+    await expect(field).toBeFocused();
+    await expect(field).toBeInViewport({ ratio: 1 });
+    await expect(field).toHaveValue('Travel laptop');
+    await page.keyboard.press('Escape');
+    await expect(field).toHaveCount(0);
+    await expect(rename).toBeFocused();
+
+    await rename.click();
+    await expect(field).toBeInViewport({ ratio: 1 });
+    await field.fill('Old work laptop');
+    await page.keyboard.press('Enter');
+    await expect(field).toHaveCount(0);
+    await expect(laptop).toContainText('Old work laptop');
+    await expect(laptop.getByRole('button', { name: 'Rename Old work laptop (device-laptop)' }))
+      .toBeFocused();
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.rename'))).toBe(1);
+  });
+}
+
 test('Settings device revoke owns its pending command and success receipt', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
@@ -2361,7 +2555,7 @@ test('Settings device revoke owns its pending command and success receipt', asyn
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'Recued is still shutting a device out. Leave Settings anyway?',
+    'Recued is still revoking a device. Leave Settings anyway?',
   );
   await expect(page).toHaveURL(/#settings\/devices$/);
   await confirm.evaluate((button: HTMLElement) => {
@@ -2401,7 +2595,7 @@ test('Settings failed device revokes return to the exact retry action', async ({
 
   await expect(page.locator('.account-devices-confirm-error'))
     .toHaveText(
-      'Recued could not shut this device out: Device revoke unavailable. '
+      'Recued could not revoke this device: Device revoke unavailable. '
         + 'Try again, or do it from another device you have paired.',
     );
   await expect(confirm).toContainText('Yes, revoke');
@@ -2439,7 +2633,7 @@ for (const width of [390, 1280]) {
           window.__app.setHash('#chat');
         });
         await expect(page.locator('html')).toHaveAttribute('data-device-leave-prompt',
-          'Recued is still shutting a device out. Leave Settings anyway?');
+          'Recued is still revoking a device. Leave Settings anyway?');
         await expect(page).toHaveURL(/#settings\/devices$/);
       }
       expect(await page.evaluate(index => window.__app.releaseRpcResponses?.('pair.list', index), newerFirst ? 1 : 0)).toBe(1);
@@ -2651,7 +2845,7 @@ test('Settings Devices manual checks preserve a pending revoke through its lates
     window.__app.setHash('#chat');
   });
   await expect(page.locator('html')).toHaveAttribute('data-device-leave-prompt',
-    'Recued is still shutting a device out. Leave Settings anyway?');
+    'Recued is still revoking a device. Leave Settings anyway?');
   await expect(page).toHaveURL(/#settings\/devices$/);
   expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 1))).toBe(1);
   await expect(laptop).toHaveCount(0);
@@ -2717,6 +2911,119 @@ test('Settings Devices returns a failed roster Retry to its alert action', async
 // two tests that drove it went with it. Their contracts live on in the
 // per-browser twins below: mutation ownership, and failures that return to
 // the exact control.
+interface NotificationWorkspaceFixture {
+  writes: Array<{ method: string; args: unknown }>;
+  failNextWrite: boolean;
+}
+declare global { interface Window { __notificationsWorkspace: NotificationWorkspaceFixture } }
+
+const openNotificationsWorkspace = async (page: Page, width: number) => {
+  await page.setViewportSize({ width, height: 900 });
+  await page.addInitScript(() => {
+    let policies: NotificationKindPolicy[] = [
+      { kind: 'task', enabled: true, offset_ms: 86_400_000, updated_at: 1 },
+      { kind: 'commitment', enabled: true, offset_ms: 86_400_000, updated_at: 1 },
+      { kind: 'booking', enabled: true, offset_ms: 7_200_000, updated_at: 1 },
+      { kind: 'calendar', enabled: false, offset_ms: 1_800_000, updated_at: 1 },
+    ];
+    let quiet: QuietHoursGetResponse = { policy: { enabled: true, from_minute: 1320, to_minute: 480,
+      applies_to: ['notification'], updated_at: 1 }, can_arm: true, resolved_zone: 'Europe/London' };
+    const fixture: NotificationWorkspaceFixture = { writes: [], failNextWrite: false };
+    window.__notificationsWorkspace = fixture;
+    Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
+      if (method === 'notification.kind_policy.get') return { result: { policies: structuredClone(policies) } };
+      if (method === 'notification.quiet_hours.get') return { result: structuredClone(quiet) };
+      if (method === 'server.timezone.get') return { result: { setting: { mode: 'fixed', zone: 'Europe/London', updated_at: 1 },
+        resolved_zone: 'Europe/London', host_zone: 'Europe/London' } };
+      if (method === 'notification.kind_policy.set' || method === 'notification.quiet_hours.set') {
+        fixture.writes.push({ method, args: structuredClone(args) });
+        if (fixture.failNextWrite) {
+          fixture.failNextWrite = false;
+          return { error: { code: 'UNAVAILABLE', message: 'Timing setting unavailable.' } };
+        }
+        if (method === 'notification.kind_policy.set') {
+          const patch = args as NotificationKindPolicySetRequest;
+          policies = policies.map(policy => policy.kind === patch.kind
+            ? { ...policy, ...patch, updated_at: policy.updated_at + 1 } : policy);
+          return { result: { policies: structuredClone(policies) } };
+        }
+        const patch = args as QuietHoursSetRequest;
+        quiet = { ...quiet, policy: { ...quiet.policy, ...patch, updated_at: quiet.policy.updated_at + 1 } };
+        return { result: structuredClone(quiet) };
+      }
+      return undefined;
+    } });
+  });
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-recued-kind-policy-panel]')).toHaveAttribute('data-recued-kind-policy-state', 'ready');
+  await expect(page.locator('[data-recued-quiet-hours-panel]')).toHaveAttribute('data-recued-quiet-hours-state', 'ready');
+  await expect(page.locator('[data-situation-delivery] [data-overview-editor]')).toBeVisible();
+  await expect(page.locator('[data-household-delivery] select').first()).toBeVisible();
+};
+
+for (const width of [280, 390, 1280]) {
+  test(`Settings notifications workspace checkbox labels accept outer-edge clicks and keyboard reversal at ${width}px`, async ({ page }) => {
+    await openNotificationsWorkspace(page, width);
+    const settings = [
+      ...(['task', 'commitment', 'booking', 'calendar'] as const).map(kind => ({
+        selector: `[data-recued-kind-policy-enabled="${kind}"]`,
+        method: 'notification.kind_policy.set',
+        patch: (enabled: boolean) => ({ kind, enabled }),
+      })),
+      { selector: '[data-recued-quiet-hours-toggle]', method: 'notification.quiet_hours.set', patch: (enabled: boolean) => ({ enabled }) },
+      { selector: '[data-recued-quiet-hours-approval]', method: 'notification.quiet_hours.set',
+        patch: (enabled: boolean) => ({ applies_to: enabled ? ['notification', 'approval'] : ['notification'] }) },
+    ];
+    const expected: Array<{ method: string; args: unknown }> = [];
+    for (const setting of settings) {
+      const checkbox = page.locator(setting.selector), label = checkbox.locator('..');
+      const before = await checkbox.isChecked();
+      await label.scrollIntoViewIfNeeded();
+      const box = await label.boundingBox();
+      const glyph = await checkbox.boundingBox();
+      expect(box!.width).toBeGreaterThanOrEqual(44);
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+      expect(glyph!.height).toBeLessThanOrEqual(20);
+      // Native input forwarding must cover the new padding, beyond the glyph.
+      await label.click({ position: { x: box!.width - 6, y: 4 } });
+      await expect(checkbox).toBeChecked({ checked: !before });
+      expected.push({ method: setting.method, args: setting.patch(!before) });
+      await expect.poll(() => page.evaluate(() => window.__notificationsWorkspace.writes)).toEqual(expected);
+      await checkbox.focus(); await page.keyboard.press('Space');
+      await expect(checkbox).toBeChecked({ checked: before });
+      await expect(checkbox).toBeFocused();
+      expected.push({ method: setting.method, args: setting.patch(before) });
+      await expect.poll(() => page.evaluate(() => window.__notificationsWorkspace.writes)).toEqual(expected);
+    }
+    await expect(page.locator('[data-recued-quiet-hours-from]')).toHaveValue('22:00');
+    await expect(page.locator('[data-recued-quiet-hours-to]')).toHaveValue('08:00');
+  });
+}
+
+for (const width of [390, 1280]) {
+  test(`Settings notifications workspace preserves the failed checkbox value and its keyboard retry at ${width}px`, async ({ page }) => {
+    await openNotificationsWorkspace(page, width);
+    await page.evaluate(() => { window.__notificationsWorkspace.failNextWrite = true; });
+    const checkbox = page.locator('[data-recued-kind-policy-enabled="calendar"]');
+    const row = page.locator('[data-recued-kind-policy-row="calendar"]');
+    await checkbox.focus(); await page.keyboard.press('Space');
+    await expect(row.getByRole('alert')).toHaveText('Timing setting unavailable.');
+    await expect(checkbox).not.toBeChecked();
+    await expect(checkbox).toBeFocused();
+    await expect(row.getByRole('combobox')).toBeDisabled();
+    await page.keyboard.press('Space');
+    await expect(checkbox).toBeChecked();
+    await expect(checkbox).toBeFocused();
+    await expect(row.getByRole('combobox')).toBeEnabled();
+    await expect(row.getByRole('alert')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__notificationsWorkspace.writes)).toEqual([
+      { method: 'notification.kind_policy.set', args: { kind: 'calendar', enabled: true } },
+      { method: 'notification.kind_policy.set', args: { kind: 'calendar', enabled: true } },
+    ]);
+  });
+}
+
 test('Settings keeps a pending notification write attached on route leave', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
@@ -3001,7 +3308,8 @@ test('Settings Server tabs form one full-size arrow-key keyboard stop', async ({
   const tabHeights = await tabs.evaluateAll((nodes) =>
     nodes.map((node) => node.getBoundingClientRect().height)
   );
-  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
+  // A finger's height on a phone. ⛔ They were 36px.
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(44);
 
   await connect.focus();
   await page.keyboard.press('ArrowRight');
@@ -3198,21 +3506,29 @@ test('Settings Server address scripted actions respect outside focus', async ({ 
   await expect(outside).toBeFocused();
 });
 
-test('Settings Server address focus follows the selected profile', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?server_profiles=multiple#settings/servers`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  const rows = page.locator('[data-server-address-row]');
-  await expect(rows).toHaveCount(2);
-  for (const index of [0, 1]) {
-    await rows.nth(index).locator('[data-server-address-edit]').focus(); await page.keyboard.press('Enter');
-    await expect(rows.nth(index).locator('[data-server-address-input]')).toBeFocused();
+for (const height of [844, 480]) {
+  for (const activation of ['keyboard', 'pointer'] as const) {
+    test(`Settings Server address focus follows the selected profile via ${activation} at ${height}px height`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height });
+      await page.goto(`${HARNESS_URL}?server_profiles=multiple#settings/servers`);
+      await page.waitForFunction(() => window.__app?.ready === true);
+      const rows = page.locator('[data-server-address-row]');
+      await expect(rows).toHaveCount(2);
+      for (const index of [0, 1]) {
+        const edit = rows.nth(index).locator('[data-server-address-edit]');
+        if (activation === 'keyboard') { await edit.focus(); await page.keyboard.press('Enter'); }
+        else await edit.click();
+        const input = rows.nth(index).getByRole('textbox', { name: 'New server address', exact: true });
+        await expect(input).toBeFocused();
+        await expect(input).toBeInViewport({ ratio: 1 });
+      }
+      await expect(rows.nth(0)).toHaveAttribute('data-server-address-row-state', 'idle');
+      await rows.nth(1).locator('[data-server-address-input]').fill('not-a-server');
+      await rows.nth(1).locator('[data-server-address-cancel]').focus(); await page.keyboard.press('Enter');
+      await expect(rows.nth(1).locator('[data-server-address-edit]')).toBeFocused();
+    });
   }
-  await expect(rows.nth(0)).toHaveAttribute('data-server-address-row-state', 'idle');
-  await rows.nth(1).locator('[data-server-address-input]').fill('not-a-server');
-  await rows.nth(1).locator('[data-server-address-cancel]').focus(); await page.keyboard.press('Enter');
-  await expect(rows.nth(1).locator('[data-server-address-edit]')).toBeFocused();
-});
+}
 
 test('Settings Server address Cancel retires a pending check’s focus', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -3364,8 +3680,8 @@ test.describe('Settings Exposure keyboard navigation', () => {
 
 test.describe('Settings Exposure connection example', () => {
   const examples = [
-    ['claude', 'Claude Desktop'], ['cursor', 'Cursor'],
-    ['codex', 'Codex'], ['custom', 'Another AI app'],
+    ['claude', "Claude Desktop, on the server's computer"], ['claude-code', 'Claude Code'],
+    ['cursor', 'Cursor'], ['cline', 'Cline'], ['codex', 'Codex'], ['custom', 'Another AI app'],
   ] as const;
 
   const openExample = async (page: Page, width: number, activation: 'keyboard' | 'pointer' = 'keyboard') => {
@@ -3406,7 +3722,8 @@ test.describe('Settings Exposure connection example', () => {
           for (const [index, snippet] of snippets.entries()) {
             await expect(snippet).toHaveAttribute('data-recued-exposure-connect-snippet', examples[index]![0]);
             await expect(snippet).toHaveAttribute('tabindex', '0');
-            await expect(snippet).toContainText('/mcp');
+            // Claude Desktop runs Recued's stdio mode locally: no address.
+            await expect(snippet).toContainText(examples[index]![0] === 'claude' ? '--mcp' : '/mcp');
             await page.keyboard.press('Tab');
             await expect(snippet).toBeFocused();
             await expect(snippet).toBeInViewport({ ratio: 1 });

@@ -40,6 +40,17 @@ describe('D-325 asset provenance in the owner’s words', () => {
     expect(assetSourceWords(source('confirmed_document')).from).toMatch(/^From a document you confirmed, /u);
   });
 
+  it('says a value its type supplied came from its type, never that the owner entered it', () => {
+    // D-325 §4.4 — an AI or a recipe created the asset, and the server stamped its
+    // type's reminders and settings at the owner's rank under a `type:` ref.
+    const at = Date.parse('2026-10-24T12:00Z');
+    expect(assetSourceWords({ kind: 'owner', ref: 'type:passport@1', at }))
+      .toEqual({ from: expect.stringMatching(/^From its type, /u), rank: 'Nothing automatic replaces it.' });
+    expect(assetSourceWords({ kind: 'owner', ref: 'owner:local', at }).from).toMatch(/^Entered by you, /u);
+    // Only the server writes the owner rank, so a lower rank with that ref is what it is.
+    expect(assetSourceWords({ kind: 'extracted', ref: 'type:passport@1', at }).from).toMatch(/^Extracted from your data, /u);
+  });
+
   it('says what each piece of evidence showed, by where it is', () => {
     expect(assetEvidenceText({ collection: 'home-assistant', id: 'light.porch', field: 'transitions', value: 'on and off 14 times' }))
       .toBe('Home Assistant · light.porch · transitions: on and off 14 times');

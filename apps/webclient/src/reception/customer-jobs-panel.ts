@@ -11,6 +11,8 @@ import type { QuoteSignoffConn } from './quote-signoff-panel.js';
 import { mountQuoteCompletionReminders,type QuoteCompletionReminderOptions } from './quote-completion-reminders.js';
 import { mountQuotePaymentReminders } from './quote-payment-reminders.js';
 import { mountQuoteCompletionPanel } from './quote-completion-panel.js';
+import { appendCustomerCorrections } from './customer-completion-corrections.js';
+import { guardCustomerHistoryInteraction } from './customer-history-interaction.js';
 import { mountCustomerAccountsPanel,type CustomerAccountsConn } from './customer-accounts-panel.js';
 import { mountCustomerJobPaymentStatement } from './customer-job-payment-statement.js';
 import { mountCustomerPaymentHistory } from './customer-payment-history.js';
@@ -34,7 +36,7 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
   const button = (text: string,host: HTMLElement = root) => { const node = doc.createElement('button');node.type = 'button';node.textContent = text;host.appendChild(node);return node; };
   const link = (text: string,href: string,host: HTMLElement) => { const node = add('a',text,host);node.setAttribute('href',href);return node; };
   const focusKey = (node: HTMLElement) => node.getAttribute('data-job-action') ?? node.getAttribute('href')
-    ?? (node.tagName === 'SUMMARY' ? 'scope' : null);
+    ?? (node.tagName === 'SUMMARY' ? 'disclosure:'+(node.closest('[data-job-disclosure]')?.getAttribute('data-job-disclosure') ?? 'scope') : null);
   add('style',`[data-customer-jobs]{display:grid;gap:18px;max-width:1100px}
     [data-customer-jobs] [hidden]{display:none!important}
     [data-customer-jobs] h2,[data-customer-jobs] h3,[data-customer-jobs] p{margin:0}
@@ -96,6 +98,7 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
   const retryJob=button('Retry job view',board);retryJob.hidden=true;retryJob.addEventListener('click',()=>{if(!loading)void load();});
   const message = add('p',opts.jobId ? 'Loading this job…' : 'Loading customer jobs…',board);message.setAttribute('role','status');message.setAttribute('aria-live','polite');
   const list = add('div','',board);list.setAttribute('data-job-list','');
+  const historyInteraction = guardCustomerHistoryInteraction(doc,list);
   const paging = add('div','',board);paging.hidden = !!opts.jobId;paging.className = 'job-actions';const newer = button('Newer jobs',paging);const older = button('Older jobs',paging);
   let disposed = false;let loading = false;let generation = 0;let nextCursor: string | undefined;
   type Page = { cursor?: string;previous: Array<string | undefined> };
@@ -239,7 +242,10 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
       if (completion.owner_action) add('p',completion.owner_action.action === 'close' ? 'Owner closed work after review' : 'Owner reopened work after review',reply);
       if (completion.state === 'waiting' && completion.response.decision !== 'not_recorded') add('p','Reply received; processing pending',reply);
       if (completion.review === 'closed' && completion.owner_action === null) add('p','Owner review ended without applying this completion',reply);
-      if (completion.response.corrections) add('pre',completion.response.corrections,reply);
+      if (completion.response.corrections) {
+        const corrections = appendCustomerCorrections(doc,reply,completion.response.corrections);
+        corrections.summary.setAttribute('data-job-correction-summary',''); corrections.details?.setAttribute('data-job-disclosure','corrections');
+      }
     } else if (job.agreement) add('p','No completion request yet',reply);
     const balance = add('div','',statuses);add('strong','Payment',balance);
     add('p',job.payment.status === 'not_invoiced' ? 'No invoice released'
@@ -254,14 +260,25 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
     if (job.payment.amount_refund_credited!==undefined && job.payment.outstanding!==null) add('p',`Customer still owes: ${job.payment.outstanding} ${job.currency}`,balance);
     customerRefundBalanceLines(job.payment,job.currency).forEach(line=>add('p',line,balance));
     if (job.needs_attention) add('p',job.payment.refund_due && job.payment.refund_due !== '0.0000' ? 'A refund is owed. Record it after returning the money to the customer.' : 'This job needs attention. Review unavailable records or ended reviews before continuing.',card);
-    const scope = add('details','',card);add('summary',job.agreed_scope === null ? 'Offered scope' : 'Agreed scope',scope);add('pre',job.agreed_scope ?? job.offer.scope,scope);
+    const scope = add('details','',card);scope.setAttribute('data-job-disclosure','scope');add('summary',job.agreed_scope === null ? 'Offered scope' : 'Agreed scope',scope);add('pre',job.agreed_scope ?? job.offer.scope,scope);
     const actions = add('div','',card);actions.className = 'job-actions';
     if (job.needs_owner_review) link('Review in Reception Inbox',receptionInboxTargetAddress(reviewTarget(job)),actions);
     if (job.offer.release_review === 'closed' || job.completion?.review === 'closed' && job.completion.owner_action === null) link('Review in Runs','#logs',actions);
     if (job.agreement?.task_id && job.agreement.follow_up?.task.availability === 'current') link('Open task',`#data/task/${encodeURIComponent(job.agreement.task_id)}`,actions);
     if (!archived && job.can_request_completion && job.agreement) {
-      const request = button('Request completion',actions);request.setAttribute('data-job-action','completion');
-      request.addEventListener('click',() => { if (!disposed && !boardBusy() && !closeout?.isOpen() && !aging?.isOpen() && !timeline?.isOpen()) { completions.open(job.agreement!);controls(); } });
+      const draft = job.completion_matches_agreement && job.completion?.state === 'draft' && job.completion.availability === 'current' ? job.completion : undefined;
+      const request = button(draft ? 'Resume completion preview' : 'Request completion',actions);request.setAttribute('data-job-action','completion');
+      request.addEventListener('click',() => {
+        if (disposed || boardBusy() || closeout?.isOpen() || aging?.isOpen() || timeline?.isOpen()) return;
+        const onReturn = () => {
+          const target = [...list.querySelectorAll<HTMLElement>('[data-job-action="completion"]')].find(node => node.closest('[data-job-id]')?.getAttribute('data-job-id') === job.job_id);
+          if (!target) heading.tabIndex = -1;
+          (target ?? heading).focus();
+        };
+        if (draft) void completions.resume(draft.completion_id,job.agreement!.signoff_id,onReturn).finally(() => { if (!disposed) controls(); });
+        else completions.open(job.agreement!,onReturn);
+        controls();
+      });
     }
     if (!archived && reminders && job.completion_matches_agreement && job.completion?.state === 'waiting'
       && job.completion.availability === 'current' && job.completion.response.decision === 'not_recorded') {
@@ -375,15 +392,17 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
       const result: CustomerJobsListResult = opts.jobId ? await readSelectedJob() : await conn('reception.jobs.list',{ limit: 50,...(savedQuery.search ? { search: savedQuery.search } : {}),
         ...(savedQuery.filter !== 'all' ? { filter: savedQuery.filter } : {}),...(savedQuery.archive !== 'active' ? { archive: savedQuery.archive } : {}),...(desired.cursor ? { cursor: desired.cursor } : {}) });
       if (disposed || current !== generation) return;
+      for (const job of result.jobs) completions.reconcileJob(job.job_id,job.completion);
+      if (!await historyInteraction.ready() || disposed || current !== generation) return;
       const focused = [...list.querySelectorAll<HTMLElement>('button,a,summary')].find(node => node === doc.activeElement);
       const focusJob = focused?.closest('[data-job-id]')?.getAttribute('data-job-id');const action = focused ? focusKey(focused) : null;
-      const expanded = new Set([...list.querySelectorAll<HTMLDetailsElement>('details[open]')]
-        .map(node => node.closest('[data-job-id]')?.getAttribute('data-job-id')));
+      const disclosureKey = (node: HTMLElement) => JSON.stringify([node.closest('[data-job-id]')?.getAttribute('data-job-id'),node.getAttribute('data-job-disclosure') ?? 'scope']);
+      const expanded = new Set([...list.querySelectorAll<HTMLDetailsElement>('details[open]')].map(disclosureKey));
       page = { cursor: desired.cursor,previous: [...desired.previous] };pending = undefined;nextCursor = result.next_cursor;
       retryJob.hidden=true;capturedAt = result.captured_at;displayedQuery = savedQuery;hasLoaded = true;list.replaceChildren();
       for (const job of result.jobs) { if (opts.jobId) renderDetail(job);else renderSummary(job); }
       for (const details of list.querySelectorAll<HTMLDetailsElement>('details')) {
-        details.open = expanded.has(details.closest('[data-job-id]')?.getAttribute('data-job-id'));
+        details.open = expanded.has(disclosureKey(details));
       }
       if (focused && focusJob && action) {
         const replacement = [...list.querySelectorAll<HTMLElement>('button,a,summary')].find(node =>
@@ -417,5 +436,5 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
   else if (opts.workspace === 'receivables') void aging?.open(opts.onCloseWorkspace ?? (()=>{}));
   else void load();
   return { suspend:()=>{generation++;loading=false;pending=undefined;query={...displayedQuery};search.value=query.search;filter.value=query.filter;archiveFilter.value=query.archive;controls();},getBoardState: (): CustomerJobsBoardState => ({ ...(hasLoaded?displayedQuery:query),cursor: page.cursor,previous: [...page.previous] }),update: changed,hasUnsavedChanges: () => payment?.hasUnsavedChanges() === true || accounts.hasOpenEmail() || paymentStatement.hasOpenEmail() || paymentHistory.hasOpenEmail() || closeout?.hasUnsavedChanges() === true || accounts.hasUnsavedChanges() || paymentStatement.hasUnsavedChanges() || paymentHistory.hasUnsavedChanges() || completions.hasUnsavedChanges() || reminders?.hasUnsavedChanges() === true || paymentReminders?.hasUnsavedChanges() === true,hasInFlightWork: inFlight,
-    dispose: () => { disposed = true;generation++;clearInterval(interval);aging?.dispose();timeline?.dispose();closeout?.dispose();accounts.dispose();paymentStatement.dispose();paymentHistory.dispose();completions.dispose();reminders?.dispose();paymentReminders?.dispose();receipts.dispose();payment?.dispose();root.remove(); } };
+    dispose: () => { disposed = true;generation++;historyInteraction.dispose();clearInterval(interval);aging?.dispose();timeline?.dispose();closeout?.dispose();accounts.dispose();paymentStatement.dispose();paymentHistory.dispose();completions.dispose();reminders?.dispose();paymentReminders?.dispose();receipts.dispose();payment?.dispose();root.remove(); } };
 };

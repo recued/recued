@@ -47,7 +47,7 @@
  *  Spec: D-166 §"contract_definition lifecycle"; the use-resolution
  *  overlay this lights up is documented in the contract-definition handover. */
 
-import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, OWNER_TOOL_VERSION_SCOPE, cliToolVersionHash, isCliVersionOutside, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, type UsageCapPeriod, type DoorType } from '@recued/contracts';
+import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, OWNER_TOOL_VERSION_SCOPE, cliToolVersionHash, isCliVersionOutside, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, KEY_AUTHORITIES, isKeyAuthority, type KeyAuthority, type UsageCapPeriod, type DoorType } from '@recued/contracts';
 import type {
   Actor,
   CatalogIngredientView,
@@ -82,6 +82,7 @@ import type {
   SessionGrantRevokeRequest,
   SessionGrantView,
   SetContractDoorTypesRequest,
+  SetContractLimitsRequest,
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 import type { WsClient } from './ws-server.js';
@@ -98,6 +99,7 @@ import {
   createContractDefinitionStore,
   type ContractDefinitionStore,
 } from './storage/contract-definition-store.js';
+import { createWriteRuleRpcHandlers } from './write-rule-rpc.js';
 import { createContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import {
   createDelegationSuggestionStore,
@@ -148,6 +150,9 @@ export type ContractBroadcastEvent =
 const DEFAULT_COVERAGE_WINDOW_DAYS = 30;
 
 export interface ContractRpcDeps {
+  /** D-329 §3.4 — the write rules an AI's approvals teach (`write-rule-rpc.ts`). Absent ⇒
+   *  their five methods answer `not_configured`. */
+  writeRules?: import('./storage/write-rule-store.js').WriteRuleStore;
   /** D-177 N.14.8 fork 3 — counts the owner's D-173 rejects on one door, for the
    *  suggestion card's counter-evidence. OPTIONAL: absent ⇒ door rows carry no
    *  reject count at all, which the card renders as "not counted" — never as a
@@ -967,6 +972,31 @@ const ensureOptionalMintGrantKind = (
   return value;
 };
 
+/** D-327 — `key_authority` is the closed {@link KEY_AUTHORITIES} vocabulary and
+ *  names a STANDING agreement: a customer template's instances take their
+ *  grants from the template's stamped rows and their keys from the Seller
+ *  lifecycle, which this field does not describe. */
+const ensureOptionalKeyAuthority = (
+  method: string,
+  value: unknown,
+  grant_kind: 'customer_template' | undefined,
+): KeyAuthority | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (!isKeyAuthority(value)) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: key_authority, when present, must be one of ${KEY_AUTHORITIES.join(' | ')}`,
+    );
+  }
+  if (grant_kind !== undefined) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: key_authority names a standing agreement, so it cannot be minted with grant_kind '${grant_kind}'`,
+    );
+  }
+  return value;
+};
+
 /** D-171 — emit the `contract_definition` lifecycle broadcast (best-effort).
  *  Called AFTER a successful mint / revoke / in-place update (D-187 §6 step 7 —
  *  `setDoorTypes`), so a failed write never emits — a revoke of a missing contract
@@ -1004,6 +1034,7 @@ const handleContractMint = async (
   const expiry_at = ensureOptionalEpochMs(method, 'expiry_at', a.expiry_at);
   const max_uses = ensureOptionalMaxUses(method, a.max_uses);
   const use_period = ensureOptionalUsePeriod(method, a.use_period, max_uses);
+  const key_authority = ensureOptionalKeyAuthority(method, a.key_authority, grant_kind);
   // Provenance: which paired device minted the contract. `display_name` is always
   // populated on a connected client; the `?.` + fallback is defensive for a
   // db-less / synthetic ctx (the family is reserved out of MCP, so the caller is
@@ -1030,6 +1061,7 @@ const handleContractMint = async (
         scope,
         ...(read_spheres !== undefined && read_spheres !== null ? { read_spheres } : {}),
         ...(grant_kind !== undefined ? { grant_kind } : {}),
+        ...(key_authority !== undefined ? { key_authority } : {}),
         ...(door_types !== undefined ? { door_types } : {}),
         ...(a.approved_actions_template !== undefined
           ? { approved_actions_template: a.approved_actions_template }
@@ -1155,6 +1187,61 @@ const handleContractSetDoorTypes = async (
     throw new RpcError(
       'not_found',
       `${method}: no editable standing contract or customer template '${contract_id}'`,
+      404,
+      method,
+    );
+  }
+  return toContractView(def, now());
+};
+
+/** D-327 — `collection.contract.setLimits`: replace a standing agreement's
+ *  limits in place (see `SetContractLimitsRequest`). Every field is required, so
+ *  a missing one is a caller bug rather than "leave it alone". */
+const handleContractSetLimits = async (
+  definitionStore: ContractDefinitionStore,
+  now: () => number,
+  args: SetContractLimitsRequest,
+): Promise<ContractDefinitionView> => {
+  const method = 'collection.contract.setLimits';
+  const a = ensureRecordArgs(method, args);
+  const contract_id = ensureNonEmptyString(method, 'contract_id', a.contract_id);
+  if (isReservedOwnerContractId(contract_id) || isReservedPublicContractId(contract_id)) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: contract_id '${contract_id}' is derived at the gate and has no limits to edit`,
+      400,
+      method,
+    );
+  }
+  for (const field of ['max_uses', 'use_period', 'expiry_at'] as const) {
+    if (!Object.prototype.hasOwnProperty.call(a, field)) {
+      throw new RpcError(
+        'bad_request',
+        `${method}: ${field} is required (null clears max_uses / expiry_at; use_period 'total' means one budget)`,
+        400,
+        method,
+      );
+    }
+  }
+  const max_uses = ensureOptionalMaxUses(method, a.max_uses) ?? null;
+  const expiry_at = ensureOptionalEpochMs(method, 'expiry_at', a.expiry_at) ?? null;
+  // `ensureOptionalUsePeriod` refuses a period with no count to refill.
+  const use_period = ensureOptionalUsePeriod(method, a.use_period, max_uses ?? undefined) ?? 'total';
+  const current = definitionStore.get(contract_id);
+  if (current !== null && current.revoked_at !== undefined && current.revoked_at !== null) {
+    // Limits cannot bring a revoked agreement back; revocation is final.
+    throw new RpcError(
+      'bad_request',
+      `${method}: agreement '${contract_id}' is revoked, so its limits cannot change`,
+      400,
+      method,
+    );
+  }
+  const def = definitionStore.setLimits(contract_id, { max_uses, use_period, expiry_at });
+  if (def === null) {
+    throw new RpcError(
+      'not_found',
+      `${method}: no editable standing agreement '${contract_id}'`,
       404,
       method,
     );
@@ -2347,6 +2434,7 @@ type ContractMethods =
   | 'collection.contract.revokeContract'
   | 'collection.contract.setDoorTypes'
   | 'collection.contract.setReadSpheres'
+  | 'collection.contract.setLimits'
   | 'collection.contract.listContracts'
   | 'collection.contract.session_grant.list'
   | 'collection.contract.session_grant.revoke'
@@ -2360,7 +2448,12 @@ type ContractMethods =
   | 'collection.contract.acceptQualityDelegationSuggestion'
   | 'collection.contract.dismissQualityDelegationSuggestion'
   | 'collection.contract.listQualityDelegations'
-  | 'collection.contract.revokeQualityDelegation';
+  | 'collection.contract.revokeQualityDelegation'
+  | 'collection.contract.listWriteRuleSuggestions'
+  | 'collection.contract.acceptWriteRuleSuggestion'
+  | 'collection.contract.dismissWriteRuleSuggestion'
+  | 'collection.contract.listWriteRules'
+  | 'collection.contract.revokeWriteRule';
 
 export const makeContractHandlers = (
   deps: ContractRpcDeps | undefined,
@@ -2402,6 +2495,7 @@ export const makeContractHandlers = (
       'collection.contract.revokeContract',
       'collection.contract.setDoorTypes',
       'collection.contract.setReadSpheres',
+      'collection.contract.setLimits',
       'collection.contract.listContracts',
       'collection.contract.session_grant.list',
       'collection.contract.session_grant.revoke',
@@ -2416,8 +2510,19 @@ export const makeContractHandlers = (
       'collection.contract.dismissQualityDelegationSuggestion',
       'collection.contract.listQualityDelegations',
       'collection.contract.revokeQualityDelegation',
+      'collection.contract.listWriteRuleSuggestions',
+      'collection.contract.acceptWriteRuleSuggestion',
+      'collection.contract.dismissWriteRuleSuggestion',
+      'collection.contract.listWriteRules',
+      'collection.contract.revokeWriteRule',
     ],
     handlers: {
+      // D-329 §3.4 — the write rules an AI's approvals teach.
+      ...createWriteRuleRpcHandlers({
+        ...(deps.writeRules !== undefined ? { store: deps.writeRules } : {}),
+        ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        now,
+      }),
       'collection.contract.upsertOverride': async (args) =>
         upsertContractOverride(
           deps,
@@ -2458,8 +2563,17 @@ export const makeContractHandlers = (
                 return recipe === null ? [] : [{ id, recipe }];
               }),
             );
+        // D-327 — one agreement's runs when the caller names it, so a row on that
+        // agreement's page never counts another agreement's runs as its own.
+        const contract_id = typeof args?.contract_id === 'string' && args.contract_id.length > 0
+          ? args.contract_id
+          : undefined;
         const usage = deps.auditLog
-          ? await readRecipeCoverageUsage(deps.auditLog, { window_days, now: () => Date.now() })
+          ? await readRecipeCoverageUsage(deps.auditLog, {
+              window_days,
+              now: () => Date.now(),
+              ...(contract_id === undefined ? {} : { contract_id }),
+            })
           : { byOperation: new Map(), window_days, oldest_scanned_at: null };
 
         // Union the two key sets: an op can have dependents and no runs (never
@@ -2545,6 +2659,15 @@ export const makeContractHandlers = (
           definitionStore,
           now,
           args as Parameters<typeof handleContractSetDoorTypes>[2],
+        );
+        emitContractChanged(deps.broadcast, 'update', view.contract_id);
+        return view;
+      },
+      'collection.contract.setLimits': async (args) => {
+        const view = await handleContractSetLimits(
+          definitionStore,
+          now,
+          args as Parameters<typeof handleContractSetLimits>[2],
         );
         emitContractChanged(deps.broadcast, 'update', view.contract_id);
         return view;

@@ -20,7 +20,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
-import { RpcError } from '@recued/contracts';
+import { RpcError, WORK_ENTITY_KINDS } from '@recued/contracts';
 
 import { createBlobStore, type BlobStore } from '../../../storage/blob-store.js';
 import {
@@ -207,6 +207,25 @@ describe('attachFile', () => {
     await expect(
       attachFile({ file_id: fileId, to_collection: 'contact', to_id: '' }, h.deps),
     ).rejects.toBeInstanceOf(RpcError);
+  });
+
+  it('⛔ refuses a target a file cannot be attached to, and writes nothing (2026-10-23)', async () => {
+    // The link store takes any name, so a misspelled target wrote an edge that
+    // no `{{data.<collection>.<id>.links.attachment}}` read ever finds.
+    const fileId = await ingestFile('drop-8');
+    for (const to_collection of ['contacts', 'data.task', 'Task', 'file']) {
+      await expect(attachFile({ file_id: fileId, to_collection, to_id: 'x@x.com' }, h.deps))
+        .rejects.toMatchObject({ code: 'bad_request', message: expect.stringContaining(`'${to_collection}'`) });
+      expect(await h.store.outboundLinks(to_collection, 'x@x.com')).toHaveLength(0);
+    }
+  });
+
+  it('attaches to a mail record, a contact and every work kind', async () => {
+    const fileId = await ingestFile('drop-9');
+    for (const to_collection of ['mail', 'contact', ...WORK_ENTITY_KINDS]) {
+      const { link } = await attachFile({ file_id: fileId, to_collection, to_id: `${to_collection}-1` }, h.deps);
+      expect(link).toMatchObject({ from_collection: to_collection, role: ATTACHMENT_LINK_ROLE });
+    }
   });
 
   it('rejects when the file collection is not registered', async () => {

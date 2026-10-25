@@ -75,3 +75,13 @@ export const resolveAccountBindingExchangeUrl = (
   const apex = options.cloudApex?.trim() || resolveCloudApex();
   return `https://auth.${apex}${ACCOUNT_BINDING_EXCHANGE_PATH}`;
 };
+
+/** The Worker route a server releases its own binding at (Disconnect). */
+export const ACCOUNT_BINDING_RELEASE_PATH = '/v1/account/binding/release';
+
+/** Resolve the release URL: the same Worker as the exchange, so a mirror set
+ *  through `RECUED_ACCOUNT_BINDING_EXCHANGE_URL` or `RECUED_CLOUD_APEX` is
+ *  where the server releases too. */
+export const resolveAccountBindingReleaseUrl = (
+  options: ResolveAccountBindingExchangeUrlOptions = {},
+): string => new URL(ACCOUNT_BINDING_RELEASE_PATH, resolveAccountBindingExchangeUrl(options)).toString();

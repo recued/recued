@@ -111,6 +111,7 @@ import {
 import { buildMcpClientSnippets } from '../contracts/bootstrap-contracts-route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import { EXPOSURE_WORKSPACE_STYLES } from './exposure-workspace-styles.js';
 
 // ════════════════════════════════════════════════════════════════
 // Element ids — stable for DOM tests + host introspection
@@ -2049,4 +2050,4 @@ export const EXPOSURE_PANEL_STYLES = `
 }
 [${EXPOSURE_PANEL_ATTR}] .exposure-modal-error { margin: 0; color: var(--danger); }
 [${EXPOSURE_PANEL_ATTR}] .exposure-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-`;
+` + '\n' + EXPOSURE_WORKSPACE_STYLES;

@@ -308,6 +308,8 @@ export const placeBinary = (dir: string, binary: string, sidecar: string): strin
   return exe;
 };
 
+export const LIVE_SERVER_BOOT_TIMEOUT_MS = 60_000;
+
 /** Boot the packaged binary and wait for the banner it prints for a human.
  *  The banner is the contract: `Status: Running` means the realm is ENROLLED,
  *  and the pairing code is printed right under it. */
@@ -315,7 +317,7 @@ export const bootLiveServer = async (
   config: LiveConfig,
   {
     port = 7817,
-    timeoutMs = 60_000,
+    timeoutMs = LIVE_SERVER_BOOT_TIMEOUT_MS,
     mode = 'foreground',
     unsupervised = false,
     fresh = false,

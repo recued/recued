@@ -84,6 +84,10 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
   // in `chat.ts`.
   const expected: ReadonlyArray<Tier1ToolName> = [
     'contact.search',
+    // +1: `contact.read`. A contact's phone, title, birthday or address reached no
+    // tool: `contact.search` returns a name and an email, and the prefetch shows a
+    // name and a ref.
+    'contact.read',
     'mail.search',
     // Follow this work — +2: the exact body of one message, and an attachment's
     // text. `mail.search` returns previews, which can omit a withdrawal.
@@ -92,12 +96,20 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'calendar.search',
     'memory.search',
     'memory.write',
+    // D-198 §10 — +1: `memory.forget`. An agent may now drop an entry it saved
+    // (and correct one through `memory.write`'s `replaces`); before, a correction
+    // could only be a second entry that recall returned beside the first.
+    'memory.forget',
     'enrichment.search',
     'deal.search',
     'account.search',
     'work.search',
     'work.read',
     'situation.query',
+    // D-325 (2026-10-24) — +1: `work.type`. What a type of thing the user owns
+    // keeps (its dates, its holder, its reminders), so an asset is created to its
+    // type's shape rather than guessed at.
+    'work.type',
     'work.create',
     'calendar.create',
     'calendar.update',
@@ -117,7 +129,7 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'recipe.schedule',
   ];
 
-  it('lists exactly twenty-one canonical primitives in spec order (P1 six + mail.read/document.read + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop + recipe.schedule)', () => {
+  it('lists exactly twenty-four canonical primitives in spec order (P1 six + contact.read + mail.read/document.read + deal/account.search + work.search/read/type/create/update + calendar.create/update + memory.write/forget + file.search + recipe.stop + recipe.schedule)', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 
@@ -148,7 +160,7 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     }
   });
 
-  it('search primitives are read-classified; recipe.run + memory.write are unknown', () => {
+  it('search primitives are read-classified; recipe.run is unknown; every other write is write', () => {
     // Semantic ratchet (codex LOW): EVERY read primitive is asserted
     // explicitly — a future flip of one entry (+ a mirrored descriptor)
     // must fail here, not slip through the exhaustiveness-only checks.
@@ -162,14 +174,14 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     expect(TIER1_CLASSIFICATIONS['work.search']).toBe('read');
     expect(TIER1_CLASSIFICATIONS['work.read']).toBe('read');
     expect(TIER1_CLASSIFICATIONS['recipe.run']).toBe('unknown');
-    // D-198 — memory.write is deliberately `unknown` (NOT `write`): a soft,
-    // reversible, grant-gated write that bypasses P3 plan-approval so a granted
-    // customer can contribute autonomously (§3). See TIER1_CLASSIFICATIONS doc.
-    expect(TIER1_CLASSIFICATIONS['memory.write']).toBe('unknown');
-    // D-193 amendment — `unknown` with `work.create`'s reasoning: a schedule is
-    // additive and visible in Automation, and the grant is the boundary. The
-    // recipe it replaced ran with no card in owner chat.
-    expect(TIER1_CLASSIFICATIONS['recipe.schedule']).toBe('unknown');
+    // D-329 — the owner: "do the Other writes too". D-198 had `memory.write` and
+    // `memory.forget` `unknown` (soft, reversible, grant-gated) and the D-193 amendment had
+    // `recipe.schedule` `unknown` (additive, visible in Automation); every AI write now asks,
+    // wherever it is proposed, and repeated yeses teach a standing rule.
+    expect(TIER1_CLASSIFICATIONS['memory.write']).toBe('write');
+    expect(TIER1_CLASSIFICATIONS['memory.forget']).toBe('write');
+    expect(TIER1_CLASSIFICATIONS['recipe.schedule']).toBe('write');
+    expect(TIER1_CLASSIFICATIONS['work.create']).toBe('write');
   });
 
   it('batch-safe unless two calls in one turn could hit the SAME row (D-164 § 6)', () => {
@@ -191,7 +203,9 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // batch of attachments runs one conversion at a time rather than all at once.
     // `recipe.schedule` mints its own schedule, but two for ONE recipe join the
     // same main dish, which the first may make: shared identity again.
-    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read']);
+    // `memory.forget` walks an entry's earlier versions, so two forgets of one
+    // lineage in one turn address the same rows: shared identity once more.
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'memory.forget']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
     }

@@ -727,8 +727,9 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     expect(links.map((link) => link.getAttribute('href'))).toEqual([
       '#recipes/recipe-ap-1',
       '#connections',
-      '#logs',
+      '#logs/recipe/recipe-ap-1',
     ]);
+    expect(links[2]?.textContent).toBe('Recipe run history');
     expect(collectByAttr(root, APPROVALS_ROUTE_LIST_ATTR)).toHaveLength(1);
 
     route.dispose();
@@ -1618,10 +1619,10 @@ describe('D-169 P2 — bootstrapApprovalsRoute: style injection', () => {
     expect(APPROVALS_ROUTE_STYLES).toContain(APPROVAL_CARD_STYLES);
     expect(APPROVALS_ROUTE_STYLES).toContain(`[${APPROVALS_ROUTE_HOST_ATTR}]`);
     expect(APPROVALS_ROUTE_STYLES).toMatch(
-      /\.approvals-refresh\s*\{[^}]*min-height:\s*36px/s,
+      /\.approvals-refresh\s*\{[^}]*min-height:\s*44px/s,
     );
     expect(APPROVALS_ROUTE_STYLES).toMatch(
-      /\.approvals-plan-resolution-link,[^}]*min-height:\s*36px/s,
+      /\.approvals-plan-resolution-link,[^}]*min-height:\s*44px/s,
     );
   });
 });

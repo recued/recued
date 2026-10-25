@@ -186,3 +186,16 @@ export const sameStoredCredentialGeneration = (
   && left.serverUrl === right.serverUrl
   && left.serverPublicKey === right.serverPublicKey
   && left.instanceId === right.instanceId;
+
+/** The same sign-in at a different address: Change address moved this server
+ * (`retargetProfile` keeps the token and re-seals it so it opens anywhere).
+ * Not a replaced credential, so not a reason to remount a tab. */
+export const sameCredentialAtNewAddress = (
+  left: StoredPairVersion,
+  right: StoredPairVersion,
+): boolean =>
+  left.serverUrl !== right.serverUrl
+  && left.tokenId === right.tokenId
+  && left.issuedAt === right.issuedAt
+  && left.serverPublicKey === right.serverPublicKey
+  && left.instanceId === right.instanceId;

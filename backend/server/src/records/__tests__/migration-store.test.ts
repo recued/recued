@@ -345,6 +345,7 @@ describe('D-221 durable Records migration kernel and Job Status Board v1->v2 fix
       required_receipts: [],
     })).toThrow(/unexpected row version/);
     expect(store.getNamespace(OWNER)?.state.state).toBe('migrating');
+    expect(store.getNamespaceState(OWNER)).toEqual(store.getNamespace(OWNER)!.state);
     expect(store.getMigration(OWNER)?.status).toBe('failed');
     expect(db.prepare(`SELECT version FROM ${RECORDS_TABLES.rows}
       WHERE publisher=? AND pack_slug=? AND kind='job' AND pk='a'`)

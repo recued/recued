@@ -43,6 +43,7 @@ import type { ChatDispatchContext, ExecutionSource } from '@recued/contracts';
 import { buildChatTier1Handlers, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import type { GrantEntryResolver } from '../contract-grant-resolve.js';
 import {
+  collectionReadFencedHint,
   createReadGrantChecker,
   type GatedReadGrantResolver,
 } from '../read-grant-checker.js';
@@ -708,5 +709,38 @@ describe('D-205 #3 residual — the LINK join is MOOT: the fan-out never joins t
     const grantedEnv = (granted as { result: Envelope }).result;
     expect(findByAlias).toHaveBeenCalled();
     expect(grantedEnv.candidates.filter((c) => c.source === 'local')).toHaveLength(1);
+  });
+});
+
+describe('D-205 #3 — contact.read sits behind the same data.contact fence', () => {
+  const read = async (deps: ChatToolHandlerDeps, ctx: ChatDispatchContext) =>
+    buildChatTier1Handlers(deps)['contact.read']!({ target_id: CONTACT_EMAIL }, ctx);
+
+  it('a door without the grant reads nothing, is told why, and leaks nothing', async () => {
+    const get = vi.fn().mockReturnValue({ _id: CONTACT_EMAIL, email: CONTACT_EMAIL, name: SECRET_NAME });
+    const result = await read(buildDeps({ get, grants: [] }), doorCtx());
+    expect(result).toEqual({ ok: true, result: { contacts: [], hint: collectionReadFencedHint('contact') } });
+    expect(get).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain(SECRET_NAME);
+  });
+
+  it('a door holding the grant reads the record, and so does the owner', async () => {
+    for (const [deps, ctx] of [[buildDeps({ grants: ['contact'] }), doorCtx()], [buildDeps({}), ownerCtx()]] as const) {
+      expect(JSON.stringify(await read(deps, ctx))).toContain(SECRET_NAME);
+    }
+  });
+
+  it('⛔ the LINK never crosses: the core row carries it, the read does not', async () => {
+    const get = vi.fn().mockReturnValue({
+      _id: CONTACT_EMAIL,
+      email: CONTACT_EMAIL,
+      name: SECRET_NAME,
+      platform_ids: [{ vendor: 'hubspot', platform_id: LINK_SENTINEL, state: 'confirmed' }],
+      contact_id: CONTACT_ID_SENTINEL,
+    });
+    const text = JSON.stringify(await read(buildDeps({ get, grants: ['contact'] }), doorCtx()));
+    expect(text).toContain(SECRET_NAME);
+    expect(text).not.toContain(LINK_SENTINEL);
+    expect(text).not.toContain(CONTACT_ID_SENTINEL);
   });
 });

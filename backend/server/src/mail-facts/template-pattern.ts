@@ -13,6 +13,13 @@
  * backstop. A timeout THROWS `TemplatePatternTimeout`, so the rules pass can
  * record why a value was not read instead of reporting a plain miss.
  *
+ * ⛔ The VM deadline is wall time, so it also counts time the process is not
+ * scheduled. Under load `Parcel \d+` was stopped at 50 ms (the full sweep,
+ * 2026-10-24), and a repeated block whose split is stopped loses every fact in
+ * its email while the backfill says "done". A pattern stopped once runs again
+ * with a longer budget: one that backtracks catastrophically spends that budget
+ * too and is still stopped; one that was only waiting for the CPU finishes.
+ *
  * A pattern runs over canonical text (§9), as its characters are read
  * (`canonicalMailFactPattern`), and is checked as it runs.
  */
@@ -22,13 +29,15 @@ import { createContext, Script } from 'node:vm';
 import { canonicalMailFactPattern } from '@recued/contracts';
 
 export const TEMPLATE_PATTERN_TIMEOUT_MS = 50;
+/** The second run's budget, after the first was stopped. */
+export const TEMPLATE_PATTERN_RETRY_TIMEOUT_MS = 250;
 /** Characters of source text a pattern is run over. */
 export const TEMPLATE_PATTERN_MAX_INPUT = 200_000;
 const COMPILED_CACHE_LIMIT = 500;
 
 export class TemplatePatternTimeout extends Error {
   constructor(readonly pattern: string) {
-    super(`the pattern took longer than ${TEMPLATE_PATTERN_TIMEOUT_MS} ms and was stopped`);
+    super(`the pattern took longer than ${TEMPLATE_PATTERN_RETRY_TIMEOUT_MS} ms and was stopped`);
     this.name = 'TemplatePatternTimeout';
   }
 }
@@ -76,13 +85,19 @@ export const runTemplatePattern = (
   if (literal) return re.exec(input);
   context.__re = re;
   context.__text = input;
+  const stopped = (error: unknown): boolean => (error as { code?: string }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT';
   try {
-    return execScript.runInContext(context, { timeout: TEMPLATE_PATTERN_TIMEOUT_MS }) as RegExpExecArray | null;
-  } catch (error) {
-    if ((error as { code?: string }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
-      throw new TemplatePatternTimeout(pattern);
+    try {
+      return execScript.runInContext(context, { timeout: TEMPLATE_PATTERN_TIMEOUT_MS }) as RegExpExecArray | null;
+    } catch (error) {
+      if (!stopped(error)) throw error;
     }
-    throw error;
+    try {
+      return execScript.runInContext(context, { timeout: TEMPLATE_PATTERN_RETRY_TIMEOUT_MS }) as RegExpExecArray | null;
+    } catch (error) {
+      if (stopped(error)) throw new TemplatePatternTimeout(pattern);
+      throw error;
+    }
   } finally {
     context.__re = undefined;
     context.__text = '';

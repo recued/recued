@@ -2,13 +2,17 @@
 
 import { describe, expect, it } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { LifecycleState } from '@recued/contracts';
 import { Readable } from 'node:stream';
 import { createRateLimiter, type RateLimiter } from '../ports/common/rate-limit.js';
 import {
   createMcpPortHandler,
+  MCP_LEGACY_SSE_IDLE_AFTER_MS,
   MCP_MAX_CONCURRENT_VERIFICATIONS,
+  MCP_MAX_IDLE_LEGACY_SSE_SESSIONS_PER_TOKEN,
   MCP_MAX_IN_FLIGHT_GLOBAL,
   MCP_MAX_IN_FLIGHT_PER_TOKEN,
+  MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN,
 } from '../ports/mcp/handler.js';
 
 class FakeRes {
@@ -88,6 +92,7 @@ describe('createMcpPortHandler', () => {
       // these fixtures fire >20 calls from one socket-less 'unknown' IP to
       // exercise the per-token quota, so give them a generous per-IP budget.
       per_ip_limiter: createRateLimiter({ capacity: 100_000, refill_window_ms: 60_000, now: () => t }),
+      now: () => t,
     });
     return { handler, advance: (ms: number) => { t += ms; } };
   };
@@ -181,6 +186,38 @@ describe('createMcpPortHandler', () => {
     expect(res.statusCode).toBe(403);
   });
 
+  it('answers 503 until the server is running, before reading a credential, and /health throughout', async () => {
+    let state: LifecycleState = 'booting'; let verified = 0; let dispatched = 0;
+    const handler = createMcpPortHandler({
+      verifier: (tok) => { verified += 1; return tok === 'mcp-1'; },
+      limiter: createRateLimiter({ capacity: 60, refill_window_ms: 60_000 }),
+      dispatch: async (envelope) => {
+        dispatched += 1; const msg = envelope as { id: number; method: string };
+        return { jsonrpc: '2.0', id: msg.id, result: { ok: true, method: msg.method } };
+      },
+      per_ip_limiter: createRateLimiter({ capacity: 100_000, refill_window_ms: 60_000 }),
+      lifecycle_state: () => state,
+    });
+    const call = async (url = '/mcp', method = 'POST'): Promise<FakeRes> => {
+      const res = new FakeRes();
+      await handler(buildReq({ url, method, headers: { authorization: 'Bearer mcp-1' },
+        body: method === 'POST' ? JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) : '' }), res as unknown as ServerResponse);
+      return res;
+    };
+    const starting = await call();
+    expect(starting.statusCode).toBe(503); expect(starting.headers['retry-after']).toBe('1');
+    expect(json(starting)).toEqual({ error: { code: 'not_ready', message: 'The server is starting; retry shortly.' } });
+    expect((await call('/mcp/catalog', 'GET')).statusCode).toBe(503);
+    expect((await call('/health', 'GET')).statusCode).toBe(200);
+    expect({ verified, dispatched }).toEqual({ verified: 0, dispatched: 0 });
+    state = 'running';
+    expect((await call()).statusCode).toBe(200); expect(dispatched).toBe(1);
+    state = 'draining';
+    const stopping = await call();
+    expect(stopping.statusCode).toBe(503); expect(json(stopping)).toMatchObject({ error: { code: 'draining' } });
+    expect(dispatched).toBe(1);
+  });
+
   it('returns HTTP 400 when modern metadata has no matching protocol header', async () => {
     const { handler } = buildHandler();
     const res = new FakeRes();
@@ -204,6 +241,74 @@ describe('createMcpPortHandler', () => {
 
     expect(res.statusCode).toBe(400);
     expect((json(res) as { error: { code: number } }).error.code).toBe(-32020);
+  });
+
+  // Recorded 2026-10-24 from @modelcontextprotocol/sdk 1.32.2, the copy Cline
+  // 3.0.73 ships: after a legacy `initialize`, every request names the revision
+  // it settled on in this header, over a body with no `_meta`.
+  const SDK_LEGACY_HEADERS = {
+    authorization: 'Bearer mcp-1',
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+    'mcp-protocol-version': '2024-11-05',
+  };
+
+  it('accepts the legacy requests an SDK client sends after its handshake', async () => {
+    const { handler } = buildHandler();
+    const initialized = new FakeRes();
+    await handler(
+      buildReq({
+        headers: SDK_LEGACY_HEADERS,
+        body: '{"method":"notifications/initialized","jsonrpc":"2.0"}',
+      }),
+      initialized as unknown as ServerResponse,
+    );
+    expect(initialized.statusCode).toBe(202);
+
+    const list = new FakeRes();
+    await handler(
+      buildReq({
+        headers: SDK_LEGACY_HEADERS,
+        body: '{"method":"tools/list","jsonrpc":"2.0","id":1}',
+      }),
+      list as unknown as ServerResponse,
+    );
+    expect(list.statusCode).toBe(200);
+    expect((json(list) as { result: { method: string } }).result.method).toBe('tools/list');
+  });
+
+  it('reads every legacy-era revision in the header as legacy, not only the settled one', async () => {
+    const { handler } = buildHandler();
+    for (const version of ['2025-11-25', '2025-06-18', '2025-03-26']) {
+      const res = new FakeRes();
+      await handler(
+        buildReq({
+          headers: { ...SDK_LEGACY_HEADERS, 'mcp-protocol-version': version },
+          body: '{"method":"tools/list","jsonrpc":"2.0","id":1}',
+        }),
+        res as unknown as ServerResponse,
+      );
+      expect(res.statusCode, version).toBe(200);
+      expect((json(res) as { result: { method: string } }).result.method, version).toBe('tools/list');
+    }
+  });
+
+  it('still refuses the modern revision, or an unknown one, over a body with no _meta', async () => {
+    const { handler } = buildHandler();
+    for (const version of ['2026-07-28', '2099-01-01']) {
+      const res = new FakeRes();
+      await handler(
+        buildReq({
+          headers: { ...SDK_LEGACY_HEADERS, 'mcp-protocol-version': version },
+          body: '{"method":"tools/list","jsonrpc":"2.0","id":1}',
+        }),
+        res as unknown as ServerResponse,
+      );
+      expect(res.statusCode, version).toBe(400);
+      if (version === '2026-07-28') {
+        expect((json(res) as { error: { code: number } }).error.code).toBe(-32020);
+      }
+    }
   });
 
   it('returns HTTP 400 with supported versions for an unknown revision', async () => {
@@ -234,7 +339,7 @@ describe('createMcpPortHandler', () => {
     expect((json(res) as { error: { code: number; data: { supported: string[] } } }).error)
       .toMatchObject({
         code: -32022,
-        data: { supported: ['2026-07-28', '2024-11-05'] },
+        data: { supported: ['2026-07-28', '2025-11-25', '2025-06-18', '2024-11-05'] },
       });
   });
 
@@ -497,6 +602,98 @@ describe('createMcpPortHandler', () => {
     expect(post.statusCode).toBe(202);
     expect(stream.body).toContain('event: message');
     expect(stream.body).toContain('"id":9');
+  });
+
+  it('delivers the SSE posts of an SDK client, which name the settled revision', async () => {
+    const { handler } = buildHandler();
+    const stream = new FakeRes();
+    await handler(
+      buildReq({ method: 'GET', headers: { authorization: 'Bearer mcp-1', accept: 'text/event-stream' } }),
+      stream as unknown as ServerResponse,
+    );
+    const endpoint = /data: ([^\n]+)/.exec(stream.body ?? '')?.[1];
+    expect(endpoint).toBeTruthy();
+
+    const post = new FakeRes();
+    await handler(
+      buildReq({
+        url: endpoint,
+        headers: { ...SDK_LEGACY_HEADERS, accept: '*/*' },
+        body: '{"method":"tools/list","jsonrpc":"2.0","id":1}',
+      }),
+      post as unknown as ServerResponse,
+    );
+    expect(post.statusCode).toBe(202);
+    expect(stream.body).toContain('"result":{"ok":true,"method":"tools/list"}');
+  });
+
+  // The `GET` a Streamable HTTP client opens as its optional server stream is
+  // answered with a legacy session it never posts to. Recorded from the same
+  // SDK: it opens one right after `notifications/initialized`.
+  const openLegacyStream = async (
+    handler: ReturnType<typeof createMcpPortHandler>,
+  ): Promise<FakeRes> => {
+    const stream = new FakeRes();
+    await handler(
+      buildReq({
+        method: 'GET',
+        headers: { authorization: 'Bearer mcp-1', accept: 'text/event-stream' },
+      }),
+      stream as unknown as ServerResponse,
+    );
+    return stream;
+  };
+
+  it('frees the slot of a legacy SSE session that has carried no request, once it is idle', async () => {
+    const { handler, advance } = buildHandler();
+    for (let n = 0; n < MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN; n++) {
+      expect((await openLegacyStream(handler)).statusCode).toBe(200);
+    }
+    // Inside the window they still hold their slots: a legacy client takes a
+    // moment to post `initialize`.
+    expect((await openLegacyStream(handler)).statusCode).toBe(503);
+
+    advance(MCP_LEGACY_SSE_IDLE_AFTER_MS);
+    const legacy = await openLegacyStream(handler);
+    expect(legacy.statusCode).toBe(200);
+    expect(legacy.body).toMatch(/^event: endpoint\ndata: \/mcp\?sessionId=/);
+  });
+
+  it('keeps the slot of a legacy SSE session that has carried a request', async () => {
+    const { handler, advance } = buildHandler();
+    for (let n = 0; n < MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN; n++) {
+      const stream = await openLegacyStream(handler);
+      const endpoint = /data: ([^\n]+)/.exec(stream.body ?? '')?.[1];
+      const post = new FakeRes();
+      await handler(
+        buildReq({
+          url: endpoint,
+          headers: { authorization: 'Bearer mcp-1' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: n, method: 'initialize' }),
+        }),
+        post as unknown as ServerResponse,
+      );
+      expect(post.statusCode).toBe(202);
+    }
+
+    advance(MCP_LEGACY_SSE_IDLE_AFTER_MS);
+    expect((await openLegacyStream(handler)).statusCode).toBe(503);
+  });
+
+  it("closes a key's oldest idle legacy session to make room past the idle ceiling", async () => {
+    const { handler, advance } = buildHandler();
+    const idle: FakeRes[] = [];
+    for (let n = 1; n <= MCP_MAX_IDLE_LEGACY_SSE_SESSIONS_PER_TOKEN; n++) {
+      idle.push(await openLegacyStream(handler));
+      // Only a full key's worth of fresh sessions at a time can be open.
+      if (n % MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN === 0) advance(MCP_LEGACY_SSE_IDLE_AFTER_MS);
+    }
+    advance(MCP_LEGACY_SSE_IDLE_AFTER_MS);
+    expect(idle.every((stream) => stream.statusCode === 200 && !stream.writableEnded)).toBe(true);
+
+    expect((await openLegacyStream(handler)).statusCode).toBe(200);
+    expect(idle[0]!.writableEnded).toBe(true);
+    expect(idle.slice(1).some((stream) => stream.writableEnded)).toBe(false);
   });
 
   it('returns 405 on unsupported methods', async () => {

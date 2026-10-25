@@ -99,6 +99,23 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+// ⛔ It named each server by its stored address, `wss://…/ws`.
+describe('server-switch identity copy', () => {
+  it('names each server by the address a person reads, and only once when the name is it', () => {
+    const f = fixture({
+      state: {
+        source: { id: 'home', label: 'Home', serverUrl: 'wss://home.example:8443/ws' },
+        target: { id: 'office', label: 'office.example', serverUrl: 'wss://office.example/ws' },
+        workState: 'clean',
+      },
+    });
+    expect(f.root.textContent).toContain(
+      'This tab is still showing Home (home.example:8443). Another tab selected office.example.',
+    );
+    expect(f.root.textContent).not.toContain('wss://');
+  });
+});
+
 describe('server-switch draft copying', () => {
   it.each(['missing', 'navigator getter', 'clipboard getter', 'writeText getter', 'synchronous throw', 'rejection'])(
     'offers a selected draft when clipboard access fails with %s', async mode => {

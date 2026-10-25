@@ -43,8 +43,12 @@ const OUTRANKED_BY: Record<AssetContributionKind, string> = {
   extracted: 'A device report, a document you confirm or your own entry outranks it.',
   ai_guess: 'Anything else outranks it.',
 };
+/** An owner-rank value the server stamped from the asset's type: an AI or a recipe
+ * created the asset, and its type supplied its reminders and settings (D-325
+ * §4.4). Only the server writes the owner rank with this ref. */
+const fromType = (source: AssetFactSource): boolean => source.kind === 'owner' && source.ref.startsWith('type:');
 export const assetSourceWords = (source: AssetFactSource): { from: string; rank: string } => ({
-  from: `${source.ref.startsWith('reception:') ? 'From a request that came in' : FROM[source.kind]}, ${new Date(source.at)
+  from: `${source.ref.startsWith('reception:') ? 'From a request that came in' : fromType(source) ? 'From its type' : FROM[source.kind]}, ${new Date(source.at)
     .toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`,
   rank: OUTRANKED_BY[source.kind],
 });

@@ -538,3 +538,341 @@ export interface FtsMatchLadderRung {
   /** The FTS5 MATCH expression to run for this rung. */
   readonly match: string;
 }
+
+// ────────────────────────────────────────────────────────────────
+// Spelling — "did you mean", from the index's OWN words
+// ────────────────────────────────────────────────────────────────
+
+/** The closest word an index holds to a word it does not. */
+export interface FtsSpellingSuggestion {
+  /** As written in a record that holds it. The index stores words folded and,
+   *  under `porter`, stemmed (`castellano`); this is the record's own spelling
+   *  (`Castellanos`), recovered with `highlight()`. */
+  readonly word: string;
+  /** Edits from what was typed: insert, delete, substitute, or swap two
+   *  neighbouring letters — one each. */
+  readonly distance: number;
+  /** How many records hold it. */
+  readonly records: number;
+}
+
+/** One typed word, checked against one index. */
+export interface FtsWordCheck {
+  /** The word as the caller typed it. */
+  readonly typed: string;
+  /** Some indexed word starts with it. The SAME prefix probe the empty-result
+   *  relaxation uses (`relaxToPresentPrefixTokens`), so "absent" here is
+   *  exactly "a word relaxation drops". */
+  readonly present: boolean;
+  /** For an absent word, the closest indexed word, when one is close enough. */
+  readonly suggestion?: FtsSpellingSuggestion;
+}
+
+/** Shortest word worth correcting. Below four letters nearly every word is one
+ *  edit from several others (`cat` → car, bat, cut, cot), so a suggestion is a
+ *  guess wearing a correction's clothes. */
+const SPELLING_MIN_WORD = 4;
+
+/** How many edits a correction may be, by the typed word's length — the usual
+ *  "auto" fuzziness: one edit for a short word, two from six letters. */
+export const spellingMaxDistance = (length: number): number =>
+  length < SPELLING_MIN_WORD ? 0 : length < 6 ? 1 : 2;
+
+/** FTS5 syntax the caller wrote on purpose. A query carrying it asked for
+ *  something specific, and a "did you mean" would answer a different question
+ *  — the same restraint `isPlainWordQuery` asks of every widening path. */
+const SPELLING_OPERATOR = /["*()^:]|(?:^|\s)(?:AND|OR|NOT|NEAR)(?:\s|$)/u;
+
+/** Folded the way `unicode61 remove_diacritics` folds, closely enough to measure
+ *  a distance against the index's stored words. */
+const foldForSpelling = (word: string): string =>
+  word.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+/** Optimal-string-alignment distance — Levenshtein plus a swap of two
+ *  neighbouring letters, the commonest typo — or `max + 1` as soon as it is
+ *  certain to exceed `max`. Over code points, so an accented or non-Latin letter
+ *  is one edit, not two. */
+export const boundedEditDistance = (a: string, b: string, max: number): number => {
+  const s = [...a];
+  const t = [...b];
+  if (Math.abs(s.length - t.length) > max) return max + 1;
+  let before: number[] = [];
+  let prev = Array.from({ length: t.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= s.length; i += 1) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= t.length; j += 1) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      let v = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + cost);
+      if (i > 1 && j > 1 && s[i - 1] === t[j - 2] && s[i - 2] === t[j - 1]) {
+        v = Math.min(v, before[j - 2]! + 1);
+      }
+      cur.push(v);
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1;
+    before = prev;
+    prev = cur;
+  }
+  return Math.min(prev[t.length]!, max + 1);
+};
+
+/** Connections that already hold each index's `fts5vocab` view. TEMP, so it
+ *  never reaches the database file: no migration, nothing on disk to drift, and
+ *  a connection that never asks for a spelling never creates one. */
+const vocabCreated = new WeakMap<Database.Database, Set<string>>();
+
+const ensureVocab = (db: Database.Database, table: string): string => {
+  const vocab = `${table}_spelling_vocab`;
+  let created = vocabCreated.get(db);
+  if (created === undefined) {
+    created = new Set();
+    vocabCreated.set(db, created);
+  }
+  if (!created.has(table)) {
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS temp.${vocab} USING fts5vocab(main, ${table}, row)`);
+    created.add(table);
+  }
+  return `temp.${vocab}`;
+};
+
+/** The word as a record writes it, or undefined when the index cannot say
+ *  (`highlight()` needs the indexed text; a contentless index has none).
+ *
+ *  ⚠ A CAPITALISED FORM WINS, from the first few records that hold the word.
+ *  The first occurrence is often not how the owner writes a name: a mail blob
+ *  opens with its subject and ends with addresses, so `castellanos@…` or a
+ *  lower-case subject would otherwise speak for "Ana Castellanos". */
+const surfaceForm = (
+  db: Database.Database,
+  table: string,
+  column: number,
+  term: string,
+): string | undefined => {
+  try {
+    const rows = db.prepare(
+      `SELECT highlight(${table}, ${column}, char(1), char(2)) AS h
+       FROM ${table} WHERE ${table} MATCH ? LIMIT 3`,
+    ).all(`"${term.replace(/"/g, '""')}"`) as Array<{ h: string | null }>;
+    // Adjacent hits merge into one span; the first word of each is the one asked for.
+    const forms = rows.flatMap((row) => [...(row.h ?? '').matchAll(/\u0001([^\u0002]+)\u0002/gu)]
+      .map((m) => m[1]?.split(/\s+/u)[0] ?? '')
+      .filter((form) => form.length > 0));
+    return forms.find((form) => /\p{Lu}/u.test(form)) ?? forms[0];
+  } catch {
+    return undefined;
+  }
+};
+
+const closestIndexedWord = (
+  db: Database.Database,
+  table: string,
+  column: number,
+  folded: string,
+): FtsSpellingSuggestion | undefined => {
+  const length = [...folded].length;
+  const max = spellingMaxDistance(length);
+  if (max === 0) return undefined;
+  const firstPoint = folded.codePointAt(0)!;
+  // ⚠ CANDIDATES SHARE THE FIRST LETTER — a range scan over the sorted
+  // vocabulary, not a pass over every word in a mailbox. The cost is stated
+  // rather than hidden: a typo IN the first letter gets no suggestion. Most
+  // misspellings keep it, and a miss here only means no "did you mean".
+  // Measured on a 242k-word index under load: ~20 ms per absent word.
+  //
+  // ⛔ AND NO WORD WITH A DIGIT IN IT. A mailbox's index is full of tracking
+  // tokens and ids, and the typed word has none (digit words are never
+  // checked), so a digit-bearing candidate is noise posing as a correction.
+  const rows = db.prepare(
+    `SELECT term, doc FROM ${ensureVocab(db, table)}
+     WHERE term >= ? AND term < ? AND length(term) BETWEEN ? AND ?
+       AND term NOT GLOB '*[0-9]*'`,
+  ).all(
+    String.fromCodePoint(firstPoint),
+    String.fromCodePoint(firstPoint + 1),
+    length - max,
+    length + max,
+  ) as Array<{ term: string; doc: number }>;
+  let best: { term: string; doc: number; distance: number } | undefined;
+  for (const row of rows) {
+    const distance = boundedEditDistance(folded, row.term, max);
+    if (distance > max) continue;
+    // Fewest edits first; among equals, the word more records hold.
+    if (best === undefined
+      || distance < best.distance
+      || (distance === best.distance && (row.doc > best.doc
+        || (row.doc === best.doc && row.term < best.term)))) {
+      best = { term: row.term, doc: row.doc, distance };
+    }
+  }
+  if (best === undefined) return undefined;
+  return {
+    word: surfaceForm(db, table, column, best.term) ?? best.term,
+    distance: best.distance,
+    records: best.doc,
+  };
+};
+
+/** Check each typed word against the index: is it there, and if not, which
+ *  indexed word is it closest to?
+ *
+ *  🔑 THE SUGGESTION COMES FROM THE OWNER'S OWN WORDS, never a dictionary. The
+ *  failure this answers is a private name — a client's surname, a project
+ *  codename — typed one letter off. Nothing outside the index knows how it is
+ *  spelled: a model cannot correct a name it has never seen, and under the chat
+ *  privacy layer it sees on-file names only as aliases. The index is the one
+ *  party holding both spellings.
+ *
+ *  ⛔ A WORD SOME RECORD HOLDS IS NEVER "CORRECTED". `present` is the prefix
+ *  probe relaxation uses, so a real but rare word — or the first letters of one —
+ *  is left alone however close it sits to a commoner word.
+ *
+ *  ⚠ Checked: words of four letters or more, without digits, outside unspaced
+ *  scripts (segmented per character, where an edit distance means nothing), and
+ *  not stopwords. Other words are left out of the result rather than reported
+ *  present or absent. `column` is the indexed text column — 1 for an index
+ *  `createFtsTable` built (`key`, `blob_text`). */
+export const checkQuerySpelling = (
+  db: Database.Database,
+  name: string,
+  raw: string,
+  opts: { column?: number } = {},
+): FtsWordCheck[] => {
+  if (SPELLING_OPERATOR.test(raw)) return [];
+  const table = escapeIdent(name);
+  const column = opts.column ?? 1;
+  if (!Number.isInteger(column) || column < 0) {
+    throw new Error(`@recued/fts: invalid column ${String(column)}`);
+  }
+  const probe = db.prepare(`SELECT 1 FROM ${table} WHERE ${table} MATCH ? LIMIT 1`);
+  const checks: FtsWordCheck[] = [];
+  const seen = new Set<string>();
+  for (const typed of wordTokens(raw)) {
+    const folded = foldForSpelling(typed);
+    if (seen.has(folded)) continue;
+    seen.add(folded);
+    if ([...folded].length < SPELLING_MIN_WORD || /\p{N}/u.test(folded)
+      || hasUnspacedScript(typed) || FTS_STOPWORDS.has(folded)) continue;
+    let present: boolean;
+    try {
+      present = probe.get(`"${typed.replace(/"/g, '""')}"*`) !== undefined;
+    } catch {
+      continue; // a word FTS5 cannot express is no word to correct
+    }
+    if (present) {
+      checks.push({ typed, present: true });
+      continue;
+    }
+    const suggestion = closestIndexedWord(db, table, column, folded);
+    checks.push(suggestion === undefined ? { typed, present: false } : { typed, present: false, suggestion });
+  }
+  return checks;
+};
+
+/** One typed word and the indexed word to put in its place. */
+export interface FtsSpellingCorrection {
+  readonly typed: string;
+  readonly word: string;
+  readonly distance: number;
+  /** Records holding `word`, summed over every index that suggested it. */
+  readonly records: number;
+}
+
+/** Merge per-index checks into one correction per word.
+ *
+ *  ⛔ A WORD ANY INDEX HOLDS IS LEFT AS TYPED. A search spans several stores, and
+ *  a word absent from mail but present in files is a real word with a home —
+ *  suggesting a mail word in its place would be correcting the owner into the
+ *  wrong record. An index that did not check a word (too short, a number) is
+ *  neutral.
+ *
+ *  Among suggestions: fewest edits, then the word more records hold across all
+ *  indexes, then alphabetical — deterministic. */
+export const mergeSpellingChecks = (
+  perIndex: ReadonlyArray<ReadonlyArray<FtsWordCheck>>,
+): FtsSpellingCorrection[] => {
+  const present = new Set<string>();
+  const order: string[] = [];
+  const typedAs = new Map<string, string>();
+  const candidates = new Map<string, Map<string, { word: string; distance: number; records: number }>>();
+  for (const checks of perIndex) {
+    for (const check of checks) {
+      const key = foldForSpelling(check.typed);
+      if (!typedAs.has(key)) {
+        typedAs.set(key, check.typed);
+        order.push(key);
+      }
+      if (check.present) {
+        present.add(key);
+        continue;
+      }
+      if (check.suggestion === undefined) continue;
+      const byWord = candidates.get(key) ?? new Map();
+      candidates.set(key, byWord);
+      const wordKey = foldForSpelling(check.suggestion.word);
+      const prior = byWord.get(wordKey);
+      byWord.set(wordKey, prior === undefined
+        ? { ...check.suggestion }
+        : {
+          word: prior.word,
+          distance: Math.min(prior.distance, check.suggestion.distance),
+          records: prior.records + check.suggestion.records,
+        });
+    }
+  }
+  const corrections: FtsSpellingCorrection[] = [];
+  for (const key of order) {
+    if (present.has(key)) continue;
+    const byWord = candidates.get(key);
+    if (byWord === undefined) continue;
+    const [best] = [...byWord.values()].sort((x, y) => (x.distance - y.distance)
+      || (y.records - x.records)
+      || x.word.localeCompare(y.word));
+    if (best !== undefined) corrections.push({ typed: typedAs.get(key)!, ...best });
+  }
+  return corrections;
+};
+
+/** The typed words NO index holds: absent from every index that checked them,
+ *  in the order typed. A word any index holds is not listed, and neither is one
+ *  no index checked (too short, a number) — absence is only claimed where it was
+ *  looked for.
+ *
+ *  Why it is separate from `mergeSpellingChecks`: an absent word matters even
+ *  with nothing close on file. A store that relaxes a miss drops it and answers
+ *  with the other words, and saying so is the caller's to do. */
+export const absentFromAll = (
+  perIndex: ReadonlyArray<ReadonlyArray<FtsWordCheck>>,
+): string[] => {
+  const present = new Set<string>();
+  const order: string[] = [];
+  const typedAs = new Map<string, string>();
+  for (const checks of perIndex) {
+    for (const check of checks) {
+      const key = foldForSpelling(check.typed);
+      if (check.present) present.add(key);
+      else if (!typedAs.has(key)) {
+        typedAs.set(key, check.typed);
+        order.push(key);
+      }
+    }
+  }
+  return order.filter((key) => !present.has(key)).map((key) => typedAs.get(key)!);
+};
+
+/** The query with each corrected word replaced where it stands, every other
+ *  character left as typed. */
+export const applySpellingCorrections = (
+  raw: string,
+  corrections: ReadonlyArray<Pick<FtsSpellingCorrection, 'typed' | 'word'>>,
+): string => {
+  let out = raw;
+  for (const c of corrections) {
+    const escaped = c.typed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(
+      new RegExp(`(?<![\\p{L}\\p{N}\\p{M}])${escaped}(?![\\p{L}\\p{N}\\p{M}])`, 'gu'),
+      () => c.word,
+    );
+  }
+  return out;
+};

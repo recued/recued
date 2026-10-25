@@ -77,6 +77,7 @@ import { e } from '@recued/ui-shared/template';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { HOUSEKEEPING_WORKSPACE_STYLES } from './housekeeping-workspace-styles.js';
 
 export const HOUSEKEEPING_PANEL_HOST_ATTR = 'data-recued-housekeeping-panel-host';
 
@@ -1941,4 +1942,5 @@ export const HOUSEKEEPING_PANEL_STYLES = `
   }
   .housekeeping-producer-cost-line { padding: 0 14px 10px; }
 }
+${HOUSEKEEPING_WORKSPACE_STYLES}
 `;

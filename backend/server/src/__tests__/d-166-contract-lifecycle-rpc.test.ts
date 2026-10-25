@@ -7,6 +7,7 @@ import {
   RpcError,
   isReservedLocalRpc,
   opGrantEntry,
+  OWNER_CONTRACT_ID,
   PUBLIC_CONTRACT_ID,
   type ContractDefinitionView,
   type ContractListRequest,
@@ -215,6 +216,14 @@ describe('D-166 contract_id lifecycle RPCs', () => {
       { display_name: 'Session mint escape', scope: {}, grant_kind: 'session' },
       { display_name: 'Delegation mint escape', scope: {}, grant_kind: 'delegation' },
       { display_name: 'Explicit standing escape', scope: {}, grant_kind: 'standing' },
+      // D-327 — a closed vocabulary, and a standing agreement only.
+      { display_name: 'Unknown key authority', scope: {}, key_authority: 'checklist' },
+      {
+        display_name: 'Template key authority',
+        scope: {},
+        grant_kind: 'customer_template',
+        key_authority: 'contract',
+      },
     ];
 
     for (const payload of invalidPayloads) {
@@ -245,6 +254,27 @@ describe('D-166 contract_id lifecycle RPCs', () => {
     // Omitted door_types stays absent (sparse wildcard).
     const wildcard = await mintContract(handlers, { display_name: 'Wildcard', scope: {} });
     expect('door_types' in wildcard).toBe(false);
+  });
+
+  it('mints an agreement that is its key\'s whole authority (D-327) and keeps it on the view + store', async () => {
+    const { store, handlers } = makeHarness();
+
+    const minted = await mintContract(handlers, {
+      display_name: 'Research workspace',
+      scope: {},
+      key_authority: 'contract',
+    });
+    expect(minted).toEqual(expect.objectContaining({
+      key_authority: 'contract',
+      lifecycle_state: 'active',
+    }));
+    const { contracts } = await listContracts(makeHandlersForStore(store));
+    expect(contracts.find((c) => c.contract_id === minted.contract_id)?.key_authority)
+      .toBe('contract');
+
+    // Omitted ⇒ absent: every older contract keeps the older key model.
+    const older = await mintContract(handlers, { display_name: 'Older', scope: {} });
+    expect('key_authority' in older).toBe(false);
   });
 
   it('mints customer templates through normal authoring and lists the discriminator', async () => {
@@ -610,6 +640,121 @@ describe('D-187 step 7 follow-on — collection.contract.setDoorTypes rpc', () =
       'not_found',
     );
     expect(events).toEqual([]);
+  });
+});
+
+describe('D-327 — collection.contract.setLimits rpc', () => {
+  const setLimits = (
+    handlers: ContractHandlers,
+    args: unknown,
+  ): Promise<ContractDefinitionView> =>
+    handlers['collection.contract.setLimits'](
+      args as Parameters<ContractHandlers['collection.contract.setLimits']>[0],
+      CLIENT,
+    );
+
+  it('sets and clears limits in place, keeping the agreement\'s id', async () => {
+    const { handlers } = makeHarness();
+    const minted = await mintContract(handlers, {
+      display_name: 'Research workspace',
+      scope: {},
+      key_authority: 'contract',
+    });
+
+    const limited = await setLimits(handlers, {
+      contract_id: minted.contract_id,
+      max_uses: 100,
+      use_period: 'month',
+      expiry_at: NOW + 86_400_000,
+    });
+    expect(limited).toEqual(expect.objectContaining({
+      contract_id: minted.contract_id,
+      key_authority: 'contract',
+      max_uses: 100,
+      uses_remaining: 100,
+      use_period: 'month',
+      expiry_at: NOW + 86_400_000,
+      lifecycle_state: 'active',
+    }));
+
+    const cleared = await setLimits(handlers, {
+      contract_id: minted.contract_id,
+      max_uses: null,
+      use_period: 'total',
+      expiry_at: null,
+    });
+    expect(cleared.contract_id).toBe(minted.contract_id);
+    for (const field of ['max_uses', 'uses_remaining', 'use_period', 'use_period_start', 'expiry_at']) {
+      expect(field in cleared).toBe(false);
+    }
+    expect(cleared.key_authority).toBe('contract');
+  });
+
+  it('keeps the uses already spent when only the expiry changes, and starts a new count afresh', async () => {
+    const { store, handlers } = makeHarness();
+    const minted = await mintContract(handlers, { display_name: 'Capped', scope: {}, max_uses: 5 });
+    createContractDefinitionStore(store, { now: () => now }).recordUse(minted.contract_id);
+
+    const sameBudget = await setLimits(handlers, {
+      contract_id: minted.contract_id,
+      max_uses: 5,
+      use_period: 'total',
+      expiry_at: NOW + 1_000,
+    });
+    expect(sameBudget.uses_remaining).toBe(4);
+    expect(sameBudget.expiry_at).toBe(NOW + 1_000);
+
+    const newBudget = await setLimits(handlers, {
+      contract_id: minted.contract_id,
+      max_uses: 10,
+      use_period: 'total',
+      expiry_at: NOW + 1_000,
+    });
+    expect(newBudget.uses_remaining).toBe(10);
+  });
+
+  it('refuses a revoked agreement, a missing one, a derived door, and malformed limits', async () => {
+    const { store, handlers } = makeHarness();
+    const revoked = await mintContract(handlers, { display_name: 'Off', scope: {} });
+    await revokeContract(handlers, { contract_id: revoked.contract_id });
+    await expectRpcCode(setLimits(handlers, {
+      contract_id: revoked.contract_id, max_uses: 3, use_period: 'total', expiry_at: null,
+    }), 'bad_request');
+
+    await expectRpcCode(setLimits(handlers, {
+      contract_id: 'ct_never_minted', max_uses: 3, use_period: 'total', expiry_at: null,
+    }), 'not_found');
+
+    const door = createContractDefinitionStore(store, { now: () => now }).mint({
+      minted_by: 'server',
+      display_name: 'Public form',
+      scope: {},
+      door_types: ['reception'],
+    });
+    await expectRpcCode(setLimits(handlers, {
+      contract_id: door.contract_id, max_uses: 3, use_period: 'total', expiry_at: null,
+    }), 'not_found');
+
+    const ok = await mintContract(handlers, { display_name: 'Open', scope: {} });
+    for (const bad of [
+      { contract_id: ok.contract_id, max_uses: null, use_period: 'month', expiry_at: null },
+      { contract_id: ok.contract_id, max_uses: 0, use_period: 'total', expiry_at: null },
+      { contract_id: ok.contract_id, max_uses: 3, use_period: 'weekly', expiry_at: null },
+      { contract_id: ok.contract_id, max_uses: 3, use_period: 'total' },
+      { contract_id: OWNER_CONTRACT_ID, max_uses: 3, use_period: 'total', expiry_at: null },
+    ]) {
+      await expectRpcCode(setLimits(handlers, bad), 'bad_request');
+    }
+  });
+
+  it('emits op:"update" after a successful edit', async () => {
+    const { handlers, events } = makeBroadcastHarness();
+    const minted = await mintContract(handlers, { display_name: 'Door', scope: {} });
+    events.length = 0;
+    await setLimits(handlers, {
+      contract_id: minted.contract_id, max_uses: 2, use_period: 'total', expiry_at: null,
+    });
+    expect(events).toEqual([expect.objectContaining({ op: 'update', contract_id: minted.contract_id })]);
   });
 });
 

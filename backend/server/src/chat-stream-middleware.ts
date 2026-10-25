@@ -168,6 +168,7 @@ import type {
   ExecutionCaseOfferLifecycle,
 } from './execution-case-offer-lifecycle.js';
 import { createSituationPrefetch } from './situations/prefetch.js';
+import { situationPersonName } from './situations/model-projection.js';
 import type { SituationAccess } from './situations/access.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
@@ -654,7 +655,10 @@ export const createChatStreamMiddlewares = (
   // catalog source is wired; runs unconditionally (no enabled-state gate —
   // see `createCatalogSource`).
   if (deps.buildCatalog) middlewares.push(createCatalogSource(deps.buildCatalog));
-  if (deps.getSituationAccess) middlewares.push(createSituationPrefetch({ getAccess: deps.getSituationAccess }));
+  if (deps.getSituationAccess) {
+    middlewares.push(createSituationPrefetch({ getAccess: deps.getSituationAccess,
+      personName: id => situationPersonName(deps.getContactStore?.())(id) }));
+  }
   // scoped-grant parse (D-177 rule 5, 5.c) — before-turn over the user's own
   // utterance; files an inert proposal row, contributes nothing model-visible.
   // Independent of `registry` like the catalog hook; absent deps → no-op.

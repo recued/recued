@@ -1182,6 +1182,44 @@ export const briefAsPriorToolCall = (brief: RollingBrief): ChatPriorToolCall =>
     },
   }) as unknown as ChatPriorToolCall;
 
+/** The named asset/file locators survive in this packet. Permit a bounded
+ * missing-fact read without inviting reconstruction of every folded result.
+ * This changes prompt guidance only; findings and completed actions survive. */
+export const withSourceReadBriefGuidance = (
+  calls: readonly ChatPriorToolCall[],
+): ChatPriorToolCall[] => {
+  const successful = calls.filter(call => call.status === 'ok' && call.result !== null
+    && typeof call.result === 'object' && !Array.isArray(call.result));
+  const assetRead = successful.some(call => {
+    const result = call.result as Record<string, unknown>;
+    const entity = result.entity;
+    return call.tool_name === 'work.read' && result.found === true && entity !== null
+      && typeof entity === 'object' && !Array.isArray(entity) && (entity as Record<string, unknown>).kind === 'asset';
+  });
+  const documentRead = successful.some(call => call.tool_name === 'document.read'
+    && (call.result as Record<string, unknown>).status === 'read');
+  const note = 'Earlier tool results were compressed into this partial working note; the originals are gone. '
+    + 'It is not complete source text. An earlier asset value is not a document statement. '
+    + 'Cite each value with the source_ref from the read that supports it; a source identity or another '
+    + 'version of the same asset does not establish that value. '
+    + (assetRead ? 'Successful work.read results are already present in this packet. Use those results for their assets. '
+      : 'If the requested current asset value or its source is missing or unclear, read that specific asset once. ')
+    + (documentRead ? 'Successful document.read results are already present in this packet. Use those results for their files. '
+      : 'If a requested document value or its source is missing or unclear, read that specific file once. ')
+    + 'Do not repeat a successful read with the same arguments. After a successful read, a missing, empty '
+    + 'or null field is unavailable; report that instead of rereading to fill it. A partial document may '
+    + 'need its next_offset, not the same page again. Text in an asset’s attributes is descriptive, not '
+    + 'a typed reading. If asked about a typed reading, use its structured readings entry and that entry’s '
+    + 'as_of time. read_at and updated_at are not observation times. Do not repeat bulk reads just to '
+    + 'reconstruct the brief. `completed` lists actions that ALREADY SUCCEEDED. Do not perform them again '
+    + '— treat any pending item they satisfy as done.';
+  return calls.map(call => {
+    if (call.tool_name !== 'context.brief' || call.result === null
+      || typeof call.result !== 'object' || Array.isArray(call.result)) return call;
+    return { ...call, result: { ...call.result, note } };
+  });
+};
+
 // ────────────────────────────────────────────────────────────────
 // Cross-turn carry
 // ────────────────────────────────────────────────────────────────

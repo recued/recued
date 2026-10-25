@@ -37,6 +37,9 @@ describe('canonical theme tokens', () => {
     // The aliases must point at neutral tokens — never a literal green/amber.
     expect(tokensCss).toContain('--ok: var(--fg);');
     expect(tokensCss).toContain('--warn: var(--fg);');
+    // ⛔ Components use --warning, which was never defined: each fell back to
+    // its own amber literal.
+    expect(tokensCss).toContain('--warning: var(--warn);');
     expect(tokensCss).toContain('--ok-bg: var(--surface-sunk);');
     expect(tokensCss).toContain('--warn-bg: var(--surface-sunk);');
   });

@@ -8,6 +8,7 @@ import type { RecipeRegressionCaller } from '../kitchen/recipe-editor/recipe-reg
 import { PACK_VENDOR_PERMISSION_CONSENT_ATTR, PACK_VENDOR_PERMISSION_REFRESH_ATTR,
   vendorPermissionAcknowledgementKey, vendorPermissionReview, vendorPermissionReviewRequired } from './pack-vendor-permissions.js';
 import type { PackPermissionRepair, PackPermissionRepairRequest } from './pack-permission-repair.js';
+import { PACK_DETAIL_STYLES } from '../packs/pack-detail-styles.js';
 /** D-145 PA10 follow-on — Settings → Packs panel (Slices A–K).
  *
  *  Surfaces the per-pair pack roster the server returns via `packs.list`
@@ -552,9 +553,6 @@ export const PACKS_DETAIL_TAB_PANEL_ATTR = 'data-recued-packs-detail-tab-panel';
  *  `hasAppSurface`. */
 export type PacksDetailTab = 'use' | 'detail' | 'permissions' | 'access';
 
-/** The three subviews that sit behind Manage. `use` is the sibling of the
- *  whole group, not a member of it. */
-const MANAGE_TABS: ReadonlyArray<PacksDetailTab> = ['detail', 'permissions', 'access'];
 type PacksDetailTabGroup = 'primary' | 'manage';
 
 const PACKS_DETAIL_TAB_PANEL_ID = 'recued-packs-detail-tab-panel';
@@ -1556,6 +1554,7 @@ export const mountPacksPanel = (
    *  whether it does is only known once `recipes.list` has answered, which is
    *  after the first paint. */
   let activeDetailTab: PacksDetailTab = 'detail';
+  let lastManageTab: Exclude<PacksDetailTab, 'use'> = 'detail';
   let pendingDetailTabFocus: {
     group: PacksDetailTabGroup;
     id: PacksDetailTab;
@@ -2518,6 +2517,7 @@ export const mountPacksPanel = (
     initialAppViewPending = false;
     selectedSlug = slug;
     activeDetailTab = 'detail';
+    lastManageTab = 'detail';
     detailTabPinned = false;
     pendingDetailTabFocus = null;
     pendingDeleteActionFocus = null;
@@ -4097,6 +4097,10 @@ export const mountPacksPanel = (
 
     // ── IDENTITY — control-plane facts + the action affordances ──
     const identity = makeDetailSection('identity', null);
+    identity.setAttribute('aria-label', 'Pack summary');
+    const overview = doc.createElement('div');
+    overview.className = 'packs-detail-overview';
+    identity.appendChild(overview);
     const header = doc.createElement('header');
     header.className = 'packs-detail-header';
     const name = doc.createElement('h2');
@@ -4113,12 +4117,12 @@ export const mountPacksPanel = (
     if (isPackServiceKind(kind)) {
       header.appendChild(makeBadge(SERVICE_KIND_LABEL[kind] ?? kind, 'neutral'));
     }
-    identity.appendChild(header);
+    overview.appendChild(header);
     const facts = doc.createElement('p');
     facts.className = 'packs-detail-facts';
     facts.textContent =
       `${pack.slug} · ${COPY.publisher_prefix}${pack.publisher} · v${pack.version}`;
-    identity.appendChild(facts);
+    overview.appendChild(facts);
     // Repo link — issues / support route to the author's repo (the
     // marketplace hosts no issue tracking); absent on most bundled packs.
     const repo = pack.repo;
@@ -4130,12 +4134,15 @@ export const mountPacksPanel = (
       repoLink.setAttribute('target', '_blank');
       repoLink.setAttribute('rel', 'noopener noreferrer');
       repoLink.textContent = COPY.detail_repo_label;
-      identity.appendChild(repoLink);
+      overview.appendChild(repoLink);
     }
-    appendPackActions(identity, pack, grantOverlap);
+    const actions = doc.createElement('div');
+    actions.className = 'packs-detail-actions';
+    appendPackActions(actions, pack, grantOverlap);
     if (opts.packUpdateCaller && (pack.installed || pack.installed_any_version)) {
-      appendHistoryAction(identity,pack.slug);
+      appendHistoryAction(actions,pack.slug);
     }
+    identity.appendChild(actions);
     wrapper.appendChild(identity);
     // Inline consent dialog directly under the Install affordance.
     //
@@ -4170,6 +4177,9 @@ export const mountPacksPanel = (
     // A pack that gives you something to DO leads with it; its control-plane
     // surfaces group behind Manage. A capability pack has no Use tab, so its
     // strip stays exactly the three it always had.
+    const content = doc.createElement('div');
+    content.className = 'packs-detail-content';
+    wrapper.appendChild(content);
     const appSurface = appSurfaceFor(pack);
     const showUse = appSurface !== null && hasAppSurface(appSurface);
     const shownTab = effectiveDetailTab(appSurface);
@@ -4225,12 +4235,11 @@ export const mountPacksPanel = (
       const pickPrimaryTab = (next: PacksDetailTab): void => {
         if (next === 'use') {
           if (shownTab === 'use') return;
+          lastManageTab = shownTab;
           activeDetailTab = 'use';
         } else {
           if (shownTab !== 'use') return;
-          activeDetailTab = MANAGE_TABS.includes(activeDetailTab)
-            ? activeDetailTab
-            : 'detail';
+          activeDetailTab = lastManageTab;
         }
         detailTabPinned = true;
         render();
@@ -4291,7 +4300,7 @@ export const mountPacksPanel = (
         });
         topStrip.appendChild(pin);
       }
-      wrapper.appendChild(topStrip);
+      content.appendChild(topStrip);
     }
 
     // The management strip: the whole strip when there is no Use tab, the
@@ -4324,7 +4333,7 @@ export const mountPacksPanel = (
           'manage', manageTabOrder, pickManageTab,
         ));
       }
-      wrapper.appendChild(tabStrip);
+      content.appendChild(tabStrip);
     }
 
     const tabPanel = doc.createElement('div');
@@ -4598,7 +4607,7 @@ export const mountPacksPanel = (
       initialAppViewPending = false;
       opts.onAppViewNavigate?.(pack.slug, null, 'replace');
     }
-    wrapper.appendChild(tabPanel);
+    content.appendChild(tabPanel);
   };
 
   // The packs panel is the `#packs/<slug>` DETAIL (the browse list is the
@@ -5224,7 +5233,7 @@ export const PACKS_PANEL_STYLES = `
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-pin:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--accent-weak);
+  box-shadow: var(--wc-ring);
 }
 [${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_ATTR}] {
   appearance: none;
@@ -6080,4 +6089,5 @@ export const PACKS_PANEL_STYLES = `
     .igp-access-list, .igp-scope-list
   ) { grid-template-columns: minmax(0, 1fr); }
 }
+${PACK_DETAIL_STYLES}
 `;

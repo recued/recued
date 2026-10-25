@@ -1904,7 +1904,9 @@ describe('R27 delta-B — Pro DDNS toggle (hostnames panel)', () => {
     await panel.whenLoaded();
     expect(findByAttr(host, HOSTNAMES_DDNS_SECTION_ATTR)).not.toBeNull();
     expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)).toBeNull();
-    expect(textOf(findByAttr(host, HOSTNAMES_DDNS_BLOCKED_ATTR)!)).toContain('Server URL');
+    // ⛔ It sent the owner to "Server URL", which Settings does not have.
+    expect(textOf(findByAttr(host, HOSTNAMES_DDNS_BLOCKED_ATTR)!))
+      .toContain('with Change address, under Settings, then Servers.');
     expect(runDdnsSetEnabled).not.toHaveBeenCalled();
     panel.dispose();
   });

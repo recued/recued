@@ -80,6 +80,7 @@
 
 import {
   CONNECTION_VENDOR_ENTITIES,
+  canonicalizeEmail,
   type ConnectionVendorEntity,
 } from '@recued/contracts';
 import { piiEgress } from '@recued/gateway';
@@ -134,6 +135,14 @@ export interface RecallResolver {
    *  boolean captured at build time would miss a per-result failure. The egress therefore
    *  checks this AFTER calling `resolveIdentifiers` and BEFORE writing the aliased value. */
   readonly isDegraded: () => boolean;
+  /** D-326 — the name of the contact an address belongs to: the address book first
+   *  (exact, after merges), then the CRM mirror row that carries the address. Only a
+   *  name the automaton would seed (B4, never a reconciler placeholder), so the person
+   *  an address is aliased together with is one the name pass aliases too.
+   *
+   *  FAILS OPEN, and that is safe here: no owner means no link, never a leak — the
+   *  address is aliased either way, only without its person. */
+  readonly ownerOfEmail?: (email: string) => string | undefined;
 }
 
 /** What the model sees in place of a recalled result whose PII shield could not be built.
@@ -275,6 +284,8 @@ export const createContactKnownValueIndexBuilder =
     const streets: string[] = [];
     const crmPhones: string[] = [];
     const knownDomains = new Set<string>();
+    // D-326 — a CRM-only person's addresses, by the row's own full name.
+    const crmOwnerByEmail = new Map<string, string>();
     // Set by ANY seed source that THROWS. Absence / an empty warehouse must NOT set it — that
     // is a complete shield over an empty set. A throw means the values exist and we could not
     // read them, so the shield is a lie and the recalled result must be WITHHELD, not sent raw.
@@ -323,6 +334,12 @@ export const createContactKnownValueIndexBuilder =
           ]);
           for (const row of rows) {
             const email = row[CRM_NAME_PLACEHOLDER_SOURCE_KEY];
+            const owner = fields.names.includes('name') ? row['name'] : undefined;
+            const ownerEmail = email === undefined ? undefined : canonicalizeEmail(email);
+            if (owner !== undefined && ownerEmail && !crmOwnerByEmail.has(ownerEmail)
+              && seedableOwnerName(owner, email)) {
+              crmOwnerByEmail.set(ownerEmail, owner);
+            }
             for (const key of fields.names) {
               const value = row[key];
               if (value === undefined) continue;
@@ -544,5 +561,26 @@ export const createContactKnownValueIndexBuilder =
       return seeds;
     };
 
-    return { nameOrgIndex, resolveIdentifiers, isDegraded: () => degraded };
+    const ownerOfEmail = (raw: string): string | undefined => {
+      const email = canonicalizeEmail(raw);
+      if (!email) return undefined;
+      if (store !== undefined) {
+        try {
+          let survivor = email;
+          try { survivor = store.resolveCanonicalEmail(email).canonical_email; } catch { /* a broken chain reads the row itself */ }
+          const name = store.get(survivor)?.name;
+          if (name !== undefined && seedableOwnerName(name, email)) return name;
+        } catch { /* no owner, no link */ }
+      }
+      return crmOwnerByEmail.get(email);
+    };
+
+    return { nameOrgIndex, resolveIdentifiers, isDegraded: () => degraded, ownerOfEmail };
   };
+
+/** D-326 — a contact name an address may be aliased together with: one the name
+ *  automaton would seed (B4), never a reconciler placeholder that only repeats the
+ *  address's local part, never a digit-run. */
+const seedableOwnerName = (name: string, email: string): boolean =>
+  name.trim().length > 0 && shouldSeedEntityValue(name) && !isSyntheticLocalPartName(name, email)
+  && !isAllDigits(name);

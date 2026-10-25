@@ -58,7 +58,11 @@ const conn = (async (method: string,payload?: unknown) => {
       body: 'Please review the delivered drawings.\n\nhttps://fixture.example.test/reception/approve/completion-endpoint?t=fixture-token',body_format: 'text',reconciliation_id: ref };
     return { idempotency_key: ref,content };
   }
-  if (method === 'reception.signoff.completion.prepare') return { completion: { ...clone(completion),state: 'draft' },preview_hash: 'b'.repeat(64),customer_preview: completion.customer_preview };
+  if (method === 'reception.signoff.link.check') return {current:completion.state === 'waiting' && completion.expires_at > Date.now()};
+  if (method === 'reception.signoff.completion.prepare') {
+    const createdAt = Date.now(); completion.created_at = createdAt; completion.expires_at = createdAt+7*86_400_000;
+    return { completion: { ...clone(completion),state: 'draft' },preview_hash: 'b'.repeat(64),customer_preview: completion.customer_preview };
+  }
   if (method === 'reception.signoff.completion.publish') {
     if (input.remember_link_for_reminders) reminder.has_saved_link = true;
     return { completion: clone(completion),share_url: 'https://fixture.example.test/reception/approve/completion-endpoint?t=fixture-token' };

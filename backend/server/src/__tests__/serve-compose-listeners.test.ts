@@ -135,6 +135,8 @@ import { createConnectionStore } from '../storage/connection-store.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createChatTurnQueueStore } from '../storage/chat-turn-queue-store.js';
 import { createChatOrchestrator } from '../chat-orchestrator.js';
+import type { Lifecycle } from '../lifecycle/index.js';
+import { createLifecycleStateMachine, type LifecycleStateMachine } from '../lifecycle/lifecycle-state.js';
 import type { ChatRpcDeps } from '../chat-handler.js';
 import { encodeAuthForStorage } from '../connection-handler.js';
 import {
@@ -453,6 +455,38 @@ describe('composeListeners', () => {
       await vi.waitFor(() => expect(chatDeps.messengerReceiveStatus?.('telegram')).toBe('invalid'));
       expect(chatDeps.messengerReceiveStatus?.('slack')).toBe('unknown');
     } finally { await result.server.close(); }
+  });
+
+  it('starts the messengers only once the boot completes, and never when the listeners close first', async () => {
+    // A Slack or Telegram message goes into the chat, which the rest of the boot is still wiring.
+    const base = makeOptions(); const connectionStore = createConnectionStore(storageDb);
+    connectionStore.upsert({ kind: 'notification', name: 'telegram', subtype: 'telegram', display_name: 'Telegram',
+      config_json: JSON.stringify({ chat_id: '1', webhook_secret: 'fixture-secret' }),
+      auth_ciphertext: Buffer.from(JSON.stringify({ type: 'bearer', token: 'fixture-token' })).toString('base64'),
+      enrolled_at: 1, updated_at: 1 });
+    ensureChatSchema(storageDb); const store = createChatStore(storageDb);
+    const selfSignature = { server_kind: 'recued' as const, version: '1', instance_id: 'boot-hold' };
+    const orchestrator = createChatOrchestrator({ chatStore: store, selfSignature,
+      registry: { list: () => [], listByTier: () => [], getByName: () => null,
+        dispatch: async () => ({ ok: true, result: {} }), subscribeRefresh: () => () => {} } });
+    const chatDeps: ChatRpcDeps = { store, orchestrator, selfSignature };
+    const compose = (machine: LifecycleStateMachine) => composeListeners(makeOptions({
+      app: { ...base.app, chatDeps, connectionStoreRef: connectionStore },
+      lifecycle: { machine, handlerSlice: undefined, supervisor: { mode: 'none' } } as unknown as Lifecycle }));
+    const booting = createLifecycleStateMachine('booting');
+    const held = await compose(booting);
+    try {
+      expect(held.messengerIngressSupervisor?.status('telegram', 'telegram')).toBeNull();
+      booting.transition('running');
+      await vi.waitFor(() => expect(held.messengerIngressSupervisor?.status('telegram', 'telegram')?.state).toBe('webhook'));
+    } finally { await held.server.close(); }
+    const ending = createLifecycleStateMachine('booting');
+    const closed = await compose(ending);
+    await closed.server.close();
+    const start = vi.spyOn(closed.messengerIngressSupervisor!, 'start');
+    ending.transition('running');
+    expect(start).not.toHaveBeenCalled();
+    expect(closed.messengerIngressSupervisor?.status('telegram', 'telegram')).toBeNull();
   });
 
   it('reconciles installed packs before composing any intake surface, then validates the result', async () => {

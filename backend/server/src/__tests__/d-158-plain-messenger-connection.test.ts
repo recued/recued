@@ -68,7 +68,7 @@ describe('the connection a plain notify or ask on a chat channel goes through', 
     expect(named(await w.owner())).toBe('NOTIFICATION_CONNECTION_OFF');
     await w.choose({ name: 'private', enrolled_at: 9 });
     expect(named(await w.owner())).toBe('NOTIFICATION_CONNECTION_MISSING');
-    createHouseholdDeliveryStore(w.db).setTelegram(w.store.get('notification', 'family')!, ['1001', '1002'], 3);
+    createHouseholdDeliveryStore(w.db).setTelegram(w.store.get('notification', 'family')!, 3);
     await w.choose({ name: 'family', enrolled_at: 2 });
     expect(named(await w.owner())).toBe('NOTIFICATION_CONNECTION_IS_HOUSEHOLD');
   });

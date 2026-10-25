@@ -456,6 +456,13 @@ export const createTelegramTransport = (
       option_id: choice.option_id,
       from: String(f.id),
     };
+    // Who pressed, as Telegram shows them: a household join lists people by
+    // name. `first_name` is always sent; `last_name` and `username` are optional.
+    const name = [f.first_name, f.last_name]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+      .map(part => part.trim()).join(' ');
+    if (name.length > 0) result.from_name = name;
+    if (typeof f.username === 'string' && f.username.length > 0) result.from_username = f.username;
     const message = q.message;
     if (message !== null && typeof message === 'object') {
       const mid = (message as Record<string, unknown>).message_id;

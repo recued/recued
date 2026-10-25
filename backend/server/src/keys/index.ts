@@ -2,8 +2,8 @@
  *
  *  Primitives shipped at P1:
  *   - Ed25519 keypair generation + sign/verify (Node's built-in crypto)
- *   - Argon2id token hash + constant-time verify (via `@recued/crypto`'s
- *     `@noble/hashes` argon2 binding)
+ *   - Argon2id token hash + constant-time verify (Node's own Argon2 where
+ *     the runtime has it, else `@noble/hashes`' pure-JS one)
  *   - HKDF sub-DEK derivation (delegates to `@recued/crypto`)
  *   - Key storage abstraction (`ServerKeyStore`) for `server_identity_key`
  *     + `publisher_identity_key` — OS keyring or passphrase-encrypted file
@@ -42,6 +42,7 @@ import {
   timingSafeEqual,
   type KeyObject,
 } from 'node:crypto';
+import { nodeArgon2 } from './password-kdf.js';
 
 // ────────────────────────────────────────────────────────────────
 // Ed25519 sign / verify
@@ -201,6 +202,29 @@ export const TOKEN_ARGON2_PARAMS = Object.freeze({
   p: 2,
 });
 
+/** One Argon2id run over a bearer. Node's runs on libuv's thread pool, so
+ *  every other connection, request and timer goes on while it works.
+ *  `@noble/hashes`' pure-JS `argon2idAsync` yields only to microtasks and
+ *  held the whole server for 1.0–1.2 s per verify (measured 2026-10-23):
+ *  each WebSocket connection paid it once and each MCP request twice. Both
+ *  compute RFC 9106 Argon2id, so a hash either one made verifies with the
+ *  other; the pure-JS one runs where Node has none that can run
+ *  (`usableNodeArgon2`): a verify reads any error as a wrong token, so a
+ *  Node whose Argon2 always fails would refuse every client. */
+const bearerArgon2id = (
+  bearer: string,
+  salt: Uint8Array,
+  params: { t: number; m: number; p: number },
+  dkLen: number,
+): Promise<Uint8Array> => {
+  const native = nodeArgon2;
+  return native
+    ? new Promise((resolve, reject) => native('argon2id', {
+        message: bearer, nonce: salt, passes: params.t, memory: params.m, parallelism: params.p, tagLength: dkLen,
+      }, (error, key) => { if (error) reject(error); else resolve(new Uint8Array(key)); }))
+    : argon2idAsync(bearer, salt, { t: params.t, m: params.m, p: params.p, dkLen });
+};
+
 export interface TokenHashRecord {
   /** Argon2id-hashed bearer token. Base64 string. */
   hash_b64: string;
@@ -221,12 +245,7 @@ export const hashBearerToken = async (
     throw new Error('hashBearerToken: bearer must be non-empty');
   }
   const salt = randomBytes(16);
-  const hash = await argon2idAsync(bearer, salt, {
-    t: params.t,
-    m: params.m,
-    p: params.p,
-    dkLen: 32,
-  });
+  const hash = await bearerArgon2id(bearer, salt, params, 32);
   return {
     hash_b64: bytesToBase64(hash),
     salt_b64: bytesToBase64(salt),
@@ -245,12 +264,7 @@ export const verifyBearerToken = async (
     if (bearer.length === 0) return false;
     const expected = base64ToBytes(record.hash_b64);
     const salt = base64ToBytes(record.salt_b64);
-    const computed = await argon2idAsync(bearer, salt, {
-      t: record.params.t,
-      m: record.params.m,
-      p: record.params.p,
-      dkLen: expected.length,
-    });
+    const computed = await bearerArgon2id(bearer, salt, record.params, expected.length);
     return timingSafeEqual(Buffer.from(expected), Buffer.from(computed));
   } catch {
     return false;

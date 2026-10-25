@@ -1,3 +1,4 @@
+import { openBackupDisclosure } from './helpers/backup-disclosure.js';
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
@@ -11,6 +12,7 @@ const downloadButton = '[data-recued-archive-passport-download]';
 const show = async (page: Page, mode: string) => {
   await page.goto(`${HARNESS_URL}?passport_summary=${mode}`); await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/backup'));
+  await openBackupDisclosure(page, 'identity');
   await page.locator(start).focus(); await page.keyboard.press('Enter'); await expect(page.locator(summary)).toBeVisible();
 };
 const noOverflow = async (page: Page) => {

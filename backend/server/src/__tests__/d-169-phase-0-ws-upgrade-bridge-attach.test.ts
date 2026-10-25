@@ -126,6 +126,29 @@ const connectWs = (httpServer: HttpServer, token: string): Promise<WebSocket> =>
     });
   });
 
+/** The code a connection closes with, listening from the moment it is made:
+ *  over the in-memory socket pair an immediate close arrives in the same tick
+ *  as `open`, before a listener added after `connectWs` resolves. */
+const connectAndAwaitClose = (httpServer: HttpServer, token: string): Promise<number> =>
+  new Promise((resolve, reject) => {
+    const ws = new WebSocket(
+      `ws://127.0.0.1/ws?token=${encodeURIComponent(token)}`,
+      {
+        createConnection: () => {
+          const pair = createSocketPair();
+          process.nextTick(() => {
+            httpServer.emit('connection', pair.server as unknown as Socket);
+          });
+          return pair.client as unknown as Socket;
+        },
+      },
+    );
+    ws.once('close', (code: number) => resolve(code));
+    ws.once('unexpected-response', (_req, res) => {
+      reject(new Error(`unexpected response ${res.statusCode}`));
+    });
+  });
+
 const waitForClose = (ws: WebSocket): Promise<void> =>
   new Promise((resolve) => {
     if (ws.readyState === WebSocket.CLOSED) {
@@ -251,9 +274,12 @@ describe('D-169 P0 follow-on - WS upgrade bridgeRegistry.attach', () => {
   const issueStructured = async (
     client_kind: ClientKind,
     client_label?: string,
+    instance_id?: string,
   ): Promise<{ token_id: string; bearer: string; structured: string }> => {
-    const opts: { client_kind: ClientKind; client_label?: string } = { client_kind };
+    const opts: { client_kind: ClientKind; client_label?: string; metadata?: Record<string, unknown> } = { client_kind };
     if (client_label !== undefined) opts.client_label = client_label;
+    // The paired identity a device's connections carry comes from its token.
+    if (instance_id !== undefined) opts.metadata = { instance_id };
     const issued = await clientTokens.issue(opts);
     return {
       ...issued,
@@ -264,8 +290,9 @@ describe('D-169 P0 follow-on - WS upgrade bridgeRegistry.attach', () => {
   const connectStructured = async (
     client_kind: ClientKind,
     client_label?: string,
+    instance_id?: string,
   ): Promise<{ ws: WebSocket; token_id: string; bearer: string }> => {
-    const issued = await issueStructured(client_kind, client_label);
+    const issued = await issueStructured(client_kind, client_label, instance_id);
     const ws = await connectWs(currentHttpServer(), issued.structured);
     openSockets.add(ws);
     ws.once('close', () => openSockets.delete(ws));
@@ -278,22 +305,6 @@ describe('D-169 P0 follow-on - WS upgrade bridgeRegistry.attach', () => {
       (records) => records.length === size,
       `bridge registry size ${size}`,
     );
-
-  const registerInstance = async (
-    ws: WebSocket,
-    instance_id: string,
-  ): Promise<void> => {
-    const registered = waitForMessage(
-      ws,
-      (msg) => msg.type === 'registered' && msg.instance_id === instance_id,
-    );
-    ws.send(JSON.stringify({
-      type: 'register',
-      instance_id,
-      display_name: 'Test bridge',
-    }));
-    await registered;
-  };
 
   it('attaches one registry record for a structured client_kind=bridge upgrade', async () => {
     const before = Date.now();
@@ -348,10 +359,10 @@ describe('D-169 P0 follow-on - WS upgrade bridgeRegistry.attach', () => {
     expect(bridgeRegistry.list()).toEqual([]);
   });
 
-  it('rejects a legacy raw-bearer upgrade', async () => {
-    await expect(connectWs(currentHttpServer(), 'somerawbearer')).rejects.toThrow(
-      /unexpected response 401|Unexpected server response: 401/,
-    );
+  it('refuses a legacy raw-bearer upgrade, and attaches nothing', async () => {
+    // Refused with a 4401 close a browser can read, not a 401 handshake it
+    // cannot (see `closeRejectedBearer` in ws-server).
+    expect(await connectAndAwaitClose(currentHttpServer(), 'somerawbearer')).toBe(4401);
     await wait(20);
     expect(bridgeRegistry.list()).toEqual([]);
   });
@@ -364,14 +375,13 @@ describe('D-169 P0 follow-on - WS upgrade bridgeRegistry.attach', () => {
     await waitForRegistrySize(0);
   });
 
-  it('detaches when revokeConnectedInstance closes a registered bridge instance', async () => {
-    const { ws, token_id } = await connectStructured('bridge', 'Revoked bridge');
+  it('detaches when revokeConnectedInstance closes a paired bridge instance', async () => {
+    const { ws, token_id } = await connectStructured('bridge', 'Revoked bridge', 'bridge-instance-revoked');
     await waitForRegistrySize(1);
-    await registerInstance(ws, 'bridge-instance-revoked');
 
     const closed = waitForClose(ws);
     const result = currentHandlerSet().wsHandle.revokeConnectedInstance('bridge-instance-revoked');
-    expect(result).toEqual({ revoked: true, client_token_id: token_id });
+    expect(result).toEqual({ revoked: true, client_token_id: token_id, client_token_ids: [token_id] });
     await closed;
     await waitForRegistrySize(0);
   });

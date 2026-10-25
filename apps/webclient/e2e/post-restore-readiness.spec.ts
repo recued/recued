@@ -1,3 +1,4 @@
+import { openBackupDisclosure } from './helpers/backup-disclosure.js';
 import { expect, test } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
@@ -45,6 +46,7 @@ test('missing setup gives review actions and refresh preserves unsaved recovery 
   await expect(page.locator(item('schedule'))).toContainText('Set up unattended backups');
   await expect(page.locator(item('monitor'))).toContainText('another host');
   await expect(page.locator(item('integrity'))).toContainText('checks are off');
+  await openBackupDisclosure(page, 'schedule'); await openBackupDisclosure(page, 'tools');
   await page.locator('[data-unattended-words]').fill('synthetic draft words');
   await page.locator('[data-backup-watchdog-url]').fill('https://draft.example.test/private-token');
   await page.locator('[data-restore-readiness-refresh]').focus(); await page.keyboard.press('Enter');
@@ -74,4 +76,15 @@ test('disconnect clears passing claims and a late status cannot revive them afte
   await page.locator('[data-archive-import-dismiss]').click(); await expect(page.locator(panel)).toBeHidden();
   await page.evaluate(() => { window.__app.releaseRpcResponses!('server.archive.watchdog.get'); });
   await expect(page.locator(panel)).toBeHidden(); await noWrites(page);
+});
+
+
+test('extra backup checks surface problems while their forms stay closed until reviewed', async ({ page }) => {
+  await open(page, 'failed_checks');
+  const tools = page.locator('[data-backup-disclosure="tools"]'), notice = page.locator('[data-backup-tools-attention]');
+  await expect(tools).toHaveJSProperty('open', false); await expect(notice).toBeVisible();
+  await expect(page.locator('[data-backup-watchdog-url]')).toBeHidden();
+  await notice.getByRole('button', { name: 'Review backup checks', exact: true }).click();
+  await expect(tools).toHaveJSProperty('open', true); await expect(tools.locator(':scope > summary')).toBeFocused();
+  await expect(page.locator('[data-backup-watchdog-url]')).toBeVisible(); await noWrites(page);
 });

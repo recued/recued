@@ -352,7 +352,7 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
         `Answers: ${ask.options.map(option => option.label).join(', ')}`,
         ask.message.link_url ? safeHttpUrl(ask.message.link_url) : undefined, answerLink?.(ask.ask_id),
       ].filter(Boolean).join('\n')).join('\n\n')
-        + '\n\nReply with the item number and answer, for example: 2 done. A reply without an item changes nothing.',
+        + '\n\nReply with the item number and answer, for example: 2 later. A reply without an item changes nothing.',
     };
     if (envelope.repeat) email = { ...email, subject: `Repeat: ${email.subject}`,
       ...(envelope.asks.length > 1 ? { body_text: `${repeat}\n\n${email.body_text}` } : {}) };

@@ -80,6 +80,8 @@ import type {
   NotificationSetBridgeModeResult,
   NotificationSetChannelResult,
   NotificationSetVerificationPhraseResult,
+  ReminderDestinationIssue,
+  ReminderDestinationIssueReason,
 } from '@recued/contracts';
 import {
   MESSENGER_VENDOR_SLUGS,
@@ -152,6 +154,9 @@ export const NOTIFICATIONS_EMAIL_STEPS_ATTR =
   'data-recued-notifications-email-steps';
 export const NOTIFICATIONS_ROW_ERROR_ATTR =
   'data-recued-notifications-row-error';
+/** D-325 §15.7 amendment — the callout that says nothing reaches the owner's phone. */
+export const NOTIFICATIONS_PHONE_CALLOUT_ATTR =
+  'data-recued-notifications-phone-callout';
 export const NOTIFICATIONS_LIST_ERROR_ATTR =
   'data-recued-notifications-list-error';
 /** D-169 P1 — per-bridge sub-row group under the channel-level
@@ -177,6 +182,11 @@ export type NotificationsDescribeCaller = () => Promise<{
   /** R31 — the current anti-phishing verification phrase, so the panel
    *  can render + edit it as a panel-level setting. Absent when unset. */
   verification_phrase?: string;
+  /** D-325 §15.7 amendment — whether a reminder reaches the owner's phone,
+   *  as the server decides it (Yours' `phone_ready`), and why each channel that
+   *  is on carries none. Absent from an older server. */
+  reaches_phone?: boolean;
+  reminder_issues?: ReadonlyArray<ReminderDestinationIssue>;
 }>;
 
 /** R31 — `notifications.set_channel` is an axis patch (was a single
@@ -312,6 +322,17 @@ export interface NotificationsPanelMount {
 // ════════════════════════════════════════════════════════════════
 
 const COPY = {
+  // Every other part of Approval & notifications opens with its own heading;
+  // without one this card read as the section's untitled preamble.
+  heading: 'Channels',
+  phone_callout_heading: 'Nothing reaches your phone yet.',
+  phone_callout_blocked_heading: 'Reminders don’t reach your phone yet.',
+  phone_callout_app: 'Reminders wait in Recued until you open it.',
+  phone_callout_bridge: 'Reminders reach only Recued and your computer’s notifications.',
+  phone_callout_action: 'Turn on a channel below, or add one in',
+  phone_callout_other: 'Another channel can carry them: turn one on below, or add one in',
+  phone_callout_link: 'Connections',
+  lede: 'Where Recued reaches you. Notify sends you updates; Approvals sends the questions Recued needs answered before it acts.',
   loading: 'Loading the ways Recued can reach you…',
   error_heading: 'Recued could not load the ways it can reach you.',
   toggling_label: 'Updating…',
@@ -376,6 +397,18 @@ const CHANNEL_DISPLAY_NAME: Record<NotificationChannelName, string> = {
   ),
 };
 
+/** D-325 §15.7 amendment — why a channel that is on carries no reminder, in the
+ *  owner's words. Keyed on the closed list, so a reason added in contracts fails
+ *  here until someone words it; one from a newer server reads as `unknown`. `link`
+ *  ends the sentence with a link to Connections, where its fix is. */
+const REMINDER_ISSUE_WORDS: Record<ReminderDestinationIssueReason, (channel: string) => { text: string; link?: true }> = {
+  choice_required: (channel) => ({ text: `${channel} is on, but you have more than one ${channel} connection: choose one on its row below.` }),
+  connection_missing: (channel) => ({ text: `${channel} is on, but the connection chosen for it is gone: choose another on its row below.` }),
+  configuration_invalid: (channel) => ({ text: `${channel} is on, but its connection isn’t set to reach only you: check it in`, link: true }),
+  adapter_unavailable: (channel) => ({ text: `${channel} is on, but this server can’t send through ${channel} right now.` }),
+};
+const unknownReminderIssue = (channel: string): string => `${channel} is on, but Recued can’t send reminders through it yet.`;
+
 /** Per-capability badge presentation. The substrate's three
  *  `NotificationChannelCapability` classes each map to a fixed badge
  *  label + tone class. Closed Record forces an exhaustive render
@@ -433,6 +466,10 @@ export const mountNotificationsPanel = (
   let state: NotificationsPanelState = 'loading';
   let disposed = false;
   let rows: NotificationChannelToggleView[] = [];
+  // D-325 §15.7 amendment — the server's word on whether a reminder reaches a phone,
+  // and why each channel that is on carries none.
+  let reachesPhone: boolean | undefined;
+  let reminderIssues: ReadonlyArray<ReminderDestinationIssue> = [];
   let listError: string | null = null;
   /** R31 — pending per-axis toggles, keyed on `${channel}::${axis}` so a
    *  notification toggle and an approval toggle on the same row can be
@@ -574,6 +611,8 @@ export const mountNotificationsPanel = (
         const result = await opts.runDescribe();
         if (disposed) return;
         rows = [...result.rows];
+        reachesPhone = result.reaches_phone;
+        reminderIssues = result.reminder_issues ?? [];
         // R31 — seed the phrase input from the authoritative record, but
         // never over an unsaved user edit (a refresh mid-typing keeps the
         // draft). Always advance the comparison baseline: if an external
@@ -744,6 +783,10 @@ export const mountNotificationsPanel = (
       rows = rows.map((r) =>
         r.channel === channel ? { ...r, [axis]: nextEnabled } : r,
       );
+      if (result.reaches_phone !== undefined) {
+        reachesPhone = result.reaches_phone;
+        reminderIssues = result.reminder_issues ?? [];
+      }
       return;
     }
     // DD#2 — `ok: false` variants are user-flow branches, not throws.
@@ -857,7 +900,60 @@ export const mountNotificationsPanel = (
     while (wrapper.firstChild) wrapper.removeChild(wrapper.firstChild);
   };
 
+  // D-325 §15.7 amendment — said where the owner looks first, not in a footnote: a
+  // reminder that reaches no phone waits unseen. The server decides it, by the rule
+  // Yours' `phone_ready` reads, and a switch's confirmation carries the new answer.
+  // ⛔ A channel can be on and still carry no reminder, so "turn on a channel" is
+  // said only when none is on; otherwise each one says why, from the server.
+  const renderPhoneCallout = (): HTMLElement => {
+    const callout = doc.createElement('p');
+    callout.className = 'notif-phone-callout';
+    callout.setAttribute(NOTIFICATIONS_PHONE_CALLOUT_ATTR, '');
+    callout.setAttribute('role', 'status');
+    const strong = doc.createElement('strong');
+    strong.textContent = reminderIssues.length ? COPY.phone_callout_blocked_heading : COPY.phone_callout_heading;
+    callout.appendChild(strong);
+    const say = (text: string, link?: true): void => {
+      callout.appendChild(doc.createTextNode(` ${text}${link ? ' ' : ''}`));
+      if (!link) return;
+      const anchor = doc.createElement('a');
+      anchor.setAttribute('href', '#connections');
+      anchor.textContent = COPY.phone_callout_link;
+      callout.appendChild(anchor);
+      callout.appendChild(doc.createTextNode('.'));
+    };
+    if (!reminderIssues.length) {
+      const bridgeOn = rows.some((row) => row.channel === 'bridge' && row.notification);
+      say(bridgeOn ? COPY.phone_callout_bridge : COPY.phone_callout_app);
+      say(COPY.phone_callout_action, true);
+      return callout;
+    }
+    // A reason with no fix on this page or in Connections leaves another channel as
+    // the way a reminder can reach the phone.
+    let unfixable = false;
+    for (const issue of reminderIssues) {
+      const channel = CHANNEL_DISPLAY_NAME[issue.channel] ?? 'A channel';
+      const words = Object.hasOwn(REMINDER_ISSUE_WORDS, issue.reason) ? REMINDER_ISSUE_WORDS[issue.reason](channel) : undefined;
+      if (!words || issue.reason === 'adapter_unavailable') unfixable = true;
+      say(words?.text ?? unknownReminderIssue(channel), words?.link);
+    }
+    if (unfixable) say(COPY.phone_callout_other, true);
+    return callout;
+  };
+
+  const renderIntro = (): void => {
+    const heading = doc.createElement('h3');
+    heading.className = 'notif-title';
+    heading.textContent = COPY.heading;
+    wrapper.appendChild(heading);
+    const lede = doc.createElement('p');
+    lede.className = 'notif-lede';
+    lede.textContent = COPY.lede;
+    wrapper.appendChild(lede);
+  };
+
   const renderLoading = (): void => {
+    renderIntro();
     const status = doc.createElement('p');
     status.className = 'notif-status';
     status.setAttribute('role', 'status');
@@ -1378,6 +1474,8 @@ export const mountNotificationsPanel = (
   };
 
   const renderReady = (): void => {
+    renderIntro();
+    if (reachesPhone === false) wrapper.appendChild(renderPhoneCallout());
     const list = doc.createElement('div');
     list.className = 'notif-list';
     for (const row of rows) {
@@ -1790,6 +1888,22 @@ export const NOTIFICATIONS_PANEL_STYLES = `
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+}
+[${NOTIFICATIONS_PANEL_ATTR}] .notif-lede {
+  margin: -6px 0 0;
+  color: var(--fg-muted);
+}
+[${NOTIFICATIONS_PANEL_ATTR}] .notif-phone-callout {
+  margin: 0;
+  max-width: 72ch;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--fg);
+}
+[${NOTIFICATIONS_PANEL_ATTR}] .notif-phone-callout a {
+  color: var(--accent);
 }
 [${NOTIFICATIONS_PANEL_ATTR}] .notif-title-error {
   color: var(--danger);

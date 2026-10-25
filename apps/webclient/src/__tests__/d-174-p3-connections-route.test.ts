@@ -834,6 +834,42 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(root.children).toHaveLength(0);
   });
 
+  it('keeps sign-in tools in a closed Advanced section under the Apps & APIs list', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const apps = vi.fn<import('../settings/oauth-apps-panel.js').OAuthAppsCaller>(async () => ({ action: 'list', apps: [] }));
+    const broker = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => ({ action: 'profiles', profiles: [] }));
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'others', ...enrollCallers(), oauthAppsCaller: apps, connectionsManagedOAuthCaller: broker });
+    await route.whenLoaded();
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const advanced = collectByAttr(root, 'data-recued-connections-advanced')[0]!;
+    // Below the list: the enrolled connections and Add lead the page.
+    expect(content.children.indexOf(advanced)).toBeGreaterThan(content.children.indexOf(collectByAttr(content, CONNECTIONS_ROUTE_ENROLL_HOST_ATTR)[0]!));
+    const tools = collectByAttr(advanced, 'data-recued-connections-tool');
+    expect(tools.map(tool => tool.getAttribute('data-recued-connections-tool'))).toEqual(['oauth-apps', 'managed-sign-in', 'bulk-migration']);
+    expect(tools.map(tool => (tool as unknown as { open?: boolean }).open ?? false)).toEqual([false, false, false]);
+    expect(treeText(advanced)).toContain('Your own OAuth apps'); expect(treeText(advanced)).not.toContain('Authentication settings');
+    expect(broker).not.toHaveBeenCalled();
+    route.dispose();
+  });
+
+  it('opens the saved OAuth apps card for its deep link', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const apps = vi.fn<import('../settings/oauth-apps-panel.js').OAuthAppsCaller>(async () => ({ action: 'list', apps: [] }));
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'others', ...enrollCallers(), oauthAppsCaller: apps, initialManageOAuthApps: true });
+    await route.whenLoaded();
+    const card = findByAttrValue(root, 'data-recued-connections-tool', 'oauth-apps') as unknown as { open?: boolean };
+    expect(card.open).toBe(true); route.dispose();
+  });
+
+  it.each(['mail', 'webhooks'] as const)('has no Advanced section on %s', tab => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, initialTab: tab,
+      oauthAppsCaller: vi.fn(), connectionsManagedOAuthCaller: vi.fn() });
+    expect(collectByAttr(root, 'data-recued-connections-advanced')).toEqual([]); route.dispose();
+  });
+
   it('opens broker management in Apps & APIs without enrollment and guards its credential draft (D-322)', async () => {
     const doc = makeFakeDocument(); const root = doc.createElement('div');
     const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async (args) => {

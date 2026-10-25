@@ -222,7 +222,12 @@ describe('⛔ linear time on a stranger’s HTML', () => {
     mailChatHtmlOwnText(html);
     mailChatHtmlOwnText(html, { forwarded: true });
     mailChatTurnFiles(html, [inlineImage]);
-    // Measured at most ~60 ms each at 2 MB; the first cut's patterns took seconds on a tenth of it.
-    expect(performance.now() - started).toBeLessThan(1_500);
+    // ⚠ A CEILING BETWEEN LINEAR AND CATASTROPHIC, NOT A LATENCY BUDGET. Input stops at
+    // MAIL_CHAT_HTML_MAX (512 KB), where the slowest shape here ('div attributes') takes
+    // ~0.6 s on a quiet machine and 1.5-2 s under a full sweep (2026-10-23; the ~60 ms noted
+    // when this was written no longer holds). The first cut's patterns took 37 s on 320 KB,
+    // ~95 s at the cap if quadratic. 1.5 s failed two sweeps on a linear run; 8 s still sits
+    // an order of magnitude under the catastrophic case.
+    expect(performance.now() - started).toBeLessThan(8_000);
   });
 });

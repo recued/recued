@@ -91,11 +91,11 @@ describe('renderDevicesPage — layout', () => {
       }),
     );
     expect(html).toContain('>Phone<');
-    expect(html).toContain('(Webclient)');
+    expect(html).toContain('(Browser)');
     expect(html).toContain('>Work laptop<');
-    expect(html).toContain('(Bridge)');
+    expect(html).toContain('(Browser Bridge)');
     expect(html).toContain('>Server CLI<');
-    expect(html).toContain('(CLI)');
+    expect(html).toContain('(Command line)');
   });
 
   it('escapes display_name to prevent HTML injection', () => {
@@ -140,6 +140,19 @@ describe('renderDevicesPage — current row + self-revoke blocked', () => {
     expect(html).toContain('data-instance-id="phone"');
     expect(html).toContain('aria-label="Revoke Phone (phone)"');
     expect(html).toContain('aria-label="Revoke Phone (phone-2)"');
+  });
+
+  it('the hint never claims a device cannot remove itself; the host says where it can', () => {
+    // ⛔ It did, while the webclient's Account & servers revoked this
+    // browser's own access.
+    const bare = renderDevicesPage(state({ rows: [row({ instance_id: 'self', isCurrent: true })] }));
+    expect(bare).toContain('Devices paired to this server. Use a different device to revoke one.</p>');
+    expect(bare).not.toContain('cannot remove itself');
+    const hosted = renderDevicesPage(state({
+      rows: [row({ instance_id: 'self', isCurrent: true })],
+      selfRemovalHint: 'Forget it <here>.',
+    }));
+    expect(hosted).toContain('Use a different device to revoke one. Forget it &lt;here&gt;.</p>');
   });
 });
 
@@ -400,6 +413,14 @@ describe('renderDevicesPage — optional freshness controls', () => {
     expect(html).not.toContain('<time');
   });
 
+  it('renders no table for a list that never loaded, so it claims no emptiness', () => {
+    const html = renderDevicesPage(state({ rows: [], listUnavailable: true, refresh: { pending: false } }));
+    expect(html).not.toContain('<table');
+    expect(html).not.toContain('No paired devices yet');
+    // The way to try again stays.
+    expect(html).toContain('data-action="refresh-devices"');
+  });
+
   it('offers Refresh even when the successful roster is empty', () => {
     const html = renderDevicesPage(state({ rows: [], refresh: { pending: false, lastSuccessfulAt: NOW } }));
     expect(html).toContain('data-action="refresh-devices"');
@@ -415,5 +436,62 @@ describe('renderDevicesPage — optional freshness controls', () => {
     expect(visibleTime).toBeTruthy();
     expect(visibleTime).not.toBe(new Date(lastSuccessfulAt).toISOString());
     expect(html).not.toContain('Not checked yet');
+  });
+});
+
+// ⛔ A dead entry (a browser that cleared its storage never comes back)
+// looked like any quiet one, and two browsers of one kind read alike.
+describe('renderDevicesPage — last used and rename', () => {
+  it('an offline device says when it was last used, and the most recently used sorts first', () => {
+    const html = renderDevicesPage(state({
+      rows: [
+        row({ instance_id: 'self', isCurrent: true }),
+        row({ instance_id: 'old', display_name: 'Old laptop', connected: false, last_seen_at: NOW - 40 * 86_400_000 }),
+        row({ instance_id: 'recent', display_name: 'Phone', connected: false, last_seen_at: NOW - 3 * 3_600_000 }),
+        row({ instance_id: 'never', display_name: 'Tablet', connected: false, paired_at: NOW - 86_400_000 }),
+      ],
+    }));
+    expect(html).toContain('Last used 40 days ago');
+    expect(html).toContain('Last used 3 hours ago');
+    expect(html.indexOf('Phone')).toBeLessThan(html.indexOf('Old laptop'));
+    // Not seen since the server began keeping this: no invented date.
+    expect(html).toMatch(/Tablet[\s\S]*?Offline/);
+  });
+
+  it('offers Rename on every row when the host can, the current one included', () => {
+    const html = renderDevicesPage(state({
+      rows: [row({ instance_id: 'self', isCurrent: true }), row({ instance_id: 'other', isCurrent: false })],
+      renameAvailable: true,
+    }));
+    expect(html.match(/data-action="rename-device"/g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Rename Laptop (self)"');
+    expect(renderDevicesPage(state())).not.toContain('data-action="rename-device"');
+  });
+
+  it('keeps four roster cells and puts the associated rename editor in a full-width row', () => {
+    const html = renderDevicesPage(state({
+      rows: [row({ instance_id: 'i1', isCurrent: true, display_name: 'Chrome on macOS' })],
+      renameAvailable: true,
+      renamingInstanceId: 'i1',
+      renameDraft: 'Work <laptop>',
+      renameError: 'Type a name of 1 to 64 characters.',
+    }));
+    const deviceRow = html.match(/<tr class="account-devices-row\b[^>]*>[\s\S]*?<\/tr>/)?.[0] ?? '';
+    const editorRow = html.match(/<tr class="account-devices-rename-row"[^>]*>[\s\S]*?<\/tr>/)?.[0] ?? '';
+    expect(deviceRow.match(/<td\b/g)).toHaveLength(4);
+    expect(deviceRow).toContain('Chrome on macOS');
+    expect(deviceRow).not.toContain('data-rename-form');
+    expect(editorRow).toContain('data-instance-id="i1"');
+    expect(editorRow).toContain('colspan="4"');
+    expect(editorRow).toContain('data-rename-form');
+    expect(html).toContain('data-rename-form');
+    expect(html).toContain('value="Work &lt;laptop&gt;"');
+    expect(html).toContain('maxlength="64"');
+    expect(html).toContain('aria-describedby="account-devices-rename-i1-error"');
+    expect(html).toContain('id="account-devices-rename-i1-error" role="alert"');
+    expect(html).toContain('data-action="save-rename"');
+    expect(html).toContain('data-action="cancel-rename"');
+    // The row being renamed does not also offer Rename.
+    expect(html).not.toContain('data-action="rename-device"');
   });
 });

@@ -12,6 +12,8 @@ const FAST_ARGON2 = { t: 1, m: 8, p: 1 };
 
 class FakeUpgradeSocket extends Duplex {
   readonly writes: string[] = [];
+  /** The same writes as bytes: a WebSocket frame does not survive a utf8 decode. */
+  readonly chunks: Buffer[] = [];
   wasDestroyed = false;
 
   _read(): void {}
@@ -22,6 +24,7 @@ class FakeUpgradeSocket extends Duplex {
     callback: (error?: Error | null) => void,
   ): void {
     this.writes.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+    this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     callback();
   }
 
@@ -63,6 +66,25 @@ const waitForWrite = async (
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error(`timed out waiting for socket write ${prefix}`);
+};
+
+/** ⛔ A refused bearer on the rpc socket is no longer a refused handshake (`1ee07de06`): a
+ *  browser cannot read the 401 of one, so the server completes the upgrade and closes with
+ *  4401. Returns that code, from the first frame after the handshake, which must be the
+ *  close itself: nothing is sent to a refused bearer first. */
+const closeCodeAfterHandshake = async (socket: FakeUpgradeSocket): Promise<number> => {
+  for (let i = 0; i < 50; i++) {
+    const bytes = Buffer.concat(socket.chunks);
+    const end = bytes.indexOf('\r\n\r\n');
+    if (end >= 0 && bytes.length >= end + 8) {
+      expect(bytes.subarray(0, end).toString('latin1')).toMatch(/^HTTP\/1\.1 101 Switching Protocols\r\n/);
+      const frame = bytes.subarray(end + 4);
+      expect(frame[0], 'the first frame is a close (FIN + opcode 8)').toBe(0x88);
+      return frame.readUInt16BE(2);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error('timed out waiting for the close frame');
 };
 
 describe('ws-server canonical client_tokens auth without a listener', () => {
@@ -112,8 +134,7 @@ describe('ws-server canonical client_tokens auth without a listener', () => {
       Buffer.alloc(0),
     );
 
-    expect(socket.writes.join('')).toContain('HTTP/1.1 401 Unauthorized');
-    expect(socket.wasDestroyed).toBe(true);
+    expect(await closeCodeAfterHandshake(socket)).toBe(4401);
     db.close();
   });
 
@@ -129,8 +150,7 @@ describe('ws-server canonical client_tokens auth without a listener', () => {
       Buffer.alloc(0),
     );
 
-    expect(socket.writes.join('')).toContain('HTTP/1.1 401 Unauthorized');
-    expect(socket.wasDestroyed).toBe(true);
+    expect(await closeCodeAfterHandshake(socket)).toBe(4401);
     db.close();
   });
 });

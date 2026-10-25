@@ -23,6 +23,7 @@
  *  precisely so its copy cannot claim otherwise. An absence the owner reads as
  *  proof is the failure mode this substrate names repeatedly. */
 
+import { isRecipeGrantEntry, OWNER_CONTRACT_ID } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 
 /** Per-op usage, for one bounded window. */
@@ -48,13 +49,39 @@ export interface RecipeCoverageUsageResult {
 
 const COVERAGE_ACTION = 'recipe_coverage_admission';
 
+/** D-327 — was this covered run made under `contract_id`?
+ *
+ *  A row records its agreement (`execute-handler.ts`, `onRecipeCoverage`). A row
+ *  written before rows did is placed by the shape of its grant instead: the
+ *  owner's is the `recipe.` entry key and a door's is the bare `<publisher>/<id>`
+ *  wire name (`grantingRecipeEntry`). That cannot say WHICH door, so such a row
+ *  counts for every door, and a row whose grant cannot be read counts for every
+ *  agreement — overstating usage, the direction that does not read as "safe to
+ *  revoke". Those rows leave the window within its length. */
+const rowIsForContract = (
+  detail: { granting_recipe?: unknown; contract_id?: unknown },
+  contract_id: string,
+): boolean => {
+  if (typeof detail.contract_id === 'string') return detail.contract_id === contract_id;
+  const granting = detail.granting_recipe;
+  if (typeof granting !== 'string' || granting.length === 0) return true;
+  return isRecipeGrantEntry(granting) === (contract_id === OWNER_CONTRACT_ID);
+};
+
 /** Aggregate the coverage ledger by op over a bounded window.
  *
  *  ⚠ ONE query per RENDER, never per row: D11's grant matrix would otherwise ask
  *  this once per cell. The caller renders many ops from one result. */
 export const readRecipeCoverageUsage = async (
   auditLog: Pick<AuditLogStore, 'listActivities'>,
-  opts: { window_days: number; now: () => number; scan_limit?: number },
+  opts: {
+    window_days: number;
+    now: () => number;
+    scan_limit?: number;
+    /** D-327 — count only the runs made under this agreement. Absent ⇒ every
+     *  agreement's runs, as before. */
+    contract_id?: string;
+  },
 ): Promise<RecipeCoverageUsageResult> => {
   const since = opts.now() - opts.window_days * 24 * 60 * 60 * 1000;
   const rows = await auditLog.listActivities(opts.scan_limit ?? 5_000);
@@ -68,21 +95,24 @@ export const readRecipeCoverageUsage = async (
     if (row.timestamp < since) continue;
     const op = row.target;
     if (typeof op !== 'string' || op.length === 0) continue;
+    // Fail-SOFT on a malformed detail: the COUNT is the load-bearing half and a
+    // row whose JSON we cannot read still happened. Dropping it would understate
+    // usage, which is the direction that reads as "safe to revoke".
+    let detail: { granting_recipe?: unknown; contract_id?: unknown } = {};
+    try {
+      if (row.detail !== undefined) {
+        const parsed: unknown = JSON.parse(row.detail);
+        if (parsed !== null && typeof parsed === 'object') detail = parsed as typeof detail;
+      }
+    } catch { detail = {}; }
+    const granting = detail.granting_recipe;
+    if (opts.contract_id !== undefined && !rowIsForContract(detail, opts.contract_id)) continue;
     let bucket = byOperation.get(op);
     if (!bucket) {
       bucket = { count: 0, recipes: [] };
       byOperation.set(op, bucket);
     }
     bucket.count += 1;
-    // Fail-SOFT on a malformed detail: the COUNT is the load-bearing half and a
-    // row whose JSON we cannot read still happened. Dropping it would understate
-    // usage, which is the direction that reads as "safe to revoke".
-    let granting: unknown;
-    try {
-      granting = row.detail === undefined
-        ? undefined
-        : (JSON.parse(row.detail) as { granting_recipe?: unknown }).granting_recipe;
-    } catch { granting = undefined; }
     if (typeof granting === 'string' && granting.length > 0 && !bucket.recipes.includes(granting)) {
       bucket.recipes.push(granting);
     }

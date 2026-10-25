@@ -23,6 +23,7 @@ import { createRecipeStore } from '../recipe-store.js';
 import { createPairingManager } from '../pairing.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
 import { createPairedInstancesStore } from '../paired-instances-store.js';
+import { createClientTokenStore } from '../pairing/client-tokens.js';
 import { unlockWithRecoveryKey } from '../commands/auth.js';
 
 /** The real fetch, recording what the CLI sent. */
@@ -39,6 +40,7 @@ describe('recued unlock — an enrolled server', () => {
   let server: RunningServer;
   let db: Database.Database;
   let pairedInstances: ReturnType<typeof createPairedInstancesStore>;
+  let clientTokens: ReturnType<typeof createClientTokenStore>;
   const realmRecoveryKey = generateRecoveryKey().mnemonic;
 
   beforeAll(async () => {
@@ -47,6 +49,8 @@ describe('recued unlock — an enrolled server', () => {
     const { processRecoveryKey } = await import('../recovery-key-processor.js');
     await processRecoveryKey(recoveryKeyCheck, realmRecoveryKey);
     pairedInstances = createPairedInstancesStore(db);
+    // As in production: the route issues sign-ins from this store.
+    clientTokens = createClientTokenStore(db, { argon2_params: { t: 1, m: 8, p: 1 } });
     server = await startServer(0, {
       executeDeps: {
         recipeStore: createRecipeStore('/nonexistent'),
@@ -56,6 +60,7 @@ describe('recued unlock — an enrolled server', () => {
       pairing: createPairingManager({ realmToken: 'unlock-realm' }),
       recoveryKeyCheck,
       pairedInstances,
+      clientTokens,
     });
   });
 
@@ -73,6 +78,22 @@ describe('recued unlock — an enrolled server', () => {
     // The recovery key IS the credential; no instanceId means no Devices row.
     expect(sent[0]!.body).toEqual({ recoveryKey: realmRecoveryKey, clientKind: 'cli', displayName: 'recued unlock' });
     expect(pairedInstances.listAllActive()).toEqual([]);
+    // ⛔ …and no sign-in. It used to issue a working bearer here that no
+    // Devices row showed and `pair.revoke` could not name.
+    expect(clientTokens.list({ include_revoked: true })).toEqual([]);
+  });
+
+  it('answers a recovery key that names no device with no sign-in in the reply', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ recoveryKey: realmRecoveryKey, clientKind: 'cli' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body['token']).toBeUndefined();
+    expect(body['bearer']).toBeUndefined();
+    expect(clientTokens.list({ include_revoked: true })).toEqual([]);
   });
 
   it('takes the key as piped — surrounding whitespace and the newline are not part of it', async () => {

@@ -51,6 +51,7 @@ import {
   isExecutionCaseFeedbackKind,
   isChatModelHint,
   isChatModelSourceId,
+  isMcpInboundTokenActive,
   isReservedOwnerContractId,
   isReservedPublicContractId,
   validateConnectionMcpAnnotationInput,
@@ -134,6 +135,15 @@ export interface ChatRpcDeps {
    *  cancel rpcs surface `not_configured` (501) the same way the
    *  W2.2 / W2.3 stores do when their backing stores aren't wired. */
   planApprovalStore?: planApprovalModule.PlanApprovalStore;
+  /** D-329 — answer the ask of a held write's hold (`ChatPlanProposal.hold`), as any approval
+   *  channel answers it: found by the hold's run, so a boot re-raise keeps the card answering
+   *  it. `closed` — it was answered somewhere else first; `no_ask` — none is out (not raised
+   *  yet, or gone). Late-bound to the notification block; absent ⇒ a held card cannot be
+   *  answered here. */
+  answerHeldPlanAsk?: (
+    run_id: string,
+    option: 'approve' | 'deny',
+  ) => Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'>;
   /** D-137 P5 follow-on § A.9 — Bob's per-pair inbound MCP token
    *  store. The six `chat.inbound_token.*` rpcs persist through this
    *  store; the verifier swap-in at the MCP HTTP port handler also
@@ -202,6 +212,12 @@ export interface ChatRpcDeps {
    *
    */
   preflightExternalToolGrant?: (toolName: string) => void;
+  /** D-327 — the agreement a key is issued for or bound to, when that agreement
+   *  is its key's WHOLE authority (`key_authority: 'contract'`), with whether it
+   *  can still admit anything; `null` for every other contract, whose keys keep
+   *  their own checklist. Absent ⇒ no contract is treated as one (tests, and a
+   *  dbless embedder). */
+  keyAgreement?: (contract_id: string) => { readonly live: boolean } | null;
   /** Door standing closure, MCP arm — derive the operation closure a token's
    *  granted tools would run, so the owner's tick becomes a bounded list of op
    *  ids rather than an open promise.
@@ -1348,6 +1364,110 @@ export const handleDataDiagnosisResolve = async (
   return { resolution: persistedResolution };
 };
 
+/** D-329 — the proposal, when it is a held write still waiting for its answer. A cancel
+ *  that cannot read the plan (its payload locked or unreadable) falls through to the plain
+ *  cancel, which needs no payload. */
+const heldPlan = async (
+  deps: ChatRpcDeps,
+  plan_id: string,
+  next_status: 'approved' | 'cancelled',
+): Promise<ChatPlanProposal | undefined> => {
+  let plan: ChatPlanProposal | undefined;
+  try {
+    plan = await deps.planApprovalStore!.get(plan_id);
+  } catch (error) {
+    if (next_status === 'approved') throw error;
+    return undefined;
+  }
+  return plan?.hold !== undefined && plan.status === 'proposed' ? plan : undefined;
+};
+
+/** D-329 — approve or cancel a held write from its card: the card's buttons answer the ask
+ *  every approval channel shows. Approving runs the write now, through its hold's resume; the
+ *  plan is then resolved here too (the settlement may not have landed), and a decision made
+ *  elsewhere first is reported as it stands.
+ *
+ *  ⛔ A CANCEL WHOSE ASK WAS ALREADY APPROVED IS NOT A CANCEL. The write ran, or is running,
+ *  on that approval, so the plan keeps its state; marking it cancelled would say the opposite
+ *  of what happened. */
+const resolveHeldPlanRpc = async (
+  deps: ChatRpcDeps,
+  method: 'chat.plan.approve' | 'chat.plan.cancel',
+  next_status: 'approved' | 'cancelled',
+  plan: ChatPlanProposal,
+): Promise<{ plan: ChatPlanProposal }> => {
+  const store = deps.planApprovalStore!;
+  if (deps.answerHeldPlanAsk === undefined) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: approvals are not wired, so plan_id '${plan.plan_id}' cannot be answered here`,
+      501,
+    );
+  }
+  const answer = await deps.answerHeldPlanAsk(
+    plan.hold!.run_id,
+    next_status === 'approved' ? 'approve' : 'deny',
+  );
+  if (answer === 'ignored') {
+    throw new RpcError('bad_request', `${method}: the approval for plan_id '${plan.plan_id}' refused this answer`, 400);
+  }
+  if (answer === 'expired') {
+    // The hold expired unanswered and the card was never told: it lapses now, with nothing
+    // run, whichever button was pressed.
+    const lapsed = await store.lapseHold?.(plan.plan_id, plan.hold!.run_id, (deps.now ?? Date.now)());
+    if (lapsed === undefined) {
+      throw new RpcError('not_found', `${method}: plan_id '${plan.plan_id}' was removed mid-resolve`, 404);
+    }
+    try {
+      deps.broadcast?.emit({ kind: 'chat.plan_resolved', session_id: lapsed.session_id,
+        turn_id: lapsed.turn_id, plan: lapsed });
+    } catch {
+      // Broadcast failures are observability-only.
+    }
+    return { plan: lapsed };
+  }
+  if (answer === 'no_ask' && next_status === 'approved') {
+    // Not raised yet: a boot raises a lost one.
+    throw new RpcError(
+      'conflict',
+      `${method}: the approval for plan_id '${plan.plan_id}' is not ready yet; try again in a moment`,
+      409,
+    );
+  }
+  if (answer === 'closed') {
+    return { plan: (await store.get(plan.plan_id)) ?? plan };
+  }
+  // Answered here, or (a cancel) no ask is out: this decision is the plan's.
+  const now = deps.now ?? Date.now;
+  const resolved = await store.resolve(plan.plan_id, next_status, now());
+  if (resolved === undefined) {
+    throw new RpcError('not_found', `${method}: plan_id '${plan.plan_id}' was removed mid-resolve`, 404);
+  }
+  if (resolved.status === next_status) {
+    void safeLogActivity(
+      deps.auditLog,
+      next_status === 'approved' ? 'chat_plan_approved' : 'chat_plan_cancelled',
+      `${resolved.session_id}:${resolved.turn_id}:${resolved.tool}`,
+      JSON.stringify({ plan_id: resolved.plan_id, tier: resolved.tier, classification: resolved.classification,
+        hold_run_id: plan.hold!.run_id }),
+    );
+    try {
+      deps.broadcast?.emit({ kind: 'chat.plan_resolved', session_id: resolved.session_id,
+        turn_id: resolved.turn_id, plan: resolved });
+    } catch {
+      // Broadcast failures are observability-only.
+    }
+    if (next_status === 'cancelled' && deps.executionCaseLifecycle) {
+      try {
+        await deps.executionCaseLifecycle.finalizeTurn({ session_id: resolved.session_id, turn_id: resolved.turn_id });
+      } catch {
+        // Learning is advisory, as on a plain card's cancel.
+      }
+    }
+  }
+  return { plan: resolved };
+};
+
 /** D-137 P3 § A.11 — shared resolve helper. Validates the rpc args,
  *  looks up the plan, flips status, broadcasts + audits, returns the
  *  resolved plan to the caller. The approve / cancel handlers share
@@ -1368,6 +1488,9 @@ const resolvePlanRpc = async (
   }
   const safe = ensureRecordArgs(method, args);
   const plan_id = ensureNonEmptyString(method, 'plan_id', safe.plan_id);
+  // D-329 — a held write's card answers its hold's ask; the settlement does the rest.
+  const held = await heldPlan(deps, plan_id, next_status);
+  if (held !== undefined) return resolveHeldPlanRpc(deps, method, next_status, held);
   // Approval must recover the exact reviewed payload before any state change.
   // Cancellation is the safe exception: the durable store may cancel a
   // proposed shell even when corrupt ciphertext made its details unreadable.
@@ -2211,6 +2334,46 @@ export const handleInboundTokenIssue = async (
       400,
     );
   }
+  // ── D-327 — one agreement, one key, one gate ───────────────────────
+  // A key for an agreement that is its key's whole authority carries nothing of
+  // its own: its tools are the agreement's grants, its lifetime and limits the
+  // agreement's. Refuse every field that would put a second answer on the key,
+  // rather than store it and ignore it — an ignored grant reads as a granted one
+  // to whoever set it.
+  const keyAgreementId = validation.value.contract_id;
+  const keyAgreement = keyAgreementId === undefined
+    ? null
+    : deps.keyAgreement?.(keyAgreementId) ?? null;
+  if (keyAgreementId !== undefined && keyAgreement !== null) {
+    const refuse = (why: string): never => {
+      throw new RpcError('bad_request', `chat.inbound_token.issue: ${why}`, 400);
+    };
+    if (!keyAgreement.live) {
+      refuse(`agreement '${keyAgreementId}' is not active, so it cannot have a key`);
+    }
+    if (Object.values(validation.value.grants).some((allowed) => allowed)) {
+      refuse(
+        `agreement '${keyAgreementId}' gives its key its permissions — grant tools on the `
+          + 'agreement (Ops, Entities, Recipes), not on the key',
+      );
+    }
+    if (validation.value.chat_mode !== null) {
+      refuse(`a key for agreement '${keyAgreementId}' takes no chat setting of its own`);
+    }
+    if (validation.value.contract_limits !== undefined) {
+      refuse(`limits for agreement '${keyAgreementId}' live on the agreement, not on its key`);
+    }
+    // ⚠ Check-then-insert with no await between them, so no other issuance can
+    // land in the gap on this single-threaded store.
+    const nowMs = (deps.now ?? Date.now)();
+    if (deps.inboundTokenStore.listTokens().some((token) =>
+      token.contract_id === keyAgreementId && isMcpInboundTokenActive(token, nowMs))) {
+      refuse(
+        `agreement '${keyAgreementId}' already has a key — one agreement has one key, `
+          + 'so turn the old one off first',
+      );
+    }
+  }
   for (const [toolName, allowed] of Object.entries(validation.value.grants)) {
     if (!allowed) continue;
     try {
@@ -2507,6 +2670,17 @@ export const handleInboundTokenUpdateGrants = async (
       404,
     );
   }
+  // D-327 — this key's tools ARE its agreement's grants; the record above
+  // already reads them from there. A write here would land in a column nothing
+  // reads for this key.
+  if (prior.contract_id !== undefined && deps.keyAgreement?.(prior.contract_id) != null) {
+    throw new RpcError(
+      'bad_request',
+      `chat.inbound_token.update_grants: token '${token_id}' takes its permissions from agreement `
+        + `'${prior.contract_id}' — change them on the agreement (Ops, Entities, Recipes)`,
+      400,
+    );
+  }
   if (grants !== undefined) {
     for (const [toolName, allowed] of Object.entries(grants)) {
       if (!allowed) continue;
@@ -2593,12 +2767,11 @@ export const handleInboundTokenUpdateGrants = async (
 };
 
 /** D-171 slice 3 — `chat.inbound_token.update_contract`. Rebinds an
- *  EXISTING token's bound `contract_id` IN PLACE (no re-issue). The
- *  Advanced sub-panel's cap/expiry toggles lazily mint a
- *  `contract_definition` (D-166, via `collection.contract.mintContract`)
- *  when a limit is turned ON, then call this to bind the live token to
- *  it; turning a limit OFF rebinds to unbound (`contract_id: null`) before
- *  revoking the definition. The token's bearer value is unchanged, so
+ *  EXISTING token's bound `contract_id` IN PLACE (no re-issue). Its caller was
+ *  the retired door panel's limits editor, which minted a new contract per
+ *  limit change and moved the key onto it; no page calls it since D-327, where
+ *  an agreement's limits are edited in place (`collection.contract.setLimits`)
+ *  and a key belongs to its agreement. The token's bearer value is unchanged, so
  *  connected clients keep working across the rebind (decision 6) — the
  *  only column that moves is the bound contract, so the next MCP dispatch
  *  resolves liveness against the new (or no) contract.
@@ -2707,6 +2880,20 @@ export const handleInboundTokenUpdateContract = async (
       `chat.inbound_token.update_contract: token_id '${token_id}' not found`,
       404,
     );
+  }
+  // D-327 — an agreement's key is made for it by `issue` and belongs to it.
+  // Moving a key onto such an agreement would hand it a second key (or a key
+  // carrying an old checklist the agreement no longer reads); moving one off
+  // would carry the agreement's key somewhere its page does not show.
+  for (const id of [contract_id, prior.contract_id]) {
+    if (id !== undefined && deps.keyAgreement?.(id) != null) {
+      throw new RpcError(
+        'bad_request',
+        `chat.inbound_token.update_contract: agreement '${id}' keeps its own key — `
+          + 'create a key on the agreement instead of moving one',
+        400,
+      );
+    }
   }
   const now = deps.now ?? Date.now;
   const updated = deps.inboundTokenStore.updateTokenContract({

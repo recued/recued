@@ -56,6 +56,7 @@ export const registerMcpReadonlyMailCollections = (deps: {
       get: (record_id) => table.get(record_id),
       list: (query) => table.list(query),
       search: (query) => table.search(query),
+      checkSpelling: (query) => table.checkSpelling(query),
       sync: {
         async start() { /* read view has no provider loop */ },
         async stop() { /* read view has no provider loop */ },

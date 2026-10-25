@@ -44,10 +44,12 @@ import type Database from 'better-sqlite3';
 
 import {
   FTS_REINDEX_PAGE,
+  checkQuerySpelling,
   createFtsTable,
   dropFtsTable,
   indexRecord as ftsIndexRecord,
   deleteRecord as ftsDeleteRecord,
+  type FtsWordCheck,
 } from '@recued/fts';
 // One definition of the trailing-`*` prefix convention, shared with the generic
 // collection table — see the note on `toFtsMatch`.
@@ -275,6 +277,9 @@ export interface CalendarCollectionTable {
   listSnapshots(query: CalendarListQuery): CalendarRowSnapshot[];
   /** FTS5 search over summary + description + location. */
   search(query: CalendarSearchQuery): CalendarSearchMatch[];
+  /** Each plain word of a search checked against this calendar's index — see
+   *  `CollectionTable.checkSpelling`. */
+  checkSpelling(query: string): FtsWordCheck[];
   /** All-day rows whose times are not days: a start or end off a UTC
    *  midnight, or an end not after the start (`calendar-days.ts`). Rows
    *  written before every write was held to the rule (2026-10-07). */
@@ -1103,6 +1108,7 @@ export const createCalendarTable = (
     list,
     listSnapshots,
     search,
+    checkSpelling: (query: string): FtsWordCheck[] => checkQuerySpelling(db, ftsName, query),
     summarizeParticipant,
     totalBytes,
     referencedBlobHashes,

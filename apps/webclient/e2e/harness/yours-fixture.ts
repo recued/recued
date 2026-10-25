@@ -2,10 +2,20 @@ import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, type Asset, type AssetClassPreset, ty
 import type { ChatQueuedTurn } from '@recued/contracts';
 
 /** UI fixture only. The independent server drive uses the real SQLite stores. */
+declare global {
+  interface Window { __householdFixture?: { setGroup(on: boolean): void } }
+}
 export const createYoursFixture = () => {
   const ruleWrites: YoursCommand[] = [];
   (globalThis as { __assetRuleWrites?: YoursCommand[] }).__assetRuleWrites = ruleWrites;
+  const renewals: YoursCommand[] = [];
+  (globalThis as { __occurrenceRenewals?: YoursCommand[] }).__occurrenceRenewals = renewals;
+  // §15.7 (2026-10-24) — Today's Done on the passport acknowledges its latest reminder.
+  let acknowledged = false;
   const factWrites: YoursCommand[] = [];
+  const relationshipWrites: YoursCommand[] = [];
+  const enrolledWriters: NonNullable<YoursSnapshot['observation_bindings']> = [];
+  (globalThis as { __assetRelationshipWrites?: YoursCommand[] }).__assetRelationshipWrites = relationshipWrites;
   (globalThis as { __assetFactWrites?: YoursCommand[] }).__assetFactWrites = factWrites;
   const navigationOpens: YoursCommand[] = [];
   (globalThis as { __navigationOpens?: YoursCommand[] }).__navigationOpens = navigationOpens;
@@ -31,7 +41,9 @@ export const createYoursFixture = () => {
     rules: [rule], audience: 'owner', retirement: 'part' }, { id: 'warranty_purchase', name: 'Warranty-bearing purchase', version: 1, origin: 'builtin',
     fields: { dates: { warranty_ends_on: null }, readings: {}, observations: {}, settings: {} }, rules: [], audience: 'owner', retirement: 'part' },
     { id: 'boiler', name: 'Boiler', version: 1, origin: 'builtin', fields: { dates: { last_serviced_on: null }, readings: {}, observations: {}, settings: {} },
-      rules: [], audience: 'household', retirement: 'part' }];
+      rules: [], audience: 'household', retirement: 'part' },
+    { id: 'visa', name: 'Visa', version: 1, origin: 'builtin', fields: { dates: { expires_on: null, issued_on: null }, readings: {}, observations: {}, settings: { sensitive: true } },
+      rules: [], audience: 'owner', retirement: 'part' }];
   const make = (id: string, input: Partial<Asset> & { name: string }): Asset => ({ id, source_id: 'recued.asset',
     status: input.status ?? 'active', dates: input.dates ?? {}, readings: {}, observations: {}, values: [], anchors: [], attributes: {}, settings: {}, rules: [],
     retirement: 'part', created_at: time, updated_at: time, last_seen_at: time, sync_state: 'live', conflict_policy: 'recued_wins', field_sources: {}, ...input });
@@ -89,6 +101,10 @@ export const createYoursFixture = () => {
     }
   }
   // UI-only authoritative snapshot update; native store tests enforce admission.
+  (globalThis as { __assetSetAttributes?: (id: string, attributes: Asset['attributes']) => void }).__assetSetAttributes = (id, attributes) => {
+    // Previously returned snapshots retain their old values, like a wire read.
+    assets.set(id, { ...assets.get(id)!, attributes: structuredClone(attributes) });
+  };
   (globalThis as { __assetReportReading?: (id: string, field: string, value: number, unit: string, asOf: number) => void }).__assetReportReading = (id, field, value, unit, asOf) => {
     const asset = assets.get(id)!;
     asset.readings[field] = { value, unit, as_of: asOf, evidence: [] };
@@ -118,7 +134,7 @@ export const createYoursFixture = () => {
   // reported with its evidence (D-325 §15.3).
   const provenance = demo && new URLSearchParams(location.search).has('yours_provenance');
   if (provenance) Object.assign(assets.get('passport')!, {
-    document_number: 'X1234', settings: { radius_km: 5 }, attributes: { cover: 'Blue' },
+    document_number: 'X1234', settings: { radius_km: 5 }, attributes: { cover: new URLSearchParams(location.search).has('yours_crlf_fact') ? 'Blue\r\nSecond line' : 'Blue' },
     observations: { flickering: { active: true, certainty: 'conditional', as_of: time, source: 'recipe:fixture/porch#hash',
       evidence: [{ collection: 'home-assistant', id: 'light.porch', field: 'transitions', value: 'on and off 14 times in two minutes, not from an automation' }] } },
     field_sources: { 'dates.expires_on': { kind: 'extracted', ref: 'reception:request-1', at: time }, document_number: { kind: 'owner', ref: 'paired-owner', at: time },
@@ -195,6 +211,11 @@ export const createYoursFixture = () => {
   if (demo) proposals.set('receipt', { id: 'receipt', key: 'receipt', kind: 'asset', title: 'LG television', explanation: 'A stored Store receipt names this television. Warranty ends 2027-10-10.',
     confidence: 'high', state: 'proposed', origin: 'intake', lane: 'likely_asset', merchant: 'Store', sources: [{ collection: 'mail', id: 'personal:receipt' }],
     payload: { asset: { name: 'LG television', class_id: 'warranty_purchase', dates: { warranty_ends_on: '2027-10-10' } } }, created_at: time, updated_at: time });
+  if (demo && new URLSearchParams(location.search).has('yours_focus_corrections')) {
+    for (const id of ['passport-review-a', 'passport-review-b']) proposals.set(id, { ...proposals.get('receipt')!, id, key: id,
+      title: 'Review passport', explanation: 'Check this proposed passport update.', merchant: undefined, sources: [],
+      subject: { collection: 'asset', id: 'passport' }, payload: { asset: { name: 'Ana’s passport', class_id: 'passport' } } });
+  }
   if (new URLSearchParams(location.search).has('learning')) {
     const base = { confidence: 'medium' as const, state: 'proposed' as const, origin: 'learner' as const, sources: [], created_at: time, updated_at: time };
     proposals.set('ranking', { ...base, id: 'ranking', key: 'ranking', kind: 'ranking', title: 'Review passport ranking', explanation: 'Three owner completions support this ranking.', payload: { ranking_factor: 1.3 } });
@@ -224,6 +245,11 @@ export const createYoursFixture = () => {
   let delivery: SituationDeliveryStatus = { settings: { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true }, last_run: null, last_sent: null };
   let householdTelegram: NonNullable<YoursSnapshot['household']>['telegram'] = null;
   let householdHA: import('@recued/contracts').HouseholdHomeAssistantSelection | null = null;
+  const familyGroup = () => ({ connection_name: 'Family', connection_enrolled_at: 200, recipient: '-100123', selected_at: time });
+  // The group chosen, or switched off, on another device while Settings was away.
+  if (typeof window !== 'undefined') window.__householdFixture = { setGroup: on => { householdTelegram = on ? familyGroup() : null; } };
+  // `?household=group`: the household's Telegram group is already chosen.
+  if (new URLSearchParams(location.search).get('household') === 'group') householdTelegram = familyGroup();
   const today = (input: { now: number; before: number }): ProactiveToday => {
     const when = { from: input.now + 2 * 86_400_000, to: input.now + 2 * 86_400_000 + 3600_000 };
     const evidence = [{ collection: 'asset', id: 'passport' }];
@@ -241,7 +267,8 @@ export const createYoursFixture = () => {
         reasons: ['related'], basis: 'declared', evidence, consequence: 'floor', updated_at: time },
     ] }] : [];
     return { situations: { clusters: [...trip, ...bills], omitted: 0, ambiguous: [] }, ...(demo ? { people: { 'contact-ana': 'Ana Lima' } } : {}),
-      occurrences: demo && commitment.lifecycle_state === 'pending' ? [{ id: 'passport-occurrence', asset_id: 'passport', asset_name: 'Ana’s passport', question: false, reminders_started: true, commitment }] : [],
+      occurrences: demo && commitment.lifecycle_state === 'pending' ? [{ id: 'passport-occurrence', asset_id: 'passport', asset_name: 'Ana’s passport', question: false, reminders_started: true, commitment,
+        renewal: { field: 'expires_on', current: '2027-04-17' }, ...(acknowledged ? { acknowledged: true as const } : {}) }] : [],
       proposal_count: proposals.size, newest_proposal: proposals.size ? { id: 'receipt', title: 'LG television' } : null, phone_ready: false,
       unmatched_replies: demo ? [{ id: 'unmatched', text: 'done', reason: 'no_item_number', created_at: time }] : [] };
   };
@@ -277,7 +304,8 @@ export const createYoursFixture = () => {
       ...(input.asset_filter && !legacyFilters ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}),
       ...(input.asset_sphere && !legacySpheres ? { asset_sphere: input.asset_sphere } : {}),
       ...(input.include_asset_summaries === true && !new URLSearchParams(location.search).has('yours_without_asset_summaries') ? { asset_summaries: selected.map(summaryFor) } : {}),
-      occurrences: demo && (!input.asset_id || input.asset_id === 'passport') && commitment.lifecycle_state === 'pending' ? [{ id: 'passport-occurrence', asset_id: 'passport', rule_id: 'renew', title: commitment.statement, due_on: '2027-04-17', question: false, commitment, current_ask_id: null, later_until: null, closes_by_proof: true }] : [],
+      occurrences: demo && (!input.asset_id || input.asset_id === 'passport') && commitment.lifecycle_state === 'pending' ? [{ id: 'passport-occurrence', asset_id: 'passport', rule_id: 'renew', title: commitment.statement, due_on: '2027-04-17', question: false, commitment, current_ask_id: null, later_until: null, closes_by_proof: true,
+        renewal: { field: 'expires_on', current: '2027-04-17' } }] : [],
       // `&yours_proof=1` — a mailbox takes forwarded proof (D-325 §5.3).
       ...(new URLSearchParams(location.search).has('yours_proof') ? { proof_addresses: ['ana+done@example.test'] } : {}),
       occasions: [...occasions.values()].filter(row => !input.occasion_id || row.id === input.occasion_id),
@@ -287,12 +315,14 @@ export const createYoursFixture = () => {
       sources: [{ id: 'mail:personal', name: 'Personal mail', enabled: true, proposals: proposals.size }], suppressions,
       observation_handoffs: input.asset_id ? handoffs.filter(row => row.id.startsWith(`${input.asset_id}:`)) : [],
       ...(new URLSearchParams(location.search).has('yours_handoff_writer') ? {
-        observation_recipes: [{ id: 'health', name: 'Asset monitor', publisher: 'Fixture', hash: 'fixture' }],
+        observation_recipes: [{ id: 'health', name: 'Asset monitor', publisher: 'Fixture', hash: 'fixture' },
+          ...(new URLSearchParams(location.search).has('yours_multiple_writers') ? [{ id: 'second', name: 'Second monitor', publisher: 'Fixture', hash: 'second-fixture' }] : [])],
         observation_bindings: [{ id: 'monitor', asset_id: 'passport', actor_ref: 'recipe:health', source_ref: 'device:monitor', fields: ['readings.odometer', 'observations.damage'], enabled: true, available: true }],
       } : provenance ? {
         observation_recipes: [{ id: 'porch', name: 'Porch light check', publisher: 'Fixture', hash: 'hash' }],
         observation_bindings: [{ id: 'porch', asset_id: 'passport', actor_ref: 'recipe:porch', source_ref: 'recipe:fixture/porch#hash', fields: ['observations.flickering'], enabled: true, available: true }],
       } : {}),
+      ...(enrolledWriters.length ? { observation_bindings: enrolledWriters } : {}),
       // `&yours_holder_gone=1` — the server says the holder's contact is no longer on file.
       ...(input.asset_id === 'passport' && new URLSearchParams(location.search).has('yours_holder_gone') ? { holder: { contact_id: 'ana', name: null } } : {}),
       intake: { emails_read: 42, receipts_found: 3, likely_assets: proposals.size, last_scan_at: time }, unmatched_replies: [], phone_ready: false,
@@ -301,11 +331,25 @@ export const createYoursFixture = () => {
         ...[...episodes.values(), derived].map(row => ({ collection: 'episode', id: row.id! })), { collection: 'commitment', id: commitment.id },
       ].map(ref => ({ ref, ...placementFor(ref) })),
       sphere_sources: ['mail:personal', 'calendar:work'].map(source => ({ source, name: source, ...(sourceSpheres.has(source) ? { sphere: sourceSpheres.get(source)! } : {}) })),
-      household: { telegram: householdTelegram, telegram_connections: [{ name: 'Family', enrolled_at: 200, recipient: '-100123', owner_sender: '1001' }],
-        home_assistant: { selection: householdHA, connections: [{ name: 'house', enrolled_at: 300 }], issue: null, uncertain: 0 } },
+      household: { telegram: householdTelegram, telegram_connections: [{ name: 'Family', enrolled_at: 200, recipient: '-100123' }],
+        home_assistant: { selection: householdHA, connections: [{ name: 'house', enrolled_at: 300 }], issue: null, uncertain: 0 },
+        // The server's list for Settings, from each asset's own audience (the fixture has no inheritance).
+        shared_assets: (shared => ({ assets: shared.slice(0, 6).map(({ id, name }) => ({ id, name })), total: shared.length }))([...assets.values()]
+          .filter(row => row.audience === 'household' && ['active', 'lent'].includes(row.status) && row.deleted_at == null).sort((a, b) => a.name.localeCompare(b.name))) },
       ...(input.asset_id ? { retirement_impact: { parts: 0, contracts: 0, open_occurrences: commitment.lifecycle_state === 'pending' ? 1 : 0 } } : {}) };
   };
   const change = (input: YoursCommand): { result?: unknown; error?: { code: string; message: string } } => {
+    // §15.7 (2026-10-24) — as the server: the passport's renewal is done by its new date.
+    if (input.action === 'occurrence.acknowledge') {
+      renewals.push(structuredClone(input)); acknowledged = true;
+      return { result: { message: 'Noted. It stays open until its new date is entered under Yours → Due, and Today shows it again at its next reminder.' } };
+    }
+    if (input.action === 'occurrence.renewed') {
+      renewals.push(structuredClone(input));
+      if (!(input.on > '2027-04-17')) return { error: { code: 'bad_request', message: 'Enter a date after 2027-04-17' } };
+      commitment.lifecycle_state = 'fulfilled';
+      return { result: { message: 'New date saved. This task is done, and the next reminders follow the new date.' } };
+    }
     if (input.action === 'asset.automatic_updates') {
       handoffWrites.push(structuredClone(input));
       if (handoffFailures-- > 0) return { error: { code: 'UNAVAILABLE', message: 'The fixture handoff is unavailable. Try again.' } };
@@ -322,13 +366,37 @@ export const createYoursFixture = () => {
       }
       return { result: { message: 'Automatic updates allowed. Your entry stays until a fresh authorized observation arrives.' } };
     }
+    if (input.action === 'binding.disable') {
+      relationshipWrites.push(structuredClone(input));
+      const binding = enrolledWriters.find(row => row.id === input.id); if (binding) binding.enabled = false;
+      return { result: { message: 'Writer disabled.' } };
+    }
+    if (input.action === 'binding.save') {
+      relationshipWrites.push(structuredClone(input));
+      enrolledWriters.push({ id: `writer-${input.recipe_id}`, asset_id: input.asset_id, actor_ref: `recipe:${input.recipe_id}`, source_ref: `recipe:${input.recipe_id}`, fields: input.fields, enabled: true, available: true });
+      return { result: { message: 'Writer enrolled for the reviewed fields.' } };
+    }
+    if (input.action === 'asset.add_evidence') {
+      relationshipWrites.push(structuredClone(input));
+      const [group, field] = input.path.split('.') as ['readings' | 'observations', string];
+      assets.get(input.id)![group][field]!.evidence.push(input.evidence);
+      return { result: { message: 'Evidence added. The observation and its writer keep their existing authority.' } };
+    }
+    if (input.action === 'asset.record_attribute_reading') {
+      factWrites.push(structuredClone(input));
+      if (new URLSearchParams(location.search).has('yours_copy_conflict')) return { error: { code: 'bad_request', message: 'This text or its source changed. Refresh and review it before recording a reading.' } };
+      const asset = assets.get(input.id)!;
+      asset.readings[input.field] = { ...input.reading, evidence: [{ collection: 'asset', id: asset.id, field: `attributes.${input.attribute}`, value: input.expected_source.value }] };
+      asset.field_sources[`readings.${input.field}`] = { kind: 'owner', ref: 'paired-owner', at: Date.now(), revision: `copy:${input.request_id}` };
+      return { result: { id: asset.id, message: 'Reading recorded. The original text is unchanged.' } };
+    }
     if (input.action === 'asset.update') factWrites.push(structuredClone(input));
     if (input.action === 'navigation.open') navigationOpens.push(structuredClone(input));
     if (input.action === 'rule.save' || input.action === 'proposal.edit' || input.action === 'class.save') ruleWrites.push(structuredClone(input));
     if (input.action === 'household.telegram') householdTelegram = input.connection_name === null ? null : {
-      connection_name: input.connection_name, connection_enrolled_at: input.connection_enrolled_at!, recipient: '-100123', expected_sender: '1001', members: input.members!, selected_at: time };
+      connection_name: input.connection_name, connection_enrolled_at: input.connection_enrolled_at!, recipient: '-100123', selected_at: time };
     if (input.action === 'household.home_assistant') householdHA = input.connection_name === null ? null : {
-      connection_name: input.connection_name, connection_enrolled_at: input.connection_enrolled_at!, entity_id: input.entity_id!, base_url: 'http://ha.local:8123', mode: 'interactive', selected_at: time };
+      connection_name: input.connection_name, connection_enrolled_at: input.connection_enrolled_at!, entity_id: input.entity_id!, base_url: 'http://ha.local:8123', selected_at: time };
     if (input.action === 'delivery.update') delivery = { ...delivery, settings: { ...delivery.settings, ...input.settings } };
     if (input.action === 'occasion.save') { const id = input.occasion.id ?? `occasion-${++number}`; const old = occasions.get(id);
       occasions.set(id, { ...input.occasion, id, created_at: old?.created_at ?? time, updated_at: time, rules: input.occasion.rules.length || old ? input.occasion.rules : [{ ...rule, id: 'date', title: input.occasion.title,
@@ -405,7 +473,7 @@ export const createYoursFixture = () => {
         const links = identityLinks.get(left!) ?? new Set<string>(); links.add(right!); identityLinks.set(left!, links);
       }
     } else if (input.action === 'asset.delete') assets.delete(input.id);
-    else if (input.action === 'class.save') { const index = classes.findIndex(row => row.id === input.preset.id); if (index < 0) classes.push(input.preset); else classes[index] = { ...input.preset, version: classes[index]!.version + 1 }; }
+    else if (input.action === 'class.save') { const index = classes.findIndex(row => row.id === input.preset.id); if (input.create && index >= 0) throw new Error('This class id already exists. Choose a different id or edit the existing class.'); if (index < 0) classes.push(input.preset); else classes[index] = { ...input.preset, version: classes[index]!.version + 1 }; }
     else if (input.action === 'class.delete') { const index = classes.findIndex(row => row.id === input.id); if (index >= 0) classes.splice(index, 1); }
     else if (input.action === 'sphere.item') spherePlacements.set(JSON.stringify([input.ref.collection, input.ref.id]), { ...(input.sphere ? { sphere: input.sphere } : {}), reason: input.sphere ? 'placed by you' : 'unsorted', pinned: !!input.sphere, source: 'mail:personal' });
     else if (input.action === 'sphere.source') { if (input.sphere) sourceSpheres.set(input.source, input.sphere); else sourceSpheres.delete(input.source); }
@@ -445,10 +513,33 @@ export const createYoursFixture = () => {
       return { result: { ...input, message: queuedAssetQuestion.message } };
     }
     if (absent && method.startsWith('yours.')) return { error: { code: 'unknown_method', message: 'Unknown method' } };
+    // §15.7 amendment — `?household_lists=1`: the Home Assistant connection's lists, read live.
+    // Otherwise a server before the menu, which keeps the typed list id.
+    if (method === 'yours.household_lists') {
+      const input = raw as { connection_name: string; connection_enrolled_at: number };
+      if (!new URLSearchParams(location.search).has('household_lists')) return { error: { code: 'unknown_method', message: 'Unknown method' } };
+      if (input.connection_name !== 'house' || input.connection_enrolled_at !== 300) return { error: { code: 'bad_request', message: 'Choose an enrolled Home Assistant connection' } };
+      return { result: { lists: [{ entity_id: 'todo.chores', name: 'Chores', usable: true },
+        { entity_id: 'todo.household', name: 'Household', usable: true }] } };
+    }
     if (method === 'yours.today') return { result: today(raw as { now: number; before: number }) };
     if (method === 'yours.delivery') return { result: delivery };
     if (method === 'yours.learning') return { result: { last_time: lastTime, classes: recallRates,
       asked: lastTime === 'unasked' && new URLSearchParams(location.search).has('yours_last_time_asked') } };
+    if (method === 'yours.context') {
+      const { root } = raw as import('@recued/contracts').AssetFactContextRequest;
+      const asset = assets.get(root.asset_id)!;
+      const rule = root.kind === 'rule' ? asset.rules.find(value => value.id === root.rule_id)! : undefined;
+      const field: import('@recued/contracts').AssetFieldRef = root.kind === 'field' ? root : { kind: 'field', asset_id: asset.id,
+        group: rule!.when.kind === 'objective' ? 'readings' : rule!.when.kind === 'condition' ? 'observations' : 'dates', field: rule!.when.field };
+      const value = asset[field.group][field.field] ?? null;
+      const fieldNode: import('@recued/contracts').AssetFactContextNode = { kind: 'field', ref: field, label: field.field.replaceAll('_', ' '), value, known: value !== null,
+        source: asset.field_sources[`${field.group}.${field.field}`] ?? null };
+      const rules: import('@recued/contracts').AssetFactContextNode[] = asset.rules.filter(row => row.when.field === field.field).map(row => ({ kind: 'rule', ref: { kind: 'rule', asset_id: asset.id, rule_id: row.id }, title: row.title, rule: row }));
+      const packet: import('@recued/contracts').AssetFactContext = { root, asset: { id: asset.id, name: asset.name, status: new URLSearchParams(location.search).has('yours_retired_context') ? 'retired' : asset.status }, nodes: [fieldNode, ...rules],
+        edges: rules.map(node => ({ from: node.ref, to: field, kind: 'uses' })), read_at: Date.now(), freshness: 'current', completeness: 'complete', omitted: [], missing: value === null ? [field] : [] };
+      return { result: packet };
+    }
     if (method === 'yours.read') {
       if ((raw as YoursReadRequest).search !== undefined && assetSearchFailures-- > 0) return { error: { code: 'unavailable', message: 'Asset search unavailable. Try again.' } };
       // P44: a list read must never ask the server to assemble derived episodes.
@@ -486,7 +577,9 @@ export const createYoursFixture = () => {
     if (method === 'data.file.attachments.preview') return { result: { record_id: 'file:received:receipt', filename: 'Passport receipt.txt', mime_type: 'text/plain', size_bytes: 16, transient: false, can_download: false, content: { kind: 'text', bytes_b64: btoa('Passport receipt') } } };
     if (method === 'data.timeline') return { result: { entries: [] } };
     if (method === 'work_entity.commitment.fulfill' || method === 'work_entity.commitment.cancel') {
-      commitment.lifecycle_state = method.endsWith('fulfill') ? 'fulfilled' : 'cancelled'; return { result: { entity: { ...commitment, _kind: 'commitment' } } };
+      // §15.7 (2026-10-24) — as the server: Done alone does not renew the passport.
+      if (method.endsWith('fulfill')) return { error: { code: 'bad_request', message: `“${commitment.statement}” is done once its new date is entered. Enter it under Yours → Due.` } };
+      commitment.lifecycle_state = 'cancelled'; return { result: { entity: { ...commitment, _kind: 'commitment' } } };
     }
     return null;
   };

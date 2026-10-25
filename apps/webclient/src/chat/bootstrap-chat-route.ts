@@ -21,6 +21,7 @@ import {
 } from '@recued/contracts';
 import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
+import { ANSWER_SOURCES_STYLES, buildAnswerSources } from './source-citations.js';
 import { renderAnswerText } from './answer-text.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
@@ -126,6 +127,7 @@ import {
   type ChatPlanAddress,
   type SourceRecordDataTab,
 } from '../shell/route.js';
+import { RUN_REVIEW_LABEL, RUN_REVIEW_LINK_ATTR, runReviewHref } from '../logs/run-review.js';
 import {
   classifyRpcError,
   type ClassifiedRpcError,
@@ -1442,6 +1444,18 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   border-top: none;
   padding: 0;
 }
+/* ⛔ The welcome cards above the Chat box can be taller than the thread on a
+   phone — and with the connection banner up the thread is shorter still — so
+   the box began below the fold (about 100px below it while offline). Pinned to
+   the thread's bottom edge it stays in view and the cards scroll behind it. A
+   thread whose welcome fits never scrolls, so this changes nothing there. */
+[${CHAT_ROUTE_THREAD_ATTR}][data-empty="true"] .chat-thread-hero .chat-composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-block: 8px 10px;
+  background: var(--surface);
+}
 [${CHAT_ROUTE_GREETING_ATTR}] {
   margin: 0;
   font-size: 20px;
@@ -2696,6 +2710,17 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action {
     flex: 1 1 100%;
   }
+  /* The composer's buttons and the attach menu are a finger's size. ⛔ Send
+     was 32px tall and Attach 33 by 31. */
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_ATTACH_ATTR}],
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_VOICE_ATTR}],
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_SEND_ATTR}] {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  [data-chat-attach-menu] button {
+    min-height: 44px;
+  }
 }
 `;
 
@@ -2712,6 +2737,7 @@ export const CHAT_ROUTE_STYLES = [
   CHAT_QUEUE_STYLES,
   CHAT_QUOTED_REPLY_STYLES,
   CHAT_INSTALL_OFFERS_STYLES,
+  ANSWER_SOURCES_STYLES,
 ].join('\n');
 
 export interface ChatConnectedSourcePollScheduler {
@@ -3191,7 +3217,7 @@ const planStatusLabel = (card: PlanApprovalCard): string => {
     return 'Recued cannot show this';
   }
   if (card.status === 'proposed') return 'Needs a look';
-  if (card.status === 'cancelled') return 'Cancelled';
+  if (card.status === 'cancelled') return card.lapsed === true ? 'Expired' : 'Cancelled';
   if (card.execution?.status === 'running') return 'Running';
   if (card.execution?.status === 'completed') return 'Completed';
   if (card.execution?.status === 'held') return 'Paused';
@@ -3312,10 +3338,20 @@ const planCardHint = (
       return 'Chat has suggested trying again after checking. Nothing ran '
         + 'from this. Look at it as a brand new one-off yes.';
     }
+    // D-329 — the same ask is on every approval channel, and any of them decides it.
+    if (card.held === true) {
+      return 'Look at what is below. Saying yes does it now, once, with exactly '
+        + 'these details. You can also answer it from your phone or your messages.';
+    }
     return 'Look at what is below. Saying yes lets Chat do it once, '
       + 'with exactly these details. It does not run it yet.';
   }
   if (card.status === 'cancelled') {
+    // D-329 — no one said no: the approval waited too long and was withdrawn everywhere.
+    if (card.lapsed === true) {
+      return 'Its approval expired before anyone answered it, so nothing ran. '
+        + 'Ask Chat again if you still want it.';
+    }
     return 'Nothing ran. Ask Chat again if you want to '
       + 'look at something different.';
   }
@@ -3382,6 +3418,10 @@ const planCardHint = (
   if (state.continuationPrepared) {
     return 'A message is ready in the box. Read it, then send it '
       + 'when you are ready.';
+  }
+  if (card.held === true) {
+    return 'You said yes to exactly these details. Recued is doing it now, '
+      + 'and Chat will say when it is done.';
   }
   return 'You said yes to exactly these details. Carry on in Chat when '
     + 'you are ready to ask Chat to do it.';
@@ -3457,11 +3497,11 @@ const dataVerificationRelationshipDescription = (
 ): string => {
   switch (relationship) {
     case 'derived':
-      return 'record the run wrote';
+      return 'record written by the run';
     case 'involved':
-      return 'item touched by the step that changes things';
+      return 'item involved in the side-effecting step';
     case 'action':
-      return 'record the outside action used';
+      return 'record used by the external action';
     default:
       return 'record linked to the run';
   }
@@ -3515,8 +3555,8 @@ const buildChatDataReviewContext = (
     run_id: context.runId,
     run_correlation:
       runMatch === 'matched'
-        ? 'the result says so'
-        : 'not the result says so',
+        ? 'confirmed by the action execution receipt'
+        : 'not confirmed by the action execution receipt',
     data_relationship:
       dataVerificationRelationshipDescription(context.relationship),
   })}\n`
@@ -4151,6 +4191,10 @@ export const bootstrapChatRoute = (
   }
   let threadSnapshotGeneration = 0;
   let threadSnapshotLoad: ThreadSnapshotLoad | null = null;
+  // A returned conversation owns this draft before its rows arrive. Sending
+  // during that gap must not create an empty replacement session or lose it.
+  const composerNavigationPending = (): boolean => initialSessionIdOnLoad !== null
+    || threadSnapshotLoad?.kind === 'navigation';
   const beginThreadSnapshotLoad = (
     sessionId: string,
     kind: ThreadSnapshotLoad['kind'],
@@ -5122,7 +5166,7 @@ export const bootstrapChatRoute = (
 
   const renderMessage = (
     host: HTMLElement,
-    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'tool_call' | 'reply_to' | 'attachments'>,
+    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations'>,
     activity: ReadonlyArray<ChatActivityRow> = [],
     pendingText?: string,
   ): HTMLElement => {
@@ -5166,7 +5210,7 @@ export const bootstrapChatRoute = (
       content.textContent = pendingText;
     } else if (message.role === 'assistant') {
       // Record citations become in-app links; everything else stays text.
-      renderAnswerText(doc, content, message.content);
+      renderAnswerText(doc, content, message.content, message.source_citations);
     } else {
       const assetHandoff = message.role === 'user' ? readAssetChatMessage(message.content) : null;
       const handoff = message.role === 'user' ? readMailWorkChatPrompt(message.content) : null;
@@ -5210,6 +5254,8 @@ export const bootstrapChatRoute = (
       }
     }
     row.appendChild(content);
+    const sources = buildAnswerSources(doc, message, quoteSession);
+    if (sources) row.appendChild(sources);
     if (message.attachments?.length) {
       const attachments = doc.createElement('ul'); attachments.setAttribute('data-chat-attachments', '');
       for (const file of message.attachments) {
@@ -5968,7 +6014,7 @@ export const bootstrapChatRoute = (
     scope.className = 'chat-plan-card-scope';
     scope.textContent =
       card.status === 'cancelled'
-        ? 'You gave no permission'
+        ? card.lapsed === true ? 'No one answered in time' : 'You gave no permission'
         : card.retry_of_plan_id !== undefined
           ? 'A new one-off yes'
           : card.execution !== undefined
@@ -6048,10 +6094,7 @@ export const bootstrapChatRoute = (
       if (runId !== undefined) {
         const sessionId =
           state.thread.session?.id ?? state.activeSessionId;
-        const runLink = doc.createElement('a');
-        runLink.setAttribute(CHAT_ROUTE_PLAN_RUN_ATTR, '');
-        runLink.setAttribute('href', serializeLogsRunAddress({
-          runId,
+        const href = runReviewHref(runId, {
           ...(sessionId === null
             ? {}
             : {
@@ -6063,10 +6106,16 @@ export const bootstrapChatRoute = (
                     : {}),
                 },
               }),
-        }));
-        runLink.setAttribute('aria-label', 'See this run under Runs');
-        runLink.textContent = 'See this run →';
-        receipt.appendChild(runLink);
+        });
+        if (href !== null) {
+          const runLink = doc.createElement('a');
+          runLink.setAttribute(CHAT_ROUTE_PLAN_RUN_ATTR, '');
+          runLink.setAttribute(RUN_REVIEW_LINK_ATTR, '');
+          runLink.setAttribute('href', href);
+          runLink.setAttribute('aria-label', 'Review this run in Logs');
+          runLink.textContent = RUN_REVIEW_LABEL;
+          receipt.appendChild(runLink);
+        }
       }
       el.appendChild(receipt);
     }
@@ -6385,6 +6434,8 @@ export const bootstrapChatRoute = (
       && card.execution === undefined
       && card.payload_available !== false
       && !continuationSent
+      // D-329 — a held write runs on its approval; asking Chat again would ask twice.
+      && card.held !== true
     ) {
       const actions = doc.createElement('div');
       actions.className = 'chat-plan-card-actions';
@@ -7902,6 +7953,7 @@ export const bootstrapChatRoute = (
       send.disabled =
         state.sending
         || composerDeletionInFlight()
+        || composerNavigationPending()
         || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
         || state.aiAvailable === false
         || composerAttachments.hasUnfinished()
@@ -8106,6 +8158,7 @@ export const bootstrapChatRoute = (
     if (
       state.sending
       || composerDeletionInFlight()
+      || composerNavigationPending()
       || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || aiUnavailable
       || composerAttachments.hasUnfinished()
@@ -8126,6 +8179,7 @@ export const bootstrapChatRoute = (
     if (composerDeletionInFlight()) {
       send.setAttribute('title', 'Waiting for this chat to finish deleting.');
     }
+    if (composerNavigationPending()) send.setAttribute('title', 'Waiting for this conversation to finish loading.');
     if (aiUnavailable) {
       // Accessible disabled reason: tooltip for sighted users + an
       // aria-describedby pointing at the visible banner for AT.
@@ -11675,6 +11729,7 @@ export const bootstrapChatRoute = (
       (trimmed.length === 0
         && (composerAttachments?.payload().length ?? 0) === 0)
       || state.sending
+      || composerNavigationPending()
       || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || hasPendingInitialDraft()
       || composerAttachments.hasUnfinished()

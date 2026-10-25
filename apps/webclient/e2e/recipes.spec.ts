@@ -595,7 +595,9 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   const executeCallsBeforeSave = await page.evaluate(
     () => window.__app.rpcCallCount('execute'),
   );
-  await save.click();
+  await page.evaluate(() => window.__app.holdRpcResponses?.('execute'));
+  await save.focus();
+  await page.keyboard.press('Enter');
   await expect(status).toHaveText('1 row · Saving changes…');
   await expect(save).toHaveText('Saving…');
   await expect(save).toHaveAttribute('aria-disabled', 'true');
@@ -627,6 +629,8 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(detail).toBeVisible();
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execute')))
+    .toBe(1);
   await expect(status).toHaveText('1 row · No changes yet');
   await expect(amount).toHaveValue('800.00');
   await expect(save).toBeDisabled();
@@ -817,7 +821,7 @@ test('Recipes keeps Save settings owned while reading what a first dish starts f
 
 test('Recipes returns a failed Save settings read to its action with a retryable error', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&dishes_defaults_response=fail-slow`,
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&dishes_defaults_response=fail-slow&hold_rpc=dishes.defaults`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
@@ -837,6 +841,8 @@ test('Recipes returns a failed Save settings read to its action with a retryable
   await expect(switchOn).toHaveAttribute('aria-busy', 'true');
   await expect(switchOn).toBeFocused();
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('dishes.defaults')))
+    .toBe(1);
   const alert = detail.locator('[data-recued-running-as] [role="alert"]');
   await expect(alert).toContainText('Recued could not read what this recipe starts from');
   await expect(alert).toContainText('Settings are temporarily unavailable');
@@ -1445,7 +1451,7 @@ test('Recipes Discover keeps dependency install ownership through a slow failure
     });
   });
   await page.goto(
-    `${HARNESS_URL}?recipes=installed&recipe_install_response=fail-slow`,
+    `${HARNESS_URL}?recipes=installed&recipe_install_response=fail-slow&hold_rpc=recipe.installBySlug`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
@@ -1481,6 +1487,8 @@ test('Recipes Discover keeps dependency install ownership through a slow failure
   await expect(dialog).toBeVisible();
   await expect(install).toBeFocused();
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('recipe.installBySlug')))
+    .toBe(1);
   await expect(dialog.getByRole('alert'))
     .toHaveText('Recipe install unavailable.');
   await expect(install).toHaveText('Install recipe');

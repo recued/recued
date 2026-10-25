@@ -2,8 +2,10 @@
  *
  *  It used to check access and then mark the calendar synced, reading nothing:
  *  an event changed at Google stayed as it was until the next poll, while the
- *  page said the calendar had just synced. The real calendar stack, collection
- *  and Google provider run here against a fake Google; nothing polls on its own.
+ *  page said the calendar had just synced. It answers once the calendar has
+ *  caught up, so the page it reloads shows this read (`resync-wait.ts`). The
+ *  real calendar stack, collection and Google provider run here against a fake
+ *  Google; nothing polls on its own.
  */
 import Database from 'better-sqlite3';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -131,36 +133,40 @@ let h: Harness | undefined;
 afterEach(async () => { await h?.close(); h = undefined; });
 
 describe('Re-sync on a Google calendar', () => {
-  it('reads the calendar again: what changed at Google since the last poll comes in', async () => {
+  it('reads the calendar again, and answers once it has: the page it reloads shows this read', async () => {
     h = newHarness();
     h.google.put(timed('standup', 'Standup', 24 * HOUR));
     await h.stack.startAll('wait');
     expect(h.summaryOf('standup')).toBe('Standup');
 
+    // An hour on, the event changed at Google and another was added.
+    h.advance(HOUR);
     h.google.put(timed('standup', 'Team standup', 24 * HOUR));
     h.google.put(timed('dentist', 'Dentist', 48 * HOUR));
     expect(h.summaryOf('standup')).toBe('Standup');
 
     await expect(handleCalendarResync(h.stack.enrollDeps, { slug: 'work' }))
       .resolves.toMatchObject({ ok: true, auth_state: 'healthy' });
-    await expect.poll(() => h!.summaryOf('standup'), { timeout: 5_000 }).toBe('Team standup');
+    expect(h.summaryOf('standup')).toBe('Team standup');
     expect(h.summaryOf('dentist')).toBe('Dentist');
+    expect(h.stack.instances.get('calendar', 'work')?.last_synced_at).toBe(T0 + HOUR);
   });
 
-  it('leaves the sync time alone when it reads nothing', async () => {
+  it('leaves the sync time alone when it reads nothing, and answers once the read has failed', async () => {
     h = newHarness();
     h.google.put(timed('standup', 'Standup', 24 * HOUR));
     await h.stack.startAll('wait');
     const synced = h.stack.instances.get('calendar', 'work')?.last_synced_at;
     expect(synced).toBe(T0);
 
-    // An hour on, Google fails every listing.
+    // An hour on, Google fails every listing. A wait longer than the test: it
+    // answers on the failed read, not on the timer.
     h.advance(HOUR);
     h.google.fail();
     const listings = h.google.listings();
-    await expect(handleCalendarResync(h.stack.enrollDeps, { slug: 'work' })).resolves.toMatchObject({ ok: true });
-    await expect.poll(() => h!.google.listings(), { timeout: 5_000 }).toBeGreaterThan(listings);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(handleCalendarResync({ ...h.stack.enrollDeps, resyncWaitMs: 60_000 }, { slug: 'work' }))
+      .resolves.toMatchObject({ ok: true });
+    expect(h.google.listings()).toBeGreaterThan(listings);
     expect(h.stack.instances.get('calendar', 'work')?.last_synced_at).toBe(T0);
   });
 });

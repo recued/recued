@@ -39,6 +39,7 @@ const ancestryReads = (sql: string[]) => sql.filter(query => /^WITH RECURSIVE an
 const counterReads = (sql: string[]) => sql.filter(query => /^SELECT total_changes\(\) AS writes,data_version,schema_version/u.test(query));
 const priorPoints = (sql: string[]) => sql.filter(query => /^SELECT snapshot, revision FROM situations WHERE id=/u.test(query));
 const priorBatches = (sql: string[]) => sql.filter(query => /^WITH publication_situation_requested\b/u.test(query));
+const metadataReads = (sql: string[]) => sql.filter(query => /^WITH publication_asset_requested\b/u.test(query));
 
 describe('D-325 proposal publication asset placements', () => {
   for (const count of [0, 1, 100, 101, 201]) it(`publishes ${count} events with bounded asset projection and no repeated-publication reads`, () => {
@@ -49,7 +50,7 @@ describe('D-325 proposal publication asset placements', () => {
     const expected = offers.map(row => proposalSituation(row, f.spheres));
     const { sql } = f.publish();
     const points = Math.ceil(count / 100); const batches = Math.floor(count / 100);
-    expect(assetReads(sql)).toHaveLength(points); expect(ancestryReads(sql)).toHaveLength(batches);
+    expect(assetReads(sql)).toHaveLength(points); expect(ancestryReads(sql)).toEqual([]); expect(metadataReads(sql)).toHaveLength(batches);
     expect(counterReads(sql)).toHaveLength(count - points + 2 * batches);
     expect(priorPoints(sql)).toHaveLength(points); expect(priorBatches(sql)).toHaveLength(batches);
     expect(offers.map(row => f.situations.get(`proposal:${row.id}`)?.snapshot)).toEqual(expected);
@@ -87,7 +88,7 @@ describe('D-325 proposal publication asset placements', () => {
   it('deduplicates projection IDs while publishing every revision in order', () => {
     const f = fixture(); f.put('a');
     const first = f.offer({ collection: 'asset', id: 'a' }); f.proposals.edit(first.id, { title: 'Owner edit' }, 101); f.proposals.outcome(first.id, 'not_this_one', 102);
-    const { sql } = f.publish(); expect(ancestryReads(sql)).toHaveLength(1); expect(assetReads(sql)).toHaveLength(1);
+    const { sql } = f.publish(); expect(metadataReads(sql)).toHaveLength(1); expect(assetReads(sql)).toHaveLength(1);
     expect(f.situations.revisionsAfter(0, 1000).map(row => row.after.state)).toEqual(['proposed', 'proposed', 'dismissed']);
     expect(f.proposals.pendingEvents()).toEqual([]);
   });
@@ -124,7 +125,7 @@ describe('D-325 proposal publication asset placements', () => {
     const offers = ids.map(id => { f.put(id); return f.offer({ collection: 'asset', id }); });
     const expected = offers.map(row => proposalSituation(row, f.spheres)); seen.length = 0;
     const { sql } = f.publish();
-    expect(seen).toEqual(ids); expect(ancestryReads(sql)).toHaveLength(1);
+    expect(seen).toEqual(ids); expect(metadataReads(sql)).toHaveLength(1);
     expect(assetReads(sql)).toHaveLength(100); expect(counterReads(sql)).toHaveLength(2);
     expect(offers.map(row => f.situations.get(`proposal:${row.id}`)?.snapshot)).toEqual(expected);
   });
@@ -136,7 +137,7 @@ describe('D-325 proposal publication asset placements', () => {
     const offers = ids.map(id => { f.put(id); return f.offer({ collection: 'asset', id }); });
     const expected = offers.map(row => proposalSituation(row, f.spheres)); seen.length = 0;
     const { sql } = f.publish();
-    expect(seen).toEqual(ids); expect(ancestryReads(sql)).toHaveLength(1);
+    expect(seen).toEqual(ids); expect(metadataReads(sql)).toHaveLength(1);
     expect(assetReads(sql)).toHaveLength(2); expect(counterReads(sql)).toHaveLength(100);
     expect(offers.map(row => f.situations.get(`proposal:${row.id}`)?.snapshot)).toEqual(expected);
   });

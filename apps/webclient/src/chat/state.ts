@@ -166,6 +166,12 @@ export interface PlanApprovalCard {
   /** False only when encrypted reviewed args could not be recovered. Exact-
    * payload actions are disabled in that state. */
   payload_available?: boolean;
+  /** D-329 — a held write: approving answers the ask every approval channel shows and runs
+   *  it at once, so there is nothing to continue in Chat. */
+  held?: true;
+  /** D-329 — its hold expired unanswered (`hold.lapsed_at`): cancelled with nothing run, by
+   *  no one's no. */
+  lapsed?: true;
 }
 
 /** Execution receipt for a consumed one-time approval. `held` is distinct
@@ -360,6 +366,8 @@ export const hydrateThreadFromSnapshot = (
       ...(record.execution !== undefined
         ? { execution: record.execution }
         : {}),
+      ...(record.plan.hold !== undefined ? { held: true as const } : {}),
+      ...(record.plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
       recovered: true,
       payload_available: record.payload_available,
     })),
@@ -746,6 +754,7 @@ export const reduceChatThreadEvent = (
             ? { args_hash: event.args_hash }
             : {}),
           status: 'proposed',
+          ...(event.held === true ? { held: true as const } : {}),
           recovered: false,
           payload_available: true,
         },
@@ -965,14 +974,23 @@ export const applyPlanResolution = (
           args: plan.args,
           args_hash: plan.args_hash,
           status: plan.status,
+          ...(plan.hold !== undefined ? { held: true as const } : {}),
+          ...(plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
         },
       ],
     };
   }
   const existing = state.plan_cards[index];
-  if (existing.status === plan.status) return state;
+  const held = plan.hold !== undefined && existing.held !== true;
+  const lapsed = plan.hold?.lapsed_at !== undefined && existing.lapsed !== true;
+  if (existing.status === plan.status && !held && !lapsed) return state;
   const copy = state.plan_cards.slice();
-  copy[index] = { ...existing, status: plan.status };
+  copy[index] = {
+    ...existing,
+    status: plan.status,
+    ...(held ? { held: true as const } : {}),
+    ...(lapsed ? { lapsed: true as const } : {}),
+  };
   return { ...state, plan_cards: copy };
 };
 

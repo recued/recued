@@ -33,6 +33,7 @@ export {
   buildRecallIndex,
   aliasRecallArgsForEgress,
   decorateOverlapForEgress,
+  ownerTextAsSent,
   aliasCandidateValuesForEgress,
   type FieldPrivacyResolver,
   type EgressGateInput,
@@ -41,6 +42,7 @@ export {
   type RecallContactSeeds,
   type RecallIndex,
   type CandidateValueSeed,
+  type OwnerTextAsSent,
   type RequestRestoreAuthority,
 } from './egress-aliasing.js';
 // D-167 B3 — the pure alias→kind shape function, surfaced on the `piiEgress`
@@ -48,7 +50,7 @@ export {
 // `contact.search` by an aliased arg's kind before the value-restore (D6). It
 // reads no ledger, but lives behind this namespace with the other PII primitives
 // so the backend stays on the gateway consumer surface.
-export { ledgerKindForAlias } from '@recued/transforms';
+export { ledgerKindForAlias, hasShapeToAlias } from '@recued/transforms';
 // D-167 — the deterministic slot-ordering seeder. Surfaced here for the same
 // reason as `ledgerKindForAlias`: the backend stays on this consumer namespace
 // rather than importing the transform directly. A reservation is not an

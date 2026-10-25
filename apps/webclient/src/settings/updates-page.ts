@@ -54,6 +54,7 @@ import type {
 } from '../realtime/connection-status.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { WEBCLIENT_SHELL_CACHE_NAME } from '../runtime/service-worker.js';
+import { UPDATES_WORKSPACE_STYLES } from './updates-workspace-styles.js';
 
 export const UPDATES_PAGE_ATTR = 'data-recued-updates-page';
 export const UPDATES_PAGE_STATE_ATTR = 'data-recued-updates-page-state';
@@ -275,7 +276,7 @@ export const UPDATES_PAGE_STYLES = `
   flex-wrap: wrap;
   gap: 8px;
 }
-`;
+` + '\n' + UPDATES_WORKSPACE_STYLES;
 
 /** Default availability re-check cadence (6h — matches the server's stable
  *  housekeeping check). Injectable via `pollIntervalMs`. */
@@ -872,6 +873,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   receiptRecoveryEl.appendChild(receiptDiagnosticEl);
   setHidden(receiptDiagnosticEl, true);
   setHidden(receiptRecoveryEl, true);
+  const currentBlock = make('section', { className: 'updates-version-card' });
+  currentBlock.appendChild(make('h3', { text: 'Current versions' }));
   const versionEl = make('p', {
     attrs: { [UPDATES_VERSION_ATTR]: '', tabindex: '-1' },
   });
@@ -897,8 +900,9 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const applyResultEl = make('p', { attrs: { [UPDATES_APPLY_RESULT_ATTR]: '' } });
   setHidden(applyResultEl, true);
 
-  const modeBlock = make('div');
+  const modeBlock = make('div', { className: 'updates-policy-card' });
   setHidden(modeBlock, true);
+  modeBlock.appendChild(make('h3', { text: 'Update policy' }));
   const modeLabel = make('label', { text: 'When updates are available' });
   const modeSelect = doc.createElement('select') as HTMLSelectElement;
   modeSelect.setAttribute(UPDATES_MODE_SELECT_ATTR, '');
@@ -947,7 +951,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const modeNoteEl = make('p', { attrs: { [UPDATES_MODE_NOTE_ATTR]: '' } });
   modeBlock.appendChild(modeNoteEl);
 
-  const rollbackBlock = make('div');
+  const rollbackBlock = make('div', { className: 'updates-recovery-card' });
+  rollbackBlock.appendChild(make('h3', { text: 'Recovery' }));
   rollbackBlock.appendChild(
     make('p', {
       // ⛔ CONDITIONAL, NOT A PROMISE. This said the snapshot "is restored" flatly,
@@ -981,11 +986,12 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   root.appendChild(credentialRetryEl);
   root.appendChild(tabProgressEl);
   root.appendChild(receiptRecoveryEl);
-  root.appendChild(versionEl);
-  root.appendChild(webAppVersionEl);
-  root.appendChild(checkBtn);
-  root.appendChild(statusEl);
-  root.appendChild(errorEl);
+  currentBlock.appendChild(versionEl);
+  currentBlock.appendChild(webAppVersionEl);
+  currentBlock.appendChild(checkBtn);
+  currentBlock.appendChild(statusEl);
+  currentBlock.appendChild(errorEl);
+  root.appendChild(currentBlock);
   root.appendChild(availableEl);
   root.appendChild(applyResultEl);
   root.appendChild(modeBlock);

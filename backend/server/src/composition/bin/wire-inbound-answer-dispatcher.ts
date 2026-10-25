@@ -109,6 +109,8 @@ export type MessengerCallbackAck = (
 
 /** D-325 §5.1 — what a press on a reminder that already closed is told. */
 export const REMINDER_ALREADY_CLOSED = 'This reminder is already closed.';
+/** What a press in the household group is told: the group only receives reminders. */
+export const HOUSEHOLD_ONLY_RECEIVES = 'Reminders in this group are for reading. They are marked done in Recued.';
 
 export interface ComposeInboundAnswerDispatcherDeps {
   /** Host-only D-261 interceptor. This dispatcher receives signature-verified
@@ -131,8 +133,9 @@ export interface ComposeInboundAnswerDispatcherDeps {
   /** Read from the same authenticated named connection used by the webhook
    * port. A newly enrolled row cannot answer a previous enrollment's asks. */
   connectionEnrollment?: (name: string) => number | undefined;
-  /** A selected household reminder group is a narrow surface: no private
-   * approvals, live controls, chat turns or message-trigger ingestion. */
+  /** The selected household group only receives reminders (D-325 §15.7,
+   * 2026-10-24): nothing from it is an answer, an approval, a live control, a
+   * chat turn or a message trigger. */
   householdRemindersOnly?: (name: string) => boolean;
   /** D-158 amendment 2026-10-20 — the connection a plain ask on `vendor` goes
    *  out through: the owner's choice for the channel
@@ -358,23 +361,13 @@ export const composeInboundAnswerDispatcher = (
     // `update_id`); omitted when the payload carried none.
     const idLog: Record<string, string> = id_value !== null ? { [id_field]: id_value } : {};
 
+    // D-325 §15.7 (2026-10-24) — the household group only receives reminders, so
+    // nothing from it is taken. A press on a button an older build posted there is
+    // acknowledged, so the presser's app stops waiting, and changes nothing.
     if (deps.householdRemindersOnly?.(connection_name)) {
-      if (!channel || !block) return;
-      await block.restoreAskDeliveries();
-      const enrolled_at = deps.connectionEnrollment?.(connection_name);
-      if (enrolled_at === undefined) return;
-      let reply;
-      try { reply = channel.parseInboundReply(payload, { name: connection_name, enrolled_at }); }
-      catch (error) { log?.('warn', 'Household reminder reply could not be parsed', {
-        connection_name, error: error instanceof Error ? error.message : String(error),
-      }); return; }
-      if (!reply || !(await block.getAsk(reply.ask_id))?.delivery_group_id) return;
-      // The durable delivery controller checks the original audience and
-      // member snapshot against the current connection and member selection.
-      const notice = await lateNotice(await block.submitAnswer(reply), reply.ask_id);
       if (ack) {
-        try { await ackWith(ack, payload, connection_name, notice); }
-        catch (error) { log?.('warn', 'Household reminder callback acknowledgement failed', {
+        try { await ackWith(ack, payload, connection_name, HOUSEHOLD_ONLY_RECEIVES); }
+        catch (error) { log?.('warn', 'Household callback acknowledgement failed', {
           connection_name, error: error instanceof Error ? error.message : String(error),
         }); }
       }

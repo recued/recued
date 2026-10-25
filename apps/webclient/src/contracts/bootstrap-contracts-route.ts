@@ -17,9 +17,9 @@ import type { Conn, ServerRpcRegistry } from '@recued/contracts';
  */
 
 import {
-  AUTHORABLE_DOOR_TYPES,
   OWNER_CONTRACT_ID,
   derivedDoorType,
+  isKeyAuthorityContract,
   isStandingContractDefinition,
   type ContractGrantKind,
   type ContractDefinitionView,
@@ -30,7 +30,9 @@ import {
   type ContractLifecycleState,
   type DerivedDoorType,
   type DoorType,
+  type KeyAuthority,
   type MintContractRequest,
+  type SetContractLimitsRequest,
   type UsageCapPeriod,
 } from '@recued/contracts';
 import { mountStandingTasksPanel, type StandingTasksOptions } from './standing-tasks-panel.js';
@@ -71,6 +73,12 @@ import {
   type SuggestionsListCaller,
 } from './suggested-rules-panel.js';
 import {
+  mountWriteRulesPanel,
+  WRITE_RULES_PANEL_STYLES,
+  type WriteRulesPanelCallers,
+  type WriteRulesPanelMount,
+} from './write-rules-panel.js';
+import {
   mountScopedGrantPanel,
   type ScopedGrantPanelMount,
   type ScopedSuggestionsAcceptCaller,
@@ -93,6 +101,7 @@ import {
   type GrantCliReachabilityListCaller,
   type GrantCliReachabilitySetCaller,
 } from './contract-grants-panel.js';
+import { CONTRACTS_DETAIL_STYLES } from './contracts-detail-styles.js';
 import {
   mountPermissionsPanel,
   PERMISSIONS_PANEL_STYLES,
@@ -100,19 +109,20 @@ import {
 } from '../settings/permissions-panel.js';
 import type {
   PermissionsDeleteOverrideCaller,
-  PermissionsIssueInboundTokenCaller,
   PermissionsListCatalogOperationsCaller,
   PermissionsListContractsCaller,
-  PermissionsListInboundTokensCaller,
   PermissionsListOverridesCaller,
   PermissionsMintContractCaller,
-  PermissionsRevokeContractCaller,
-  PermissionsRevokeInboundTokenCaller,
-  PermissionsToolCatalogCaller,
-  PermissionsUpdateInboundContractCaller,
-  PermissionsUpdateInboundTokenCaller,
   PermissionsUpsertOverrideCaller,
 } from '../settings/permissions-panel.js';
+import {
+  CONTRACT_KEY_PANEL_STYLES,
+  mountContractKeyPanel,
+  type ContractKeyIssueCaller,
+  type ContractKeyListCaller,
+  type ContractKeyPanelMount,
+  type ContractKeyRevokeCaller,
+} from './contract-key-panel.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type { RunsListCaller } from '../logs/bootstrap-logs-route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
@@ -157,6 +167,18 @@ export const CONTRACTS_ROUTE_TAB_ATTR = 'data-recued-contracts-tab';
 export const CONTRACTS_ROUTE_TAB_BODY_ATTR = 'data-recued-contracts-tab-body';
 /** The header "Recent activity → Log" link. */
 export const CONTRACTS_ROUTE_ACTIVITY_LINK_ATTR = 'data-recued-contracts-activity-link';
+/** D-327 — the list page's "Rules for every agreement" section (`<details>`). */
+export const CONTRACTS_ROUTE_RULES_ATTR = 'data-recued-contracts-rules';
+/** D-327 — "Change limits" beside Usage and expiry (opens the in-place editor). */
+export const CONTRACTS_ROUTE_LIMITS_EDIT_ATTR = 'data-recued-contracts-limits-edit';
+/** D-327 — the in-place limits editor and its fields. */
+export const CONTRACTS_ROUTE_LIMITS_FORM_ATTR = 'data-recued-contracts-limits-form';
+export const CONTRACTS_ROUTE_LIMITS_CAP_ATTR = 'data-recued-contracts-limits-cap';
+export const CONTRACTS_ROUTE_LIMITS_PERIOD_ATTR = 'data-recued-contracts-limits-period';
+export const CONTRACTS_ROUTE_LIMITS_EXPIRY_ATTR = 'data-recued-contracts-limits-expiry';
+export const CONTRACTS_ROUTE_LIMITS_SAVE_ATTR = 'data-recued-contracts-limits-save';
+export const CONTRACTS_ROUTE_LIMITS_CANCEL_ATTR = 'data-recued-contracts-limits-cancel';
+export const CONTRACTS_ROUTE_LIMITS_ERROR_ATTR = 'data-recued-contracts-limits-error';
 
 // ── New-contract flow (delta 2) ─────────────────────────────────────
 /** The `+ New contract` action on the Others tab (toggles the mint form). */
@@ -225,13 +247,15 @@ const pendingListFocusByDocument = new WeakMap<Document, string>();
 // MCP client snippets (pure helpers — consumed by the delta-2 Connect tab)
 // ════════════════════════════════════════════════════════════════
 
-const TOKEN_PLACEHOLDER = '<token shown once after opening the door>';
+const TOKEN_PLACEHOLDER = '<this agreement\'s key>';
 
 export interface McpClientSnippet {
-  readonly id: 'claude' | 'cursor' | 'codex' | 'custom';
+  readonly id: 'claude' | 'claude-code' | 'cursor' | 'cline' | 'codex' | 'custom';
   readonly label: string;
   readonly body: string;
 }
+
+const RECUED_PATH_PLACEHOLDER = '<full path to recued: run `which recued`, or `where recued` on Windows>';
 
 export const mcpEndpointFromServerUrl = (serverUrl: string): string => {
   try {
@@ -251,10 +275,11 @@ export const buildMcpClientSnippets = (
   serverUrl: string,
 ): ReadonlyArray<McpClientSnippet> => {
   const endpoint = mcpEndpointFromServerUrl(serverUrl);
-  const jsonConfig = JSON.stringify(
+  const remoteJsonConfig = (transport: Record<string, string> = {}): string => JSON.stringify(
     {
       mcpServers: {
         recued: {
+          ...transport,
           url: endpoint,
           headers: {
             Authorization: `Bearer ${TOKEN_PLACEHOLDER}`,
@@ -265,10 +290,34 @@ export const buildMcpClientSnippets = (
     null,
     2,
   );
+  // Claude Desktop's config file starts local servers only, so a `url` entry
+  // there never connects (remote servers go through its Connectors, which want
+  // OAuth, not a key). Recued's own stdio mode is that local server. A desktop
+  // app does not get the shell's PATH, so `command` is the full path.
+  const claudeDesktopConfig = JSON.stringify(
+    {
+      mcpServers: {
+        recued: {
+          command: RECUED_PATH_PLACEHOLDER,
+          args: ['--mcp'],
+          env: { RECUED_MCP_TOKEN: TOKEN_PLACEHOLDER },
+        },
+      },
+    },
+    null,
+    2,
+  );
 
   return [
-    { id: 'claude', label: 'Claude Desktop', body: jsonConfig },
-    { id: 'cursor', label: 'Cursor', body: jsonConfig },
+    { id: 'claude', label: "Claude Desktop, on the server's computer", body: claudeDesktopConfig },
+    {
+      id: 'claude-code',
+      label: 'Claude Code',
+      body: `claude mcp add --transport http recued ${endpoint} --header "Authorization: Bearer ${TOKEN_PLACEHOLDER}"`,
+    },
+    { id: 'cursor', label: 'Cursor', body: remoteJsonConfig() },
+    // Without `type`, Cline uses the older SSE transport.
+    { id: 'cline', label: 'Cline', body: remoteJsonConfig({ type: 'streamableHttp' }) },
     {
       id: 'codex',
       label: 'Codex',
@@ -640,6 +689,87 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   letter-spacing: 0.04em;
   font-weight: 600;
 }
+[${CONTRACTS_ROUTE_LIMITS_EDIT_ATTR}] {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+[${CONTRACTS_ROUTE_LIMITS_FORM_ATTR}] {
+  flex-basis: 100%;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+[${CONTRACTS_ROUTE_LIMITS_FORM_ATTR}] .contracts-new-field {
+  display: grid;
+  min-width: 0;
+  max-width: 32rem;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+[${CONTRACTS_ROUTE_LIMITS_FORM_ATTR}] :is(input, select) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--fg);
+}
+[${CONTRACTS_ROUTE_LIMITS_FORM_ATTR}] .contracts-section-copy {
+  margin: 0;
+}
+[${CONTRACTS_ROUTE_LIMITS_SAVE_ATTR}],
+[${CONTRACTS_ROUTE_LIMITS_CANCEL_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: none;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--fg);
+}
+[${CONTRACTS_ROUTE_LIMITS_SAVE_ATTR}] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+[${CONTRACTS_ROUTE_LIMITS_ERROR_ATTR}] {
+  margin: 0;
+  font-size: 13px;
+  color: var(--danger, #b3261e);
+}
+[${CONTRACTS_ROUTE_RULES_ATTR}] {
+  margin-top: 24px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 10px);
+  background: var(--surface);
+}
+[${CONTRACTS_ROUTE_RULES_ATTR}] > summary {
+  min-height: 44px;
+  padding: 10px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+[${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-door-hint {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--muted);
+}
 [${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] {
   box-sizing: border-box;
   min-height: 36px;
@@ -905,12 +1035,15 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 export const CONTRACTS_ROUTE_STYLES = [
   PRIMITIVE_STYLES,
   SUGGESTED_RULES_PANEL_STYLES,
+  WRITE_RULES_PANEL_STYLES,
   CONTRACT_GRANTS_PANEL_STYLES,
   CONTRACTS_ROUTE_CHROME_STYLES,
-  // The Connect tab mounts the shared credential / override editor directly.
-  // Bundle its scoped CSS here so a cold Contracts deep link does not render
-  // the editor as native controls in one collapsed line.
+  // The list page mounts the rules editor and the Connect tab the key panel.
+  // Bundle their scoped CSS here so a cold Contracts deep link does not render
+  // either as native controls in one collapsed line.
   PERMISSIONS_PANEL_STYLES,
+  CONTRACT_KEY_PANEL_STYLES,
+  CONTRACTS_DETAIL_STYLES,
 ].join('\n');
 
 // ════════════════════════════════════════════════════════════════
@@ -961,15 +1094,13 @@ export interface BootstrapContractsRouteOptions {
   permissionsDeleteOverrideCaller?: PermissionsDeleteOverrideCaller;
   permissionsUpsertOverrideCaller?: PermissionsUpsertOverrideCaller;
   permissionsListCatalogOperationsCaller?: PermissionsListCatalogOperationsCaller;
-  permissionsListInboundTokensCaller?: PermissionsListInboundTokensCaller;
-  permissionsIssueInboundTokenCaller?: PermissionsIssueInboundTokenCaller;
-  permissionsRevokeInboundTokenCaller?: PermissionsRevokeInboundTokenCaller;
-  permissionsUpdateInboundTokenCaller?: PermissionsUpdateInboundTokenCaller;
-  permissionsToolCatalogCaller?: PermissionsToolCatalogCaller;
+  /** D-327 — an agreement's key: list (filtered to the agreement), create, turn
+   *  off. The Connect tab's key panel mounts only when all three are wired. */
+  permissionsListInboundTokensCaller?: ContractKeyListCaller;
+  permissionsIssueInboundTokenCaller?: ContractKeyIssueCaller;
+  permissionsRevokeInboundTokenCaller?: ContractKeyRevokeCaller;
   permissionsMintContractCaller?: PermissionsMintContractCaller;
-  permissionsRevokeContractCaller?: PermissionsRevokeContractCaller;
   permissionsListContractsCaller?: PermissionsListContractsCaller;
-  permissionsUpdateInboundContractCaller?: PermissionsUpdateInboundContractCaller;
   contractsListCaller?: ContractsListCaller;
   contractsRevokeCaller?: ContractsRevokeCaller;
   /** D-177 N.13 — the staged-trust suggestion surface; all three gate the
@@ -979,6 +1110,8 @@ export interface BootstrapContractsRouteOptions {
   suggestionsAcceptCaller?: SuggestionsAcceptCaller;
   suggestionsDismissCaller?: SuggestionsDismissCaller;
   standingTasks?: Omit<StandingTasksOptions, 'host' | 'subscribe'>;
+  /** D-329 §3.4 — the write rules an AI's approvals teach: suggestions and live rules. */
+  writeRules?: Omit<WriteRulesPanelCallers, 'listContracts'>;
   /** D-177 rule 5 — the scoped-grant proposal surface (same all-three gate). */
   scopedSuggestionsListCaller?: ScopedSuggestionsListCaller;
   scopedSuggestionsAcceptCaller?: ScopedSuggestionsAcceptCaller;
@@ -996,6 +1129,9 @@ export interface BootstrapContractsRouteOptions {
   grantRegistryDescribeCaller?: GrantRegistryDescribeCaller;
   grantSetDoorTypesCaller?: GrantSetDoorTypesCaller;
   grantSetReadSpheresCaller?: (args: { contract_id: string; read_spheres: import('@recued/contracts').Sphere[] | null }) => Promise<import('@recued/contracts').ContractDefinitionView>;
+  /** D-327 — `collection.contract.setLimits`: an agreement's use limit and
+   *  expiry, edited in place (its id, grants, doors and key all survive). */
+  grantSetLimitsCaller?: (args: SetContractLimitsRequest) => Promise<ContractDefinitionView>;
   /** `cli.reachability.{list,set}` — route CLI ops in the Ops grant panel to the
    *  cli_reachability allowlist (their real authority), not contract_grant. */
   grantCliReachabilityListCaller?: GrantCliReachabilityListCaller;
@@ -1025,6 +1161,10 @@ export interface ContractRowVM {
    *  door). */
   readonly door_types?: ReadonlyArray<DoorType>;
   readonly read_spheres?: ReadonlyArray<import('@recued/contracts').Sphere>;
+  /** D-327 — `'contract'` when this agreement is its key's whole authority:
+   *  its key is created on its Connect tab, its grants start off, and it has a
+   *  Recipes tab. Absent on every older agreement. */
+  readonly key_authority?: KeyAuthority;
 }
 
 export type ContractsViewMode = 'loading' | 'list' | 'detail';
@@ -1041,11 +1181,14 @@ export interface ContractsRoute {
   getActiveTab(): string | null;
   /** The active inventory tab in LIST mode. */
   getListTab(): ContractsListTab;
-  /** The credential panel mounted in the open DETAIL's Connect tab, or null
-   *  (a built-in/template detail or the MCP-door callers aren't wired). It is
-   *  built once per ordinary contract DETAIL and kept alive across tabs so a
-   *  just-revealed one-time token survives a round-trip to Ops/Entities. */
-  permissionsPanel(): PermissionsPanelMount | null;
+  /** D-327 — the key panel mounted in the open DETAIL's Connect tab, or null
+   *  (a built-in/template detail, or the key callers aren't wired). It is built
+   *  once per ordinary contract DETAIL and kept alive across tabs so a
+   *  just-created key survives a round-trip to Ops/Entities. */
+  contractKeyPanel(): ContractKeyPanelMount | null;
+  /** D-327 — the rules for every agreement (the override editor), mounted on
+   *  the list page, or null (detail view, or its callers aren't wired). */
+  rulesPanel(): PermissionsPanelMount | null;
   /** The single-contract grant view mounted for the open DETAIL's Ops/Entities
    *  tabs, or null (no DETAIL open / the grant callers aren't wired). Built once
    *  per DETAIL and shared by both tabs (kept alive across tab switches). */
@@ -1090,13 +1233,15 @@ const toRowVM = (c: ContractDefinitionView): ContractRowVM => ({
   ...(c.use_period !== undefined ? { use_period: c.use_period } : {}),
   ...(c.door_types !== undefined ? { door_types: c.door_types } : {}),
   ...(c.read_spheres !== undefined ? { read_spheres: c.read_spheres } : {}),
+  ...(c.key_authority !== undefined ? { key_authority: c.key_authority } : {}),
 });
 
 // ── Level-1 door-type math (a door backs a subset of DOOR_TYPES; absent/empty
 //    = wildcard "backs all"). Salvaged from the global grant-matrix panel so it
 //    retires cleanly in delta 4. ──
 //
-// D-207 slice 1c — this math runs over AUTHORABLE_DOOR_TYPES, not DOOR_TYPES. The two
+// D-207 slice 1c — this math never runs over DOOR_TYPES (it ran over AUTHORABLE_DOOR_TYPES
+// then, and runs over the narrower SHOWN_DOOR_TYPES below now). The two
 // diverged when D-207 added `reception`: DOOR_TYPES is what a contract may BACK, and
 // AUTHORABLE_DOOR_TYPES is what a HUMAN may hand-author. A reception door is not
 // hand-authored — the server MINTS it from a recipe's derived capability when the owner
@@ -1107,6 +1252,15 @@ const toRowVM = (c: ContractDefinitionView): ContractRowVM => ({
 // wildcard door expanded to all four, so unticking one type wrote back an explicit list
 // with `reception` in it — a human idly narrowing an MCP door would have hand-granted the
 // anonymous public a door type they were never shown.
+//
+// ⚠ AND IT RUNS OVER THE TYPES THIS PAGE SHOWS, which is narrower again: `mcp_chat` is
+// authorable but has no transport. Nothing on the server lets an outside AI talk to the
+// owner's Chat yet (`customer-surface-usage.ts` calls that transport future work), and no
+// dispatch reads the door type, so a box for it changed nothing. The math has to agree
+// with the boxes, or unticking one shown box would silently write back a hidden one.
+// Add `mcp_chat` here again when its door exists.
+const SHOWN_DOOR_TYPES: ReadonlyArray<DoorType> = ['mcp', 'llm_gateway'];
+
 const doorTypeBacked = (
   doorTypes: ReadonlyArray<DoorType> | undefined,
   doorType: DoorType,
@@ -1115,12 +1269,12 @@ const doorTypeBacked = (
 
 const backedDoorTypes = (
   doorTypes: ReadonlyArray<DoorType> | undefined,
-): DoorType[] => AUTHORABLE_DOOR_TYPES.filter((t) => doorTypeBacked(doorTypes, t));
+): DoorType[] => SHOWN_DOOR_TYPES.filter((t) => doorTypeBacked(doorTypes, t));
 
 /** The explicit `door_types` to WRITE when toggling `doorType`, or `null` when
  *  the toggle would leave the door backing NOTHING (invalid — a door must back
  *  ≥1 type, and `[]` already means wildcard). "Backs all" normalizes to `[]`
- *  (matching mint); a strict subset is sent verbatim in AUTHORABLE_DOOR_TYPES order. */
+ *  (matching mint); a strict subset is sent verbatim in SHOWN_DOOR_TYPES order. */
 const nextDoorTypes = (
   doorTypes: ReadonlyArray<DoorType> | undefined,
   doorType: DoorType,
@@ -1129,12 +1283,27 @@ const nextDoorTypes = (
   if (backed.has(doorType)) backed.delete(doorType);
   else backed.add(doorType);
   if (backed.size === 0) return null;
-  if (backed.size === AUTHORABLE_DOOR_TYPES.length) return [];
-  return AUTHORABLE_DOOR_TYPES.filter((t) => backed.has(t));
+  if (backed.size === SHOWN_DOOR_TYPES.length) return [];
+  return SHOWN_DOOR_TYPES.filter((t) => backed.has(t));
 };
+
+/** Why the last ticked door box cannot be unticked. Shown under the boxes and
+ *  as the box's tooltip, because a greyed-out tick with no reason reads as a
+ *  third state of the box rather than a locked one. */
+const LAST_DOOR_LOCKED_HINT =
+  'One way in has to stay on. To stop this agreement, use Revoke.';
 
 const formatDateTime = (ts: number): string =>
   formatClientDateTime(ts, { invalidText: String(ts) });
+
+/** Epoch-ms → the local `YYYY-MM-DDTHH:mm` a `datetime-local` input holds, so
+ *  the limits editor opens on the agreement's current expiry. */
+const toDateTimeLocalValue = (ms: number): string => {
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  const two = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}`;
+};
 
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
@@ -1242,6 +1411,11 @@ const tabsFor = (row: ContractRowVM): ReadonlyArray<TabSpec> =>
         { id: 'connect', label: 'Connect' },
         { id: 'ops', label: 'Ops' },
         { id: 'entities', label: 'Entities' },
+        // D-327 — an agreement that is its key's whole authority answers its
+        // key's recipe access from these rows (its key's tool list is read from
+        // the agreement), so the switches here are read. An older agreement's
+        // key keeps its own checklist, where the D-247 note above still holds.
+        ...(isKeyAuthorityContract(row) ? [{ id: 'recipes', label: 'Recipes' }] : []),
       ];
 
 const tabPlaceholder = (id: string): string => {
@@ -1377,10 +1551,9 @@ export const bootstrapContractsRoute = (
       if (loc !== undefined) loc.hash = hash;
     });
 
-  // The contract credential panel (token reveal/copy/revoke + tool grants) is
-  // re-homed into the Connect tab; it mounts only when the three inbound-token
-  // lifecycle callers are wired (the pre-delta-1 credential gate). Absent ⇒
-  // the Connect tab shows the snippets + an "unavailable" note.
+  // D-327 — the Connect tab's key panel (create / show once / turn off) mounts
+  // only when the three key callers are wired. Absent ⇒ the Connect tab shows
+  // the snippets + an "unavailable" note.
   const canMountContractCredential =
     opts.permissionsListInboundTokensCaller !== undefined
     && opts.permissionsIssueInboundTokenCaller !== undefined
@@ -1420,7 +1593,9 @@ export const bootstrapContractsRoute = (
   let suggestedRulesPanel: SuggestedRulesPanelMount | null = null;
   let standingTasksPanel: ReturnType<typeof mountStandingTasksPanel> | null = null;
   let scopedGrantPanel: ScopedGrantPanelMount | null = null;
-  let connectPanel: PermissionsPanelMount | null = null;
+  let writeRulesPanel: WriteRulesPanelMount | null = null;
+  let connectPanel: ContractKeyPanelMount | null = null;
+  let rulesPanel: PermissionsPanelMount | null = null;
   let detailGrantPanel: ContractGrantsPanelMount | null = null;
   let permissionPanel: ReturnType<typeof mountPermissionRegressionPanel> | null = null;
   let routeOwnedMutationCount = 0;
@@ -1443,7 +1618,9 @@ export const bootstrapContractsRoute = (
     || standingTasksPanel?.hasInFlightWork() === true
     || standingTasksPanel?.hasUnsavedChanges() === true
     || scopedGrantPanel?.hasInFlightWork() === true
+    || writeRulesPanel?.hasInFlightWork() === true
     || connectPanel?.hasInFlightWork() === true
+    || rulesPanel?.hasInFlightWork() === true
     || detailGrantPanel?.hasInFlightWork() === true;
 
   const clearBody = (): void => {
@@ -1457,10 +1634,12 @@ export const bootstrapContractsRoute = (
       scopedGrantPanel.dispose();
       scopedGrantPanel = null;
     }
+    writeRulesPanel?.dispose(); writeRulesPanel = null;
     if (connectPanel !== null) {
       connectPanel.dispose();
       connectPanel = null;
     }
+    rulesPanel?.dispose(); rulesPanel = null;
     if (detailGrantPanel !== null) {
       detailGrantPanel.dispose();
       detailGrantPanel = null;
@@ -1515,6 +1694,65 @@ export const bootstrapContractsRoute = (
       });
       body.appendChild(section);
     }
+    if (opts.writeRules !== undefined) {
+      const section = doc.createElement('section');
+      section.setAttribute(CONTRACTS_ROUTE_PROPOSALS_ATTR, '');
+      writeRulesPanel = mountWriteRulesPanel({
+        host: section,
+        document: doc,
+        ...opts.writeRules,
+        // An AI app's rule names its agreement as the inventory does.
+        ...(opts.permissionsListContractsCaller !== undefined
+          ? { listContracts: opts.permissionsListContractsCaller }
+          : {}),
+      });
+      body.appendChild(section);
+    }
+  };
+
+  // ── D-327 — the rules for every agreement (list view only) ──
+  // An override names no agreement — it is keyed on who (you, or any app with
+  // an agreement) × ingredient × operation — so it applies across every
+  // agreement at once. It sat on each agreement's Connect tab as "Extra rules",
+  // where it read as that agreement's own. It lives here, beside the inventory,
+  // collapsed and loaded on first open (most owners never write one).
+  const mountRules = (): void => {
+    const list = opts.permissionsListOverridesCaller;
+    const remove = opts.permissionsDeleteOverrideCaller;
+    if (list === undefined || remove === undefined) return;
+    const section = doc.createElement('details');
+    section.setAttribute(CONTRACTS_ROUTE_RULES_ATTR, '');
+    const summary = doc.createElement('summary');
+    summary.textContent = 'Rules for every agreement';
+    section.appendChild(summary);
+    section.appendChild(makeEl(
+      doc,
+      'p',
+      'contracts-section-copy',
+      'A rule applies to every agreement at once, and to you when you choose "You". Use one '
+        + 'to stop something everywhere, or to always be asked first. To change what one '
+        + 'agreement may do, open it and use Ops, Entities and Recipes.',
+    ));
+    const host = doc.createElement('div');
+    section.appendChild(host);
+    section.addEventListener('toggle', () => {
+      // `clearBody` disposes the panel and drops this section on navigation, so
+      // a late toggle can only come from the list it was built for.
+      if (!section.open || rulesPanel !== null || disposed || viewMode !== 'list') return;
+      rulesPanel = mountPermissionsPanel({
+        host,
+        document: doc,
+        runListOverrides: list,
+        runDeleteOverride: remove,
+        ...(opts.permissionsUpsertOverrideCaller !== undefined
+          ? { runUpsertOverride: opts.permissionsUpsertOverrideCaller }
+          : {}),
+        ...(opts.permissionsListCatalogOperationsCaller !== undefined
+          ? { runListCatalogOperations: opts.permissionsListCatalogOperationsCaller }
+          : {}),
+      });
+    });
+    body.appendChild(section);
   };
 
   // ── New-contract authoring flow ─────────────────────────────────────
@@ -1563,7 +1801,7 @@ export const bootstrapContractsRoute = (
     // from a (form, recipe) pair, with a scope computed from what the recipe actually does
     // and a contract_id the pair row points at. A hand-minted one would have no pair
     // pointing at it, so no dispatch could ever resolve to it — an inert row that looks
-    // like a live public door. Hence AUTHORABLE_DOOR_TYPES, not DOOR_TYPES.
+    // like a live public door. Hence SHOWN_DOOR_TYPES (see its note), not DOOR_TYPES.
     const doorDraft: Record<DoorType, boolean> = {
       mcp: false,
       mcp_chat: false,
@@ -1571,7 +1809,7 @@ export const bootstrapContractsRoute = (
       reception: false,
       webhook: false,
     };
-    for (const dt of AUTHORABLE_DOOR_TYPES) {
+    for (const dt of SHOWN_DOOR_TYPES) {
       const toggle = makeEl(doc, 'button', undefined, DOOR_TYPE_LABELS[dt]);
       toggle.setAttribute('type', 'button');
       toggle.setAttribute(CONTRACTS_ROUTE_NEW_DOOR_ATTR, '');
@@ -1652,7 +1890,7 @@ export const bootstrapContractsRoute = (
         nameInput.focus({ preventScroll: true });
         return;
       }
-      const doorTypes = AUTHORABLE_DOOR_TYPES.filter((dt) => doorDraft[dt]);
+      const doorTypes = SHOWN_DOOR_TYPES.filter((dt) => doorDraft[dt]);
       const capRaw = capInput.value.trim();
       let cap: number | undefined;
       if (capRaw.length > 0) {
@@ -1691,6 +1929,9 @@ export const bootstrapContractsRoute = (
         const request: MintContractRequest = {
           display_name: name,
           scope: {},
+          // D-327 — every agreement made here is its key's whole authority: its
+          // key reads its tools from these grants, which start off.
+          key_authority: 'contract',
           ...(doorTypes.length > 0 ? { door_types: doorTypes } : {}),
           ...(cap !== undefined ? { max_uses: cap } : {}),
           // Only alongside a count, and only when it is not the default: the rpc
@@ -2039,6 +2280,7 @@ export const bootstrapContractsRoute = (
     // Staged-trust proposals are user decisions, not contract inventory. Keep
     // their existing dormant-when-empty behavior after the active inventory.
     mountProposals();
+    mountRules();
 
     const requestedTabFocus = pendingListTabFocusByDocument.get(doc);
     if (requestedTabFocus !== undefined) {
@@ -2121,64 +2363,13 @@ export const bootstrapContractsRoute = (
     sibling?.setAttribute('disabled', '');
   };
 
-  // The contract-credential (mcp-door) panel lives in the Connect tab. Only
-  // reached behind the contract-credential gate (the door lifecycle trio), so the
-  // three callers are cast to their non-optional caller types; every other
-  // caller is forwarded when present (graceful degrade), mirroring the
-  // production wiring from `webclient-bootstrap.ts`.
-  const mountContractCredentialPanel = (
-    panelHost: HTMLElement,
-  ): PermissionsPanelMount =>
-    mountPermissionsPanel({
-      host: panelHost,
-      document: doc,
-      surface: 'contracts-detail',
-      runListInboundTokens:
-        opts.permissionsListInboundTokensCaller as PermissionsListInboundTokensCaller,
-      runIssueInboundToken:
-        opts.permissionsIssueInboundTokenCaller as PermissionsIssueInboundTokenCaller,
-      runRevokeInboundToken:
-        opts.permissionsRevokeInboundTokenCaller as PermissionsRevokeInboundTokenCaller,
-      ...(opts.permissionsListOverridesCaller !== undefined
-        && opts.permissionsDeleteOverrideCaller !== undefined
-        ? {
-            runListOverrides: opts.permissionsListOverridesCaller,
-            runDeleteOverride: opts.permissionsDeleteOverrideCaller,
-          }
-        : {}),
-      ...(opts.permissionsUpsertOverrideCaller !== undefined
-        ? { runUpsertOverride: opts.permissionsUpsertOverrideCaller }
-        : {}),
-      ...(opts.permissionsListCatalogOperationsCaller !== undefined
-        ? { runListCatalogOperations: opts.permissionsListCatalogOperationsCaller }
-        : {}),
-      ...(opts.permissionsUpdateInboundTokenCaller !== undefined
-        ? { runUpdateInboundToken: opts.permissionsUpdateInboundTokenCaller }
-        : {}),
-      ...(opts.permissionsToolCatalogCaller !== undefined
-        ? { runListToolCatalog: opts.permissionsToolCatalogCaller }
-        : {}),
-      ...(opts.permissionsMintContractCaller !== undefined
-        && opts.permissionsRevokeContractCaller !== undefined
-        && opts.permissionsListContractsCaller !== undefined
-        && opts.permissionsUpdateInboundContractCaller !== undefined
-        ? {
-            runMintContract: opts.permissionsMintContractCaller,
-            runRevokeContract: opts.permissionsRevokeContractCaller,
-            runListContracts: opts.permissionsListContractsCaller,
-            runUpdateInboundContract: opts.permissionsUpdateInboundContractCaller,
-          }
-        : {}),
-      ...(opts.now !== undefined ? { now: opts.now } : {}),
-      ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
-    });
-
   const renderDetail = (row: ContractRowVM): void => {
     clearBody();
     viewMode = 'detail';
     selectedContractId = row.contract_id;
 
     const detail = doc.createElement('section');
+    detail.className = 'contracts-workspace';
     detail.setAttribute(CONTRACTS_ROUTE_DETAIL_ATTR, '');
     detail.setAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR, row.contract_id);
 
@@ -2251,6 +2442,12 @@ export const bootstrapContractsRoute = (
     let revokeArmed = false;
     let headError: string | null = null;
     let pendingHeadFocusAttr: string | null = null;
+    // D-327 — the in-place limits editor. `null` ⇒ closed. Held here rather
+    // than read off the inputs so a header repaint (a door toggle settling)
+    // keeps what the owner typed.
+    let limitsDraft: { cap: string; period: UsageCapPeriod; expiry: string } | null = null;
+    let limitsBusy = false;
+    let limitsError: string | null = null;
 
     // Only ordinary contracts expose generic door and revoke controls.
     // Seller templates use this detail strictly for grant authoring; Seller
@@ -2268,6 +2465,15 @@ export const bootstrapContractsRoute = (
       && !isCustomerTemplateRow(currentRow)
       && anonymousDoorType(currentRow) === null
       && opts.contractsRevokeCaller !== undefined;
+
+    // D-327 — the same ordinary-agreement predicate as the door controls; a
+    // revoked agreement's limits are moot (revocation is final).
+    const canEditLimits = (): boolean =>
+      !currentRow.is_self
+      && !isCustomerTemplateRow(currentRow)
+      && anonymousDoorType(currentRow) === null
+      && currentRow.lifecycle_state !== 'revoked'
+      && opts.grantSetLimitsCaller !== undefined;
 
     const head = makeEl(doc, 'div', 'contracts-detail-head');
     let sphereBusy = false;
@@ -2366,16 +2572,166 @@ export const bootstrapContractsRoute = (
       }
     };
 
+    const saveLimits = async (): Promise<void> => {
+      const setter = opts.grantSetLimitsCaller;
+      if (setter === undefined || limitsDraft === null || limitsBusy) return;
+      const capRaw = limitsDraft.cap.trim();
+      let max_uses: number | null = null;
+      if (capRaw.length > 0) {
+        const cap = Number(capRaw);
+        if (!Number.isInteger(cap) || cap <= 0) {
+          limitsError = 'The limit has to be a whole number above zero.';
+          pendingHeadFocusAttr = CONTRACTS_ROUTE_LIMITS_CAP_ATTR;
+          paintHead();
+          return;
+        }
+        max_uses = cap;
+      }
+      const expiryRaw = limitsDraft.expiry.trim();
+      let expiry_at: number | null = null;
+      if (expiryRaw.length > 0) {
+        const parsed = Date.parse(expiryRaw);
+        if (Number.isNaN(parsed)) {
+          limitsError = 'Type a real end date.';
+          pendingHeadFocusAttr = CONTRACTS_ROUTE_LIMITS_EXPIRY_ATTR;
+          paintHead();
+          return;
+        }
+        expiry_at = parsed;
+      }
+      limitsBusy = true;
+      limitsError = null;
+      const releaseOwnership = beginRouteOwnedMutation();
+      paintHead();
+      try {
+        const view = await setter({
+          contract_id: currentRow.contract_id,
+          max_uses,
+          // A period with no count refills nothing, and the rpc refuses it.
+          use_period: max_uses === null ? 'total' : limitsDraft.period,
+          expiry_at,
+        });
+        if (disposed) return;
+        currentRow = toRowVM(view);
+        limitsDraft = null;
+        pendingHeadFocusAttr = CONTRACTS_ROUTE_LIMITS_EDIT_ATTR;
+      } catch (err) {
+        if (disposed) return;
+        limitsError = `Recued could not change the limits: ${errMessage(err)}`;
+      } finally {
+        limitsBusy = false;
+        releaseOwnership();
+        if (!disposed) paintHead();
+      }
+    };
+
+    const appendLimitsControl = (host: HTMLElement): void => {
+      if (limitsDraft === null) {
+        const open = makeEl(doc, 'button', 'contracts-link', 'Change limits');
+        open.setAttribute('type', 'button');
+        open.setAttribute(CONTRACTS_ROUTE_LIMITS_EDIT_ATTR, '');
+        open.addEventListener('click', () => {
+          limitsDraft = {
+            cap: currentRow.max_uses !== undefined ? String(currentRow.max_uses) : '',
+            period: contractUsePeriod(currentRow),
+            expiry: currentRow.expiry_at !== undefined ? toDateTimeLocalValue(currentRow.expiry_at) : '',
+          };
+          limitsError = null;
+          pendingHeadFocusAttr = CONTRACTS_ROUTE_LIMITS_CAP_ATTR;
+          paintHead();
+        });
+        host.appendChild(open);
+        return;
+      }
+      const draft = limitsDraft;
+      const form = makeEl(doc, 'div', 'contracts-limits-form');
+      form.setAttribute(CONTRACTS_ROUTE_LIMITS_FORM_ATTR, '');
+      form.setAttribute('role', 'group');
+      form.setAttribute('aria-label', 'Change limits');
+      const capField = makeEl(doc, 'label', 'contracts-new-field');
+      capField.appendChild(makeEl(doc, 'span', undefined, 'Use limit, if you want one'));
+      const cap = makeEl(doc, 'input');
+      cap.setAttribute('type', 'number');
+      cap.setAttribute('min', '1');
+      cap.setAttribute('placeholder', 'unlimited');
+      cap.setAttribute(CONTRACTS_ROUTE_LIMITS_CAP_ATTR, '');
+      cap.value = draft.cap;
+      cap.addEventListener('input', () => { draft.cap = cap.value; });
+      capField.appendChild(cap);
+      const period = makeEl(doc, 'select');
+      period.setAttribute(CONTRACTS_ROUTE_LIMITS_PERIOD_ATTR, '');
+      period.setAttribute('aria-label', 'How often the limit refills');
+      for (const p of USAGE_CAP_PERIODS) {
+        const option = makeEl(doc, 'option', undefined, USAGE_CAP_PERIOD_OPTION_LABEL[p]);
+        option.setAttribute('value', p);
+        period.appendChild(option);
+      }
+      (period as unknown as { value: string }).value = draft.period;
+      period.addEventListener('change', () => {
+        const value = (period as unknown as { value: string }).value;
+        if (isUsageCapPeriod(value)) draft.period = value;
+      });
+      capField.appendChild(period);
+      form.appendChild(capField);
+      const expiryField = makeEl(doc, 'label', 'contracts-new-field');
+      expiryField.appendChild(makeEl(doc, 'span', undefined, 'Ends, if you want it to'));
+      const expiry = makeEl(doc, 'input');
+      expiry.setAttribute('type', 'datetime-local');
+      expiry.setAttribute(CONTRACTS_ROUTE_LIMITS_EXPIRY_ATTR, '');
+      expiry.value = draft.expiry;
+      expiry.addEventListener('input', () => { draft.expiry = expiry.value; });
+      expiryField.appendChild(expiry);
+      form.appendChild(expiryField);
+      form.appendChild(makeEl(
+        doc,
+        'p',
+        'contracts-section-copy',
+        'A new limit starts its count again. Changing only the end date keeps the uses already made.',
+      ));
+      const actions = makeEl(doc, 'div', 'contracts-revoke-wrap');
+      const save = makeEl(doc, 'button', undefined, limitsBusy ? 'Saving…' : 'Save limits');
+      save.setAttribute('type', 'button');
+      save.setAttribute(CONTRACTS_ROUTE_LIMITS_SAVE_ATTR, '');
+      if (limitsBusy) {
+        save.setAttribute('aria-disabled', 'true');
+        save.setAttribute('aria-busy', 'true');
+      } else {
+        save.addEventListener('click', () => { void saveLimits(); });
+      }
+      actions.appendChild(save);
+      const cancel = makeEl(doc, 'button', undefined, 'Cancel');
+      cancel.setAttribute('type', 'button');
+      cancel.setAttribute(CONTRACTS_ROUTE_LIMITS_CANCEL_ATTR, '');
+      if (!limitsBusy) {
+        cancel.addEventListener('click', () => {
+          limitsDraft = null;
+          limitsError = null;
+          pendingHeadFocusAttr = CONTRACTS_ROUTE_LIMITS_EDIT_ATTR;
+          paintHead();
+        });
+      }
+      actions.appendChild(cancel);
+      form.appendChild(actions);
+      if (limitsError !== null) {
+        const line = makeEl(doc, 'p', undefined, limitsError);
+        line.setAttribute(CONTRACTS_ROUTE_LIMITS_ERROR_ATTR, '');
+        line.setAttribute('role', 'alert');
+        form.appendChild(line);
+      }
+      host.appendChild(form);
+    };
+
     const appendDoorControls = (host: HTMLElement): void => {
       const wrap = makeEl(doc, 'span', 'contracts-door');
       wrap.appendChild(makeEl(doc, 'span', 'contracts-door-label', 'Door'));
       const backedCount = backedDoorTypes(currentRow.door_types).length;
-      // AUTHORABLE_DOOR_TYPES, not DOOR_TYPES — the same rule the slice-1c
-      // note above documents for the toggle MATH. Rendering reception/webhook
+      let anyLocked = false;
+      // SHOWN_DOOR_TYPES, not DOOR_TYPES — the same rule the slice-1c note
+      // above documents for the toggle MATH. Rendering reception/webhook
       // checkboxes here handed a human a control that either narrowed a
       // wildcard ordinary contract behind their back or (on a derived door, now
       // unreachable via `canEditDoors`) replaced its door-class binding.
-      for (const dt of AUTHORABLE_DOOR_TYPES) {
+      for (const dt of SHOWN_DOOR_TYPES) {
         const backed = doorTypeBacked(currentRow.door_types, dt);
         const label = makeEl(doc, 'label', 'contracts-door-toggle');
         label.setAttribute(CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR, '');
@@ -2397,6 +2753,8 @@ export const bootstrapContractsRoute = (
           }
         } else if (lockLast) {
           input.setAttribute('disabled', '');
+          label.setAttribute('title', LAST_DOOR_LOCKED_HINT);
+          anyLocked = true;
         } else {
           input.addEventListener('change', () => {
             void runSetDoor(dt);
@@ -2407,6 +2765,9 @@ export const bootstrapContractsRoute = (
           makeEl(doc, 'span', 'contracts-door-name', DOOR_TYPE_LABELS[dt]),
         );
         wrap.appendChild(label);
+      }
+      if (anyLocked) {
+        wrap.appendChild(makeEl(doc, 'span', 'contracts-door-hint', LAST_DOOR_LOCKED_HINT));
       }
       host.appendChild(wrap);
     };
@@ -2465,7 +2826,7 @@ export const bootstrapContractsRoute = (
         ? activeHeadElement.getAttribute('data-door')
         : null;
       const focusedDoorType = focusedDoorTypeRaw !== null
-        && AUTHORABLE_DOOR_TYPES.some((doorType) =>
+        && SHOWN_DOOR_TYPES.some((doorType) =>
           doorType === focusedDoorTypeRaw)
         ? focusedDoorTypeRaw
         : null;
@@ -2480,6 +2841,10 @@ export const bootstrapContractsRoute = (
       const requestedHeadFocusAttr = pendingHeadFocusAttr ?? focusedHeadAttr;
       pendingHeadFocusAttr = null;
       clearChildren(head);
+      const summary = makeEl(doc, 'section', 'contracts-detail-summary');
+      summary.setAttribute('aria-label', 'Agreement summary');
+      const identity = makeEl(doc, 'div', 'contracts-detail-identity');
+      summary.appendChild(identity);
       const nextDetailHeading = makeEl(
         doc,
         'h2',
@@ -2492,31 +2857,51 @@ export const bootstrapContractsRoute = (
       );
       nextDetailHeading.setAttribute('tabindex', '-1');
       detailHeading = nextDetailHeading;
-      head.appendChild(nextDetailHeading);
-      appendBadgeAndPill(doc, head, currentRow);
-      appendSphereControl(head);
+      identity.appendChild(nextDetailHeading);
+      const tags = makeEl(doc, 'div', 'contracts-detail-tags');
+      identity.appendChild(tags);
+      appendBadgeAndPill(doc, tags, currentRow);
+      const meta = makeEl(doc, 'div', 'contracts-detail-meta');
+      const facts = makeEl(doc, 'dl', 'contracts-detail-facts');
+      facts.appendChild(makeEl(doc, 'dt', undefined, 'Usage and expiry'));
+      facts.appendChild(makeEl(doc, 'dd', 'contracts-detail-limits', limitsSummary(currentRow)));
+      meta.appendChild(facts);
+      if (canEditLimits()) appendLimitsControl(meta);
+      summary.appendChild(meta);
+      head.appendChild(summary);
+
+      const controls = makeEl(doc, 'div', 'contracts-detail-control-grid');
+      const access = makeEl(doc, 'section', 'contracts-detail-access');
+      access.setAttribute('aria-label', 'Access settings');
+      access.appendChild(makeEl(doc, 'h3', undefined, 'Access settings'));
+      const accessBody = makeEl(doc, 'div', 'contracts-detail-access-body');
+      const scope = makeEl(doc, 'div', 'contracts-scope-group');
+      accessBody.appendChild(scope);
+      access.appendChild(accessBody);
+      controls.appendChild(access);
+      appendSphereControl(scope);
       // L1 door open/close — editable only for an ACTIVE ordinary contract (a non-active
       // door can't dispatch, so its door types are moot).
       if (canEditDoors() && currentRow.lifecycle_state === 'active') {
-        appendDoorControls(head);
+        appendDoorControls(accessBody);
       }
-      const spacer = makeEl(doc, 'span', 'contracts-detail-spacer');
-      head.appendChild(spacer);
-      head.appendChild(
-        makeEl(doc, 'span', 'contracts-detail-limits', limitsSummary(currentRow)),
-      );
+      const lifecycle = makeEl(doc, 'section', 'contracts-detail-lifecycle');
+      lifecycle.setAttribute('aria-label', 'Agreement actions');
+      lifecycle.appendChild(makeEl(doc, 'h3', undefined, 'Agreement actions'));
+      controls.appendChild(lifecycle);
+      head.appendChild(controls);
       // Revoke kill-switch — any non-revoked ordinary contract (mirrors
       // `contracts-panel.ts`: an expired/exhausted one is still explicitly
       // revocable; a revoked one has nothing left to revoke).
       if (canRevoke && currentRow.lifecycle_state !== 'revoked') {
-        appendRevokeControl(head);
+        appendRevokeControl(lifecycle);
       }
       const activityLink = doc.createElement('a');
       activityLink.className = 'contracts-link';
       activityLink.setAttribute(CONTRACTS_ROUTE_ACTIVITY_LINK_ATTR, '');
       activityLink.setAttribute('href', serializeShellRoute('logs'));
       activityLink.textContent = 'Recent activity → Log';
-      head.appendChild(activityLink);
+      meta.appendChild(activityLink);
       if (headError !== null) {
         const chip = makeEl(doc, 'p', undefined, headError);
         chip.setAttribute(CONTRACTS_ROUTE_HEAD_ERROR_ATTR, '');
@@ -2565,10 +2950,10 @@ export const bootstrapContractsRoute = (
     tabBody.setAttribute('id', 'recued-contracts-detail-tabpanel');
     tabBody.setAttribute('role', 'tabpanel');
 
-    // The Connect tab's content (snippets + the contract-credential panel) is built
-    // ONCE and kept alive across tab switches — selectTab re-attaches it rather
-    // than rebuilding, so a just-revealed one-time token survives a round-trip
-    // to Ops/Entities. Disposed in `clearBody` when the DETAIL is torn down.
+    // The Connect tab's content (this agreement's key + the setup snippets) is
+    // built ONCE and kept alive across tab switches — selectTab re-attaches it
+    // rather than rebuilding, so a just-created key survives a round-trip to
+    // Ops/Entities. Disposed in `clearBody` when the DETAIL is torn down.
     let connectHost: HTMLElement | null = null;
     const ensureConnectHost = (): HTMLElement => {
       if (connectHost !== null) return connectHost;
@@ -2579,20 +2964,40 @@ export const bootstrapContractsRoute = (
           doc,
           'p',
           'contracts-section-copy',
-          'Give this agreement a way in. Use the link and the '
-            + 'one-off code, then say which tools and things it may use.',
+          'Connect an AI app as this agreement: create its key, then paste it into the '
+            + 'app with one of the setups below. The app can do only what this agreement allows.',
         ),
       );
+      if (canMountContractCredential) {
+        const panelHost = doc.createElement('div');
+        host.appendChild(panelHost);
+        connectPanel = mountContractKeyPanel({
+          host: panelHost,
+          document: doc,
+          contractId: row.contract_id,
+          contractName: row.display_name,
+          // ⛔ An older agreement keeps the two-gate model (D-327), so a key made
+          // for it would keep its own tool list with nothing on this page to set
+          // it. Its existing key can still be turned off.
+          createBlockedReason: !isKeyAuthorityContract(row)
+            ? 'This agreement was made before an agreement could hold its own key, so it '
+              + 'cannot get a new one. To connect an app, make a new agreement.'
+            : row.lifecycle_state !== 'active'
+              ? 'This agreement is off, so it cannot have a key.'
+              : null,
+          runList: opts.permissionsListInboundTokensCaller as ContractKeyListCaller,
+          runIssue: opts.permissionsIssueInboundTokenCaller as ContractKeyIssueCaller,
+          runRevoke: opts.permissionsRevokeInboundTokenCaller as ContractKeyRevokeCaller,
+          ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+          ...(opts.now !== undefined ? { now: opts.now } : {}),
+        });
+      }
       const grid = makeEl(doc, 'div', 'contracts-snippet-grid');
       for (const snippet of buildMcpClientSnippets(opts.serverUrl)) {
         appendSnippet(doc, grid, snippet);
       }
       host.appendChild(grid);
-      if (canMountContractCredential) {
-        const panelHost = doc.createElement('div');
-        host.appendChild(panelHost);
-        connectPanel = mountContractCredentialPanel(panelHost);
-      } else {
+      if (!canMountContractCredential) {
         const note = makeEl(
           doc,
           'div',
@@ -2623,6 +3028,7 @@ export const bootstrapContractsRoute = (
         ...(isCustomerTemplateRow(row) || anonymousDoorType(row) !== null
           ? { explicitGrantRowsOnly: true }
           : {}),
+        ...(isKeyAuthorityContract(row) ? { keyAgreement: true } : {}),
         runGrantRead: opts.grantReadCaller as GrantReadCaller,
         runGrantWrite: opts.grantWriteCaller as GrantWriteCaller,
         ...(opts.grantCatalogOperationsCaller !== undefined
@@ -2729,8 +3135,10 @@ export const bootstrapContractsRoute = (
       tabButtons.push({ id: tab.id, btn });
       tabStrip.appendChild(btn);
     }
-    detail.appendChild(tabStrip);
-    detail.appendChild(tabBody);
+    const content = makeEl(doc, 'div', 'contracts-detail-content');
+    content.appendChild(tabStrip);
+    content.appendChild(tabBody);
+    detail.appendChild(content);
     if (activeTab !== null) selectTab(activeTab, false);
 
     if (opts.permissionWorkbenchCall && !row.is_self && !isCustomerTemplateRow(row) && anonymousDoorType(row) === null) {
@@ -2923,7 +3331,8 @@ export const bootstrapContractsRoute = (
     },
     getActiveTab: () => activeTab,
     getListTab: () => activeListTab,
-    permissionsPanel: () => connectPanel,
+    contractKeyPanel: () => connectPanel,
+    rulesPanel: () => rulesPanel,
     contractGrantsPanel: () => detailGrantPanel,
     suggestedRulesPanel: () => suggestedRulesPanel,
     scopedGrantPanel: () => scopedGrantPanel,
@@ -2953,10 +3362,12 @@ export const bootstrapContractsRoute = (
         scopedGrantPanel.dispose();
         scopedGrantPanel = null;
       }
+      writeRulesPanel?.dispose(); writeRulesPanel = null;
       if (connectPanel !== null) {
         connectPanel.dispose();
         connectPanel = null;
       }
+      rulesPanel?.dispose(); rulesPanel = null;
       if (detailGrantPanel !== null) {
         detailGrantPanel.dispose();
         detailGrantPanel = null;

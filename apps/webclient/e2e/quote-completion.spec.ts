@@ -5,7 +5,12 @@ import { expect,test,type Page } from '@playwright/test';
 import type {} from './harness/quote-signoff-harness.js';
 import { renderApprovalLinkHtml } from '../../../backend/server/src/ports/reception/handlers/approval-link-render.js';
 import { lookupReceptionStaticAsset } from '../../../backend/server/src/ports/reception/static-assets.js';
+import { openSignoffRequestDetails } from './helpers/signoff-request.js';
 const BASE = `${process.env.E2E_SIGNOFF_HARNESS_URL ?? HARNESS_ORIGIN}/quote-signoff-harness.html?completion`;
+const go = async (page: Page, url = BASE) => {
+  await page.goto(url);
+  await openSignoffRequestDetails(page.locator('[data-signoff-history] article').first());
+};
 test.beforeEach(async ({ page }) => {
   const headers = await readFile(resolve(import.meta.dirname,'../public/_headers'),'utf8');
   const policy = headers.match(/^\s*Content-Security-Policy:\s*(.+)$/m)?.[1];if (!policy) throw new Error('Missing shipped CSP');
@@ -14,7 +19,7 @@ test.beforeEach(async ({ page }) => {
 const prepare = async (page: Page,delivery = 'Delivered the drawings. <img src=x onerror=alert(1)>') => {
   await page.getByRole('button',{ name: 'Request completion',exact: true }).click();
   await page.getByLabel('Delivered work shown to the customer').fill(delivery);
-  await page.getByRole('button',{ name: 'Preview completion',exact: true }).click();
+  await page.getByRole('button',{ name: 'Prepare completion preview',exact: true }).click();
   await expect(page.getByRole('button',{ name: 'Publish completion link',exact: true })).toBeVisible();
 };
 const publish = async (page: Page) => { await prepare(page);await page.getByRole('button',{ name: 'Publish completion link',exact: true }).click();await expect(page.getByLabel('Customer completion link',{ exact: true })).toBeVisible(); };
@@ -69,7 +74,7 @@ test('public completion blocks empty corrections before posting and sends the fi
 
 test('previews and shares exactly the delivery and released scope without executing work',async ({ page },info) => {
   const errors: string[] = [];page.on('pageerror',error => errors.push(error.message));
-  await page.goto(BASE);await prepare(page);
+  await go(page);await prepare(page);
   const editor = page.getByRole('form',{ name: 'Request customer completion' });
   await expect(editor).toContainText('Agreed scope:\nThree drawings.');await expect(editor).toContainText('Delivered the drawings. <img src=x onerror=alert(1)>');
   await expect(editor.locator('img')).toHaveCount(0);await editor.screenshot({ path: info.outputPath('completion-preview.png') });
@@ -81,13 +86,13 @@ test('previews and shares exactly the delivery and released scope without execut
   expect(calls.some(call => /execute|approve|mark_done/.test(call.method))).toBe(false);expect(errors).toEqual([]);
 });
 test('editing prepared delivery invalidates publication until it is previewed again',async ({ page }) => {
-  await page.goto(BASE);await prepare(page);await page.getByLabel('Delivered work shown to the customer').fill('New delivery.');
+  await go(page);await prepare(page);await page.getByLabel('Delivered work shown to the customer').fill('New delivery.');
   await expect(page.getByRole('button',{ name: 'Publish completion link' })).toHaveCount(0);
-  await page.getByRole('button',{ name: 'Preview completion',exact: true }).click();
+  await page.getByRole('button',{ name: 'Prepare completion preview',exact: true }).click();
   await expect(page.getByRole('form',{ name: 'Request customer completion' })).toContainText('New delivery.');
 });
 test('preserves an unfinished editor while refreshing request history',async ({ page }) => {
-  await page.goto(BASE);await page.getByRole('button',{ name: 'Request completion',exact: true }).click();
+  await go(page);await page.getByRole('button',{ name: 'Request completion',exact: true }).click();
   await page.getByLabel('Delivered work shown to the customer').fill('Unsaved delivery.');
   await page.getByRole('button',{ name: 'Refresh completions' }).click();
   await expect(page.getByLabel('Delivered work shown to the customer')).toHaveValue('Unsaved delivery.');
@@ -95,7 +100,7 @@ test('preserves an unfinished editor while refreshing request history',async ({ 
   await expect(page.getByLabel('Delivered work shown to the customer')).toHaveValue('Unsaved delivery.');
 });
 test('shows specific corrections as text and links the separate owner review',async ({ page }) => {
-  await page.goto(BASE);await publish(page);
+  await go(page);await publish(page);
   await page.evaluate(() => window.__quoteSignoff.completionResponse('corrections_requested','Correct scale. <script>alert(1)</script>'));
   await expect(queue(page)).toContainText('Customer requested corrections.');await expect(queue(page)).toContainText('Correct scale. <script>alert(1)</script>');
   await expect(queue(page).locator('script')).toHaveCount(0);
@@ -105,24 +110,24 @@ test('shows specific corrections as text and links the separate owner review',as
   await expect.poll(async () => page.evaluate(() => window.__quoteSignoff.calls.filter(call => call.method === 'reception.signoff.completion.list').at(-1)?.payload)).toEqual({ limit: 50,review_only: true });
 });
 test('does not infer acceptance from a processed status when the reply is unavailable',async ({ page }) => {
-  await page.goto(BASE);await publish(page);await page.evaluate(() => window.__quoteSignoff.completionResponse('unavailable'));
+  await go(page);await publish(page);await page.evaluate(() => window.__quoteSignoff.completionResponse('unavailable'));
   await expect(queue(page)).toContainText('Reply processed');await expect(queue(page)).toContainText('Customer reply unavailable.');
   await expect(queue(page)).not.toContainText('Customer accepted completion.');
 });
 test('cancels a pending completion without approving its work',async ({ page }) => {
-  await page.goto(BASE);await publish(page);await queue(page).getByRole('button',{ name: 'Cancel completion request' }).click();
+  await go(page);await publish(page);await queue(page).getByRole('button',{ name: 'Cancel completion request' }).click();
   await expect(queue(page)).toContainText('Cancelled');await expect(queue(page).getByRole('button',{ name: 'Cancel completion request' })).toHaveCount(0);
 });
 test('retries a failed preparation without publishing the failed preview',async ({ page }) => {
-  await page.goto(BASE);await page.getByRole('button',{ name: 'Request completion',exact: true }).click();await page.getByLabel('Delivered work shown to the customer').fill('Delivered.');
-  await page.evaluate(() => window.__quoteSignoff.failCompletion(true));await page.getByRole('button',{ name: 'Preview completion',exact: true }).click();
+  await go(page);await page.getByRole('button',{ name: 'Request completion',exact: true }).click();await page.getByLabel('Delivered work shown to the customer').fill('Delivered.');
+  await page.evaluate(() => window.__quoteSignoff.failCompletion(true));await page.getByRole('button',{ name: 'Prepare completion preview',exact: true }).click();
   await expect(page.locator('[data-signoff-completions]')).toContainText('Completion unavailable. Try again.');
   await expect(page.getByRole('button',{ name: 'Publish completion link' })).toHaveCount(0);
-  await page.evaluate(() => window.__quoteSignoff.failCompletion(false));await page.getByRole('button',{ name: 'Preview completion',exact: true }).click();
+  await page.evaluate(() => window.__quoteSignoff.failCompletion(false));await page.getByRole('button',{ name: 'Prepare completion preview',exact: true }).click();
   await expect(page.getByRole('button',{ name: 'Publish completion link' })).toBeEnabled();
 });
 test('exports completion decision and owner action while omitting corrections and escaping the delivery',async ({ page }) => {
-  await page.goto(BASE);await publish(page);await page.evaluate(() => window.__quoteSignoff.completionResponse('corrections_requested','PRIVATE correction','reopen'));
+  await go(page);await publish(page);await page.evaluate(() => window.__quoteSignoff.completionResponse('corrections_requested','PRIVATE correction','reopen'));
   await expect(queue(page)).toContainText('Owner reopened work');await page.getByRole('button',{ name: 'View sign-off receipt',exact: true }).click();
   const view = page.getByRole('region',{ name: 'Sign-off receipt' });await expect(view).toContainText('Delivery completion');await expect(view).toContainText('Customer requested corrections');
   await expect(view).toContainText('Owner reopened work');await expect(view).not.toContainText('PRIVATE correction');
@@ -132,8 +137,8 @@ test('exports completion decision and owner action while omitting corrections an
   expect(html).not.toContain('PRIVATE correction');expect(html).not.toContain('fixture-token');expect(html).not.toMatch(/<(?:img|script)\b/);
 });
 test('ignores a late completion preparation after the panel is disposed',async ({ page }) => {
-  await page.goto(BASE+'&defer=reception.signoff.completion.prepare');await page.getByRole('button',{ name: 'Request completion',exact: true }).click();await page.getByLabel('Delivered work shown to the customer').fill('Delivered.');
-  await page.getByRole('button',{ name: 'Preview completion',exact: true }).click();
+  await go(page,BASE+'&defer=reception.signoff.completion.prepare');await page.getByRole('button',{ name: 'Request completion',exact: true }).click();await page.getByLabel('Delivered work shown to the customer').fill('Delivered.');
+  await page.getByRole('button',{ name: 'Prepare completion preview',exact: true }).click();
   await expect.poll(async () => page.evaluate(() => window.__quoteSignoff.calls.some(call => call.method === 'reception.signoff.completion.prepare'))).toBe(true);
   await page.evaluate(() => { window.__quoteSignoff.dispose();window.__quoteSignoff.release(); });
   await expect(page.locator('[data-recued-quote-signoffs]')).toHaveCount(0);

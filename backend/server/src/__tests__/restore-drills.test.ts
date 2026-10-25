@@ -34,7 +34,12 @@ const cleanup: (() => void | Promise<void>)[] = [];
 // Real encrypted restore/key derivation competes with other builds and suite
 // workers on shared hosts. This bounds fixture completion, not product latency;
 // worker deadline and cancellation behavior have separate process tests.
-const DRILL_SETTLE_TIMEOUT_MS = 60_000;
+// ⚠ 60 s → 180 s (2026-10-23): three drills of one sweep each gave up at 60 s still
+// `checking` — working, not stuck — while their whole cases take 11-30 s alone.
+const DRILL_SETTLE_TIMEOUT_MS = 180_000;
+// A case waits for at most two drills, so its bound outlasts both settle waits and the
+// wait, not the case, is what reports a slow drill (with the row it last saw).
+const DRILL_CASE_TIMEOUT_MS = 2 * DRILL_SETTLE_TIMEOUT_MS + 120_000;
 afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
 const setup = async () => {
   const dir = mkdtempSync(join(tmpdir(), 'restore-drill-')), dbPath = join(dir, 'server.db');
@@ -85,7 +90,7 @@ const setup = async () => {
     changed: () => { changed = true; } };
 };
 
-describe('isolated recovery drills', { timeout: 120_000 }, () => {
+describe('isolated recovery drills', { timeout: DRILL_CASE_TIMEOUT_MS }, () => {
   for (const delegated of [false, true]) it(`recovers ${delegated ? 'unattended v4' : 'manual v3'} S3 bytes, checks every root and local boot key, removes the realm, and keeps live data intact`, async () => {
     const h = await setup(), backupId = await h.publish(delegated);
     h.db.exec("INSERT INTO example VALUES ('live change')");

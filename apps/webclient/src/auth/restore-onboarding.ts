@@ -747,6 +747,10 @@ export interface BrowserRestoreOpsEnv {
    *  `metadata.instance_id` — required by the WS socket gate) + persisted into
    *  `pair_metadata`. */
   instanceId: string;
+  /** This browser's name for the server's Devices list ("Chrome on macOS").
+   *  ⛔ A restore paired without one, so every restored browser showed
+   *  there as "unknown device". */
+  displayName?: string;
   // ── Test seams (production defaults below) ──
   /** Override `globalThis.fetch` for the `/auth/pair` POST. */
   fetch?: typeof fetch;
@@ -777,6 +781,7 @@ export const createBrowserRestoreOps = (
       serverUrl: inputs.serverUrl,
       code: inputs.code,
       instanceId: env.instanceId,
+      ...(env.displayName !== undefined ? { displayName: env.displayName } : {}),
       // Code-only — NO recoveryKey, so the server stays unenrolled.
       ...(env.fetch !== undefined ? { fetch: env.fetch } : {}),
     });

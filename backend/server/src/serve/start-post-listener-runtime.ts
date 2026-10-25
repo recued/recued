@@ -888,6 +888,9 @@ export const startPostListenerRuntime = async (
     webclientServed: options.webclientServed,
     notificationBlock: options.notificationBlock,
     gatedActionStore: options.executeDeps.gatedActionStore,
+    ...(options.executeDeps.mcpActionStore !== undefined
+      ? { mcpActionStore: options.executeDeps.mcpActionStore }
+      : {}),
     runUpdateBootReconcile: options.runUpdateBootReconcile,
     // D-148 § A.5.6 — the last hop of the lapse-recovery wiring. Resolved
     // LAZILY: the cert stack fills `handleStateMachineRef` in `composeLate`,

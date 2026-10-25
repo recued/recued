@@ -22,6 +22,9 @@ interface AssetPlacementRow {
   pinned_sphere: Sphere | null; pinned_source: string | null;
   asset_sphere: Sphere | null; source_sphere: Sphere | null; fallback_sphere: Sphere | null;
 }
+type PublicationAssetPlacementRow = Omit<AssetRow, 'id'> & {
+  id: string | null; requested_id: string; pinned_sphere: Sphere | null; pinned_source: string | null;
+};
 export interface AssetSpherePage {
   ids: string[];
   total: number;
@@ -121,15 +124,40 @@ export const createSphereStore = (db: Database.Database, work?: WorkEntityStore,
    * selection only. The shared projection reader fetches missing ancestors;
    * all other calls, including reads after an await, load fresh facts. */
   const projectAssets = (ids: readonly string[], scanned: readonly Asset[] | undefined,
-    originFor: typeof sourceForReference): Map<string, SpherePlacement> => {
+    originFor: typeof sourceForReference, publication = false): Map<string, SpherePlacement> => {
     const result = new Map<string, SpherePlacement>(); const keys = [...new Set(ids)];
     if (!work) return new Map(keys.map(id => [id, resolve({ collection: 'asset', id })]));
     const known = new Map(scanned?.map(asset => [asset.id, asset]));
     for (let offset = 0; offset < keys.length; offset += 200) {
       const page = keys.slice(offset, offset + 200);
       const origins = new Map(page.map(id => [id, originFor?.({ collection: 'asset', id })]));
-      let combined: AssetPlacementRow[] | undefined;
-      if (page.every(id => known.has(id))) {
+      let combined: AssetPlacementRow[] | undefined; let loaded: Asset[] | undefined;
+      let publicationItems: Map<string, ItemPlacement> | undefined;
+      if (publication && !scanned && !originFor && hasNativeAssetProjection(work) && page.every(id => typeof id === 'string')) {
+        try {
+          // Pins shield the raw asset too. Reuse returned roots in the ordinary
+          // projector; keep its source-key deduplication and ancestor reads.
+          const rows = db.prepare(`WITH publication_asset_requested(id) AS (VALUES ${page.map(() => '(?)').join(',')})
+            SELECT wanted.id AS requested_id,item.sphere AS pinned_sphere,item.source AS pinned_source,asset.*
+            FROM publication_asset_requested wanted
+              LEFT JOIN sphere_items item ON item.collection='asset' AND item.id=wanted.id
+              LEFT JOIN ${ASSET_TABLE} asset ON item.id IS NULL AND asset.id=wanted.id`).all(...page) as PublicationAssetPlacementRow[];
+          const returned = new Set(rows.map(row => row.requested_id));
+          if (rows.length !== page.length || returned.size !== page.length || page.some(id => !returned.has(id))) throw new Error('Incomplete publication asset metadata');
+          publicationItems = new Map(rows.flatMap(row => row.pinned_sphere === null ? []
+            : [[row.requested_id, { sphere: row.pinned_sphere, source: row.pinned_source }] as const]));
+          const roots: Asset[] = [];
+          for (const row of rows) if (row.id !== null) {
+            const asset = rowToAsset({ ...row, id: row.id });
+            if (row.id !== row.requested_id || typeof row.source_id !== 'string'
+              || (asset.belongs_to && asset.belongs_to !== row.belongs_to)) throw new Error('Legacy publication asset metadata');
+            roots.push(asset);
+          }
+          if (!hasNativeAssetProjection(work)) throw new Error('Customized publication asset projection');
+          loaded = roots;
+        } catch { /* Retain the original projection and pin shielding for unsupported or failed reads. */ }
+      }
+      if (!publicationItems && page.every(id => known.has(id))) {
         // Source identity does not inherit. Read metadata before projecting only
         // unpinned assets, so a pin still shields a broken ancestor.
         const requested = page.map(id => {
@@ -150,12 +178,14 @@ export const createSphereStore = (db: Database.Database, work?: WorkEntityStore,
                 AND COALESCE(origin_source.sphere,'')='' AND calendar_source.source=wanted.fallback`).all(...requested.flat()) as AssetPlacementRow[];
         } catch { /* Retain the original bounded metadata reads and their error behavior. */ }
       }
-      const items = combined ? new Map(combined.flatMap(row => row.pinned_sphere === null ? []
+      const items = publicationItems ?? (combined ? new Map(combined.flatMap(row => row.pinned_sphere === null ? []
         : [[row.id, { sphere: row.pinned_sphere, source: row.pinned_source }] as const]))
         : new Map((db.prepare(`SELECT id,sphere,source FROM sphere_items WHERE collection='asset' AND id IN (${page.map(() => '?').join(',')})`)
-          .all(...page) as Array<ItemPlacement & { id: string }>).map(row => [row.id, row]));
+          .all(...page) as Array<ItemPlacement & { id: string }>).map(row => [row.id, row])));
       const unpinned = page.filter(id => !items.has(id));
-      const assets = scanned ? work.readAssetsEffective(unpinned, scanned) : work.readAssetsEffective(unpinned);
+      const loadedIds = loaded && new Set(loaded.map(asset => asset.id));
+      const assets = loaded ? work.readAssetsEffective(unpinned.filter(id => loadedIds!.has(id)), loaded)
+        : scanned ? work.readAssetsEffective(unpinned, scanned) : work.readAssetsEffective(unpinned);
       const placements = new Map<string, Sphere>();
       if (combined) {
         for (const row of combined) {
@@ -193,16 +223,17 @@ export const createSphereStore = (db: Database.Database, work?: WorkEntityStore,
   /** A synchronous publication page may write situations and acknowledgements.
    * Reuse placements only while SQLite reports exactly those accounted writes.
    * Any listener write, external commit, schema change or custom projection
-   * discards the batch. Origin callbacks still run once, in event order. */
+   * discards the batch. Start outside caller transactions so a later rollback
+   * cannot retain uncommitted facts. Origin callbacks run once, in event order. */
   function prefetchAssetPlacements(this: { resolve: typeof resolve; resolveAssets: typeof resolveAssets }, ids: readonly string[]): AssetPlacementReadBatch | undefined {
     const owner = this;
     const usable = () => {
       try { return !!work && owner?.resolve === resolve && owner.resolveAssets === resolveAssets && work.hasDefaultAssetProjection(); }
       catch { return false; }
     };
-    if (!ids.length || !usable()) return undefined;
+    if (!ids.length || db.inTransaction || !usable()) return undefined;
     const version = createSqliteReadBatch(db);
-    const placements = projectAssets(ids, undefined, undefined);
+    const placements = projectAssets(ids, undefined, undefined, true);
     if (!version.current()) return undefined;
     let active = true;
     const invalidate = () => { active = false; placements.clear(); version.invalidate(); };

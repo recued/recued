@@ -259,6 +259,35 @@ describe('what a client is actually told', () => {
   });
 });
 
+describe('only a modern request is served a stream', () => {
+  it('⛔ answers a legacy-era subscriptions/listen as the unknown method it is there', async () => {
+    const dispatched: string[] = [];
+    door = await startDoor({ tools: () => [], onDispatch: (m) => { dispatched.push(m); } });
+    // No header, and the header an SDK client sends after a legacy handshake.
+    const eras: Record<string, string>[] = [{}, { 'MCP-Protocol-Version': '2024-11-05' }];
+    for (const era of eras) {
+      const res = await fetch(door.url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${TOKEN}`,
+          accept: 'application/json, text/event-stream',
+          ...era,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 42,
+          method: 'subscriptions/listen',
+          params: { notifications: { toolsListChanged: true } },
+        }),
+      });
+      expect(res.headers.get('content-type')).toMatch(/^application\/json/);
+      expect(((await res.json()) as { error: { code: number } }).error.code).toBe(-32601);
+    }
+    expect(dispatched.filter((m) => m === 'subscriptions/listen')).toHaveLength(2);
+  });
+});
+
 describe('cost and caps', () => {
   it('⚠ checks the catalog ONCE per bearer, not once per stream', async () => {
     // Otherwise the per-token stream cap multiplies the cost of the very thing

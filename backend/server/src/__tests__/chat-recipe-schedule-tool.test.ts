@@ -335,6 +335,7 @@ describe('recipe.schedule — on the Tier-1 table', () => {
     // values a model chose.
     expect(Object.keys((descriptor.arg_schema as { properties: object }).properties).sort())
       .toEqual(['cron_expression', 'dish_id', 'enabled', 'mode', 'recipe_id', 'run_at']);
-    expect(TIER1_CLASSIFICATIONS['recipe.schedule']).toBe('unknown');
+    // D-329 — a write, so it is proposed to the owner first.
+    expect(TIER1_CLASSIFICATIONS['recipe.schedule']).toBe('write');
   });
 });

@@ -497,7 +497,7 @@ describe('Automation route — rendering', () => {
       /\.automation-detail-facts\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\)/s,
     );
     expect(routeStyles).toMatch(
-      /@media \(max-width: 360px\)[\s\S]*?\.automation-detail-facts\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
+      /@media \(max-width: 560px\)[\s\S]*?\.automation-detail-facts\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
     );
     expect(routeStyles).toMatch(
       /\.automation-detail-facts dd\s*\{[^}]*overflow-wrap:\s*anywhere/s,
@@ -2050,6 +2050,26 @@ describe('Automation route — mutations', () => {
 });
 
 describe('Automation route — detail view', () => {
+  it.each([
+    { failures: 5, expected: 'Auto-disabled', other: 'Paused' },
+    { failures: 0, expected: 'Paused', other: 'Auto-disabled' },
+    { failures: undefined, expected: 'Paused', other: 'Auto-disabled' },
+  ])('keeps the list and detail state consistent for a disabled schedule with $failures failures', async ({ failures, expected, other }) => {
+    const rig = mountRoute({
+      initialSection: 'schedules',
+      schedulesListCaller: async () => ({
+        schedules: [schedule({ enabled: false, consecutive_failures: failures })],
+      }),
+    });
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).toContain(expected);
+
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+    expect(rig.route.getDetailId()).toBe('sch_1');
+    expect(rig.host.innerHTML).toContain(expected);
+    expect(rig.host.innerHTML).not.toContain(other);
+  });
+
   it('opens details, backs out, mutates from detail, and falls back after the rule disappears', async () => {
     let currentSchedules: ServerSchedule[] = [schedule()];
     const schedulesListCaller = vi.fn<SchedulesListCaller>(async () => ({

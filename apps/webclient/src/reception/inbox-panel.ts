@@ -403,7 +403,7 @@ export const RECEPTION_INBOX_STYLES = `
   outline: none;
   border-color: var(--accent);
   background: var(--surface);
-  box-shadow: 0 0 0 3px var(--accent-weak);
+  box-shadow: var(--wc-ring);
 }
 .reception-inbox-field textarea {
   min-height: 92px;
@@ -501,6 +501,10 @@ export const RECEPTION_INBOX_STYLES = `
 .reception-inbox-btn--danger {
   color: var(--danger);
   border-color: var(--danger);
+}
+/* A finger's height on a phone. ⛔ 36px. */
+@media (max-width: 640px) {
+  .reception-inbox-btn { min-height: 44px; }
 }
 @media (max-width: 820px) {
   .reception-inbox-body {

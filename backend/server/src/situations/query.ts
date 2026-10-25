@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { setImmediate } from 'node:timers/promises';
 import { PROSE_FUNCTION_WORDS } from '@recued/middleware-prompt-cache';
+import { SITUATION_TOOL_MAX_ITEMS } from '@recued/contracts';
 import type {
   SituationCluster, SituationDimension, SituationFact, SituationItem,
   SituationQuery, SituationReason, SituationRef, SituationResult, SituationVerdict, SituationWindow,
@@ -43,6 +44,13 @@ export const situationText = (query: Pick<SituationQuery, 'text' | 'surface'>) =
 };
 type SituationText = ReturnType<typeof situationText>;
 const MAX_FACTS = 20_000;
+/** A fact about a person the question names or asks for outranks one that only a shared
+ * word brought in: "Open Maya Chen's passport" ranks her passport above two others the
+ * word matched, which scored the same and were ordered by their group's hashed id, so
+ * hers was missing from 4 of 6 prefetches. 500 keeps the tiers a score already has: an
+ * ordinary item stays below every floor clock (at most 725 against at least 865), and a
+ * named floor clock above every other one (at least 1,365 against at most 1,225). */
+const NAMED_PERSON_BONUS = 500;
 /** A source holds more records than one read may. The owner keeps the rest of
  * the result with the source named in `partial`; a scoped contract is refused,
  * so no partial result or private count reaches it. */
@@ -97,6 +105,9 @@ export interface SituationQueryDeps {
   relate?(facts: readonly SituationFact[], query: SituationQuery, context: SituationReadContext): readonly SituationFact[];
   rank?(fact: SituationFact): number;
   namedPeople?(text: string, context: SituationReadContext): Array<{ id: string; name: string }>;
+  /** The contacts one `people` entry names (`named-people.ts`). Without it,
+   * an entry is a contact's id as given. */
+  peopleFor?(entry: string, context: SituationReadContext): readonly string[];
   /** Evidence keeps its original source's verb, not the candidate's verb. */
   sourceForCollection(collection: string): { verb_op: string; collection: string } | undefined;
   /** Asset classes a learned relation pairs with trips. */
@@ -128,17 +139,39 @@ const timeVerdict = (value: SituationWindow | undefined, window: SituationWindow
 const dimension = <T>(value: T | undefined, verdict: SituationVerdict, fact: SituationFact): SituationDimension<T> => ({
   value: value ?? null, verdict: value === undefined ? 'unknown' : verdict, basis: fact.basis, evidence: fact.evidence,
 });
-const itemOf = (fact: SituationFact, reasons: Set<SituationReason>, query: SituationQuery, window: SituationWindow, text: SituationText): SituationItem => ({
+/** A trip's destination and days, without its travellers: they are the item's `who`. */
+const tripOf = (trip: SituationFact['trip']): Pick<SituationItem, 'trip'> => {
+  if (!trip) return {};
+  const shown: NonNullable<SituationItem['trip']> = {
+    ...(trip.destination_country ? { destination_country: trip.destination_country } : {}),
+    ...(trip.entry_on ? { entry_on: trip.entry_on } : {}), ...(trip.exit_on ? { exit_on: trip.exit_on } : {}),
+    ...(trip.special_entry_status ? { special_entry_status: true } : {}),
+  };
+  return Object.keys(shown).length ? { trip: shown } : {};
+};
+/** One `people` entry and the contacts it resolved to; `known` once it resolved. */
+interface AskedPerson { entry: string; ids: ReadonlySet<string>; known: boolean }
+/** Every asked person among the item's people is a match, some is near. None is
+ * outside only when each asked person resolved: a name no contact holds cannot
+ * rule an item out, and unknown is not outside. */
+const whoVerdict = (people: readonly string[], asked: readonly AskedPerson[]): SituationVerdict => {
+  if (!asked.length || !people.length) return 'unknown';
+  const found = asked.filter(person => people.some(id => person.ids.has(id))).length;
+  return found === asked.length ? 'match' : found ? 'near' : asked.every(person => person.known) ? 'outside' : 'unknown';
+};
+const itemOf = (fact: SituationFact, reasons: Set<SituationReason>, query: SituationQuery, window: SituationWindow, text: SituationText,
+  asked: readonly AskedPerson[]): SituationItem => ({
   ref: fact.ref, kind: fact.kind,
   what: dimension(fact.title, text.title(fact.title) ? 'match' : 'outside', fact),
   when: dimension(fact.when, timeVerdict(fact.last_time ? fact.last_time_comparison ?? fact.when : fact.when, window), fact),
   where: dimension(fact.place, query.place && fact.place ? (query.place.key === fact.place.key ? 'match' : 'outside')
     : query.surface === 'prefetch' && query.text && fact.place && text.place(fact.place.name) ? 'match' : 'unknown', fact),
-  who: dimension(fact.people.length ? fact.people : undefined, query.people?.length && fact.people.length
-    ? query.people.every(person => fact.people.includes(person)) ? 'match' : query.people.some(person => fact.people.includes(person)) ? 'near' : 'outside' : 'unknown', fact),
+  who: dimension(fact.people.length ? fact.people : undefined, whoVerdict(fact.people, asked), fact),
   reasons: [...reasons], basis: fact.basis, evidence: fact.evidence, consequence: fact.consequence,
   ...(fact.when_day ? { when_day: fact.when_day } : {}),
   ...(fact.sphere ? { sphere: fact.sphere } : {}), updated_at: fact.updated_at,
+  ...(fact.details ? { details: fact.details } : {}),
+  ...tripOf(fact.trip),
 });
 const uniqueRefs = (refs: SituationRef[]): SituationRef[] => [...new Map(refs.map(ref => [refKey(ref), ref])).values()]
   .sort((a, b) => refKey(a).localeCompare(refKey(b)));
@@ -151,6 +184,14 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   const window = validateQuery(query);
   const text = situationText(query);
   const current = deps.now?.() ?? Date.now();
+  /** A trip, event or booking that is over is history. It answers only a question
+   * (the tool) about a span that reaches back over it; every forward list leaves it
+   * out, and nothing derived from it outlives it. */
+  const isOver = (fact: SituationFact): boolean => fact.valid_until !== undefined && fact.valid_until <= current;
+  const asksThePast = (query.surface ?? 'tool') === 'tool' && window.from < current;
+  // A record read from email is `derived` too, so basis cannot tell a record from a
+  // check; checks come only from `relate`, which drops every one that is over.
+  const inAskedPast = (fact: SituationFact): boolean => asksThePast && fact.when !== undefined && intersects(fact.when, window);
   const allowed = (verb: string, collection: string): boolean => context.grants.isVerbOpGranted(verb) && context.grants.isCollectionReadGranted(collection);
   const factsById = new Map<string, SituationFact>();
   const contactAccess = deps.sourceForCollection('contact');
@@ -181,6 +222,15 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   const namedPeople = query.surface === 'prefetch' && query.text && contactAccess && allowed(contactAccess.verb_op, contactAccess.collection)
     ? (deps.namedPeople?.(query.text, context) ?? []).filter(person => personAllowed(person.id)) : [];
   const namedIds = new Set(namedPeople.map(person => person.id));
+  // A model names people as the owner does, never by a contact's id: each entry
+  // stands for the contacts it resolves to, read only with both contact grants.
+  const askedPeople: AskedPerson[] = (query.people ?? []).map(entry => {
+    if (!deps.peopleFor) return { entry, ids: new Set([entry]), known: true };
+    const ids = contactAccess && allowed(contactAccess.verb_op, contactAccess.collection)
+      ? deps.peopleFor(entry, context).filter(personAllowed) : [];
+    return { entry, ids: new Set([entry, ...ids]), known: ids.length > 0 };
+  });
+  const askedIds = new Set(askedPeople.flatMap(person => [...person.ids]));
   const read = new Map<SituationSource, SituationFact[]>();
   const loaded = new Map<SituationSource, Set<string> | 'all'>();
   // Await sources in inventory order; a capped scan is stable and never lets
@@ -201,7 +251,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   // source without an index is read whole, so the facts selected are those a
   // read of every record would select.
   {
-    const people = new Set([...query.people ?? [], ...namedIds]);
+    const people = new Set([...askedIds, ...namedIds]);
     const classes = deps.relationClasses?.() ?? [];
     let seeded: SituationFact[] = [];
     for (const source of sources) {
@@ -238,7 +288,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     for (const [key, fact] of facts) {
       if (fact.ref.collection !== source.collection || !fact.title.trim()) continue;
       if (!context.owner && !context.all_spheres && (!fact.sphere || !context.spheres?.includes(fact.sphere))) continue;
-      if (fact.valid_until !== undefined && fact.valid_until <= current) continue;
+      if (isOver(fact) && !inAskedPast(fact)) continue;
       if (fact.last_time && (query.surface !== 'digest' || !query.include_last_time || !context.last_time_opted_in)) continue;
       if (query.surface === 'prefetch' && (fact.ref.collection === 'episode' || fact.last_time)) continue;
       const refAllowed = (ref: SituationRef): boolean => {
@@ -264,6 +314,8 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   // relation can turn a hidden holder into a verdict or a shared-person join.
   for (const [key, fact] of factsById) factsById.set(key, projectPeople(fact));
   if (deps.relate) for (const fact of deps.relate([...factsById.values()], query, context)) {
+    // A check on a trip that is over is over with it.
+    if (isOver(fact)) continue;
     const access = deps.sourceForCollection(fact.ref.collection);
     if (!access || !allowed(access.verb_op, access.collection) || (!context.owner && !context.all_spheres && (!fact.sphere || !context.spheres?.includes(fact.sphere)))) continue;
     if (fact.evidence.some(ref => {
@@ -288,6 +340,8 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
       consequence: canonical.consequence === 'floor' || clock.consequence === 'floor' ? 'floor' : 'routine',
       subjects: uniqueRefs([...canonical.subjects, ...clock.subjects]), related: uniqueRefs([...canonical.related, ...clock.related]),
       evidence: [...canonical.evidence, ...clock.evidence], missing: canonical.missing || clock.missing,
+      // The obligation is the asset's: its fields stay with the one item kept.
+      ...(clock.details ?? canonical.details ? { details: clock.details ?? canonical.details } : {}),
       updated_at: Math.max(canonical.updated_at, clock.updated_at) });
     factsById.delete(refKey(clock.ref));
   }
@@ -312,16 +366,18 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     const key = refKey(fact.ref); const reasons = selected.get(key) ?? new Set(); reasons.add(reason); selected.set(key, reasons);
   };
   for (const fact of facts) {
-    const due = situationDue(fact, window);
+    // What is over is never due: it is here only because the question asked about its time.
+    const over = isOver(fact);
+    const due = !over && situationDue(fact, window);
     const named = querySubjects.has(refKey(fact.ref)) || fact.subjects.some(ref => querySubjects.has(refKey(ref)))
       || Boolean(query.place && fact.place?.key === query.place.key)
-      || Boolean(query.people?.some(id => fact.people.includes(id)))
-      || fact.people.some(id => namedIds.has(id))
+      || fact.people.some(id => askedIds.has(id) || namedIds.has(id))
       || Boolean(query.text?.trim() && (text.title(fact.title)
         || (query.surface === 'prefetch' && fact.place && text.place(fact.place.name))));
     // Prefetch must match the message; a general overdue item alone isn't a hit.
     if (query.surface === 'prefetch' && !named) continue;
     if (due) add(fact, 'due');
+    if (over) add(fact, 'ended');
     if (named) add(fact, fact.last_time ? 'last_time' : 'related');
     if (query.changed_since !== undefined && fact.updated_at > query.changed_since) add(fact, 'related');
     if (fact.missing && (due || named)) add(fact, 'missing');
@@ -373,11 +429,15 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   const score = (fact: SituationFact): number => {
     const prior = scores.get(fact); if (prior !== undefined) return prior;
     const proposed = deps.rank?.(fact) ?? 1; const factor = Number.isFinite(proposed) ? Math.max(fact.consequence === 'floor' ? 1 : 0.5, Math.min(1.5, proposed)) : 1;
-    const value = (fact.consequence === 'floor' ? 1000 : 0) + factor * ((fact.basis === 'inferred' ? 0 : 100)
+    const named = fact.people.some(id => askedIds.has(id) || namedIds.has(id));
+    const value = (fact.consequence === 'floor' ? 1000 : 0) + (named ? NAMED_PERSON_BONUS : 0) + factor * ((fact.basis === 'inferred' ? 0 : 100)
       + (fact.updated_at > (query.changed_since ?? current) ? 50 : 0) - Math.min(90, Math.abs((fact.when?.from ?? window.from) - window.from) / DAY));
     scores.set(fact, value); return value;
   };
-  const maxItems = Math.min(3, query.limit_items ?? 3);
+  // A tool caller asked a question, so it gets every match; the owner's surfaces (Today, the
+  // digest, a push, the chat's prefetch) show the few that fit them.
+  const tool = (query.surface ?? 'tool') === 'tool';
+  const maxItems = tool ? query.limit_items ?? Infinity : Math.min(3, query.limit_items ?? 3);
   const clusters: Array<SituationCluster & { score: number }> = [...groups.values()].flatMap(group => {
     group.sort((a, b) => score(b) - score(a) || refKey(a.ref).localeCompare(refKey(b.ref)));
     const allSubjects = uniqueRefs(group.flatMap(fact => fact.subjects));
@@ -400,7 +460,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     const supplied = (projecting ? admitted : admitted.slice(0, maxItems)).map(fact => {
       const reasons = selected.get(refKey(fact.ref))!;
       if (collisions ? collisions.has(fact) : fact.when && group.some(other => other !== fact && other.when && intersects(fact.when!, other.when))) reasons.add('collides');
-      return itemOf(fact, reasons, query, window, text);
+      return itemOf(fact, reasons, query, window, text, askedPeople);
     });
     const projected = context.projectClusterItems ? context.projectClusterItems(supplied) : supplied;
     if (projected === null || !projected.length) return [];
@@ -413,7 +473,15 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   }).filter(cluster => query.surface !== 'push' || cluster.items.some(item => item.consequence === 'floor'
     || (item.when.value && intersects(item.when.value, window))));
   clusters.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
-  const visibleClusters = clusters.slice(0, Math.min(query.surface === 'push' ? 2 : 5, query.limit_clusters ?? 5));
+  // One tool call returns at most SITUATION_TOOL_MAX_ITEMS items, best first. A group it cuts
+  // counts the rest in its own `omitted`, as the result's `omitted` counts every match not shown.
+  let room = SITUATION_TOOL_MAX_ITEMS;
+  const visibleClusters = !tool ? clusters.slice(0, Math.min(query.surface === 'push' ? 2 : 5, query.limit_clusters ?? 5))
+    : clusters.slice(0, query.limit_clusters ?? clusters.length).flatMap(cluster => {
+      if (room <= 0) return [];
+      const items = cluster.items.slice(0, room); room -= items.length;
+      return [items.length === cluster.items.length ? cluster : { ...cluster, items, omitted: cluster.omitted + cluster.items.length - items.length }];
+    });
   const names = new Map<string, SituationRef[]>();
   if (query.text) for (const fact of picked) {
     if (!text.title(fact.title)) continue;
@@ -423,6 +491,12 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   if (namedPeople.length > 1) {
     const choices = uniqueRefs(picked.filter(fact => fact.people.some(id => namedIds.has(id))).map(fact => fact.ref));
     if (choices.length > 1) ambiguous.push({ name: namedPeople.map(person => person.name).join(' / '), choices });
+  }
+  // One name, several contacts with items: which one is the owner's to say.
+  for (const person of askedPeople) {
+    const involved = new Set(picked.flatMap(fact => fact.people.filter(id => id !== person.entry && person.ids.has(id))));
+    if (involved.size < 2) continue;
+    ambiguous.push({ name: person.entry, choices: uniqueRefs(picked.filter(fact => fact.people.some(id => involved.has(id))).map(fact => fact.ref)) });
   }
   return { clusters: visibleClusters.map(({ score: _score, ...cluster }) => cluster),
     omitted: picked.length - visibleClusters.reduce((sum, cluster) => sum + cluster.items.length, 0), ambiguous,

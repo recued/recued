@@ -93,6 +93,7 @@ const entry = (
     config_snapshot: patch.config_snapshot ?? {},
     errors: patch.errors ?? [],
     ...(patch.degraded !== undefined ? { degraded: patch.degraded } : {}),
+    ...(patch.run_yield !== undefined ? { run_yield: patch.run_yield } : {}),
     trigger_url: patch.trigger_url ?? null,
     trigger_source: patch.trigger_source ?? 'manual',
     instance_id: patch.instance_id ?? 'srv-test',
@@ -591,5 +592,33 @@ describe('D-174 execution.* slice posture', () => {
 
   it('drops the slice when deps are absent', () => {
     expect(makeExecutionFeedHandlers(undefined)).toBeUndefined();
+  });
+});
+
+
+describe('History item-result projection', () => {
+  it('projects recorded results without exposing extra stored properties', async () => {
+    const tally = { steps_run: 2, steps_skipped: 1, items_total: 12, items_failed: 3, stopped_at: null,
+      skipped_step_ids: ['private-step'], raw_payload: 'private-token' };
+    await append('partial', 100, { run_yield: tally });
+    const out = await handleExecutionList(deps, {});
+    expect(out.runs[0]?.run_yield).toEqual({ steps_run: 2, steps_skipped: 1, items_total: 12, items_failed: 3, stopped_at: null });
+    expect(JSON.stringify(out)).not.toMatch(/private-step|private-token|raw_payload|skipped_step_ids/);
+  });
+
+  it('distinguishes old records from a recorded zero and retains stop conditions', async () => {
+    await append('old', 100);
+    await append('zero', 200, { run_yield: { steps_run: 1, steps_skipped: 0, items_total: 0, items_failed: 0 } });
+    await append('stopped', 300, { run_yield: { steps_run: 1, steps_skipped: 0, items_total: 0, items_failed: 0, stopped_at: 'nothing_new' } });
+    const out = await handleExecutionList(deps, {});
+    expect(out.runs.find(row => row.run_id === 'old')).not.toHaveProperty('run_yield');
+    expect(out.runs.find(row => row.run_id === 'zero')?.run_yield?.items_total).toBe(0);
+    expect(out.runs.find(row => row.run_id === 'stopped')?.run_yield?.stopped_at).toBe('nothing_new');
+  });
+
+  it('omits malformed counts rather than inventing an item outcome', async () => {
+    await append('invalid', 100, { run_yield: { steps_run: 1, steps_skipped: 0, items_total: 2, items_failed: 3 } });
+    const out = await handleExecutionList(deps, {});
+    expect(out.runs[0]).not.toHaveProperty('run_yield');
   });
 });

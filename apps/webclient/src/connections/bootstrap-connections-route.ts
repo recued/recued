@@ -18,12 +18,29 @@
  *  route with the new `initialTab` — back / forward / refresh all hold.
  *  Only the active tab's panel mounts per route instance.
  *
+ *  Secondary settings sit below each lane's list, never above it: Mail,
+ *  Calendar and Files show "Personal or work" for their own sources, and Apps
+ *  & APIs ends in an Advanced section of closed tool cards — saved OAuth apps,
+ *  managed sign-in, moving connections to another sign-in, replacing a
+ *  connection, and Personal or work for app sources (`connections-tools.ts`).
+ *
  *  The standalone per-connection "Operation grants" matrix retired with
  *  R13 (write-ops come from installing the pack that declares them; the
  *  server floor is untouched), so this route no longer hosts it. */
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { mountSourceSpheresPanel, type SourceSpheresOptions } from './source-spheres-panel.js';
+import {
+  mountSourceSpheresPanel,
+  SOURCE_SPHERES_STYLES,
+  type SourceSpheresOptions,
+  type SourceSpheresPanel,
+} from './source-spheres-panel.js';
+import {
+  connectionsToolsStyles,
+  createConnectionsAdvancedSection,
+  createConnectionsToolCard,
+  type ConnectionsToolCard,
+} from './connections-tools.js';
 import { isAuthenticationIncidentHistoryFilters } from '@recued/contracts';
 import {
   CONNECTION_NAME_REGEX,
@@ -129,7 +146,7 @@ import {
   type WebhooksTestDeliveryCaller,
   type WebhooksRetentionPruneCaller,
 } from './webhooks-panel.js';
-import type { AccountLaneId } from '@recued/ui-shared';
+import { findAccountLane, findAccountProvider, type AccountLaneId } from '@recued/ui-shared';
 import type {
   OAuthAppConfigSnapshot,
   PackListEntry,
@@ -141,7 +158,7 @@ import { createReconnectWorklistPanel, RECONNECT_WORKLIST_STYLES } from '../sett
 import { createAuthenticationIncidentPanel, AUTHENTICATION_INCIDENT_STYLES } from './authentication-incident-panel.js';
 import { createAuthenticationAccessPanel } from './authentication-access-panel.js';
 import { createManagedOAuthMigrationPanel } from '../settings/managed-oauth-migration-panel.js';
-import { mountConnectionReplacementPanel } from './connection-replacement-panel.js';
+import { CONNECTION_REPLACEMENT_STYLES, mountConnectionReplacementPanel } from './connection-replacement-panel.js';
 import type { ConnectionReplacementCaller } from './connection-replacement-caller.js';
 import { createOAuthAppsPanel, OAUTH_APPS_STYLES, type OAuthAppsCaller } from '../settings/oauth-apps-panel.js';
 import { OAUTH_TROUBLESHOOTING_STYLES } from './oauth-troubleshooting.js';
@@ -376,17 +393,24 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: -3px;
 }
+/* A finger's height on a phone. ⛔ 38px. */
+@media (max-width: 640px) {
+  [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
 [${CONNECTIONS_ROUTE_CONTENT_ATTR}],
 [${CONNECTIONS_ROUTE_ENROLL_HOST_ATTR}] { min-width: 0; }
-.connections-authentication-settings{border-top:1px solid var(--border);padding-top:16px;margin-top:24px;min-width:0}
-.connections-authentication-settings>summary{font-size:14px;font-weight:600;cursor:pointer;padding:8px 0}
-.connections-authentication-settings .oauth-apps h2,.connections-authentication-settings .oauth-apps h3{font-size:16px;margin:0 0 8px}
-.connections-setup-return{border:1px solid var(--border);padding:12px;border-radius:8px;margin-bottom:16px;font-size:13px}
-.connections-setup-return p{margin:0 0 8px}
-.reconnect-worklist-disclosure{font-size:13px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:0 0 16px}
-.reconnect-worklist-disclosure>summary{cursor:pointer;font-weight:600}
-.reconnect-worklist-disclosure .reconnect-worklist{border:0;padding:12px 0 0;margin:0;font-size:13px}
-.reconnect-worklist-disclosure h2,.reconnect-worklist-disclosure h3{font-size:16px}
+/* The route already pads the page; the embedded Apps & APIs panel lines up
+   with the tabs, the attention card and the Advanced section. */
+[${CONNECTIONS_ROUTE_ENROLL_HOST_ATTR}] > .connections-page { padding: 0; }
+[${CONNECTIONS_ROUTE_HOST_ATTR}] a.rx-btn:not(.rx-btn-link) { text-decoration: none; }
+.connections-setup-return{display:grid;gap:8px;justify-items:start;border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.5}
+.connections-setup-return p{margin:0}
+.connections-setup-return a{color:var(--accent);font-weight:600;text-decoration:none}
+.connections-setup-return a:hover{text-decoration:underline}
 [${CONNECTIONS_ROUTE_UNAVAILABLE_ATTR}] {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -429,6 +453,9 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 `;
 
 export const CONNECTIONS_ROUTE_STYLES = [
+  connectionsToolsStyles(`[${CONNECTIONS_ROUTE_HOST_ATTR}]`),
+  SOURCE_SPHERES_STYLES,
+  CONNECTION_REPLACEMENT_STYLES,
   OAUTH_APPS_STYLES,
   OAUTH_TROUBLESHOOTING_STYLES,
   RECONNECT_WORKLIST_STYLES,
@@ -778,7 +805,6 @@ export const bootstrapConnectionsRoute = (
     tabBar.appendChild(link);
   }
   routeRoot.appendChild(tabBar);
-  const sourceSpheres = opts.sourceSpheres ? mountSourceSpheresPanel(routeRoot, opts.sourceSpheres) : undefined;
 
   // Lane panels replace their own host. Keep the shared worklist above it so
   // an account refresh cannot remove the repair entry point.
@@ -815,11 +841,9 @@ export const bootstrapConnectionsRoute = (
   let replacementPanel: ReturnType<typeof mountConnectionReplacementPanel> | null = null;
   let connectionsGrant: ConnectionsGrantPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
-  const authenticationSettings = doc.createElement('details');
-  authenticationSettings.className = 'connections-authentication-settings';
-  authenticationSettings.open = opts.initialManageOAuthApps === true || !!opts.initialOAuthAppReview;
-  const settingsSummary = doc.createElement('summary'); settingsSummary.textContent = 'Authentication settings';
-  authenticationSettings.appendChild(settingsSummary);
+  // "Personal or work" for the sources this lane holds (D-325 §15.8).
+  let spheres: SourceSpheresPanel | null = null;
+  let oauthAppsCard: ConnectionsToolCard | null = null;
 
   if (worklistHost) {
     reconnectWorklist = createReconnectWorklistPanel({ document: doc,
@@ -888,10 +912,31 @@ export const bootstrapConnectionsRoute = (
       incidentHistory.mount(content);
     }
   } else if (isFoundationalLane(activeTab)) {
+    const lane = activeTab;
+    // The account list knows each source better than its key does: the
+    // mailbox address, the provider, a cloud source's own name.
+    const describeLaneSource = (source: string): { title?: string; detail?: string } | undefined => {
+      const rows = accountsPanel?.getState().rows ?? [];
+      if (source.startsWith(lane + ':')) {
+        const row = rows.find(candidate => candidate.slug === source.slice(lane.length + 1));
+        if (!row) return undefined;
+        const laneInfo = findAccountLane(lane);
+        const provider = laneInfo ? findAccountProvider(laneInfo, row.adapterType)?.label : undefined;
+        const detail = [row.sublabel, provider].filter(Boolean).join(' · ');
+        return detail ? { detail } : undefined;
+      }
+      const name = source.startsWith('work:') ? source.slice(5).split('.').slice(1, -1).join('.') : '';
+      const cloud = name ? rows.find(candidate => candidate.cloudSource?.authentication_connection === name)?.cloudSource : undefined;
+      return cloud ? { title: cloud.label } : undefined;
+    };
+    const laneSpheres = opts.sourceSpheres === undefined ? null
+      : mountSourceSpheresPanel({ ...opts.sourceSpheres, lane, document: doc, describe: describeLaneSource });
+    spheres = laneSpheres;
     accountsPanel = mountAccountsLanePanel({
       host: content,
       document: doc,
       initialLane: activeTab,
+      ...(laneSpheres !== null ? { listFooter: () => laneSpheres.supported() ? laneSpheres.element : null } : {}),
       oauthReturnHref: connectionsLaneAddress(activeTab).hash,
       onNavigate: (lane, detailSlug) => {
         connectionsHistory.navigate(
@@ -943,6 +988,7 @@ export const bootstrapConnectionsRoute = (
         : {}),
       ...(opts.now !== undefined ? { now: opts.now } : {}),
     });
+    if (spheres !== null) void accountsPanel.whenLoaded().then(() => spheres?.rerender(), () => undefined);
   } else if (activeTab === 'webhooks') {
     const canMountWebhooks = opts.webhooksListCaller !== undefined
       && opts.webhooksCreateCaller !== undefined
@@ -1004,20 +1050,49 @@ export const bootstrapConnectionsRoute = (
       back.setAttribute('data-account-setup-return', ''); back.addEventListener('click', () => navigate(connectionsLaneAddress(setup.lane).hash));
       resume.appendChild(copy); resume.appendChild(back); content.appendChild(resume);
     }
+    // ── Advanced: everything here is set up once, if ever. Each tool is a
+    // closed card under the list, so the connections and Add lead the page.
+    const advanced = createConnectionsAdvancedSection(doc, {
+      title: 'Advanced',
+      description: 'Sign-in settings and tools for moving connections. Most people never need these.',
+    });
+    let advancedTools = 0;
+    const addTool = (tool: { id: string; title: string; description: string }): ConnectionsToolCard => {
+      const card = createConnectionsToolCard(doc, tool);
+      advanced.list.appendChild(card.root);
+      advancedTools += 1;
+      return card;
+    };
+    if (opts.sourceSpheres !== undefined) {
+      const card = addTool({ id: 'spheres', title: 'Personal or work',
+        description: 'Whether items from your apps, and from Recued’s own lists, count as personal or work.' });
+      card.root.hidden = true;
+      spheres = mountSourceSpheresPanel({ ...opts.sourceSpheres, lane: 'others', document: doc,
+        onAvailability: (available) => {
+          card.root.hidden = !available;
+          if (advancedTools === 1) advanced.root.hidden = !available;
+        } });
+      card.body.appendChild(spheres.element);
+    }
     if (opts.oauthAppsCaller && !opts.initialPermissionRepair && !opts.permissionRepairUnavailable) {
-      oauthAppsHost = doc.createElement('div'); authenticationSettings.appendChild(oauthAppsHost);
+      oauthAppsCard = addTool({ id: 'oauth-apps', title: 'Your own OAuth apps',
+        description: 'Google or Microsoft app credentials you saved for signing in to mail, calendars and APIs.' });
+      oauthAppsCard.root.open = opts.initialManageOAuthApps === true || !!opts.initialOAuthAppReview;
+      oauthAppsHost = doc.createElement('div'); oauthAppsCard.body.appendChild(oauthAppsHost);
       oauthAppsPanel = createOAuthAppsPanel({ host: oauthAppsHost, call: opts.oauthAppsCaller,
         navigate,
         changed: () => { void connectionsEnroll?.refresh(); } });
     }
     if (opts.connectionsManagedOAuthCaller !== undefined) {
+      const brokers = addTool({ id: 'managed-sign-in', title: 'Managed sign-in with Nango',
+        description: 'Let a Nango account hold your sign-ins and keep them refreshed for your API connections.' });
       const section = doc.createElement('section');
       section.className = 'connections-broker-manager';
       const intro = doc.createElement('div');
       intro.className = 'connections-broker-manager-intro';
-      const title = doc.createElement('h2'); title.textContent = 'Managed sign-in';
-      const description = doc.createElement('p'); description.textContent = 'Save a Nango broker for your app connections.';
-      intro.appendChild(title); intro.appendChild(description);
+      const description = doc.createElement('p');
+      description.textContent = 'Save your Nango broker here, then choose it when you add or edit a connection. Your vendor’s consent screens and admin policies still apply.';
+      intro.appendChild(description);
       const button = doc.createElement('button');
       button.type = 'button'; button.textContent = 'Manage OAuth brokers';
       button.className = 'rx-btn rx-btn-outline rx-btn-sm';
@@ -1070,9 +1145,11 @@ export const bootstrapConnectionsRoute = (
         if (context.enabled) editor.querySelector<HTMLElement>('[data-managed-field="profile"], [data-managed-action="add"]')?.focus?.();
       });
       section.appendChild(intro);
-      section.appendChild(button); section.appendChild(editor); authenticationSettings.appendChild(section);
+      section.appendChild(button); section.appendChild(editor); brokers.body.appendChild(section);
+      const migration = addTool({ id: 'bulk-migration', title: 'Move connections to another sign-in',
+        description: 'Switch several API connections to your own OAuth app or to Nango at once. Names, packs and recipes stay linked.' });
       const migrate = doc.createElement('button'); migrate.type = 'button'; migrate.className = 'rx-btn rx-btn-outline rx-btn-sm';
-      migrate.textContent = 'Bulk authentication migration'; migrate.setAttribute('data-recued-bulk-authentication', '');
+      migrate.textContent = 'Choose connections to move'; migrate.setAttribute('data-recued-bulk-authentication', '');
       const migrationHost = doc.createElement('div'); migrationHost.hidden = true;
       migrate.setAttribute('aria-expanded', 'false'); migrationHost.id = 'connections-bulk-authentication';
       migrate.setAttribute('aria-controls', migrationHost.id);
@@ -1080,22 +1157,28 @@ export const bootstrapConnectionsRoute = (
       migrate.addEventListener('click', () => {
         if (migrationPanel) return;
         if (brokerPanel?.busy() || connectionsEnroll?.hasInFlightWork() || connectionsEnroll?.hasUnsavedChanges()) {
-          migrationNotice.textContent = 'Finish or cancel the current connection action before starting a bulk migration.';
+          migrationNotice.textContent = 'Finish or cancel the current connection action before moving connections.';
           migrationNotice.hidden = false; return;
         }
         migrationNotice.hidden = true;
-        migrationHost.hidden = false; migrate.setAttribute('aria-expanded', 'true'); migrate.disabled = true;
+        migrationHost.hidden = false; migrate.setAttribute('aria-expanded', 'true'); migrate.disabled = true; migrate.hidden = true;
         migrationPanel = createManagedOAuthMigrationPanel({ host: migrationHost, call: opts.connectionsManagedOAuthCaller!,
           changed: () => { void connectionsEnroll?.refresh(); },
           closed: () => { migrationPanel?.dispose(); migrationPanel = null; migrationHost.hidden = true; migrationHost.innerHTML = '';
-            migrate.disabled = false; migrate.setAttribute('aria-expanded', 'false'); migrate.focus?.(); void connectionsEnroll?.refresh(); } });
+            migrate.hidden = false; migrate.disabled = false; migrate.setAttribute('aria-expanded', 'false'); migrate.focus?.(); void connectionsEnroll?.refresh(); } });
         void migrationPanel.load();
       });
-      section.appendChild(migrate); section.appendChild(migrationNotice); section.appendChild(migrationHost);
+      migration.body.appendChild(migrate); migration.body.appendChild(migrationNotice); migration.body.appendChild(migrationHost);
     }
-    if (opts.connectionReplacementCaller) replacementPanel = mountConnectionReplacementPanel({ host: content, caller: opts.connectionReplacementCaller,
-      busyOther: () => (connectionsEnroll?.hasInFlightWork() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false) || (migrationPanel?.busy() ?? false) || (brokerPanel?.busy() ?? false),
-      changed: () => { void connectionsEnroll?.refresh(); } });
+    if (opts.connectionReplacementCaller) {
+      const card = addTool({ id: 'replace-connection', title: 'Replace a connection',
+        description: 'Point packs and saved recipe settings at a different connection, with a review first and an undo after.' });
+      const panel = mountConnectionReplacementPanel({ host: card.body, caller: opts.connectionReplacementCaller,
+        busyOther: () => (connectionsEnroll?.hasInFlightWork() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false) || (migrationPanel?.busy() ?? false) || (brokerPanel?.busy() ?? false),
+        changed: () => { void connectionsEnroll?.refresh(); } });
+      replacementPanel = panel;
+      card.root.addEventListener('toggle', () => { if (card.root.open) panel.activate(); });
+    }
     const canMountEnroll =
       opts.connectionsEnrollListCaller !== undefined
       && opts.connectionsEnrollCaller !== undefined
@@ -1205,7 +1288,7 @@ export const bootstrapConnectionsRoute = (
           : {}),
         runMailList: opts.connectionsMailListCaller,
         ...(opts.getOAuthAppConfig ? { runGetOAuthAppConfig: opts.getOAuthAppConfig } : {}),
-        ...(oauthAppsPanel ? { onManageOAuthApps: () => { authenticationSettings.open = true; oauthAppsPanel?.open(); oauthAppsHost?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }); } } : {}),
+        ...(oauthAppsPanel ? { onManageOAuthApps: () => { if (oauthAppsCard) oauthAppsCard.root.open = true; oauthAppsPanel?.open(); oauthAppsCard?.root.scrollIntoView?.({ block: 'start', behavior: 'smooth' }); } } : {}),
         ...(opts.connectionsSuggestSetupCaller !== undefined
           ? { runSuggestSetup: opts.connectionsSuggestSetupCaller }
           : {}),
@@ -1367,7 +1450,7 @@ export const bootstrapConnectionsRoute = (
           opts.connectionsRevokeGroupCaller as ConnectionsRevokeGroupCaller,
       });
     }
-    if (oauthAppsPanel || brokerPanel) content.appendChild(authenticationSettings);
+    if (advancedTools > 0) content.appendChild(advanced.root);
   }
 
   opts.root.appendChild(routeRoot);
@@ -1390,7 +1473,7 @@ export const bootstrapConnectionsRoute = (
 
   let disposed = false;
   const hasInFlightWork = (): boolean =>
-    (sourceSpheres?.busy() ?? false) ||
+    (spheres?.busy() ?? false) ||
     (accountsPanel?.hasInFlightWork() ?? false)
     || (brokerPanel?.busy() ?? false)
     || (oauthAppsPanel?.busy() ?? false)
@@ -1449,9 +1532,9 @@ export const bootstrapConnectionsRoute = (
         }
       : {}),
     hasUnsavedChanges: () =>
-      (replacementPanel?.hasDraft() ?? false) || (sourceSpheres?.hasDraft() ?? false) || (accountsPanel?.hasUnsavedChanges() ?? false) || (reconnectWorklist?.hasDraft() ?? false) || (accessVerification?.hasDraft() ?? false) || (incidentHistory?.hasDraft() ?? false) || (oauthAppsPanel?.hasDraft() ?? false) || (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
+      (replacementPanel?.hasDraft() ?? false) || (spheres?.hasDraft() ?? false) || (accountsPanel?.hasUnsavedChanges() ?? false) || (reconnectWorklist?.hasDraft() ?? false) || (accessVerification?.hasDraft() ?? false) || (incidentHistory?.hasDraft() ?? false) || (oauthAppsPanel?.hasDraft() ?? false) || (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
     unsavedChangesPrompt: () =>
-      replacementPanel?.hasDraft() ? 'Leave this account replacement review? Completed changes and their receipts stay on the server.' : sourceSpheres?.hasDraft() ? 'Discard this source sphere change?' : reconnectWorklist?.hasDraft() === true ? 'Leave this access review? Unstarted checks and resource choices will not be kept. Started jobs remain in connection history.' : accessVerification?.hasDraft() === true || incidentHistory?.hasDraft() === true ? 'Leave this access review? Its selected resources will not be kept.' : oauthAppsPanel?.hasDraft() === true ? 'Discard this OAuth app draft? The secret is held only in this editor.' : brokerPanel?.hasDraft() === true
+      replacementPanel?.hasDraft() ? 'Leave this connection replacement? Completed changes and their receipts stay on the server.' : spheres?.hasDraft() ? 'Discard your unsaved Personal or work change?' : reconnectWorklist?.hasDraft() === true ? 'Leave this access review? Unstarted checks and resource choices will not be kept. Started jobs remain in connection history.' : accessVerification?.hasDraft() === true || incidentHistory?.hasDraft() === true ? 'Leave this access review? Its selected resources will not be kept.' : oauthAppsPanel?.hasDraft() === true ? 'Discard this OAuth app draft? The secret is held only in this editor.' : brokerPanel?.hasDraft() === true
         ? 'Discard this OAuth broker setup? Credential fields are not saved in your browser and cannot be restored after leaving.'
         : accountsPanel?.hasUnsavedChanges() ? 'Discard this account setup or replacement password? Credentials entered here cannot be restored.' : connectionsEnroll?.unsavedChangesPrompt() ?? null,
     hasInFlightWork,
@@ -1462,7 +1545,7 @@ export const bootstrapConnectionsRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      sourceSpheres?.dispose();
+      spheres?.dispose();
       if (accountsPanel !== null) accountsPanel.dispose();
       if (connectionsEnroll !== null) connectionsEnroll.dispose();
       brokerPanel?.dispose();

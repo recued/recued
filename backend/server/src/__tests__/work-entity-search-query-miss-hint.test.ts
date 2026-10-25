@@ -412,3 +412,67 @@ describe('work.search — the same words in another kind', () => {
     expect(missed.hint).toBeUndefined();
   });
 });
+
+describe('work.search — a misspelled private name', () => {
+  // The spelling bench (2026-10-23) asks about a "Castelanos lease" the owner
+  // filed as "Castellanos lease". A model cannot correct a private name; only
+  // the index holds both spellings.
+  const ASSET_SOURCE = RECUED_BUILTIN_SOURCE_ID('asset');
+  const seedAsset = (id: string, name: string): void => {
+    if (store.listSources('asset').length === 0) {
+      store.registerSource({ id: ASSET_SOURCE, top_tier_kind: 'asset', source_kind: 'builtin', source_label: 'assets',
+        write_capable: true, registered_at: NOW });
+    }
+    store.writeAsset({ id, source_id: ASSET_SOURCE, source: { kind: 'owner', ref: 'owner' }, name }, NOW);
+  };
+  const searchWith = async (override: Partial<WorkEntityReadToolsDeps>, args: Record<string, unknown>): Promise<SearchResult> =>
+    ok(await runWorkEntitySearchTool({ ...deps(), ...override }, { kind: 'note', limit: 20, ...args }, OWNER_CTX));
+
+  it('⛔ names the spelling on file, the kind holding it, and asks the model to say how it read the word', async () => {
+    seedAsset('lease', 'Castellanos lease');
+    const missed = await search({ kind: 'asset', query: 'Castelanos' });
+    expect(missed.total).toBe(0);
+    expect(missed.hint).toContain('NOT an empty asset collection');
+    expect(missed.hint).toMatch(/No record holds "Castelanos", but "Castellanos" is in 1 asset\. If that is who or what the owner meant, search again for "Castellanos" with kind "asset", and begin your answer by telling the owner you read "Castelanos" as "Castellanos": it may be a different name\.$/u);
+  });
+
+  it('points at the kind that holds the word when the search looked in another', async () => {
+    seedAsset('lease', 'Castellanos lease');
+    const missed = await search({ query: 'Castelanos' });
+    expect(missed.hint).toBe('no note matched query "Castelanos". No record holds "Castelanos", but '
+      + '"Castellanos" is in 1 asset. If that is who or what the owner meant, search again for '
+      + '"Castellanos" with kind "asset", and begin your answer by telling the owner you read '
+      + '"Castelanos" as "Castellanos": it may be a different name.');
+  });
+
+  it('says nothing about spelling when every word is on file — that miss has another cause', async () => {
+    seedAsset('lease', 'Castellanos lease');
+    seedKestrelRings();
+    const missed = await search({ query: 'Castellanos ring' });
+    expect(missed.total).toBe(0);
+    expect(missed.hint ?? '').not.toContain('No record holds');
+  });
+
+  it('⛔ withholds a spelling that only a kind the caller may not read holds', async () => {
+    seedAsset('lease', 'Castellanos lease');
+    const missed = await searchWith({ isCollectionReadGranted: (kind) => kind !== 'asset' }, { query: 'Castelanos' });
+    expect(missed.hint ?? '').not.toContain('Castellanos');
+  });
+
+  it('⛔ does not even check spelling for a sphere-limited reader', async () => {
+    seedAsset('lease', 'Castellanos lease');
+    const limited = { limited: true, allows: () => true, cleanWork: (row: unknown) => row };
+    const resolver = createWorkEntityResolver(store, {}); let checked = 0;
+    const watched = { ...resolver, checkSpelling: (query: string) => { checked += 1; return resolver.checkSpelling(query); } };
+    const missed = await searchWith({ getReadScope: () => limited as never, getResolver: () => watched }, { query: 'Castelanos' });
+    expect(missed.hint ?? '').not.toContain('Castellanos');
+    expect(checked).toBe(0);
+  });
+
+  it('stays out of a prefix search the model wrote on purpose', async () => {
+    seedAsset('lease', 'Castellanos lease');
+    const missed = await search({ kind: 'asset', query: 'Kastel*' });
+    expect(missed.hint ?? '').not.toContain('No record holds');
+  });
+});
+

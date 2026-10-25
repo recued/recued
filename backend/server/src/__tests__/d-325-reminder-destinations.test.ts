@@ -39,11 +39,30 @@ describe('D-325 owner reminder destination snapshot', () => {
     expect(resolve([row('private', 10), row('family', 20)]).issues).toEqual([{ channel: 'telegram', reason: 'choice_required' }]);
   });
 
-  it('withholds a missing principal and an unavailable adapter rather than showing unanswerable buttons', () => {
+  it('reaches the owner’s own chat with no principal named, answered only from that chat (D-325 §15.7, 2026-10-24)', () => {
+    // As the app enrols a Telegram connection: no principal (only Teams resolves one, D-238).
     const noPrincipal = row('private', 10);
     noPrincipal.config_json = JSON.stringify({ chat_id: 'private-chat' });
-    expect(resolveOwnerReminderDestinations({ settings: settings(), connections: [noPrincipal],
-      available_channels: ['ui', 'telegram'] }).issues).toEqual([{ channel: 'telegram', reason: 'principal_missing' }]);
+    const result = resolveOwnerReminderDestinations({ settings: settings(), connections: [noPrincipal], available_channels: ['ui', 'telegram'] });
+    expect(result.issues).toEqual([]);
+    const destination = result.destinations[1]!;
+    expect(destination).toEqual({ id: 'owner:telegram:private:10', channel: 'telegram', connection_name: 'private',
+      connection_enrolled_at: 10, recipient: 'private-chat' });
+    const household: Pick<HouseholdDeliveryStore, 'isHousehold'> = { isHousehold: () => false };
+    const origin = { connection_name: 'private', connection_enrolled_at: 10, recipient: 'private-chat', sender: 'anyone-in-the-chat' };
+    expect(authorizeReminderOrigin(destination, origin, [noPrincipal], household)).toBe(true);
+    expect(authorizeReminderOrigin(destination, { ...origin, recipient: 'another-chat' }, [noPrincipal], household)).toBe(false);
+    // A principal named since the reminder went out answers nothing that went without one.
+    const named = { ...noPrincipal, config_json: JSON.stringify({ chat_id: 'private-chat', principal_id: 'owner' }) };
+    expect(authorizeReminderOrigin(destination, { ...origin, sender: 'owner' }, [named], household)).toBe(false);
+    // With a principal, only it answers.
+    const pinned = resolveOwnerReminderDestinations({ settings: settings(), connections: [named], available_channels: ['ui', 'telegram'] }).destinations[1]!;
+    expect(pinned.expected_sender).toBe('owner');
+    expect(authorizeReminderOrigin(pinned, { ...origin, sender: 'owner' }, [named], household)).toBe(true);
+    expect(authorizeReminderOrigin(pinned, origin, [named], household)).toBe(false);
+    // ⛔ Nothing from the household answers, whichever way it is marked.
+    expect(authorizeReminderOrigin({ ...destination, audience: 'household' }, origin, [noPrincipal], household)).toBe(false);
+    expect(authorizeReminderOrigin(destination, origin, [noPrincipal], { isHousehold: () => true })).toBe(false);
     expect(resolveOwnerReminderDestinations({ settings: settings(), connections: [row('private', 10)],
       available_channels: ['ui'] }).issues).toEqual([{ channel: 'telegram', reason: 'adapter_unavailable' }]);
   });
@@ -55,7 +74,7 @@ describe('D-158 amendment 2026-10-18 — an email connection naming no recipient
   const on = (): NotificationSettings => ({ ...structuredClone(DEFAULT_NOTIFICATION_SETTINGS),
     email: { ...structuredClone(DEFAULT_NOTIFICATION_SETTINGS.email), notification: true } });
   const mailboxAddress = (slug: string) => slug === 'personal' ? ' Owner@Fixture.test ' : undefined;
-  const household = { isHousehold: () => false, permitsMember: () => false } as unknown as HouseholdDeliveryStore;
+  const household: Pick<HouseholdDeliveryStore, 'isHousehold'> = { isHousehold: () => false };
 
   it('reminds the sending mailbox itself, and answers only from it', () => {
     const row = email({ sender_mail_instance: 'personal' });
@@ -67,8 +86,8 @@ describe('D-158 amendment 2026-10-18 — an email connection naming no recipient
     // A mailbox whose address is unknown gives no destination rather than a guess.
     expect(resolve().issues).toEqual([{ channel: 'email', reason: 'configuration_invalid' }]);
     const origin = { connection_name: 'owner-mail', connection_enrolled_at: 40, recipient: 'owner@fixture.test', sender: 'owner@fixture.test' };
-    expect(authorizeReminderOrigin(destination, origin, [row], household, undefined, mailboxAddress)).toBe(true);
-    expect(authorizeReminderOrigin(destination, { ...origin, sender: 'someone@fixture.test' }, [row], household, undefined, mailboxAddress)).toBe(false);
+    expect(authorizeReminderOrigin(destination, origin, [row], household, mailboxAddress)).toBe(true);
+    expect(authorizeReminderOrigin(destination, { ...origin, sender: 'someone@fixture.test' }, [row], household, mailboxAddress)).toBe(false);
     expect(authorizeReminderOrigin(destination, origin, [row], household)).toBe(false);
   });
 

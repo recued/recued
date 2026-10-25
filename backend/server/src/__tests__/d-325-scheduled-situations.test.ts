@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AssetRule, IngredientManifest, SituationFact } from '@recued/contracts';
+import { quietHoursEndFor, shouldSuppressForQuietHours, type AssetRule, type IngredientManifest, type QuietHoursPolicy, type SituationFact } from '@recued/contracts';
 import { createSituationQuery, SituationScanBoundError } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
 import { createScheduledSituations } from '../situations/scheduled-situations.js';
@@ -17,6 +17,10 @@ import { createReminderStore } from '../storage/reminder-store.js';
 import { createAssetOccurrenceService } from '../situations/asset-occurrence-service.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
+import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
+import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
+import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
+import { createOccurrenceReminderStore } from '../storage/occurrence-reminder-store.js';
 
 const monday = Date.parse('2026-10-19T08:30:00Z');
 const fact = (id = 'trip', patch: Partial<SituationFact> = {}): SituationFact => ({ ref: { collection: 'booking', id }, title: 'Lisbon trip', kind: 'booking',
@@ -28,6 +32,8 @@ const fixture = (initial = [fact()], zone = 'UTC', nativeSources = false, person
   const db = new Database(':memory:'); ensureWorkEntitySchema(db); const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
   const contracts = createContractStore(db); const store = createSituationStore(db);
   let at = monday; let open = true; let quiet = false; let facts = initial; let fail = false; let summarize: ((cluster: never) => Promise<string | undefined>) | undefined;
+  // A real window, wired as the composition root wires it; `quiet` stays a plain switch.
+  let window: QuietHoursPolicy | null = null;
   const overBound = new Set<string>();
   const send = vi.fn(async (_message: import('../notification-handler.js').NotificationSendArgs) => ({ delivered_to: fail ? [] : ['in_app', 'telegram'] }));
   const sources = nativeSources ? buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [],
@@ -40,7 +46,9 @@ const fixture = (initial = [fact()], zone = 'UTC', nativeSources = false, person
   const query = createSituationQuery({ now: () => at, sources, sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }) });
   const access = createSituationAccess({ contracts, query, now: () => at, isVaultUnlocked: () => open });
   const boot = () => {
-    const service = createScheduledSituations({ db, work, store, query, timeZone: () => zone, isVaultUnlocked: () => open, isQuiet: () => quiet, now: () => at,
+    const service = createScheduledSituations({ db, work, store, query, timeZone: () => zone, isVaultUnlocked: () => open, now: () => at,
+      isQuiet: instant => quiet || (window !== null && shouldSuppressForQuietHours({ policy: window, instant, timeZone: zone })),
+      quietEnd: minute => window && quietHoursEndFor(window, minute),
       overview: async () => ({ proposal_count: 3, newest_proposal: { id: 'p1', title: 'Boiler' }, unmatched_replies: [], phone_ready: true }), send,
       mailHealth: () => [{ name: 'Personal mail', last_success_at: monday - 8 * 86_400_000, needs_attention: true }],
       summarize: cluster => summarize?.(cluster as never) ?? Promise.resolve(undefined), ...(personName ? { personName } : {}) });
@@ -51,6 +59,7 @@ const fixture = (initial = [fact()], zone = 'UTC', nativeSources = false, person
   return { db, work, store, contracts, send, access, query, service: () => service,
     restart: async () => { await service.stop(); service = boot(); },
     time: (value: number) => { at = value; }, quiet: (value: boolean) => { quiet = value; }, open: (value: boolean) => { open = value; },
+    quietHours: (value: QuietHoursPolicy) => { window = value; },
     facts: (value: SituationFact[]) => { facts = value; }, fail: (value: boolean) => { fail = value; },
     overBound: (collection: string) => { overBound.add(collection); },
     summary: (value: typeof summarize) => { summarize = value; } };
@@ -101,6 +110,23 @@ describe('D-325 scheduled overview through the shared query', () => {
     expect(f.service().status().last_run?.state).toBe('skipped'); // day-of had no new change
     await f.restart(); await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
   });
+  it('neither shows a group again nor saves a revision when only an asset’s fields or a trip’s details changed', async () => {
+    const car = (colour: string, title = 'Renew · Car insurance') => fact('car', { ref: { collection: 'asset', id: 'car', field: 'rules.renew' }, kind: 'asset_rule', title,
+      evidence: [{ collection: 'asset', id: 'car' }], details: { status: 'active', attributes: { colour } } });
+    const trip = (country: string) => fact('trip', { trip: { subject: { collection: 'booking', id: 'trip' }, travellers: [], destination_country: country } });
+    const f = fixture([car('Red'), trip('PT')]); await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
+    const revisions = () => f.store.revisionsAfter(0, 1000).length; const saved = revisions();
+    expect(saved).toBeGreaterThan(0); expect(JSON.stringify(f.store.list())).not.toMatch(/colour|destination_country/);
+    f.facts([car('Blue'), trip('ES')]); await f.service().sendNow();
+    expect(f.send).toHaveBeenCalledTimes(1); expect(revisions()).toBe(saved);
+    // A change to the item itself is shown and saved: the two above are the context's doing.
+    f.facts([car('Blue', 'Renew · Car insurance policy'), trip('ES')]); await f.service().sendNow();
+    expect(f.send).toHaveBeenCalledTimes(2); expect(revisions()).toBe(saved + 1);
+    // Today reads the values live, context and all.
+    const today = (await f.service().today({ now: monday, before: monday + 7 * 86_400_000 })).situations.clusters.flatMap(cluster => cluster.items);
+    expect(today.find(item => item.ref.id === 'car')?.details?.attributes).toEqual({ colour: 'Blue' });
+    expect(today.find(item => item.ref.id === 'trip')?.trip).toEqual({ destination_country: 'ES' });
+  });
   it('still sends when one source is over its bound, and says which was not fully checked', async () => {
     const f = fixture(); f.overBound('episode'); await f.service().tick();
     expect(f.send).toHaveBeenCalledTimes(1);
@@ -110,6 +136,74 @@ describe('D-325 scheduled overview through the shared query', () => {
   it('holds sealed and quiet work without spending its point, then sends on release', async () => {
     const f = fixture(); f.open(false); await f.service().tick(); f.open(true); f.quiet(true); await f.service().tick(); expect(f.send).not.toHaveBeenCalled();
     f.quiet(false); await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
+  });
+  const nightly = { enabled: true, from_minute: 22 * 60, to_minute: 7 * 60, applies_to: ['notification' as const], updated_at: 1 };
+  it('sends a time set inside quiet hours when they end, where it never came round before', async () => {
+    // 23:00 inside 22:00 → 07:00: quiet every evening, and too early every morning by its own time.
+    const f = fixture(); f.quietHours(nightly); f.service().setSettings({ frequency: 'daily', time: '23:00', day_of: false });
+    for (const time of ['2026-10-19T23:30:00Z', '2026-10-20T06:59:00Z']) { f.time(Date.parse(time)); await f.service().tick(); }
+    expect(f.send).not.toHaveBeenCalled();
+    f.time(Date.parse('2026-10-20T07:00:00Z')); await f.service().tick();
+    expect(f.send).toHaveBeenCalledTimes(1); expect(f.send.mock.calls[0]?.[0].title).toBe('Coming up');
+  });
+  it('waits for the end of a same-day window around its time, and leaves a time outside quiet hours alone', async () => {
+    const f = fixture(); f.quietHours({ ...nightly, from_minute: 13 * 60, to_minute: 14 * 60 });
+    f.service().setSettings({ frequency: 'daily', time: '13:30', day_of: false });
+    f.time(Date.parse('2026-10-19T13:45:00Z')); await f.service().tick(); expect(f.send).not.toHaveBeenCalled();
+    f.time(Date.parse('2026-10-19T14:00:00Z')); await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
+    const g = fixture(); g.quietHours(nightly);
+    g.time(Date.parse('2026-10-19T07:30:00Z')); await g.service().tick(); expect(g.send).not.toHaveBeenCalled();
+    g.time(monday); await g.service().tick(); expect(g.send).toHaveBeenCalledTimes(1);
+  });
+  it('sends a weekly time carried past midnight the morning after its day, not the morning of it', async () => {
+    // Sunday 18 → Monday 19 → Tuesday 20, 07:00 each: Monday 23:00 is due Tuesday 07:00.
+    const f = fixture(); f.quietHours(nightly);
+    f.time(Date.parse('2026-10-18T12:00:00Z')); f.service().setSettings({ frequency: 'weekly', weekday: 1, time: '23:00', day_of: false });
+    for (const time of ['2026-10-19T07:00:00Z', '2026-10-19T21:59:00Z', '2026-10-19T23:30:00Z']) { f.time(Date.parse(time)); await f.service().tick(); }
+    expect(f.send).not.toHaveBeenCalled();
+    f.time(Date.parse('2026-10-20T07:00:00Z')); await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
+    f.time(Date.parse('2026-10-21T07:00:00Z')); await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
+  });
+  describe('§15.7 amendment — the next digest the status names is the one the scheduler sends', () => {
+    // Settings shows `next_at`. Checked against the tick itself: no run a minute before
+    // (unless it is due now), and the digest's run at that instant, sent or found with
+    // nothing new to send.
+    const sendsAt = async (f: ReturnType<typeof fixture>, at: number, expected: string) => {
+      const next = f.service().status().next_at;
+      expect(new Date(next!).toISOString()).toBe(expected); expect(f.service().status().time_zone).toBe('UTC');
+      const before = f.service().status().last_run;
+      if (next! > at) { f.time(next! - 60_000); await f.service().tick(); expect(f.service().status().last_run).toEqual(before); }
+      f.time(next!); await f.service().tick();
+      const run = f.service().status().last_run!; expect(run).toMatchObject({ at: next, mode: 'overview' }); expect(['sent', 'skipped']).toContain(run.state);
+      return next!;
+    };
+    it('names the weekly day and time, then the week after once it went', async () => {
+      const f = fixture(); const at = Date.parse('2026-10-17T12:00:00Z'); f.time(at); f.service().setSettings({ frequency: 'weekly', weekday: 1, time: '08:00', day_of: false });
+      const sent = await sendsAt(f, at, '2026-10-19T08:00:00.000Z');
+      await sendsAt(f, sent, '2026-10-26T08:00:00.000Z');
+    });
+    it('names now for a time already passed today, and quiet hours’ end for a time inside them', async () => {
+      const f = fixture(); f.quietHours(nightly); const at = Date.parse('2026-10-19T12:00:00Z'); f.time(at);
+      f.service().setSettings({ frequency: 'daily', time: '23:00', day_of: false });
+      const now = await sendsAt(f, at, '2026-10-19T12:00:00.000Z');
+      await sendsAt(f, now, '2026-10-20T07:00:00.000Z');
+    });
+    it('names the morning after for a weekly time carried past midnight', async () => {
+      const f = fixture(); f.quietHours(nightly); const at = Date.parse('2026-10-17T12:00:00Z'); f.time(at);
+      f.service().setSettings({ frequency: 'weekly', weekday: 1, time: '23:00', day_of: false });
+      await sendsAt(f, at, '2026-10-20T07:00:00.000Z');
+    });
+    it('waits for the end of quiet hours that day when a passed time is caught inside them', async () => {
+      const f = fixture(); f.quietHours({ ...nightly, from_minute: 13 * 60, to_minute: 14 * 60 }); const at = Date.parse('2026-10-19T13:30:00Z'); f.time(at);
+      f.service().setSettings({ frequency: 'daily', time: '12:00', day_of: false });
+      await sendsAt(f, at, '2026-10-19T14:00:00.000Z');
+    });
+    it('names nothing while the digest is off or the vault is locked', async () => {
+      const f = fixture(); f.time(Date.parse('2026-10-17T12:00:00Z')); f.service().setSettings({ frequency: 'off', day_of: false });
+      expect('next_at' in f.service().status()).toBe(false);
+      f.service().setSettings({ frequency: 'daily' }); expect(f.service().status().next_at).toBeTypeOf('number');
+      f.open(false); expect('next_at' in f.service().status()).toBe(false);
+    });
   });
   it('holds before the configured local time, disables ordinary pushes, and lets the owner send now', async () => {
     const f = fixture(); f.time(Date.parse('2026-10-19T07:30:00Z')); await f.service().tick(); expect(f.send).not.toHaveBeenCalled();
@@ -315,6 +409,108 @@ describe('D-325 day-of notification ownership', () => {
     expect(f.send.mock.calls[0]?.[0].text).toContain('Renew passport');
   });
 
+  it.each(['action', 'notice'] as const)('keeps a sensitive asset’s name and dates out of the brief, as its own %s reminder does', async occurrence => {
+    const f = fixture([], 'UTC', true);
+    const rule: AssetRule = { id: 'renew', title: 'Renew passport', enabled: true, muted: false, pinned: false,
+      consequence: 'floor', expiry_policy: 'escalate_overdue', when: { kind: 'expiry', field: 'expires_on' },
+      reaction: { notify: true, occurrence, emit: false }, schedule: { before: [], on_day: true } };
+    f.work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'fixture' }, name: 'Ana’s passport', class_id: 'passport',
+      settings: { sensitive: true }, dates: { expires_on: '2026-10-19' }, rules: [rule] }, monday);
+    await createAssetOccurrenceService({ db: f.db, work: f.work, dispatchers: createWorkEntityDispatchers({ store: f.work, resolver: createWorkEntityResolver(f.work) }),
+      timeZone: () => 'UTC', now: () => monday }).tick();
+    await f.service().sendNow(); expect(f.send).toHaveBeenCalledTimes(1);
+    const text = f.send.mock.calls[0]![0].text;
+    expect(text).not.toContain('Ana’s passport'); expect(text).not.toContain('2026-10-19');
+    expect(text).toContain('Private reminder');
+    // Today, inside the app, still names it.
+    const today = (await f.service().today({ now: monday, before: monday + 86_400_000 })).situations.clusters.flatMap(cluster => cluster.items);
+    expect(JSON.stringify(today)).toContain('Ana’s passport');
+  });
+  it('marks a renewal in Today, and one acknowledged stays out until its next reminder is sent, still open (§15.7, 2026-10-24)', async () => {
+    const f = fixture([], 'UTC', true);
+    const rule: AssetRule = { id: 'renew', title: 'Renew passport', enabled: true, muted: false, pinned: false,
+      consequence: 'floor', expiry_policy: 'escalate_overdue', when: { kind: 'expiry', field: 'expires_on' },
+      reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [], on_day: true } };
+    f.work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'fixture' }, name: 'Passport', settings: { class_rule_ids: ['renew'] },
+      dates: { expires_on: '2026-10-19' }, rules: [rule] }, monday);
+    await createAssetOccurrenceService({ db: f.db, work: f.work, dispatchers: createWorkEntityDispatchers({ store: f.work, resolver: createWorkEntityResolver(f.work) }),
+      timeZone: () => 'UTC', now: () => monday }).tick();
+    const today = async () => (await f.service().today({ now: monday, before: monday + 86_400_000 })).occurrences;
+    const [renewal] = await today(); const points = createOccurrenceReminderStore(f.db);
+    expect(renewal).toMatchObject({ renewal: { field: 'expires_on', current: '2026-10-19' } }); expect(renewal!.acknowledged).toBeUndefined();
+    // As the reminder service records the reminder it sent.
+    const sent = (on: string) => f.db.prepare(`INSERT INTO occurrence_reminder_controls(occurrence_id,last_notified_on) VALUES(?,?)
+      ON CONFLICT(occurrence_id) DO UPDATE SET last_notified_on=excluded.last_notified_on`).run(renewal!.id, on);
+    sent('2026-10-19'); points.acknowledge(renewal!.id, monday);
+    expect((await today())[0]).toMatchObject({ acknowledged: true, commitment: { lifecycle_state: 'pending' } });
+    sent('2026-11-19');
+    expect((await today())[0]!.acknowledged).toBeUndefined();
+  });
+  it('names in a brief nothing an item’s own reminder keeps private: an occasion with people, a cited visa, a summary, an anchor', async () => {
+    const day = 86_400_000; const f = fixture([]);
+    const history = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db));
+    const birthday = history.saveOccasion({ title: 'Ana’s birthday', month_day: '10-21', people: ['ana'], muted: false, rules: [], sphere: 'personal' }, monday);
+    const opening = history.saveOccasion({ title: 'Shop opening', month_day: '10-22', people: [], muted: false, rules: [], sphere: 'personal' }, monday);
+    const visa = f.work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'fixture' }, name: 'Ana’s Japan visa', class_id: 'visa',
+      settings: { sensitive: true }, dates: {}, rules: [] }, monday);
+    const occasion = (id: string, title: string, from: number, patch: Partial<SituationFact> = {}) => fact(id, { ref: { collection: 'occasion', id, field: 'rules.date' },
+      kind: 'occasion', title, when: { from, to: from }, act_by: from, evidence: [{ collection: 'occasion', id }], ...patch });
+    f.facts([
+      occasion(birthday.id, 'Ana’s birthday', monday + 2 * day, { people: ['ana'], related: [{ collection: 'asset', id: 'flowers' }] }),
+      fact('flowers', { ref: { collection: 'asset', id: 'flowers' }, kind: 'asset_rule', title: 'Order flowers', when: { from: monday - 3 * day, to: monday - 3 * day },
+        act_by: monday + 70 * day, evidence: [{ collection: 'asset', id: 'flowers' }] }),
+      occasion(opening.id, 'Shop opening', monday + 3 * day),
+      fact('trip', { ref: { collection: 'booking', id: 'trip', field: 'trip_document:ana' }, kind: 'travel_validity', when: { from: monday + 4 * day, to: monday + 5 * day },
+        title: 'Tokyo trip · visas on file: Ana’s Japan visa (valid for JP)', evidence: [{ collection: 'booking', id: 'trip' }, { collection: 'asset', id: visa.id }] }),
+    ]);
+    f.summary(async (cluster: { items: Array<{ what: { value: string | null } }> }) => `Summary: ${cluster.items.map(item => item.what.value).join(', ')}`);
+    await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
+    const lines = f.send.mock.calls[0]![0].text.split('\n');
+    expect(lines.join('\n')).not.toMatch(/Ana’s|Tokyo trip/u);
+    expect(lines.filter(line => line === 'Private reminder · open Today for the details')).toHaveLength(2);
+    expect(lines).toContain('Order flowers · 2026-10-16 · shortly before a private reminder');
+    // The rest is named as before, its group's summary included.
+    expect(lines).toEqual(expect.arrayContaining(['Shop opening · 2026-10-22', 'Summary: Shop opening']));
+  });
+  it('keeps the commitment of a sensitive asset, or of an occasion with people, private when it comes without the clock that cites it', async () => {
+    const f = fixture([]);
+    const rule: AssetRule = { id: 'renew', title: 'Renew passport', enabled: true, muted: false, pinned: false,
+      consequence: 'floor', expiry_policy: 'escalate_overdue', when: { kind: 'expiry', field: 'expires_on' },
+      reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [], on_day: true } };
+    const passport = f.work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'fixture' }, name: 'Ana’s passport', class_id: 'passport',
+      settings: { sensitive: true }, dates: { expires_on: '2026-10-19' }, rules: [rule] }, monday);
+    await createAssetOccurrenceService({ db: f.db, work: f.work, dispatchers: createWorkEntityDispatchers({ store: f.work, resolver: createWorkEntityResolver(f.work) }),
+      timeZone: () => 'UTC', now: () => monday }).tick();
+    const rows = createAssetOccurrenceStore(f.db); const commitment = rows.byAsset(passport.id)[0]!.commitment_id!;
+    const birthday = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db)).saveOccasion({ title: 'Ana’s birthday', month_day: '10-21',
+      people: ['ana'], muted: false, rules: [], sphere: 'personal' }, monday);
+    rows.ensure({ id: 'gift', asset_id: birthday.id, subject_kind: 'occasion', rule_id: 'date', cycle: '2026-10-21', commitment_id: 'gift-commitment',
+      question: false, trigger_kind: 'rule', created_at: monday });
+    // Read on its own, a commitment cites only itself.
+    const alone = (id: string, title: string) => fact(id, { ref: { collection: 'commitment', id }, kind: 'commitment', title, evidence: [{ collection: 'commitment', id }] });
+    f.facts([alone(commitment, 'Renew passport · Ana’s passport'), alone('gift-commitment', 'Buy a gift for Ana’s birthday')]);
+    await f.service().tick();
+    const text = f.send.mock.calls[0]![0].text;
+    expect(text.split('\n').filter(line => line === 'Private reminder · open Today for the details')).toHaveLength(2); expect(text).not.toContain('Ana’s');
+  });
+  it('says a resolution is private where its item’s own reminder would be, though its record is gone', async () => {
+    const f = fixture([]);
+    const history = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db));
+    const birthday = history.saveOccasion({ title: 'Ana’s birthday', month_day: '10-21', people: ['ana'], muted: false, rules: [], sphere: 'personal' }, monday);
+    const passport = f.work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'fixture' }, name: 'Ana’s passport', class_id: 'passport',
+      settings: { sensitive: true }, dates: {}, rules: [] }, monday);
+    f.facts([clockFact('asset', { ref: { collection: 'asset', id: passport.id, field: 'rules.renew' }, title: 'Renew · Ana’s passport', evidence: [{ collection: 'asset', id: passport.id }] }),
+      clockFact('occasion', { ref: { collection: 'occasion', id: birthday.id, field: 'rules.date' }, title: 'Ana’s birthday', evidence: [{ collection: 'occasion', id: birthday.id }] })]);
+    const clusters = (await f.query({ time: { from: monday, to: monday + 7 * 86_400_000 } }, { owner: true,
+      grants: { isVerbOpGranted: () => true, isCollectionReadGranted: () => true, isTopicReadGranted: () => true } })).clusters;
+    expect(clusters).toHaveLength(2);
+    for (const cluster of clusters) f.store.save({ id: cluster.id, state: 'resolved', cluster: { ...cluster, span: null }, urgency: 'routine' }, { source: 'done' }, monday);
+    history.deleteOccasion(birthday.id);
+    f.facts([]); await f.service().tick();
+    const text = f.send.mock.calls[0]![0].text;
+    expect(text.split('\n').filter(line => line === 'Resolved · a private reminder')).toHaveLength(2);
+    expect(text).not.toContain('Ana’s');
+  });
   it.each(['asset', 'occasion'])('leaves a lone %s clock to its own reminder schedule, without spending the push budget', async collection => {
     const clock = clockFact(collection); const f = fixture([clock]); dayOfOnly(f);
     await f.service().tick(); await f.restart(); await f.service().tick();

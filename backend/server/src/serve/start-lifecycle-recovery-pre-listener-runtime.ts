@@ -39,6 +39,7 @@ const uploadSessionsForReclaim = (
 };
 import { handleGetStatus } from '../bootstrap-handler.js';
 import type { PassportExportRpcDeps } from '../passport/export-handler.js';
+import type { BootTrace } from '../cli/boot-trace.js';
 
 type LifecycleRecoveryPreListenerOptions = Omit<
   StartPreListenerRuntimeOptions,
@@ -64,9 +65,11 @@ type LifecycleRecoveryPreListenerOptions = Omit<
   | 'getContactMergeCycleObserver'
   | 'getSigningIdentity'
   | 'cascade'
+  | 'bootTrace'
 >;
 
 export interface StartLifecycleRecoveryPreListenerRuntimeOptions {
+  readonly bootTrace?: BootTrace;
   readonly lifecycle: Omit<
     ComposeServeLifecycleOptions,
     'getHttpServer' | 'getSchedulersBundle'
@@ -128,12 +131,15 @@ export const startLifecycleRecoveryPreListenerRuntime = async (
   // runtime, built here BEFORE that, reads it through this late-bound ref.
   let passportExportDepsRef: PassportExportRpcDeps | undefined;
 
+  options.bootTrace?.mark('lifecycle-start');
   const lifecycle = await composeServeLifecycle({
     ...options.lifecycle,
     getHttpServer: () => httpServerRef,
     getSchedulersBundle: options.getSchedulersBundle,
   });
+  options.bootTrace?.mark('lifecycle-complete');
 
+  options.bootTrace?.mark('boot-recovery-start');
   await startBootRecoveryAndAdapters({
     ...options.recovery,
     lifecycle,
@@ -148,6 +154,8 @@ export const startLifecycleRecoveryPreListenerRuntime = async (
     // is the fail-safe answer rather than deleting a resumable session's file.
     ...(uploadSessionsForReclaim(options.lifecycle.db)),
   });
+
+  options.bootTrace?.mark('boot-recovery-complete');
 
   // Scope-B (D-108/D-109) — assemble the live `server.archive.*` runtime
   // here: this is the one layer where the constructed `lifecycle` (restart
@@ -182,6 +190,7 @@ export const startLifecycleRecoveryPreListenerRuntime = async (
 
   const listenerRuntime = await startPreListenerRuntime({
     ...options.preListener,
+    bootTrace: options.bootTrace,
     lifecycle,
     ...(archiveDeps ? { archiveDeps } : {}),
     signingIdentity: options.getSigningIdentity(),

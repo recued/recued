@@ -724,6 +724,10 @@ export type ServerEvent =
        * clients; current producers include it so global approval queues keep
        * stable ordering across reloads and devices. */
       created_at?: number;
+      /** D-329 — a held Tier-1 write (`ChatPlanProposal.hold`): approving the card answers
+       *  the ask every approval channel shows and runs it at once, with no message to send.
+       *  An older client ignores it and still offers "Continue in Chat", which re-proposes. */
+      held?: true;
       cursor: number;
     }
   | {
@@ -919,8 +923,8 @@ export type ServerEvent =
       /** D-171 — `contract_definition` lifecycle mutated. Fires on every
        *  `collection.contract.{mintContract, revokeContract}` write so paired
        *  clients re-render the Settings → Privacy → Contracts inspector (the
-       *  active-limits / kill-switch list) AND the MCP door's Advanced
-       *  cap/expiry summary without a follow-up `listContracts` round-trip.
+       *  active-limits / kill-switch list) AND an agreement's Usage and expiry
+       *  line without a follow-up `listContracts` round-trip.
        *
        *  Pre-D-171 these writes rode pair-sync only (no bus event); the
        *  webclient proxied contract changes off `chat.inbound_token_changed`
@@ -1151,7 +1155,8 @@ export type ServerEvent =
        *  effort like every emit: a fan-out failure never aborts the pair /
        *  revoke / replace it follows. */
       kind: 'pair.list_changed';
-      op: 'added' | 'revoked';
+      /** `renamed`: the owner renamed a device (`pair.rename`). */
+      op: 'added' | 'revoked' | 'renamed';
       cursor: number;
     }
   | {

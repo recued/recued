@@ -18,6 +18,7 @@ import {
   SERVER_SWITCHER_EMPTY_ATTR,
   SERVER_SWITCHER_ITEM_ATTR,
   SERVER_SWITCHER_MENU_ATTR,
+  SERVER_SWITCHER_NEEDS_PAIRING_ATTR,
   SERVER_SWITCHER_RECENCY_ATTR,
   SERVER_SWITCHER_SWITCH_CANCEL_ATTR,
   SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
@@ -35,12 +36,15 @@ import {
   SERVER_SWITCHER_REMOVE_CONFIRM_ATTR,
   SERVER_SWITCHER_REMOVE_ERROR_ATTR,
   SERVER_SWITCHER_REMOVE_LOCAL_ATTR,
+  SERVER_SWITCHER_REMOVE_NEXT_ATTR,
+  SERVER_SWITCHER_REMOVE_WORK_ATTR,
   SERVER_SWITCHER_REMOVE_REVOKE_ATTR,
   SERVER_SWITCHER_REMOVE_STATUS_ATTR,
   formatServerProfileRecency,
   mountProfileList,
   serverSwitchReviewCoversActiveWork,
   serverSwitchReviewCoversWorkState,
+  type ServerSwitchWorkState,
 } from '../shell/server-switcher.js';
 
 interface FakeEvent {
@@ -173,12 +177,20 @@ const findAllByAttr = (root: FakeEl, attr: string): FakeEl[] => {
 const subtreeText = (root: FakeEl): string =>
   [root.textContent, ...root.children.map(subtreeText)].join(' ');
 
+/** Every fixture server is signed in unless a test says otherwise. */
+const SIGN_IN = {
+  token_id: 'tok',
+  ciphertext_b64: 'ciphertext',
+  iv_b64: 'iv',
+  issued_at: 1,
+};
+
 const profile = (
   over: Partial<WebclientServerProfile> & Pick<WebclientServerProfile, 'id'>,
 ): WebclientServerProfile => ({
   label: 'home.example:8443',
   server_url: 'wss://home.example:8443/ws',
-  webclient_token: null,
+  webclient_token: SIGN_IN,
   server_public_key: null,
   pair_metadata: null,
   cert_pin_state: null,
@@ -337,6 +349,14 @@ describe('mountProfileList', () => {
     });
   });
 
+  it('names Forget by what it says, as Rename is', () => {
+    // ⛔ It read "See how to remove … from this browser".
+    const { host } = setup();
+    const forget = findAllByAttr(host, SERVER_SWITCHER_REMOVE_ATTR)[0]!;
+    expect(forget.textContent).toBe('Forget');
+    expect(forget.getAttribute('aria-label')).toBe(`Forget ${HOME.label}`);
+  });
+
   describe('renaming a server', () => {
     it('opens an inline local form, trims the name, saves, and restores focus', async () => {
       const { dom, host, onRename } = setup();
@@ -346,6 +366,9 @@ describe('mountProfileList', () => {
       const input = findByAttr(host, SERVER_SWITCHER_RENAME_INPUT_ATTR)!;
       expect(input.value).toBe(HOME.label);
       expect(dom.activeElement()).toBe(input);
+      // ⛔ The hint gave the stored `wss://…/ws` address.
+      expect(subtreeText(findByAttr(host, SERVER_SWITCHER_RENAME_FORM_ATTR)!))
+        .toContain('Server address: home.example:8443');
       input.input('  Home workspace  ');
       findByAttr(host, SERVER_SWITCHER_RENAME_SAVE_ATTR)!.click();
       await flush();
@@ -419,6 +442,8 @@ describe('mountProfileList', () => {
     const confirm = findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!;
     expect(subtreeText(confirm)).toContain('The Chat message you have not sent is only in this tab');
     expect(subtreeText(confirm)).toContain('will never be sent to, or saved on, office.example:8443');
+    // ⛔ It started on "Switch server": one Enter took the loss.
+    expect(dom.activeElement()).toBe(findByAttr(host, SERVER_SWITCHER_SWITCH_CANCEL_ATTR));
     findByAttr(host, SERVER_SWITCHER_SWITCH_CANCEL_ATTR)!.click();
 
     expect(onSwitch).not.toHaveBeenCalled();
@@ -548,6 +573,57 @@ describe('mountProfileList', () => {
     expect(dom.activeElement()).toBe(error);
   });
 
+  it('marks a server this browser has no sign-in for, and says pairing comes next', () => {
+    // A reconnect from before 2026-10-23 could wipe another server's sign-in
+    // and leave its address behind. Switching there ends on the pair form.
+    const signedOut = { ...OFFICE, webclient_token: null };
+    const { host } = setup({ profiles: [HOME, signedOut] });
+
+    const rows = findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR);
+    expect(findByAttr(rows[1]!, SERVER_SWITCHER_NEEDS_PAIRING_ATTR)?.textContent)
+      .toBe('Needs pairing again');
+    expect(findByAttr(rows[0]!, SERVER_SWITCHER_NEEDS_PAIRING_ATTR)).toBeNull();
+
+    rows[1]!.click();
+    const confirm = findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!;
+    const note = findByAttr(confirm, SERVER_SWITCHER_NEEDS_PAIRING_ATTR)!;
+    expect(note.textContent).toBe(
+      'This browser has no sign-in for office.example:8443 any more. Switching opens the pairing page for it, with its address filled in.',
+    );
+    expect(confirm.getAttribute('aria-describedby'))
+      .toContain(note.getAttribute('id')!);
+  });
+
+  it('shows a lock in place of an encrypted address’s scheme, and no lock for a plain one', () => {
+    const local = profile({
+      id: 'p3',
+      label: 'This computer',
+      server_url: 'ws://127.0.0.1:7717/ws',
+    });
+    const { host } = setup({ profiles: [HOME, local] });
+    const [encrypted, plain] = findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)
+      .map((row) => row.children[1]!);
+
+    const lock = encrypted!.children[0]!;
+    expect(lock.getAttribute('role')).toBe('img');
+    expect(lock.getAttribute('aria-label')).toBe('Encrypted connection');
+    expect(subtreeText(encrypted!)).not.toContain('wss://');
+    expect(subtreeText(encrypted!)).toContain('home.example:8443/ws');
+    expect(encrypted!.getAttribute('title')).toBe('wss://home.example:8443/ws');
+
+    expect(plain!.children.some((child) => child.getAttribute('role') === 'img'))
+      .toBe(false);
+    expect(subtreeText(plain!)).not.toContain('ws://');
+    expect(subtreeText(plain!)).toContain('127.0.0.1:7717/ws');
+    expect(plain!.getAttribute('title')).toBe('ws://127.0.0.1:7717/ws');
+  });
+
+  it('marks nothing for a server that still has its sign-in', () => {
+    const { host } = setup();
+    findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    expect(findByAttr(host, SERVER_SWITCHER_NEEDS_PAIRING_ATTR)).toBeNull();
+  });
+
   it('clicking the server you are ALREADY on switches nothing', () => {
     // Re-selecting the active row would otherwise tear down a healthy
     // connection and re-bootstrap for no reason. It still reports the click so
@@ -582,14 +658,18 @@ describe('mountProfileList', () => {
       const items = findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR);
       expect(items[0]!.getAttribute('data-unreachable')).toBe('true');
       expect(items[1]!.hasAttribute('data-unreachable')).toBe(false);
-      expect(items[0]!.children[1]?.textContent).toContain('not reachable');
+      // ⛔ It rode the end of the address, which a phone cuts off first: the
+      // status leads the recency line now, and the address stays plain.
+      expect(findByAttr(items[0]!, SERVER_SWITCHER_RECENCY_ATTR)!.textContent)
+        .toMatch(/^Not reachable — /);
+      expect(subtreeText(items[0]!.children[1]!)).not.toContain('reachable');
     });
 
     it('says nothing while the active server is reachable', () => {
       const { host } = setup({ activeUnreachable: false });
       const items = findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR);
       expect(items[0]!.hasAttribute('data-unreachable')).toBe(false);
-      expect(items[0]!.children[1]?.textContent).not.toContain('not reachable');
+      expect(subtreeText(items[0]!)).not.toContain('reachable');
     });
 
     it('refresh can flip it without a remount', () => {
@@ -611,8 +691,57 @@ describe('mountProfileList', () => {
       expect(findByAttr(host, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)?.textContent)
         .toBe('Forget on this browser');
       expect(findByAttr(host, SERVER_SWITCHER_REMOVE_REVOKE_ATTR)?.textContent)
-        .toBe('Take access away and forget');
+        .toBe('Revoke access and forget');
       expect(findByAttr(host, SERVER_SWITCHER_REMOVE_CANCEL_ATTR)).not.toBeNull();
+    });
+
+    it('on the current server, says what an unsent message loses and where the tab goes next', async () => {
+      // ⛔ It reloaded onto the fallback server with no word about either.
+      let work: ServerSwitchWorkState = 'chat_draft';
+      const { host, onRemove } = setup({ switchWorkState: () => work });
+      const forget = findAllByAttr(host, SERVER_SWITCHER_REMOVE_ATTR)
+        .find((button) => button.getAttribute('data-profile-id') === 'p1')!;
+      forget.click();
+
+      expect(findByAttr(host, SERVER_SWITCHER_REMOVE_WORK_ATTR)?.textContent).toBe(
+        'The Chat message you have not sent is only in this tab. Forgetting it reloads this tab, and the message is lost.',
+      );
+      expect(findByAttr(host, SERVER_SWITCHER_REMOVE_NEXT_ATTR)?.textContent)
+        .toBe('This tab then opens office.example:8443.');
+
+      // Work that grows while the choice is open is shown again first.
+      work = 'in_flight_with_chat_draft';
+      findByAttr(host, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+      await flush();
+      expect(onRemove).not.toHaveBeenCalled();
+      expect(findByAttr(host, SERVER_SWITCHER_REMOVE_WORK_ATTR)?.textContent)
+        .toContain('Work is still finishing');
+      findByAttr(host, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+      await flush();
+      expect(onRemove).toHaveBeenCalledWith('p1', 'local');
+    });
+
+    it('names pairing as the next step when no other server is signed in', () => {
+      const { host } = setup({
+        profiles: [HOME, { ...OFFICE, webclient_token: null }],
+      });
+      findAllByAttr(host, SERVER_SWITCHER_REMOVE_ATTR)
+        .find((button) => button.getAttribute('data-profile-id') === 'p1')!.click();
+      expect(findByAttr(host, SERVER_SWITCHER_REMOVE_NEXT_ATTR)?.textContent)
+        .toBe('This tab then opens pairing for office.example:8443.');
+
+      const alone = setup({ profiles: [HOME] });
+      findAllByAttr(alone.host, SERVER_SWITCHER_REMOVE_ATTR)[0]!.click();
+      expect(findByAttr(alone.host, SERVER_SWITCHER_REMOVE_NEXT_ATTR)?.textContent)
+        .toBe('This tab then asks you to pair this browser with a server.');
+    });
+
+    it('says nothing about work or a next server when forgetting another server', () => {
+      const { host } = setup({ switchWorkState: () => 'chat_draft' });
+      findAllByAttr(host, SERVER_SWITCHER_REMOVE_ATTR)
+        .find((button) => button.getAttribute('data-profile-id') === 'p2')!.click();
+      expect(findByAttr(host, SERVER_SWITCHER_REMOVE_WORK_ATTR)).toBeNull();
+      expect(findByAttr(host, SERVER_SWITCHER_REMOVE_NEXT_ATTR)).toBeNull();
     });
 
     it('forgets locally without pretending server access was revoked', async () => {

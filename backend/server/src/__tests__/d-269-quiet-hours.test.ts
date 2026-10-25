@@ -22,6 +22,7 @@ import {
   isMinuteWithinWindow,
   isWithinQuietHours,
   localMinuteOfDay,
+  quietHoursEndFor,
   RECUED_BUILTIN_SOURCE_ID,
   shouldSuppressForQuietHours,
   WORK_ENTITY_DUE_SOON_WINDOW_MS,
@@ -91,6 +92,24 @@ describe('D-269 step 3 — the window itself', () => {
     // the evidence of the withholding is the notification that did not arrive.
     expect(defaultQuietHoursPolicy().enabled).toBe(false);
     expect(isWithinQuietHours(defaultQuietHoursPolicy(), NIGHT, HK)).toBe(false);
+  });
+});
+
+describe('D-325 §15.7 amendment — when a send set inside quiet hours may go', () => {
+  const on = (patch: Partial<QuietHoursPolicy> = {}): QuietHoursPolicy => ({ ...defaultQuietHoursPolicy(1), enabled: true, ...patch });
+
+  it('⛔ a time inside the window waits for its end, including a window past midnight', () => {
+    expect(quietHoursEndFor(on(), 23 * 60)).toBe(7 * 60);
+    expect(quietHoursEndFor(on(), 6 * 60 + 30)).toBe(7 * 60);
+    expect(quietHoursEndFor(on({ from_minute: 13 * 60, to_minute: 14 * 60 }), 13 * 60 + 30)).toBe(14 * 60);
+  });
+
+  it('keeps its own time outside the window, and when the window is off, holds no notifications or is empty', () => {
+    expect(quietHoursEndFor(on(), 8 * 60)).toBeNull();
+    expect(quietHoursEndFor(on(), 7 * 60)).toBeNull();
+    expect(quietHoursEndFor(on({ enabled: false }), 23 * 60)).toBeNull();
+    expect(quietHoursEndFor(on({ applies_to: ['approval'] }), 23 * 60)).toBeNull();
+    expect(quietHoursEndFor(on({ from_minute: 600, to_minute: 600 }), 600)).toBeNull();
   });
 });
 

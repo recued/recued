@@ -230,7 +230,7 @@ test.describe(`the packaged binary, launched ${launched}`, () => {
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Pair this browser' })).toBeVisible();
 
-    await page.getByRole('textbox', { name: 'Server URL' }).fill(server.url);
+    await page.getByRole('textbox', { name: 'Server address' }).fill(server.url);
     // ⛔ MINT IT HERE, do not reuse the boot banner's. One live code exists at a
     // time and `recued pair` replaces it, so anything that ran `pair` earlier in
     // the file has already invalidated the boot code — which presents as
@@ -247,7 +247,7 @@ test.describe(`the packaged binary, launched ${launched}`, () => {
     await expect(words).toHaveCount(24);
     for (let i = 0; i < 24; i += 1) await words.nth(i).fill(server.recoveryWords[i]);
 
-    await page.getByRole('button', { name: /pair this device/i }).click();
+    await page.getByRole('button', { name: /pair this browser/i }).click();
 
     // The pair form is replaced by the app once the server has accepted and the
     // client has a session — the url field going away is the observable edge.

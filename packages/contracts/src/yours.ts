@@ -59,6 +59,10 @@ export interface YoursOccurrence {
   /** A forwarded proof can propose closing it (§5.3): an open action of an
    *  expiry or interval rule. Absent otherwise, and from an older server. */
   closes_by_proof?: true;
+  /** §15.7 (2026-10-24) — an open renewal, such as a passport's: a later date closes it,
+   *  so Due asks for that date (`occurrence.renewed`) instead of offering Done. `current`
+   *  is the date it replaces. Absent otherwise, and from an older server. */
+  renewal?: { field: string; current: string };
 }
 export interface YoursSourceControl { id: string; name: string; enabled: boolean; proposals: number }
 export type YoursAssetFilter = 'missing_facts' | 'overdue';
@@ -74,13 +78,22 @@ export interface YoursAssetSummary {
   missing: Array<{ path: `${'dates' | 'readings' | 'observations'}.${string}`;
     reason: 'unknown' | 'future' | 'unconfirmed' }>;
 }
+/** The household's Telegram group. D-325 §15.7 (2026-10-24) — it only receives:
+ *  reminders are posted there without buttons and nothing sent back answers, so it
+ *  names no owner or member ids. A selection saved before also carried those. */
 export interface HouseholdTelegramSelection {
-  connection_name: string; connection_enrolled_at: number; recipient: string; expected_sender: string; members: string[]; selected_at: number;
+  connection_name: string; connection_enrolled_at: number; recipient: string; selected_at: number;
 }
+/** Every list only shows its tasks (D-325 §15.7, 2026-10-24). A selection saved before
+ *  also carries a `mode`, which nothing reads; it stays as stored, since the tasks' scope
+ *  is a hash of the selection and changing it would remove and post them again. */
 export interface HouseholdHomeAssistantSelection {
-  connection_name: string; connection_enrolled_at: number; base_url: string; entity_id: string;
-  mode: 'interactive' | 'display_only'; selected_at: number;
+  connection_name: string; connection_enrolled_at: number; base_url: string; entity_id: string; selected_at: number;
 }
+/** A to-do list a Home Assistant connection offers, so Settings can offer it by name
+ *  instead of asking for its id (D-325 §15.7 amendment). `usable`: Recued can keep its
+ *  tasks there, and `reason` says why not. Every list only shows them (2026-10-24). */
+export interface HouseholdHomeAssistantList { entity_id: string; name: string; usable: boolean; reason?: string }
 /** A "last time" class's measured dark run (§9) and the owner's bar for it (P11). */
 export interface YoursRecallRate { class_id: string; scored: number; relevant: number; rate: number; minimum_rate: number | null; qualified: boolean }
 /** §15.7 — what Settings → Privacy → Learning shows of "last time" (P21), read
@@ -120,8 +133,16 @@ export interface YoursSnapshot {
   recall_rates?: YoursRecallRate[];
   history_receipts?: Array<{ mailbox: string; cutoff: number; at: number; candidates: number }>;
   history_evidence?: RetainedHistoryEvidence[];
-  household?: { telegram: HouseholdTelegramSelection | null; telegram_connections: Array<{ name: string; enrolled_at: number; recipient: string; owner_sender: string }>;
-    home_assistant?: { selection: HouseholdHomeAssistantSelection | null; connections: Array<{ name: string; enrolled_at: number }>; issue: string | null; uncertain: number } };
+  /** A connection's `display_name` is what Settings calls it; absent from an older
+   *  server, which leaves the connection's own name. */
+  /** `telegram_connections`: the Telegram connections bound to a group, any of which
+   *  can be the household's. */
+  household?: { telegram: HouseholdTelegramSelection | null; telegram_connections: Array<{ name: string; enrolled_at: number; recipient: string; display_name?: string }>;
+    /** The assets whose reminders reach the household, so Settings can name them
+     *  (D-325 §15.7 amendment): the first few by name, and how many in all. Absent
+     *  from an older server. */
+    shared_assets?: { assets: Array<{ id: string; name: string }>; total: number };
+    home_assistant?: { selection: HouseholdHomeAssistantSelection | null; connections: Array<{ name: string; enrolled_at: number; display_name?: string }>; issue: string | null; uncertain: number } };
   sources: YoursSourceControl[];
   suppressions: ProactiveSuppression[];
   /** §15.4 — what the owner hid from Today and the brief, to restore. */
@@ -148,6 +169,8 @@ export interface YoursSpherePlacement { sphere?: Sphere; reason: string; pinned:
 /** Owner UI controls. Grant creation remains in Contracts. These commands
  * cannot run recipes, mint grants, or accept a standing delegation. */
 export type YoursCommand =
+  | import('./asset-fact-context.js').AssetAttributeReadingCommand
+  | import('./asset-fact-context.js').AssetAddEvidenceCommand
   | { action: 'asset.create'; input: Omit<AssetCreateInput, 'source'>; class_id?: string }
   | { action: 'asset.update'; id: string; patch: AssetPatch; confirm_retirement?: boolean }
   | { action: 'asset.automatic_updates'; id: string; path: string;
@@ -155,7 +178,7 @@ export type YoursCommand =
   | { action: 'asset.delete'; id: string; confirmed: boolean }
   | { action: 'asset.link'; id: string; parent_id: string | null }
   | { action: 'asset.same_thing'; id: string; other_id: string; merge: boolean }
-  | { action: 'class.save'; preset: AssetClassPreset }
+  | { action: 'class.save'; preset: AssetClassPreset; create?: boolean }
   | { action: 'class.delete'; id: string }
   | { action: 'class.apply'; asset_id: string; class_id: string }
   | { action: 'proposal.create'; proposal: ProactiveProposalInput }
@@ -169,6 +192,8 @@ export type YoursCommand =
   | { action: 'intake.scan' }
   | { action: 'occurrence.last_done'; id: string; on: string | null }
   | { action: 'occurrence.later'; id: string; until: number }
+  | { action: 'occurrence.renewed'; id: string; on: string }
+  | { action: 'occurrence.acknowledge'; id: string }
   | { action: 'rule.save'; asset_id: string; rule: AssetRule; confirm_floor_mute?: boolean }
   | { action: 'rule.delete'; asset_id: string; rule_id: string; confirm_floor_delete?: boolean }
   | { action: 'suppression.save'; suppression: Omit<ProactiveSuppression, 'id' | 'created_at'> }
@@ -185,7 +210,8 @@ export type YoursCommand =
   | { action: 'episode.hide'; id: string }
   | { action: 'recall.class'; class_id: string; minimum_rate: number }
   | { action: 'history.forget'; confirmed: boolean }
-  | { action: 'household.telegram'; connection_name: string | null; connection_enrolled_at?: number; members?: string[] }
+  /** An older webclient also sends the group's member ids, which are not read (D-325 §15.7, 2026-10-24). */
+  | { action: 'household.telegram'; connection_name: string | null; connection_enrolled_at?: number }
   | { action: 'household.home_assistant'; connection_name: string | null; connection_enrolled_at?: number; entity_id?: string }
   | { action: 'place.save'; name: string; key?: string; aliases: string[] }
   /** `from: 'today'` — the owner opened an item Today showed, which the learner counts
@@ -195,7 +221,7 @@ export type YoursCommand =
   | { action: 'situation.dismiss'; ref: SituationRef; kind: string; code: SituationDismissal; label: string }
   | { action: 'situation.restore'; key: string }
   | { action: 'trip.save'; trip: import('./situation.js').TripDetails }
-  | { action: 'binding.save'; asset_id: string; recipe_id: string; fields: string[] }
+  | { action: 'binding.save'; asset_id: string; recipe_id: string; fields: string[]; expected_recipe_hash?: string }
   | { action: 'binding.disable'; asset_id: string; id: string }
   | { action: 'file.attach'; asset_id: string; record_id: string }
   | { action: 'file.details'; asset_id: string; link_id: string; record_id: string; details: AssetDocumentDetails }

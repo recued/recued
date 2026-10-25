@@ -28,6 +28,7 @@ import type {
   HostnameRemoveRequest,
   HostnameRemoveResponse,
   HostnameSetAddressUseRequest,
+  HostnameTlsTopology,
   HostnameUpdateRequest,
   HostnameVerificationMethod,
   LocalServerUrl,
@@ -37,6 +38,7 @@ import type {
 import { formatClientDateTime } from '@recued/ui-shared';
 import type { ReachabilityExternalProbeCaller } from './reachability.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { HOSTNAMES_WORKSPACE_STYLES } from './hostnames-workspace-styles.js';
 
 // ---------------------------------------------------------------------------
 // Stable DOM hooks
@@ -149,6 +151,14 @@ const VERIFICATION_METHOD_LABELS: Record<HostnameVerificationMethod, string> = {
   http_token: 'HTTP token',
   dns_txt: 'DNS TXT',
 };
+
+const TLS_TOPOLOGY_LABELS: Record<HostnameTlsTopology, string> = {
+  server_terminated: 'By this server',
+  upstream_terminated: 'By another service',
+};
+
+const formatTlsTopology = (topology: HostnameTlsTopology): string =>
+  Object.hasOwn(TLS_TOPOLOGY_LABELS, topology) ? TLS_TOPOLOGY_LABELS[topology] : 'Unknown';
 
 const OWNERSHIP_LABELS: Record<HostnameOwnershipStatus, string> = {
   pending: 'Pending',
@@ -460,7 +470,7 @@ export const HOSTNAMES_PANEL_STYLES = `
     grid-template-columns: 1fr;
   }
 }
-`;
+` + '\n' + HOSTNAMES_WORKSPACE_STYLES;
 
 // ---------------------------------------------------------------------------
 // Caller seams and state
@@ -1253,6 +1263,9 @@ export const mountHostnamesPanel = (
     const input = doc.createElement('input');
     input.className = mono ? 'hostnames-input hostnames-mono' : 'hostnames-input';
     input.type = 'text';
+    input.setAttribute('spellcheck', 'false');
+    input.setAttribute('autocapitalize', 'none');
+    input.setAttribute('autocorrect', 'off');
     input.value = value;
     input.disabled = formSaving(attr);
     input.setAttribute(attr, field);
@@ -1450,6 +1463,11 @@ export const mountHostnamesPanel = (
     form.className = 'hostnames-form';
     form.setAttribute(HOSTNAMES_ADD_FORM_ATTR, '');
 
+    const formTitle = doc.createElement('h4');
+    formTitle.className = 'hostnames-form-title';
+    formTitle.textContent = 'Add a hostname';
+    form.appendChild(formTitle);
+
     const feedback = mountEditorFeedback(form, HOSTNAMES_ADD_FIELD_ATTR,
       state.add.error === null ? null : renderError(state.add.error));
 
@@ -1589,6 +1607,11 @@ export const mountHostnamesPanel = (
     const form = doc.createElement('div');
     form.className = 'hostnames-form';
     form.setAttribute(HOSTNAMES_UPDATE_FORM_ATTR, row.hostname);
+
+    const formTitle = doc.createElement('h4');
+    formTitle.className = 'hostnames-form-title';
+    formTitle.textContent = 'Edit hostname';
+    form.appendChild(formTitle);
 
     const feedback = mountEditorFeedback(form, HOSTNAMES_UPDATE_FIELD_ATTR,
       state.update.error === null ? null : renderError(state.update.error));
@@ -1811,7 +1834,7 @@ export const mountHostnamesPanel = (
       renderMeta(meta, 'Hostname', detail.hostname);
       renderMeta(meta, 'Where the certificate comes from', CERT_SOURCE_LABELS[detail.cert_source]);
       renderMeta(meta, 'Ownership', OWNERSHIP_LABELS[detail.ownership_status]);
-      renderMeta(meta, 'How the certificate is served', detail.tls_topology);
+      renderMeta(meta, 'How the certificate is served', formatTlsTopology(detail.tls_topology));
       renderMeta(meta, 'Ports', detail.listener_ports.join(', ') || 'none');
       renderMeta(meta, 'Enabled', detail.enabled ? 'yes' : 'no');
       renderMeta(meta, 'Recued keeps the address up to date', detail.ddns_managed ? 'yes' : 'no');
@@ -2106,7 +2129,7 @@ export const mountHostnamesPanel = (
       const meta = doc.createElement('div');
       meta.className = 'hostnames-row-meta';
       renderMeta(meta, 'Where the certificate comes from', CERT_SOURCE_LABELS[row.cert_source]);
-      renderMeta(meta, 'How the certificate is served', row.tls_topology);
+      renderMeta(meta, 'How the certificate is served', formatTlsTopology(row.tls_topology));
       renderMeta(meta, 'Ports', row.listener_ports.join(', ') || 'none');
       renderMeta(meta, 'Enabled', row.enabled ? 'yes' : 'no');
       renderMeta(meta, 'Recued keeps the address up to date', row.ddns_managed ? 'yes' : 'no');
@@ -2247,8 +2270,8 @@ export const mountHostnamesPanel = (
       blocked.setAttribute(HOSTNAMES_DDNS_BLOCKED_ATTR, '');
       blocked.textContent =
         `Pausing could cut this browser off. It may be reaching your server ` +
-        `through ${host}. Switch to another address (a LAN URL or a custom domain) in ` +
-        'Settings, then Server URL, and reconnect. After that you can pause.';
+        `through ${host}. Switch to another address (a LAN URL or a custom domain) ` +
+        'with Change address, under Settings, then Servers. After that you can pause.';
       section.appendChild(blocked);
       target.appendChild(section);
       return;

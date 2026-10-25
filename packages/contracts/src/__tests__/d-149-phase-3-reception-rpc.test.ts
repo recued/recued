@@ -57,6 +57,10 @@ describe('D-149 P3 § A.3 — RECEPTION_RPC_METHODS closed list', () => {
   it('lists the current Reception handler slice methods in order', () => {
     expect(RECEPTION_RPC_METHODS).toEqual([
       'reception.signoff.quotes',
+      // `d0274e3ed` — resuming a draft sign-off, checking its link, resuming its completion.
+      'reception.signoff.resume',
+      'reception.signoff.link.check',
+      'reception.signoff.completion.resume',
       'reception.signoff.prepare',
       'reception.signoff.prepare_addition',
       'reception.signoff.publish',

@@ -266,6 +266,10 @@ export interface MountAccountsLanePanelOptions {
    * may unlock fresh consent. Production waits five seconds from dispatch. */
   now?: () => number;
   oauthReloadRetryGraceMs?: number;
+  /** Lane settings shown under the account list (the route's "Personal or
+   *  work" card). Asked for after every render, which detaches it; null
+   *  leaves the list without one. List stage only. */
+  listFooter?: () => HTMLElement | null;
 }
 
 export interface AccountsLanePanelMount {
@@ -650,7 +654,17 @@ export const mountAccountsLanePanel = (
       && active.closest('[data-accounts-delete-dialog]') !== null;
     if (state.stage !== 'detail' || state.authenticationManagement?.slug !== state.detailSlug) delete state.authenticationManagement;
     state.authenticationManagementBusy = authenticationPanel?.busy() === true || oauthAppSwitchPanel?.busy() === true;
+    // Re-rendering detaches the footer, which drops its focus; put it back.
+    const footer = opts.listFooter?.() ?? null;
+    const footerFocus = footer !== null && active && footer.contains(active) ? active : null;
     host.innerHTML = renderAccountsPanel({ state });
+    const footerHost = footer !== null
+      ? host.querySelector?.<HTMLElement>('[data-accounts-list-footer-host]') ?? null
+      : null;
+    if (footerHost !== null && footer !== null) {
+      footerHost.appendChild(footer);
+      if (footerFocus !== null && doc.activeElement !== footerFocus) footerFocus.focus?.({ preventScroll: true });
+    }
     // Explicit tab stops keep Safari inside this modal even when the system
     // keyboard preference skips ordinary buttons in the native Tab order.
     if (state.deleteConfirm !== null) {

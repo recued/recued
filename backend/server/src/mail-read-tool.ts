@@ -45,7 +45,7 @@ export const createMailReadHandler = (deps: ChatToolHandlerDeps): Tier1Handler =
   const attached = fileGranted ? deps.mailAttachments?.(record, args.slug) : undefined;
   return { ok: true, result: { status: body === null ? 'unavailable_body' : page === null ? 'invalid_offset' : 'read',
     slug: args.slug, record_id: args.record_id,
-    ...mailEvidenceMetadata(args.slug, args.record_id, record.received_at),
+    ...mailEvidenceMetadata(args.slug, args.record_id, record.received_at, ctx?.time_zone),
     // Mail privacy fields are relative to the headers, not this result envelope.
     hot_fields: { ...record.hot_fields, [PII_ENTITY_MARKER_KEY]: 'mail' }, received_at: record.received_at,
     content_hash, read_version: content_hash,

@@ -195,6 +195,11 @@ export interface ParsedInboundChoice {
   option_id: string;
   /** Sender identifier on the vendor surface. */
   from: string;
+  /** The sender's display name, when the payload carries one (Telegram
+   *  `first_name` + `last_name`). Text the person chose: never an identity. */
+  from_name?: string;
+  /** The sender's public handle without the `@` (Telegram `username`), when set. */
+  from_username?: string;
   /** Vendor message id of the prompt the press answers, when present. */
   vendor_message_id?: string;
 }

@@ -620,6 +620,7 @@ export const composeMailStack = (
       async restart(slug) { authenticationPaused.delete(slug); const row = instances.get('mail', slug);
         if (!row || closed) throw new Error('Mail collection is unavailable.');
         await startLive(row, 'background'); if (!live.has(slug)) throw new Error('Mail collection did not restart.'); },
+      caughtUp: (slug) => live.get(slug)?.caughtUp ?? Promise.resolve(),
     },
     // D-264 — the listing's draft axis, answered by the running collection
     // rather than re-derived from config/scopes at the rpc layer. A slug with

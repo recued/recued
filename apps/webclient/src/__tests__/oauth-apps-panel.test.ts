@@ -13,7 +13,8 @@ const fixture = async (call: OAuthAppsCaller = vi.fn(async () => response()), sa
   const click = (action: string, id?: string) => { const node = { dataset: { oauthAppAction: action, oauthAppId: id }, closest: (selector: string) => selector === '[data-oauth-app-action]' ? node : null }; for (const fn of listeners.get('click') ?? []) fn({ target: node }); };
   const field = (name: string, value: string) => { for (const fn of listeners.get('input') ?? []) fn({ target: { dataset: { oauthAppField: name }, value, hasAttribute: () => false } }); };
   const submit = () => { for (const fn of listeners.get('submit') ?? []) fn({ target: { hasAttribute: (key: string) => key === 'data-oauth-app-editor' }, preventDefault() {} }); };
-  return { host, panel, click, field, submit };
+  const filter = (value: string) => { for (const fn of listeners.get('input') ?? []) fn({ target: { dataset: {}, value, hasAttribute: (key: string) => key === 'data-oauth-app-filter' } }); };
+  return { host, panel, click, field, submit, filter };
 };
 describe('saved OAuth app manager', () => {
   it.each([{ issuer: 'google' as const, id: 'default' }, { issuer: 'microsoft' as const, id: app().id }])('does not substitute a recovered check from $issuer/$id for a targeted app review', async source => {
@@ -78,5 +79,52 @@ describe('saved OAuth app manager', () => {
     let html = ''; const host = { get innerHTML() { return html; }, set innerHTML(value: string) { html = value; }, querySelector: () => null, addEventListener() {}, removeEventListener() {} };
     const panel = createOAuthAppsPanel({ host: host as unknown as HTMLElement, call: () => pending });
     const before = html; panel.dispose(); resolve(response()); await panel.whenLoaded(); expect(html).toBe(before);
+  });
+});
+
+describe('a long saved-app list', () => {
+  const many = (count: number, extra: Partial<SavedOAuthApp> = {}): SavedOAuthApp[] => Array.from({ length: count }, (_, i) => ({
+    ...app(), id: 'app-' + String(i).padStart(32, '0'), issuer: i % 3 === 2 ? 'microsoft' : 'google', label: 'App ' + String(i).padStart(2, '0'),
+    client_id: 'client-' + i, ...extra }));
+  const listed = (apps: SavedOAuthApp[], expiry = false): OAuthAppsCaller => vi.fn(async args => ({ ...response(args.action, apps), ...(expiry ? { secret_expiry_supported: true } : {}) }));
+  const shownRows = (html: string): string[] => [...html.matchAll(/data-oauth-app-row="([^"]+)"(?! hidden)/g)].map(match => match[1]!);
+
+  it('lists each app as one closed row, grouped by vendor, with its actions inside the row', async () => {
+    const f = await fixture(listed(many(3))); f.click('toggle'); const html = f.host.innerHTML;
+    expect(html.indexOf('data-oauth-app-group="google"')).toBeLessThan(html.indexOf('data-oauth-app-group="microsoft"'));
+    expect(html).toMatch(/<details data-oauth-app-details="google:app-0{32}">/);
+    const row = html.slice(html.indexOf('data-oauth-app-row="google:app-0'), html.indexOf('</li>', html.indexOf('data-oauth-app-row="google:app-0')));
+    expect(row.indexOf('</summary>')).toBeLessThan(row.indexOf('data-oauth-app-action="usage"'));
+    expect(html).not.toContain('data-oauth-app-filter'); f.panel.dispose();
+  });
+
+  it('shows eight rows and a filter for a long list, and every row on request', async () => {
+    const f = await fixture(listed(many(18))); f.click('toggle');
+    expect(f.host.innerHTML).toContain('data-oauth-app-filter'); expect(shownRows(f.host.innerHTML)).toHaveLength(8);
+    expect(f.host.innerHTML).toContain('Show all 18 apps');
+    f.click('show-all'); expect(shownRows(f.host.innerHTML)).toHaveLength(18); expect(f.host.innerHTML).toContain('Show fewer apps');
+    // A filter shows every match, cap or not, and says how many; the next render keeps it.
+    f.click('show-all'); f.filter('App 0'); f.click('show-all');
+    expect(shownRows(f.host.innerHTML)).toHaveLength(10); expect(f.host.innerHTML).toContain('10 of 18 apps');
+    expect(f.host.innerHTML).toMatch(/data-oauth-app-action="show-all" hidden/);
+    f.panel.dispose();
+  });
+
+  it('edits an app inside its own row, which stays open beyond the cap', async () => {
+    const apps = many(18); const last = apps.find(a => a.label === 'App 16')!;
+    const f = await fixture(listed(apps)); f.click('toggle'); f.click('edit', last.issuer + ':' + last.id); const html = f.host.innerHTML;
+    const start = html.indexOf('data-oauth-app-row="' + last.issuer + ':' + last.id + '"');
+    expect(html.slice(start, html.indexOf('</li>', start))).toContain('data-oauth-app-editor');
+    expect(shownRows(html)).toContain(last.issuer + ':' + last.id);
+    expect(html).toMatch(new RegExp('data-oauth-app-details="' + last.issuer + ':' + last.id + '" open'));
+    f.panel.dispose();
+  });
+
+  it('keeps the three soonest expiry reminders in view and the rest behind one line', async () => {
+    const soon = new Date(Date.now() + 5 * 86_400_000); const day = soon.getFullYear() + '-' + String(soon.getMonth() + 1).padStart(2, '0') + '-' + String(soon.getDate()).padStart(2, '0');
+    const f = await fixture(listed(many(5, { secret_expires_on: day }), true)); const html = f.host.innerHTML;
+    const shown = html.slice(0, html.indexOf('data-oauth-app-expiry-more'));
+    expect(shown.match(/data-oauth-app-action="edit-expiry"/g)).toHaveLength(3);
+    expect(html).toContain('Show 2 more'); expect(html.match(/data-oauth-app-action="edit-expiry"/g)).toHaveLength(5); f.panel.dispose();
   });
 });

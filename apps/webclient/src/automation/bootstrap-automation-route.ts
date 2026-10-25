@@ -539,6 +539,15 @@ const AUTOMATION_ROUTE_STYLES = `
   font-size: 13px;
   color: var(--muted);
 }
+/* A label and its select wrap as one. Apart, the row broke between them:
+   "Status" ended one line and its select began the next on a phone, and
+   "Origin" did the same at 640-700px. */
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-filter-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
 [${AUTOMATION_ROUTE_SECTION_ATTR}] {
   margin-bottom: 22px;
 }
@@ -709,18 +718,90 @@ const AUTOMATION_ROUTE_STYLES = `
   outline-offset: 1px;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail,
-[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail > * {
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail :where(*) {
   box-sizing: border-box;
   min-width: 0;
   max-width: 100%;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail {
+  --wc-control-h: 44px;
+  display: grid;
+  gap: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail > [data-recued-automation-back] {
+  justify-self: start;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] :is(.automation-detail-header, .automation-detail-section, .automation-detail > details) {
+  padding: clamp(14px, 2vw, 22px);
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 10px);
+  background: var(--surface);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-identity {
+  flex: 1 1 180px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-kind {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-header .automation-section-title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.35;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-header .automation-section-title a {
+  font-size: inherit;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-state {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 0 4px 12px;
+  border-left: 3px solid var(--border);
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-state > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-state[data-armed="on"],
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-state[data-armed="waiting"] {
+  border-left-color: var(--accent);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-state[data-armed="tripped"] {
+  border-left-color: var(--danger);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-grid {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-section > h3 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  line-height: 1.4;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-section > :last-child {
+  margin-bottom: 0;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   min-width: 0;
   max-width: 100%;
-  gap: 6px 12px;
-  margin: 12px 0;
+  gap: 12px 16px;
+  margin: 0;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts dt {
   color: var(--muted);
@@ -733,19 +814,89 @@ const AUTOMATION_ROUTE_STYLES = `
   overflow-wrap: anywhere;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts code {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface-subtle);
+  font-size: 12px;
+  line-height: 1.6;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-note {
   overflow-wrap: anywhere;
 }
-@media (max-width: 360px) {
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail :is(button, a) {
+  min-width: 44px;
+  min-height: 44px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail .automation-button {
+  padding: 8px 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail .automation-row-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-remove {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-inline-start: auto;
+  padding-inline-start: 16px;
+  border-inline-start: 1px solid var(--border);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-remove:empty { display: none; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail .automation-rows {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail .automation-rows > li {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface-subtle);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail > details > summary {
+  display: list-item;
+  min-height: 44px;
+  padding: 10px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail :is(button, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (min-width: 800px) {
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-remove {
+    flex-basis: 100%;
+    margin-inline-start: 0;
+    padding: 12px 0 0;
+    border-inline-start: 0;
+    border-top: 1px solid var(--border);
+  }
   [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts {
     grid-template-columns: minmax(0, 1fr);
-    gap: 2px;
+    gap: 4px;
   }
   [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts dd {
-    margin-bottom: 8px;
+    margin-bottom: 12px;
+  }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts dd:last-child {
+    margin-bottom: 0;
   }
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-button {
@@ -871,6 +1022,10 @@ const AUTOMATION_ROUTE_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: -3px;
   box-shadow: none;
+}
+/* A finger's height on a phone. ⛔ 36px. */
+@media (max-width: 640px) {
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subnav-tab { min-height: 44px; }
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subnav-count {
   font-size: 11px;
@@ -1886,14 +2041,18 @@ export const bootstrapAutomationRoute = (
     }
   };
 
-  /** D-266 — the detail view's own copies of the row's two derived
-   *  facts, so the panel and the list cannot drift apart. */
+  /** The list and detail share the same derived schedule state, including
+   *  the difference between an owner pause and a server stop after failures. */
   const detailLateness = (s: ServerSchedule): number | null =>
     scheduleLatenessMs(s.next_run_at, opts.now?.() ?? Date.now(), s.enabled);
-  const detailStateLabel = (s: ServerSchedule): string =>
-    waitingScheduleIds().has(s.schedule_id)
-      ? 'Waiting on you'
-      : s.enabled ? 'On' : 'Paused';
+  const scheduleState = (s: ServerSchedule): { armed: ArmedState; label: string } => {
+    const waiting = waitingScheduleIds().has(s.schedule_id);
+    const selfStopped = !s.enabled && (s.consecutive_failures ?? 0) > 0;
+    return {
+      armed: waiting ? 'waiting' : s.enabled ? 'on' : selfStopped ? 'tripped' : 'off',
+      label: waiting ? 'Waiting on you' : s.enabled ? 'On' : selfStopped ? 'Auto-disabled' : 'Paused',
+    };
+  };
 
   /** D-266 — which schedules are holding for an answer. Derived from the
    *  missed-run report the route already fetches for the card, so the row
@@ -1919,7 +2078,6 @@ export const bootstrapAutomationRoute = (
     schedules
       .filter((s) => matchesFilter(s.recipe_id))
       .map((s): RuleItem => {
-      const isWaiting = waitingScheduleIds().has(s.schedule_id);
       // D-268 — a schedule the SERVER stopped is not a schedule the owner
       // paused, and they rendered identically: `off` / "Paused" for both, so
       // the one needing action was the one that looked handled. An owner
@@ -1927,10 +2085,7 @@ export const bootstrapAutomationRoute = (
       // non-zero counter on a disabled row means exactly one thing.
       // `ArmedState` already carried `'tripped'` for the trigger rows; only
       // this derivation was missing it.
-      const selfStopped = !s.enabled && (s.consecutive_failures ?? 0) > 0;
-      const armed: ArmedState = isWaiting
-        ? 'waiting'
-        : s.enabled ? 'on' : selfStopped ? 'tripped' : 'off';
+      const { armed, label } = scheduleState(s);
       // D-266 — `next_run_at` is the EXPECTED slot (the server sets it at
       // every fire and touches it nowhere else), so a slot in the past is
       // exactly how late this occurrence is. Nothing is computed from an
@@ -1943,9 +2098,7 @@ export const bootstrapAutomationRoute = (
         title: nameFor(s.recipe_id),
         titleHref: recipeHref(s.recipe_id),
         armed,
-        stateLabel: isWaiting
-          ? 'Waiting on you'
-          : s.enabled ? 'On' : selfStopped ? 'Auto-disabled' : 'Paused',
+        stateLabel: label,
         detail: `<span>${scheduleCadence(s)}</span>`,
         meta: [
           // When a run is overdue, "next <future date>" is the one thing
@@ -2563,23 +2716,27 @@ export const bootstrapAutomationRoute = (
         RefPicker.initialRefPickerState(resolveRecipeSelection()),
         RECIPE_PICKER_CONFIG,
       )}
-      ${isViewToken(activeSection) ? '' : `<label class="automation-filter-label" for="automation-status-filter">Status</label>
-      <select id="automation-status-filter" class="automation-filter-select"
-        ${AUTOMATION_ROUTE_STATUS_FILTER_ATTR}>
-        <option value="all"${statusFilter === 'all' ? ' selected' : ''}>All</option>
-        <option value="on"${statusFilter === 'on' ? ' selected' : ''}>Armed</option>
-        <option value="off"${statusFilter === 'off' ? ' selected' : ''}>Paused</option>
-        <option value="tripped"${statusFilter === 'tripped' ? ' selected' : ''}>Tripped</option>
-        <option value="waiting"${statusFilter === 'waiting' ? ' selected' : ''}>Waiting on you</option>
-      </select>`}
+      ${isViewToken(activeSection) ? '' : `<span class="automation-filter-field">
+        <label class="automation-filter-label" for="automation-status-filter">Status</label>
+        <select id="automation-status-filter" class="automation-filter-select"
+          ${AUTOMATION_ROUTE_STATUS_FILTER_ATTR}>
+          <option value="all"${statusFilter === 'all' ? ' selected' : ''}>All</option>
+          <option value="on"${statusFilter === 'on' ? ' selected' : ''}>Armed</option>
+          <option value="off"${statusFilter === 'off' ? ' selected' : ''}>Paused</option>
+          <option value="tripped"${statusFilter === 'tripped' ? ' selected' : ''}>Tripped</option>
+          <option value="waiting"${statusFilter === 'waiting' ? ' selected' : ''}>Waiting on you</option>
+        </select>
+      </span>`}
       ${activeSection === 'triggers'
-        ? `<label class="automation-filter-label" for="automation-origin-filter">Origin</label>
-      <select id="automation-origin-filter" class="automation-filter-select"
-        ${AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR}>
-        <option value="all"${originFilter === 'all' ? ' selected' : ''}>All</option>
-        <option value="user"${originFilter === 'user' ? ' selected' : ''}>Manual</option>
-        <option value="recipe"${originFilter === 'recipe' ? ' selected' : ''}>From recipe</option>
-      </select>`
+        ? `<span class="automation-filter-field">
+        <label class="automation-filter-label" for="automation-origin-filter">Origin</label>
+        <select id="automation-origin-filter" class="automation-filter-select"
+          ${AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR}>
+          <option value="all"${originFilter === 'all' ? ' selected' : ''}>All</option>
+          <option value="user"${originFilter === 'user' ? ' selected' : ''}>Manual</option>
+          <option value="recipe"${originFilter === 'recipe' ? ' selected' : ''}>From recipe</option>
+        </select>
+      </span>`
         : ''}
     </div>
   `;
@@ -2873,20 +3030,38 @@ export const bootstrapAutomationRoute = (
     const heading = (content: string): string =>
       `<h2 class="automation-section-title" tabindex="-1" `
       + `${AUTOMATION_ROUTE_DETAIL_HEADING_ATTR}>${content}</h2>`;
+    const header = (
+      kind: string,
+      title: string,
+      state: { label: string; armed: ArmedState },
+    ): string => `<header class="automation-detail-header">
+      <div class="automation-detail-identity">
+        <p class="automation-detail-kind">${e(kind)}</p>${heading(title)}
+      </div>
+      <p class="automation-detail-state" data-armed="${state.armed}">
+        <span>State</span><strong>${e(state.label)}</strong>
+      </p>
+    </header>`;
+    const section = (label: string, content: string): string =>
+      `<section class="automation-detail-section" aria-label="${e(label)}">
+        <h3>${e(label)}</h3>${content}
+      </section>`;
     let body: string | null = null;
     if (activeSection === 'schedules') {
       const s = schedules.find((x) => x.schedule_id === detailId);
       if (s !== undefined) {
         body = `
-          ${heading(`<a href="${e(recipeHref(s.recipe_id))}">${e(nameFor(s.recipe_id))}</a>`)}
-          ${facts([
+          ${header('Schedule', `<a href="${e(recipeHref(s.recipe_id))}">${e(nameFor(s.recipe_id))}</a>`, scheduleState(s))}
+          <div class="automation-detail-grid">
+          ${section('Timing', facts([
             ['Cadence', scheduleCadence(s)],
-            ['State', e(detailStateLabel(s))],
             // D-266 — an overdue schedule must not show a future-looking
             // "Next run"; say what was due and how late it is.
             ...(detailLateness(s) === null
               ? [['Next run', e(s.enabled ? formatDateTime(s.next_run_at) : '—')] as [string, string]]
               : [['Due', e(`${formatDateTime(s.next_run_at)} · ${formatLateness(detailLateness(s)!)}`)] as [string, string]]),
+          ]))}
+          ${section('Recent activity', `${facts([
             ['Last run', e(`${formatDateTime(s.last_run_at)}${s.last_status ? ` (${s.last_status})` : ''}`)],
             // D-266 — the forensic pair. `Last run` says when it stopped;
             // `Before that` says whether it was running normally before it
@@ -2903,15 +3078,17 @@ export const bootstrapAutomationRoute = (
                   : `${s.missed_cycles + 1} run${s.missed_cycles === 0 ? '' : 's'}`),
               ] as [string, string]]),
           ])}
-          ${s.last_error ? `<p class="automation-row-error">${e(s.last_error)}</p>` : ''}
+          ${s.last_error ? `<p class="automation-row-error">${e(s.last_error)}</p>` : ''}`)}
+          </div>
+          ${section('Controls', `
           <div class="automation-row-actions">
             <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:schedule:${!s.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(s.schedule_id)}"${mutationBusyAttrs('schedule', s.schedule_id, 'toggle')}>${e(mutationToggleLabel('schedule', s.schedule_id, s.enabled ? 'Pause' : 'Resume', !s.enabled))}</button>
             ${s.preapproval ? renderPreapprovalButtons('schedule', s.schedule_id, s.preapproval.proposal_id)
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && s.lifecycle_revision !== undefined
                   && canPreapprove('next_schedule')
                 ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:schedule" ${ROW_ID_ATTR}="${e(s.schedule_id)}">Look at the next run</button>` : ''}
-            ${renderDeleteButtons('schedule', s.schedule_id)}
-          </div>`;
+            <span class="automation-detail-remove">${renderDeleteButtons('schedule', s.schedule_id)}</span>
+          </div>`)}`;
       }
     } else if (activeSection === 'dishes' && detailId !== null) {
       const d = dishes.find((x) => x.dish_id === detailId);
@@ -2951,16 +3128,16 @@ export const bootstrapAutomationRoute = (
       if (d !== undefined) {
         const origin = dishOrigin(d);
         body = `
-          ${heading(`<a href="${e(recipeHref(d.recipe_id))}">${e(dishTitle(d))}</a>`)}
-          ${facts([
+          ${header('Dish', `<a href="${e(recipeHref(d.recipe_id))}">${e(dishTitle(d))}</a>`, { label: d.enabled ? 'On' : 'Paused', armed: d.enabled ? 'on' : 'off' })}
+          <div class="automation-detail-grid">
+          ${section('Settings', facts([
             ['Origin', e(origin.label)],
-            ['State', e(d.enabled ? 'On' : 'Paused')],
             ['Config', e(Object.keys(d.config_overlay).length === 0
               ? 'recipe defaults'
               : `${Object.keys(d.config_overlay).length} value(s)`)],
-          ])}
-          <h3 class="automation-section-title">History</h3>
-          ${historyBlock}`;
+          ]))}
+          ${section('History', historyBlock)}
+          </div>`;
       } else {
         // ⛔ D-215 § 9e — a RETIRED dish: its runs are in audit, its row is
         // not. Reachable without a stale bookmark — a one-shot retires
@@ -2968,23 +3145,30 @@ export const bootstrapAutomationRoute = (
         // the very next refresh. It must read as RETIRED, never as an error
         // and never as an empty state, because the history below is real.
         body = `
-          ${heading('Retired dish')}
+          ${header('Dish', 'Retired dish', { label: 'Retired', armed: 'off' })}
+          ${section('About this dish', `
           <p class="automation-detail-note" ${DISH_RETIRED_ATTR}="${e(detailId)}">
             This dish no longer exists — a one-shot retires itself once it
             succeeds, and a config change replaces the dish it versioned.
             Its run history is kept.
-          </p>
-          <h3 class="automation-section-title">History</h3>
-          ${historyBlock}`;
+          </p>`)}
+          ${section('History', historyBlock)}`;
       }
     } else if (activeSection === 'triggers') {
       const t = triggers.find((x) => x.trigger_id === detailId);
       if (t !== undefined) {
         const armed = t.enabled ? 'on' : t.last_error ? 'tripped' : 'off';
         const fact = RunModal.describeMailFactTrigger(t, mailFactTemplates, mailFactTypes);
+        const poll = pollStatusBlock(t);
         body = `
-          ${heading(`<a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a>`)}
-          ${facts([
+          ${header('Trigger', `<a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a>`, { label: t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused', armed })}
+          <div class="automation-detail-grid">
+          ${section('Recent activity', `${facts([
+            ['Origin', e(t.origin === 'recipe' ? 'From a Recipe, looked after by Recued' : 'Manual')],
+            ['Last fired', e(formatDateTime(t.last_fired_at))],
+          ])}
+          ${t.last_error ? `<p class="automation-row-error">${e(t.last_error)}</p>` : ''}`)}
+          ${section('Conditions', facts([
             ...(fact !== null
               ? [['Starts on', e(fact)] as [string, string]]
               : [
@@ -2996,37 +3180,39 @@ export const bootstrapAutomationRoute = (
                       .map(([k, v]) => `${k} = ${String(v)}`).join(', '))}</code>`] as [string, string]]
                     : []),
                 ]),
-            ['State', e(t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused')],
-            ['Origin', e(t.origin === 'recipe' ? 'From a Recipe, looked after by Recued' : 'Manual')],
-            ['Last fired', e(formatDateTime(t.last_fired_at))],
             ...(fact === null && t.fields && t.fields.length > 0
               ? [['Fields', e(t.fields.join(' / '))] as [string, string]]
               : []),
-          ])}
-          ${t.last_error ? `<p class="automation-row-error">${e(t.last_error)}</p>` : ''}
-          ${pollStatusBlock(t)}
+          ]))}
+          </div>
+          ${poll ? section('Checking for changes', poll) : ''}
+          ${section('Controls', `
           <div class="automation-row-actions">
             <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:event_trigger:${!t.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(t.trigger_id)}"${mutationBusyAttrs('event_trigger', t.trigger_id, 'toggle')}>${e(mutationToggleLabel('event_trigger', t.trigger_id, t.enabled ? 'Pause' : 'Resume', !t.enabled))}</button>
             ${t.preapproval ? renderPreapprovalButtons('event_trigger', t.trigger_id, t.preapproval.proposal_id)
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && t.lifecycle_revision !== undefined
                   && canPreapprove('next_trigger')
                 ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:event_trigger" ${ROW_ID_ATTR}="${e(t.trigger_id)}">Look at the next run</button>` : ''}
-            ${t.origin === 'recipe' ? '' : renderDeleteButtons('event_trigger', t.trigger_id)}
-          </div>`;
+            ${t.origin === 'recipe' ? '' : `<span class="automation-detail-remove">${renderDeleteButtons('event_trigger', t.trigger_id)}</span>`}
+          </div>`)}`;
       }
     } else {
       const a = autoRun.find((x) => autoRunId(x) === detailId);
       if (a !== undefined) {
         const tripped = a.enabled && a.auto_disabled;
         body = `
-          ${heading(`<a href="${e(recipeHref(a.recipe_id))}">${e(a.recipe_name ?? a.recipe_id)}</a>`)}
-          ${facts([
+          ${header('Auto-run', `<a href="${e(recipeHref(a.recipe_id))}">${e(a.recipe_name ?? a.recipe_id)}</a>`, { label: !a.enabled ? 'Paused' : tripped ? `Tripped (${a.consecutive_failures} failures)` : 'On', armed: !a.enabled ? 'off' : tripped ? 'tripped' : 'on' })}
+          <div class="automation-detail-grid">
+          ${section('Timing', facts([
             ['Cadence', e(`every ${formatInterval(a.interval_ms)}${a.dynamic ? ' (dynamic)' : ''}`)],
-            ['State', e(!a.enabled ? 'Paused' : tripped ? `Tripped (${a.consecutive_failures} failures)` : 'On')],
             ['Next run', e(a.enabled && !a.auto_disabled ? formatDateTime(a.next_run_at) : '—')],
+          ]))}
+          ${section('Recent activity', `${facts([
             ['Last finished', e(formatDateTime(a.last_finished_at))],
           ])}
-          ${a.last_failure_reason ? `<p class="automation-row-error">${e(a.last_failure_reason)}</p>` : ''}
+          ${a.last_failure_reason ? `<p class="automation-row-error">${e(a.last_failure_reason)}</p>` : ''}`)}
+          </div>
+          ${section('Controls', `
           <div class="automation-row-actions">
             ${a.enabled && !a.auto_disabled && Object.keys(a.variables ?? {}).length > 0
               ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(autoRunId(a))}"${mutationBusyAttrs('auto_run', autoRunId(a), 'configure')}>Configure</button>`
@@ -3036,7 +3222,7 @@ export const bootstrapAutomationRoute = (
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && a.lifecycle_revision !== undefined && !a.auto_disabled
                   && (a.dish_id ?? null) !== null && canPreapprove('next_auto_run')
                 ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(autoRunId(a))}">Look at the next run</button>` : ''}
-          </div>`;
+          </div>`)}`;
       }
     }
     return `

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SituationFact, SituationQuery } from '@recued/contracts';
+import { SITUATION_TOOL_MAX_ITEMS, type SituationFact, type SituationQuery } from '@recued/contracts';
 import { createSituationQuery, SituationScanBoundError, type SituationSource } from '../situations/query.js';
 
 const DAY = 86_400_000;
@@ -122,13 +122,31 @@ describe('D-325 shared situation query', () => {
       { owner: false, spheres: ['professional'] }).run();
     expect(items(result).map(item => item.ref.id)).toEqual(['work']); expect(result.omitted).toBe(0);
   });
-  it('caps inferred items at one per cluster, items at three, and clusters at five', async () => {
+  it('caps inferred items at one per cluster everywhere, and items at three and clusters at five on the owner\'s surfaces', async () => {
     const facts = [0, 1, 2, 3, 4].map(index => fact(`shared-${index}`, { basis: 'inferred', subjects: [{ collection: 'asset', id: 'shared' }] }));
     for (let index = 0; index < 12; index += 1) facts.push(fact(`separate-${index}`));
-    const result = await setup(facts).run({ limit_clusters: 100, limit_items: 100 });
-    expect(result.clusters).toHaveLength(5);
-    expect(result.clusters.every(cluster => cluster.items.length <= 3 && cluster.items.filter(item => item.basis === 'inferred').length <= 1)).toBe(true);
-    expect(result.omitted + items(result).length).toBe(17);
+    const inferredOnce = (result: Awaited<ReturnType<ReturnType<typeof setup>['run']>>) =>
+      result.clusters.every(cluster => cluster.items.filter(item => item.basis === 'inferred').length <= 1);
+    // A tool caller asked a question and gets every match: all 13 groups, the shared one with its one inferred item.
+    const tool = await setup(facts).run({ limit_clusters: 100, limit_items: 100 });
+    expect(tool.clusters).toHaveLength(13); expect(inferredOnce(tool)).toBe(true);
+    expect(tool.omitted + items(tool).length).toBe(17);
+    const today = await setup(facts).run({ surface: 'today', limit_clusters: 100, limit_items: 100 });
+    expect(today.clusters).toHaveLength(5);
+    expect(today.clusters.every(cluster => cluster.items.length <= 3)).toBe(true); expect(inferredOnce(today)).toBe(true);
+    expect(today.omitted + items(today).length).toBe(17);
+  });
+  it('returns at most SITUATION_TOOL_MAX_ITEMS items a tool call, best first, and counts the rest', async () => {
+    // One group of 110 and 40 alone: the guard cuts the group and counts what it cut there too.
+    const group = Array.from({ length: 110 }, (_, index) => fact(`trip-${String(index).padStart(3, '0')}`, { consequence: 'floor', subjects: [{ collection: 'asset', id: 'trip' }] }));
+    const alone = Array.from({ length: 40 }, (_, index) => fact(`alone-${index}`));
+    const result = await setup([...group, ...alone]).run();
+    expect(items(result)).toHaveLength(SITUATION_TOOL_MAX_ITEMS);
+    expect(result.clusters).toHaveLength(1); expect(result.clusters[0]!.omitted).toBe(10);
+    expect(result.omitted).toBe(50);
+    // A caller may still ask for fewer.
+    const fewer = await setup([...group, ...alone]).run({ limit_items: 2, limit_clusters: 3 });
+    expect(fewer.clusters.map(cluster => cluster.items.length)).toEqual([2, 1, 1]);
   });
   it('clusters overlapping dates only with a real shared person or normalized place', async () => {
     const result = await setup([fact('a', { place: { key: 'city:las-vegas', name: 'LV' } }), fact('b', { place: { key: 'city:las-vegas', name: 'Las Vegas' } }), fact('c')]).run();

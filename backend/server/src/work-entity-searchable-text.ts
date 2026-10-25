@@ -11,6 +11,9 @@
  *  `title + body` and a matcher reading `title` alone diverge silently, and the
  *  only symptom is a record that is findable from one Source and not another.
  *
+ *  An asset is also matched by its holder's name, which a search adds for the
+ *  caller that may read it (`assetSearchableText`) and the index never holds.
+ *
  *  ⚠ The long-text field is per-kind and `booking` HAS NONE — its `title` is a
  *  short label and it carries no prose column. That is the same reasoning
  *  `workEntityLongText` records in `work-entity-read-resolution.ts`; this module
@@ -97,6 +100,20 @@ export const workEntitySearchableText = (
   // must not answer a phrase query for "ring 04 notes").
   return parts.join('\n');
 };
+
+/** An asset's text with its holder's name, so "Maya Chen passport" finds the
+ *  asset named "Passport" that Maya Chen holds.
+ *
+ *  ⛔ THE NAME IS ADDED WHEN A SEARCH RUNS, NEVER INDEXED. Whether a caller may
+ *  know who holds an asset is decided per caller (contact grants, the contact's
+ *  sphere), and an index answers every caller alike: a name in it would let a
+ *  search say who holds what to a door that may not read contacts. A renamed
+ *  contact would also leave the index holding the old name. */
+export const assetSearchableText = (
+  asset: object,
+  holderName: string,
+): string => [workEntitySearchableText('asset', asset as Readonly<Record<string, unknown>>), holderName]
+  .filter((part) => part.length > 0).join('\n');
 
 /** The FTS key for one record. Dotted so `packages/fts`'s `scope: '<kind>.*'`
  *  selects exactly one kind — its prefix match is over `<prefix>.`, so an

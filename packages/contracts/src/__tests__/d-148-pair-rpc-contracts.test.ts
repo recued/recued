@@ -31,6 +31,7 @@ import {
 const PAIR_METHODS = [
   'pair.list',
   'pair.revoke',
+  'pair.rename',
   'pair.registerRecoveryKey',
 ] as const;
 
@@ -45,7 +46,7 @@ describe('D-148 pair.* rpc contracts', () => {
     }
   });
 
-  it('SERVER_RPC_METHODS enumerates the three surviving pair.* rpcs', () => {
+  it('SERVER_RPC_METHODS enumerates the surviving pair.* rpcs', () => {
     for (const method of PAIR_METHODS) {
       expect(SERVER_RPC_METHODS).toContain(method);
     }

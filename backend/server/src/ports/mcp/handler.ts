@@ -1,12 +1,15 @@
 /** D-148 P6 § A.6 — MCP port handler.
  *
  *  The MCP dispatch lives at `mcp-server.ts` (stdio transport). P6
- *  adds an HTTP transport on the dedicated MCP port (default 8444)
- *  with bearer auth + per-token rate limit (60 rpc/min — § P6
- *  acceptance line 2153). MCP carries a structurally different risk
- *  class (AI-agent ingress, prompt-injection surface) so the port
- *  is gated behind the explicit `public_mcp_acknowledged` sub-toggle
- *  per § A.7 — until then it stays LAN-bound.
+ *  adds an HTTP transport with bearer auth + per-token rate limit
+ *  (60 rpc/min — § P6 acceptance line 2153), served at `/mcp` on the
+ *  server's own port: the path router hands every `/mcp/*` URL to this
+ *  handler. (P6 first gave it a dedicated port, default 8444; that port
+ *  and its `mcp_port` setting were removed 2026-10-09.) MCP carries a
+ *  structurally different risk class (AI-agent ingress, prompt-injection
+ *  surface) so making `/mcp` public is gated behind the explicit
+ *  `public_mcp_acknowledged` sub-toggle per § A.7 — until then it stays
+ *  LAN-bound.
  *
  *  Per-rpc dispatch shape: each request is a single JSON-RPC 2.0
  *  envelope `{ jsonrpc: '2.0', id, method, params? }`. The handler
@@ -19,10 +22,12 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { LifecycleState } from '@recued/contracts';
 import { extractBearerToken } from '../common/bearer.js';
 import { writeJson } from '../common/respond.js';
 import { createRateLimiter, type RateLimiter } from '../common/rate-limit.js';
 import {
+  MCP_ACCEPTED_LEGACY_PROTOCOL_VERSIONS,
   MCP_HEADER_MISMATCH,
   MCP_MISSING_REQUIRED_CLIENT_CAPABILITY,
   MCP_MODERN_PROTOCOL_VERSION,
@@ -71,6 +76,20 @@ export const MCP_MAX_IN_FLIGHT_GLOBAL = 64;
 export const MCP_MAX_IN_FLIGHT_PER_TOKEN = 16;
 export const MCP_MAX_LEGACY_SSE_SESSIONS = 64;
 export const MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN = 4;
+/** A `GET /mcp` is answered with a legacy SSE session, but not every caller
+ *  is a legacy client: a Streamable HTTP client opens the same `GET` as its
+ *  optional server stream and ignores the endpoint it is given. A legacy
+ *  client POSTs `initialize` to its endpoint the moment it reads it, so a
+ *  session that has carried no request this long is IDLE: it stops holding
+ *  one of its key's `MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN` slots, where four
+ *  modern clients on one key used to lock that key's legacy clients out. The
+ *  stream itself is kept: a legacy client whose stream dropped reconnects
+ *  with the same `GET` and may stay quiet for a while. */
+export const MCP_LEGACY_SSE_IDLE_AFTER_MS = 30_000;
+/** Idle sessions one key may hold. Past it, the key's oldest idle session is
+ *  closed to make room (its client reconnects), so idle streams never refuse
+ *  a client and one key cannot fill `MCP_MAX_LEGACY_SSE_SESSIONS` with them. */
+export const MCP_MAX_IDLE_LEGACY_SSE_SESSIONS_PER_TOKEN = 16;
 /** `subscriptions/listen` feeds. Counted SEPARATELY from the legacy SSE
  *  sessions above: they are different resources on different eras, and sharing
  *  a budget would let a deprecated-transport client starve the modern one. */
@@ -199,6 +218,12 @@ export interface McpPortHandlerOptions {
    * an Origin header must name the request Host; non-browser clients normally
    * omit Origin and remain unaffected. */
   allowed_origins?: readonly string[];
+  /** The server's lifecycle. Until it is `running`, every MCP request but
+   *  `/health` is answered 503, as the web app's RPC answers `not_ready`. */
+  lifecycle_state?: () => LifecycleState;
+  /** Clock for `MCP_LEGACY_SSE_IDLE_AFTER_MS`. Defaults to `Date.now`; tests
+   *  inject one. */
+  now?: () => number;
 }
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
@@ -265,9 +290,13 @@ export const createMcpPortHandler = (
   const allowedOrigins = options.allowed_origins === undefined
     ? undefined
     : new Set(options.allowed_origins.map((origin) => new URL(origin).origin));
+  const now = options.now ?? Date.now;
   const legacySseSessions = new Map<string, {
     tokenKey: string;
     response: ServerResponse;
+    opened_at: number;
+    /** A request has arrived on this session's endpoint. */
+    carried: boolean;
   }>();
   /** Open `subscriptions/listen` feeds, for the caps. */
   const listenStreams = new Set<{ tokenKey: string; response: ServerResponse }>();
@@ -416,6 +445,18 @@ export const createMcpPortHandler = (
       return;
     }
 
+    // What the rest of the boot wires (the source write executor, read-through
+    // reads, schedulers) is not there until the server is `running`: a call
+    // would get a refused or reduced answer. An AI app reconnecting right after
+    // a restart is told to retry instead.
+    const state = options.lifecycle_state?.();
+    if (state !== undefined && state !== 'running') {
+      writeJson(res, 503, { error: state === 'booting'
+        ? { code: 'not_ready', message: 'The server is starting; retry shortly.' }
+        : { code: 'draining', message: 'The server is stopping.' } }, { 'retry-after': '1' });
+      return;
+    }
+
     // D-148 § A.6 line 820 — token-scoped catalog route. Same
     // bearer + rate-limit gate as POST so the per-token quota
     // applies uniformly across rpc + catalog discovery.
@@ -453,14 +494,29 @@ export const createMcpPortHandler = (
       const token = await gate(req, res);
       if (token === null) return;
       const tokenKey = limiterTokenKey(token);
+      const openedAt = now();
       let tokenSessions = 0;
-      for (const session of legacySseSessions.values()) {
-        if (session.tokenKey === tokenKey) tokenSessions += 1;
+      // Oldest first: a Map iterates in insertion order.
+      const idleTokenSessions: string[] = [];
+      for (const [id, session] of legacySseSessions) {
+        if (session.tokenKey !== tokenKey) continue;
+        if (!session.carried && openedAt - session.opened_at >= MCP_LEGACY_SSE_IDLE_AFTER_MS) {
+          idleTokenSessions.push(id);
+        } else {
+          tokenSessions += 1;
+        }
       }
-      if (
-        legacySseSessions.size >= MCP_MAX_LEGACY_SSE_SESSIONS
-        || tokenSessions >= MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN
-      ) {
+      if (tokenSessions >= MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN) {
+        writeOverloaded(res, 'Too many legacy MCP SSE sessions are already open.');
+        return;
+      }
+      if (idleTokenSessions.length >= MCP_MAX_IDLE_LEGACY_SSE_SESSIONS_PER_TOKEN) {
+        const oldest = idleTokenSessions[0]!;
+        const idle = legacySseSessions.get(oldest)!;
+        legacySseSessions.delete(oldest);
+        idle.response.end();
+      }
+      if (legacySseSessions.size >= MCP_MAX_LEGACY_SSE_SESSIONS) {
         writeOverloaded(res, 'Too many legacy MCP SSE sessions are already open.');
         return;
       }
@@ -468,6 +524,8 @@ export const createMcpPortHandler = (
       legacySseSessions.set(sessionId, {
         tokenKey,
         response: res,
+        opened_at: openedAt,
+        carried: false,
       });
       res.statusCode = 200;
       res.setHeader('content-type', 'text/event-stream');
@@ -508,6 +566,7 @@ export const createMcpPortHandler = (
       writeJson(res, 404, { error: { code: 'not_found' } });
       return;
     }
+    if (legacySession !== undefined) legacySession.carried = true;
     const release = admitDispatch(token, res);
     if (!release) return;
     try {
@@ -539,10 +598,26 @@ export const createMcpPortHandler = (
       const headerProtocolVersion = Array.isArray(rawProtocolHeader)
         ? rawProtocolHeader[0]
         : rawProtocolHeader;
-      if (
-        bodyProtocolVersion !== undefined
-        || headerProtocolVersion !== undefined
-      ) {
+      // A legacy-era client sends this header too. Since 2025-06-18 it names
+      // the revision `initialize` settled on, on every later request, and the
+      // official SDKs send it whichever revision that was. Ours always settles
+      // on 2024-11-05, so that header over a body with no `_meta` declaration
+      // is a legacy request, not a modern one missing its `_meta`. Reading it
+      // as modern refused every SDK-built client right after its handshake
+      // (Cline 3.0.73, 2026-10-24), on both HTTP transports.
+      // Any legacy-era revision reads as legacy here, not only the one we
+      // settle on: a client naming its own (off-spec, but a client that did
+      // would otherwise be refused in words about `_meta` it cannot act on)
+      // gets the same answers, because the methods this door serves kept one
+      // wire shape through 2025-11-25. The modern revision without `_meta`,
+      // and dates we do not know, are still refused below.
+      const legacyRequest = bodyProtocolVersion === undefined
+        && (
+          headerProtocolVersion === undefined
+          || (MCP_ACCEPTED_LEGACY_PROTOCOL_VERSIONS as readonly string[])
+            .includes(headerProtocolVersion)
+        );
+      if (!legacyRequest) {
         const responseId = envelope !== null
           && typeof envelope === 'object'
           && !Array.isArray(envelope)
@@ -630,6 +705,10 @@ export const createMcpPortHandler = (
       // Placed AFTER every protocol validation above and BEFORE the dispatch:
       // a listen request must satisfy the same era, header and `_meta` rules as
       // any other modern request, and only then take a different response path.
+      // A legacy-era request skipped those rules, so it never takes this path:
+      // it falls through to the dispatcher, which answers it as the unknown
+      // method `subscriptions/listen` is in that era. (Until 2026-10-24 one
+      // with no header and no `_meta` opened a stream here.)
       //
       // ⚠ THE IN-FLIGHT SLOT IS RELEASED WHEN THIS HANDLER RETURNS, NOT WHEN
       // THE STREAM CLOSES — the `finally` below runs on the `return` here while
@@ -641,7 +720,11 @@ export const createMcpPortHandler = (
         && !Array.isArray(envelope)
         ? (envelope as { method?: unknown }).method
         : undefined;
-      if (subscriptions !== undefined && envelopeMethod === 'subscriptions/listen') {
+      if (
+        subscriptions !== undefined
+        && !legacyRequest
+        && envelopeMethod === 'subscriptions/listen'
+      ) {
         const tokenKey = limiterTokenKey(token);
         let tokenStreams = 0;
         for (const open of listenStreams) {

@@ -40,7 +40,7 @@ export interface LogBootBannerOptions {
 const HOSTED_WEBCLIENT_URL = 'https://app.recued.com';
 
 /** The banner advertises LOOPBACK, never the LAN IP, for both the local
- *  webclient URL and the Server URL typed into it.
+ *  webclient URL and the server address typed into it.
  *
  *  Not a display choice — a correctness one. A loopback origin is a SECURE
  *  CONTEXT, so `crypto.subtle` exists and the webclient boots; `http://<lan-ip>`
@@ -135,7 +135,7 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
   //
   // ⛔ THE LOCAL URL LEADS, AND THE ORDER IS THE POINT. Listing the hosted app
   // first read like the happy path and was not: a beginner picks it, then pastes
-  // the LOOPBACK Server URL printed below into it, and that pairing is the one
+  // the LOOPBACK server address printed below into it, and that pairing is the one
   // combination that half-works. An `https://` page opening a `ws://` socket is
   // refused by the browser before a byte leaves it — Chrome permits it to
   // loopback, Safari and Firefox do not — and what the client sees is close 1006,
@@ -174,8 +174,8 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
 ${webclientTargets}
 
   Then, in the webclient:
-  1. Server URL:    ${localBase}
-     Pairing code:  ${pairingCode ? `${pairingCode}   (expires in ${pairTtl})` : `none live ${EM_DASH} run \`recued pair\` to mint one`}
+  1. Server address: ${localBase}
+     Pairing code:   ${pairingCode ? `${pairingCode}   (expires in ${pairTtl})` : `none live ${EM_DASH} run \`recued pair\` to mint one`}
   2. Choose "Generate a new one" to create your 24-word recovery key
      and write it down ${EM_DASH} or enter an existing key to re-pair.
 
@@ -184,7 +184,7 @@ ${otherDeviceBlock}`
     : pairingCode ? `
   Add a browser ${EM_DASH} ${openLabel.toLowerCase()}
 ${webclientTargets}
-  Then enter Server URL ${localBase} and the pairing code:
+  Then enter the server address ${localBase} and the pairing code:
   Pairing code: ${pairingCode}  (expires in ${pairTtl})
 ${otherDeviceBlock}` : '';
 

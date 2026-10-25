@@ -157,6 +157,31 @@ export interface CollectionSearchGroup {
   source_freshness: CollectionSourceFreshness;
 }
 
+/** "Did you mean" for a universal search: the query with each word that NO
+ *  searched store holds replaced by the closest word one of them does.
+ *
+ *  🔑 BUILT ONLY FROM THE OWNER'S OWN WORDS — each store's index, never a
+ *  dictionary. The search it answers is a private name typed one letter off,
+ *  and only the warehouse knows how the owner's client spells it.
+ *
+ *  ⛔ OFFERED, NEVER APPLIED. The groups beside it answer the query as typed;
+ *  this is a second query the owner may choose to run. A typed word some record
+ *  holds is never "corrected", and a store that cannot check its words makes
+ *  the server offer nothing rather than risk correcting the owner away from the
+ *  record that store holds. */
+export interface CollectionSearchDidYouMean {
+  /** The corrected query: each replaced word where it stood, the rest as typed. */
+  query: string;
+  corrections: Array<{
+    /** As the owner typed it. */
+    typed: string;
+    /** As a record writes it. */
+    word: string;
+    /** How many records hold `word`, across every store searched. */
+    records: number;
+  }>;
+}
+
 /** ⛔⛔ `snippet` WAS RETIRED FROM THIS SHAPE (2026-08-28). It was an FTS5
  *  `snippet()` — N tokens centred on the query terms — and every consumer that
  *  mattered read it as THE RECORD. A row could be retrieved perfectly and still

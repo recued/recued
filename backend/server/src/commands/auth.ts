@@ -32,9 +32,9 @@ export type UnlockOutcome =
  *  26.10.6 against a locked realm: `auth.state` unlocked, the sync loops
  *  resumed). The recovery key IS the credential there, as here.
  *
- *  No `instanceId` is sent, so no device joins the Devices roster. The
- *  route still mints a client token; it is dropped unread, so its secret
- *  exists only in this process's memory. */
+ *  No `instanceId` is sent, so no device joins the Devices roster and the
+ *  route issues no sign-in: it answers 200 once the key has unlocked the
+ *  realm (a sign-in with no device would be one nobody could see or revoke). */
 export const unlockWithRecoveryKey = async (input: {
   readonly port: number;
   readonly recoveryKey: string;

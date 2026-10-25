@@ -355,20 +355,15 @@ const segmentCjk = (term: string): readonly string[] => {
   return parts.length > 0 ? parts : [term];
 };
 
-/** Distinctive terms from the owner's message, in first-appearance order.
- *  Lowercased, de-duplicated, stripped of punctuation, and filtered against the
- *  corpus stoplist.
- *
- *  ⛔ A PURE-DIGIT TERM IS KEPT. It used to be dropped, justified as "`2024`
- *  indexes nothing" — but that reasoned from the WEAKEST number to a rule over
- *  all of them. Measured, the drop cost `invoice 88421` its `88421` and
- *  `order 4471193` its `4471193`: in both the number is the single most
- *  distinctive thing in the sentence, and the index kept only the generic noun
- *  beside it. Commonness is already handled downstream by
- *  `CHAT_INDEX_TOO_COMMON_CAP`, which is where a year like `2024` dies on its
- *  own evidence rather than on its shape. */
-export const distinctiveTerms = (userMessage: string): readonly string[] => {
-  const seen = new Set<string>();
+/** Where the line's optional framing (`RECUED_CHAT_INDEX_FRAMING`) begins; it
+ *  trails the last entry. The PII egress splits it off before reading entries. */
+export const CHAT_INDEX_FRAMING_MARK = ' — partial: ';
+
+/** Every word the index could take from `text`, in order: lowercased, split,
+ *  trimmed and CJK-segmented exactly as `distinctiveTerms` reads a message, before
+ *  its length floors and stoplist. The PII egress reads the owner's message AS SENT
+ *  with it, so an index term and a word of the message compare as the same word. */
+export const chatIndexWords = (text: string): string[] => {
   const out: string[] = [];
   // ⛔⛔ UNICODE-AWARE, AND IT WAS NOT. The split was `[^a-z0-9'-]+`, so every
   // non-ASCII character acted as a SEPARATOR — which does not merely skip
@@ -388,25 +383,44 @@ export const distinctiveTerms = (userMessage: string): readonly string[] => {
   // The Indic and Semitic cases returned NOTHING AT ALL: each fragment fell
   // under the Latin minimum length, so the index was silently inert for those
   // owners rather than merely degraded — and inert while shipped ON.
-  outer: for (const raw of userMessage.toLowerCase().split(/[^\p{L}\p{N}\p{M}'-]+/u)) {
+  for (const raw of text.toLowerCase().split(/[^\p{L}\p{N}\p{M}'-]+/u)) {
     const trimmed = raw.replace(/^[''-]+|[''-]+$/gu, '');
-    for (const term of segmentCjk(trimmed)) {
-      // ⚠ CJK writes words without spaces, so a script-blind minimum length
-      // discards real terms: a 2-character Han/Kana/Hangul run is a word. Latin
-      // keeps the higher floor, where short tokens are mostly function words.
-      const floor = SHORT_WORD_SCRIPT.test(term)
-        ? CJK_MIN_TERM_LENGTH
-        : ABJAD_SCRIPT.test(term) ? ABJAD_MIN_TERM_LENGTH : MIN_TERM_LENGTH;
-      if (term.length < floor) continue;
-      // Letters OR digits — see the note above on pure-digit terms. This drops
-      // only what carries neither, e.g. a token trimmed down to punctuation.
-      if (!/[\p{L}\p{N}]/u.test(term)) continue;
-      if (CHAT_INDEX_GENERIC_WORDS.has(term)) continue;
-      if (seen.has(term)) continue;
-      seen.add(term);
-      out.push(term);
-      if (out.length >= CHAT_INDEX_MAX_TERMS) break outer;
-    }
+    for (const term of segmentCjk(trimmed)) if (term.length > 0) out.push(term);
+  }
+  return out;
+};
+
+/** Distinctive terms from the owner's message, in first-appearance order.
+ *  Lowercased, de-duplicated, stripped of punctuation, and filtered against the
+ *  corpus stoplist.
+ *
+ *  ⛔ A PURE-DIGIT TERM IS KEPT. It used to be dropped, justified as "`2024`
+ *  indexes nothing" — but that reasoned from the WEAKEST number to a rule over
+ *  all of them. Measured, the drop cost `invoice 88421` its `88421` and
+ *  `order 4471193` its `4471193`: in both the number is the single most
+ *  distinctive thing in the sentence, and the index kept only the generic noun
+ *  beside it. Commonness is already handled downstream by
+ *  `CHAT_INDEX_TOO_COMMON_CAP`, which is where a year like `2024` dies on its
+ *  own evidence rather than on its shape. */
+export const distinctiveTerms = (userMessage: string): readonly string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const term of chatIndexWords(userMessage)) {
+    // ⚠ CJK writes words without spaces, so a script-blind minimum length
+    // discards real terms: a 2-character Han/Kana/Hangul run is a word. Latin
+    // keeps the higher floor, where short tokens are mostly function words.
+    const floor = SHORT_WORD_SCRIPT.test(term)
+      ? CJK_MIN_TERM_LENGTH
+      : ABJAD_SCRIPT.test(term) ? ABJAD_MIN_TERM_LENGTH : MIN_TERM_LENGTH;
+    if (term.length < floor) continue;
+    // Letters OR digits — see the note above on pure-digit terms. This drops
+    // only what carries neither, e.g. a token trimmed down to punctuation.
+    if (!/[\p{L}\p{N}]/u.test(term)) continue;
+    if (CHAT_INDEX_GENERIC_WORDS.has(term)) continue;
+    if (seen.has(term)) continue;
+    seen.add(term);
+    out.push(term);
+    if (out.length >= CHAT_INDEX_MAX_TERMS) break;
   }
   return out;
 };
@@ -698,7 +712,7 @@ export const buildChatIndexContext = async (
   // in the way this framing assumes, which is why the framing stays OFF by
   // default and unproven. A claim of impossibility needs a test, not a reading.
   return process.env.RECUED_CHAT_INDEX_FRAMING === '1'
-    ? `${body} — partial: only some stores are indexed, and a term may also be `
+    ? `${body}${CHAT_INDEX_FRAMING_MARK}only some stores are indexed, and a term may also be `
       + 'in ones not named here, including this conversation\'s own history. '
       + 'Search whatever the question calls for.'
     : body;

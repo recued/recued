@@ -72,6 +72,10 @@ export const PAIR_SERVER_ERROR_COPY = {
     'Your server said that was too big. Check what you typed. A recovery key is 24 words.',
   internal_error:
     'Your server hit an internal error while pairing. Check its logs, then try again.',
+  // Past its limit on failed checks the server refuses for a minute without
+  // checking — the code typed was not looked at, so it was not used up.
+  too_many_attempts:
+    'Your server has had too many wrong codes or recovery keys, so it is not checking any for a minute. Wait a minute, then try again.',
 } as const satisfies Readonly<Record<string, string>>;
 
 /** The codes above, as a type. Clients DERIVE their server-error union

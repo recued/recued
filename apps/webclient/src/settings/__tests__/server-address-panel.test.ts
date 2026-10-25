@@ -23,6 +23,7 @@ import {
   SERVER_ADDRESS_SAVE_BTN_ATTR,
   SERVER_ADDRESS_CHECK_BTN_ATTR,
   SERVER_ADDRESS_EDIT_BTN_ATTR,
+  SERVER_ADDRESS_INPUT_ATTR,
 } from '../server-address-panel.js';
 
 // ── Fake DOM ────────────────────────────────────────────────────────────
@@ -151,7 +152,22 @@ describe('Settings → Account & Servers — changing a server address', () => {
     const { panel, host, retarget } = mount();
     await panel.refresh();
     expect(findIn(rowEl(host, 'p1'), SERVER_ADDRESS_EDIT_BTN_ATTR)).toBeDefined();
+    expect(walk(rowEl(host, 'p1')).find(el => el.tagName === 'H3')?.textContent).toBe('Home');
+    expect(walk(rowEl(host, 'p1')).find(el => el.tagName === 'CODE')?.textContent).toBe(OLD);
     expect(panel.rowState('p1')).toBe('idle');
+    expect(retarget).not.toHaveBeenCalled();
+  });
+
+  it('gives the address editor a visible associated label and keeps the saved address visible', async () => {
+    const { panel, host, retarget } = mount();
+    await panel.refresh();
+    panel.clickEdit('p1');
+    const row = rowEl(host, 'p1');
+    const input = findIn(row, SERVER_ADDRESS_INPUT_ATTR)!;
+    expect(input.parent?.tagName).toBe('LABEL');
+    expect(input.parent?.children.find(el => el.tagName === 'SPAN')?.textContent).toBe('New server address');
+    expect(input.value).toBe(OLD);
+    expect(walk(row).find(el => el.tagName === 'CODE')?.textContent).toBe(OLD);
     expect(retarget).not.toHaveBeenCalled();
   });
 

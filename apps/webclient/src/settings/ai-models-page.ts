@@ -6,6 +6,7 @@
  */
 
 import { totalRecord } from '@recued/contracts';
+import { AI_MODELS_WORKSPACE_STYLES } from './ai-models-workspace-styles.js';
 import type { ServerLlmUsageResponse } from '@recued/contracts';
 import {
   resolveFreePoolDataUse, freePoolDataUseNotice, suggestFreePoolEntryId,
@@ -993,6 +994,13 @@ const appendHeading = (
   heading.textContent = text;
   parent.appendChild(heading);
   return heading;
+};
+
+const appendLayoutGroup = (doc: Document, parent: HTMLElement, className: string): HTMLElement => {
+  const group = doc.createElement('div');
+  group.className = className;
+  parent.appendChild(group);
+  return group;
 };
 
 const appendButton = (
@@ -2010,8 +2018,9 @@ export const mountAiModelsPage = (
     );
     // The provider's NAME is free text and display only; it is offered only
     // when this server keeps it (an older one would accept and drop it).
+    const fieldGrid = appendLayoutGroup(doc, card, 'ai-models-fields');
     const providerName = slotProviderNameSupported
-      ? appendInput(doc, card, 'Provider', draft.providerName, [
+      ? appendInput(doc, fieldGrid, 'Provider', draft.providerName, [
         ['placeholder', 'Groq, OpenRouter, my Ollama…'],
         ['maxlength', '64'],
         [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider-name')],
@@ -2020,22 +2029,22 @@ export const mountAiModelsPage = (
       : null;
     // The PROTOCOL is a choice: it picks the adapter, so free text here was
     // refused at save for anything but the four ids the server speaks.
-    const provider = appendProtocolSelect(doc, card, SLOT_PROTOCOLS, draft.provider, [
+    const provider = appendProtocolSelect(doc, fieldGrid, SLOT_PROTOCOLS, draft.provider, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
       ['aria-label', `${title} protocol`],
     ]);
-    const model = appendInput(doc, card, 'Model', draft.model, [
+    const model = appendInput(doc, fieldGrid, 'Model', draft.model, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('model')],
       ['aria-label', `${title} model`],
     ]);
-    const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+    const baseUrl = appendInput(doc, fieldGrid, 'Base URL', draft.baseUrl, [
       ['placeholder', 'Needed for OpenAI-compatible'],
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('base-url')],
       ['aria-label', `${title} base URL`],
     ]);
     const apiKey = appendInput(
       doc,
-      card,
+      fieldGrid,
       'API key',
       draft.apiKey,
       [
@@ -2053,7 +2062,7 @@ export const mountAiModelsPage = (
     // reset (enforced in the LLM match layer).
     const budget = appendInput(
       doc,
-      card,
+      fieldGrid,
       'Daily token budget',
       draft.budget,
       [
@@ -2066,7 +2075,7 @@ export const mountAiModelsPage = (
     budget.type = 'number';
     const contextWindow = appendInput(
       doc,
-      card,
+      fieldGrid,
       'How much it can hold at once',
       draft.contextWindow,
       [
@@ -2117,9 +2126,10 @@ export const mountAiModelsPage = (
       baseUrl: baseUrl.value,
       apiKey: apiKey.value,
     });
+    const actions = appendLayoutGroup(doc, card, 'ai-models-actions');
     const save = appendButton(
       doc,
-      card,
+      actions,
       savingThis ? 'Saving slot…' : 'Save slot',
       () => {
         if (byokSlotSavePendingKey !== null || slotClearPendingKey !== null) return;
@@ -2161,7 +2171,7 @@ export const mountAiModelsPage = (
     if (savingThis) save.setAttribute('aria-busy', 'true');
     const clear = appendButton(
       doc,
-      card,
+      actions,
       'Clear slot',
       () => {
         if (
@@ -2186,7 +2196,7 @@ export const mountAiModelsPage = (
       clear.setAttribute('aria-disabled', 'true');
     }
     renderProbeControls(
-      card,
+      actions,
       slotKey,
       title,
       { kind: 'slot', slot_key: slotKey },
@@ -2425,8 +2435,9 @@ export const mountAiModelsPage = (
     // Name and protocol, as on a chat slot. This field took free text the
     // server refused for anything but its four protocol ids, one of which
     // (Anthropic) has no embedding model.
+    const fieldGrid = appendLayoutGroup(doc, card, 'ai-models-fields');
     const providerName = slotProviderNameSupported
-      ? appendInput(doc, card, 'Provider', draft.providerName, [
+      ? appendInput(doc, fieldGrid, 'Provider', draft.providerName, [
         ['placeholder', 'Mistral, my Ollama…'],
         ['maxlength', '64'],
         [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider-name'],
@@ -2435,7 +2446,7 @@ export const mountAiModelsPage = (
       : null;
     const provider = appendProtocolSelect(
       doc,
-      card,
+      fieldGrid,
       DEDICATED_SLOT_PROTOCOLS,
       draft.provider,
       [
@@ -2445,7 +2456,7 @@ export const mountAiModelsPage = (
     );
     const model = appendInput(
       doc,
-      card,
+      fieldGrid,
       'Model',
       draft.model,
       [
@@ -2454,14 +2465,14 @@ export const mountAiModelsPage = (
         ['aria-label', 'Embeddings slot model'],
       ],
     );
-    const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+    const baseUrl = appendInput(doc, fieldGrid, 'Base URL', draft.baseUrl, [
       ['placeholder', 'Needed for OpenAI-compatible'],
       [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'base-url'],
       ['aria-label', 'Embeddings slot base URL'],
     ]);
     const apiKey = appendInput(
       doc,
-      card,
+      fieldGrid,
       'API key',
       draft.apiKey,
       [
@@ -2504,9 +2515,10 @@ export const mountAiModelsPage = (
       },
       DEDICATED_SLOT_PROTOCOLS,
     );
+    const actions = appendLayoutGroup(doc, card, 'ai-models-actions');
     const save = appendButton(
       doc,
-      card,
+      actions,
       embeddingsSlotSavePending ? 'Saving slot…' : 'Save slot',
       () => {
         if (embeddingsSlotSavePending || slotClearPendingKey !== null) return;
@@ -2532,7 +2544,7 @@ export const mountAiModelsPage = (
     );
     const clear = appendButton(
       doc,
-      card,
+      actions,
       'Clear slot',
       () => {
         if (embeddingsSlotSavePending || slotClearPendingKey !== null) return;
@@ -2556,7 +2568,7 @@ export const mountAiModelsPage = (
     // `embed` call through the embeddings registry, not a chat completion.
     // What comes back is the vector width, not the chat capability facts.
     renderProbeControls(
-      card,
+      actions,
       'embeddings_slot',
       'Embeddings slot',
       { kind: 'slot', slot_key: 'embeddings_slot' },
@@ -2607,11 +2619,24 @@ export const mountAiModelsPage = (
         ? ` ${savedSlotSource(slot)} / ${asString(slot.model) || 'model?'}`
         : ' Not set up. Voice notes need this. The microphone stays hidden until you set it.',
     );
+    // D-262 § E2.1 — ⛔ SAY WHAT THE CHOICE SENDS, set up or not. The owner ruled
+    // audio an accepted way for names to leave BECAUSE the owner chose voice, and
+    // this card is where that choice is made (or, after the § B5 derivation,
+    // inherited). The text pass that swaps known names for stand-ins cannot
+    // touch a recording, so this provider hears everything said in one.
+    appendText(
+      doc,
+      card,
+      'Voice notes are sent to this provider as audio, so it hears every name and detail in '
+        + 'them. Recued can hide names it knows in text, but not in a recording. To keep '
+        + 'recordings on your machine, point this at a Whisper server running there.',
+    ).className = 'ai-models-hint';
     // Name and protocol, as on a chat slot. This field took free text the
     // server refused for anything but its four protocol ids, one of which
     // (Anthropic) cannot transcribe.
+    const fieldGrid = appendLayoutGroup(doc, card, 'ai-models-fields');
     const providerName = slotProviderNameSupported
-      ? appendInput(doc, card, 'Provider', draft.providerName, [
+      ? appendInput(doc, fieldGrid, 'Provider', draft.providerName, [
         ['placeholder', 'Groq, my own server…'],
         ['maxlength', '64'],
         [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'provider-name'],
@@ -2620,7 +2645,7 @@ export const mountAiModelsPage = (
       : null;
     const provider = appendProtocolSelect(
       doc,
-      card,
+      fieldGrid,
       DEDICATED_SLOT_PROTOCOLS,
       draft.provider,
       [
@@ -2628,17 +2653,17 @@ export const mountAiModelsPage = (
         ['aria-label', 'Transcription slot protocol'],
       ],
     );
-    const model = appendInput(doc, card, 'Model', draft.model, [
+    const model = appendInput(doc, fieldGrid, 'Model', draft.model, [
       ['placeholder', 'e.g. whisper-1, whisper-large-v3'],
       [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'model'],
       ['aria-label', 'Transcription slot model'],
     ]);
-    const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+    const baseUrl = appendInput(doc, fieldGrid, 'Base URL', draft.baseUrl, [
       ['placeholder', 'Your own, or someone else’s. Both work'],
       [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'base-url'],
       ['aria-label', 'Transcription slot base URL'],
     ]);
-    const apiKey = appendInput(doc, card, 'API key', draft.apiKey, [
+    const apiKey = appendInput(doc, fieldGrid, 'API key', draft.apiKey, [
       ['placeholder', slot?.has_key === true ? 'Leave empty to keep the key you have' : 'Required'],
       [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'api-key'],
       ['aria-label', 'Transcription slot API key'],
@@ -2652,7 +2677,7 @@ export const mountAiModelsPage = (
     // to serve.
     const language = appendInput(
       doc,
-      card,
+      fieldGrid,
       'Spoken language',
       transcriptionLanguageDraft ?? asString(llmConfig?.transcription_language),
       [
@@ -2671,7 +2696,7 @@ export const mountAiModelsPage = (
     // placeholder says so rather than showing a number nobody chose.
     const cap = appendInput(
       doc,
-      card,
+      fieldGrid,
       'Most times a day it may be used',
       transcriptionCapDraft ?? (
         typeof llmConfig?.transcription_daily_requests === 'number'
@@ -2726,9 +2751,10 @@ export const mountAiModelsPage = (
       },
       DEDICATED_SLOT_PROTOCOLS,
     );
+    const actions = appendLayoutGroup(doc, card, 'ai-models-actions');
     const save = appendButton(
       doc,
-      card,
+      actions,
       transcriptionSlotSavePending ? 'Saving slot…' : 'Save slot',
       () => {
         if (transcriptionSlotSavePending || slotClearPendingKey !== null) return;
@@ -2754,7 +2780,7 @@ export const mountAiModelsPage = (
     );
     const clear = appendButton(
       doc,
-      card,
+      actions,
       'Clear slot',
       () => {
         if (transcriptionSlotSavePending || slotClearPendingKey !== null) return;
@@ -2779,7 +2805,7 @@ export const mountAiModelsPage = (
     // to a Whisper endpoint reports its 404 as a missing model — true, and
     // useless.
     renderProbeControls(
-      card,
+      actions,
       'transcription_slot',
       'Transcription slot',
       { kind: 'slot', slot_key: 'transcription_slot' },
@@ -3302,11 +3328,12 @@ export const mountAiModelsPage = (
           + 'After a server update it has one, and can be edited or removed.';
         row.appendChild(note);
       } else {
+        const actions = appendLayoutGroup(doc, row, 'ai-models-actions');
         const editingThis = freePoolEdit?.id === id;
         const edit = poolDraftsSupported
           ? appendButton(
             doc,
-            row,
+            actions,
             editingThis ? 'Editing below' : 'Edit',
             () => openFreePoolEdit(entry),
             [
@@ -3317,7 +3344,7 @@ export const mountAiModelsPage = (
           : null;
         const toggle = appendButton(
           doc,
-          row,
+          actions,
           togglePending
             ? pendingTarget === true ? 'Enabling…' : 'Disabling…'
             : enabling ? 'Enable' : 'Disable',
@@ -3332,7 +3359,7 @@ export const mountAiModelsPage = (
         );
         const remove = appendButton(
           doc,
-          row,
+          actions,
           'Remove',
           () => {
             openPoolRemoveDialog(id);
@@ -3343,7 +3370,7 @@ export const mountAiModelsPage = (
         // No draft: this is the SAVED entry's Test. The form below tests a
         // draft, before it is added or saved.
         renderProbeControls(
-          row,
+          actions,
           `pool:${id}`,
           `free-pool entry ${id}`,
           { kind: 'pool_entry', entry_id: id },
@@ -3383,38 +3410,39 @@ export const mountAiModelsPage = (
     const form = doc.createElement('div');
     form.className = 'ai-models-add-pool';
     appendHeading(doc, form, 'h4', editing === null ? 'Add a free one' : `Edit ${editing.id}`);
+    const fieldGrid = appendLayoutGroup(doc, form, 'ai-models-fields');
     // The name is the entry's id, fixed once it is added: Edit, Disable and
     // Remove all address the entry by it.
     const name = editing === null
-      ? appendInput(doc, form, 'Name', draft.id, [
+      ? appendInput(doc, fieldGrid, 'Name', draft.id, [
         [AI_MODELS_POOL_ADD_FIELD_ATTR, 'id'],
         ['aria-label', 'New free-pool entry name'],
         ['placeholder', 'Optional: named from the address, like groq'],
         ['maxlength', '64'],
       ])
       : null;
-    const provider = appendProtocolSelect(doc, form, SLOT_PROTOCOLS, draft.provider, [
+    const provider = appendProtocolSelect(doc, fieldGrid, SLOT_PROTOCOLS, draft.provider, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider'],
       ['aria-label', `${labelOf} protocol`],
     ]);
-    const model = appendInput(doc, form, 'Model', draft.model, [
+    const model = appendInput(doc, fieldGrid, 'Model', draft.model, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'model'],
       ['aria-label', `${labelOf} model`],
     ]);
-    const key = appendInput(doc, form, 'API key', draft.apiKey, [
+    const key = appendInput(doc, fieldGrid, 'API key', draft.apiKey, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'api-key'],
       ['aria-label', `${labelOf} API key`],
       ['placeholder', editing === null ? 'Required' : 'Leave empty to keep the key you have'],
     ]);
     key.type = 'password';
-    const baseUrl = appendInput(doc, form, 'Base URL', draft.baseUrl, [
+    const baseUrl = appendInput(doc, fieldGrid, 'Base URL', draft.baseUrl, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'base-url'],
       ['aria-label', `${labelOf} base URL`],
       ['placeholder', 'Needed for OpenAI-compatible'],
     ]);
     const contextWindow = appendInput(
       doc,
-      form,
+      fieldGrid,
       'How much it can hold at once',
       draft.contextWindow,
       [
@@ -3476,9 +3504,10 @@ export const mountAiModelsPage = (
         apiKey: key.value,
       });
     };
+    const actions = appendLayoutGroup(doc, form, 'ai-models-actions');
     const submit = appendButton(
       doc,
-      form,
+      actions,
       editing === null
         ? (freePoolFormPending ? 'Adding entry…' : 'Add API entry')
         : (freePoolFormPending ? 'Saving entry…' : 'Save entry'),
@@ -3524,7 +3553,7 @@ export const mountAiModelsPage = (
     if (editing !== null) {
       const cancel = appendButton(
         doc,
-        form,
+        actions,
         'Cancel',
         () => {
           if (freePoolFormPending) return;
@@ -3546,7 +3575,7 @@ export const mountAiModelsPage = (
     // free-pool entry" whatever the draft said.
     if (poolDraftsSupported) {
       renderProbeControls(
-        form,
+        actions,
         POOL_FORM_KEY,
         editing === null ? 'new free-pool entry' : `free-pool entry ${editing.id}`,
         () => ({ kind: 'pool_entry', entry_id: entryId() }),
@@ -6122,4 +6151,5 @@ export const AI_MODELS_PAGE_STYLES = `
     width: 100%;
   }
 }
+${AI_MODELS_WORKSPACE_STYLES}
 `;

@@ -71,6 +71,9 @@ export interface RunFeedRow {
   status: RunAnchorStatus;
   policy_result: PolicyResult;
   links: RunProvenanceLink[];
+  /** Existing recorded item counts for history review. Absent on older rows;
+   * never infer zero work or full success from an omitted tally. */
+  run_yield?: RunYield;
   /** D-181 §12 — display category for a failed / killed long-op run
    *  (`killed` / `cancelled_before_dispatch` / `timeout` / `stalled`),
    *  so the feed reads *why* a run ended without opening the detail.

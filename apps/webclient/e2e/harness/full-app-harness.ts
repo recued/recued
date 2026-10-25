@@ -926,6 +926,17 @@ const buildFakeTransport = (
   const chatSessionTitle =
     searchParams.get('chat_title') ?? 'Planning chat';
   const webhooksDemo = searchParams.get('connection') === 'webhooks';
+  // What recued.com did when the server disconnected (`account.unbind`).
+  const accountUnbindCloud = searchParams.get('account_unbind_cloud') === 'not_told'
+    ? 'not_told'
+    : 'released';
+  // A Connect the server refuses with its exchange reason, sent the way a real
+  // server sends it: the code, its own text, and `details.reason`.
+  const accountBindExchangeFailure = searchParams.get('account_bind_exchange_failure');
+  // Pro, with the account's web address held by another of its servers until
+  // this one connects again (`account_public=elsewhere`).
+  let accountPublicHolder: 'elsewhere' | 'here' | null =
+    searchParams.get('account_public') === 'elsewhere' ? 'elsewhere' : null;
   const delayWebhookTestDelivery =
     searchParams.get('webhook_test_response') === 'slow';
   const delayWebhookTerminalWrite =
@@ -975,6 +986,8 @@ const buildFakeTransport = (
   let namedReminderConnection: { name: string; enrolled_at: number } | null = null;
   let notificationsDescribeFailuresRemaining = failFirstNotificationsDescribe ? 1 : 0;
   const revokedDeviceIds = new Set<string>();
+  /** Names the owner gave devices (`pair.rename`), by instance id. */
+  const renamedDevices = new Map<string, string>();
   let devicesListFailuresRemaining = deviceListFailures;
   let accountOwner: 'old' | 'incoming' | null = accountConflictDemo
     ? 'old'
@@ -2353,7 +2366,7 @@ const buildFakeTransport = (
                                     },
                                   }
             : undefined;
-        let error: { code: string; message: string } | undefined;
+        let error: { code: string; message: string; details?: Record<string, unknown> } | undefined;
         const chatSearchReply = chatHistorySearchReply(rpc.method, rpc.args);
         if (chatSearchReply !== null) {
           result = chatSearchReply.result;
@@ -2409,7 +2422,10 @@ const buildFakeTransport = (
             result = structuredClone(backupWatchdogStatus);
           }
         }
-        const readinessReply = restoreReadinessFixture(searchParams.get('restore_readiness'), rpc.method);
+        // The monitor drill also needs replies for the adjacent backup reads.
+        const readinessMode = searchParams.get('restore_readiness')
+          ?? (backupWatchdogDrillDemo && rpc.method !== 'server.archive.watchdog.get' ? 'ready' : null);
+        const readinessReply = restoreReadinessFixture(readinessMode, rpc.method);
         if (readinessReply !== undefined) result = readinessReply;
         let beforeRpcResponse: (() => void) | null = null;
         if (
@@ -2960,6 +2976,12 @@ const buildFakeTransport = (
                 }] : []),
               ],
               verification_phrase: notificationVerificationPhrase,
+              // `?phone=none` — the server says no reminder reaches a phone; `?phone=telegram` —
+              // nor does Telegram, which is on but set to a group rather than the owner's own
+              // chat (D-325 §15.7 amendment).
+              ...((phone) => phone === 'none' ? { reaches_phone: false, reminder_issues: [] }
+                : phone === 'telegram' ? { reaches_phone: false, reminder_issues: [{ channel: 'telegram' as const, reason: 'configuration_invalid' as const }] }
+                  : {})(new URLSearchParams(location.search).get('phone')),
             };
           }
         }
@@ -3099,17 +3121,19 @@ const buildFakeTransport = (
                 },
                 {
                   instance_id: 'device-laptop',
-                  display_name: 'Travel laptop',
+                  display_name: renamedDevices.get('device-laptop') ?? 'Travel laptop',
                   kind: 'webclient',
                   added_at: Math.floor((FIXED_NOW - 172_800_000) / 1_000),
                   revoked_at: revokedDeviceIds.has('device-laptop')
                     ? Math.floor(FIXED_NOW / 1_000)
                     : null,
                   connected: false,
+                  // Last here an hour ago; the desktop was never seen.
+                  last_seen_at: Math.floor((FIXED_NOW - 3_600_000) / 1_000),
                 },
                 {
                   instance_id: 'device-desktop',
-                  display_name: 'Office desktop',
+                  display_name: renamedDevices.get('device-desktop') ?? 'Office desktop',
                   kind: 'bridge',
                   added_at: Math.floor((FIXED_NOW - 259_200_000) / 1_000),
                   revoked_at: revokedDeviceIds.has('device-desktop')
@@ -3119,6 +3143,15 @@ const buildFakeTransport = (
                 },
               ],
             };
+          }
+        }
+        if (devicesDemo && rpc.method === 'pair.rename') {
+          const args = rpc.args as { instance_id?: unknown; display_name?: unknown };
+          if (typeof args.instance_id === 'string' && typeof args.display_name === 'string') {
+            renamedDevices.set(args.instance_id, args.display_name);
+            result = { ok: true, display_name: args.display_name };
+          } else {
+            error = { code: 'bad_request', message: 'display_name must be 1 to 64 characters' };
           }
         }
         if (devicesDemo && rpc.method === 'pair.revoke') {
@@ -3168,7 +3201,18 @@ const buildFakeTransport = (
             const boundAccount = accountOwner === 'old'
               ? { id: 'acct-old', handle: 'legacy' }
               : { id: 'acct-main', handle: 'morgan' };
-            result = accountOwner !== null
+            const elsewhere = { state: 'inactive-elsewhere', detail: 'handle_on_another_server' } as const;
+            result = accountOwner !== null && accountPublicHolder !== null
+              ? {
+                  entitlement: 'entitled',
+                  account_id: boundAccount.id,
+                  publisher_handle: boundAccount.handle,
+                  ddns_hostname: `${boundAccount.handle}.recued.net`,
+                  items: accountPublicHolder === 'elsewhere'
+                    ? { handle: elsewhere, ddns: elsewhere, acme: elsewhere }
+                    : { handle: { state: 'active' }, ddns: { state: 'active' }, acme: { state: 'active' } },
+                }
+              : accountOwner !== null
               ? {
                   entitlement: 'not_entitled',
                   account_id: boundAccount.id,
@@ -3203,6 +3247,12 @@ const buildFakeTransport = (
                 ? 'Account rebind unavailable.'
                 : 'Account binding unavailable.',
             };
+          } else if (accountBindExchangeFailure !== null && !confirmRebind) {
+            error = {
+              code: 'binding_exchange_failed',
+              message: `account binding exchange failed (${accountBindExchangeFailure})`,
+              details: { reason: accountBindExchangeFailure },
+            };
           } else if (
             accountConflictDemo
             && !confirmRebind
@@ -3225,6 +3275,8 @@ const buildFakeTransport = (
               ? 'acct-old'
               : undefined;
             accountOwner = 'incoming';
+            // recued.com hands the address to the server that connects.
+            if (accountPublicHolder === 'elsewhere') accountPublicHolder = 'here';
             result = {
               outcome: previousAccountId === undefined ? 'bound' : 'rebound',
               binding: {
@@ -3247,7 +3299,7 @@ const buildFakeTransport = (
             };
           } else {
             accountOwner = null;
-            result = { outcome: 'unbound' };
+            result = { outcome: 'unbound', cloud: accountUnbindCloud };
           }
         }
         if (
@@ -6196,6 +6248,26 @@ const buildFakeTransport = (
             })),
           };
         }
+        // D-327 — the Connect tab's key panel lists the keys and keeps the ones
+        // bound to its agreement. `door_paged_01` holds one, so its Connect tab
+        // shows the "has a key" state; unanswered, the panel stays on
+        // "Checking…".
+        if (contractsPagedDemo && rpc.method === 'chat.inbound_token.list') {
+          result = {
+            tokens: [{
+              token_id: 'inbound-paged-01',
+              bearer_hash: 'hash-inbound-paged-01',
+              label: 'Paged contract 1',
+              created_at: FIXED_NOW,
+              revoked_at: null,
+              grants: {},
+              concurrency_tier: 5,
+              chat_mode: null,
+              contract_id: 'door_paged_01',
+              updated_at: FIXED_NOW,
+            }],
+          };
+        }
         if (
           (contractsPagedDemo || resolveContractsReads)
           && rpc.method === 'contract.recipeOpUsage'
@@ -6930,13 +7002,10 @@ const buildFakeTransport = (
               last_gc_at: null,
             },
             'notifications.describe': { rows: [] },
-            // ── Contracts → Connect tab (the permissions panel) ────────────
-            // `permissions-panel.ts` is NOT a settings panel:
-            // `bootstrap-settings-route.ts` sets `const permissions = null`
-            // ("Permissions moved to Contracts, D-174 P2") and it mounts as the
-            // CONNECT tab of a contract detail. Rows, not empty lists — the
-            // panel's attributes are per-token and per-tool controls, and an
-            // empty list renders only its heading.
+            // ── Contracts → Connect tab (the agreement's key, D-327) ───────
+            // One key bound to `door_paged_01`, so its Connect tab renders the
+            // key panel's "has a key" state and its turn-off control rather
+            // than only the create line.
             'chat.inbound_token.list': {
               tokens: [{
                 token_id: 'inbound-1',
@@ -9284,9 +9353,21 @@ const installRecoveryPairFetch = (
 
 void (async (): Promise<void> => {
   try {
+    // "Add another server…" reloads into an open attempt: a PENDING active
+    // profile. Seeding again would adopt the office URL, which retires that
+    // pending record, so the reload it triggered must skip the seed.
+    const addServerAttemptOpen = profileStore !== undefined
+      && searchParams.get('server_profiles') === 'multiple'
+      && await (async (): Promise<boolean> => {
+        const activeId = await profileStore.activeProfileId();
+        return (await profileStore.listProfiles()).some(
+          (profile) => profile.id === activeId && profile.server_url === '',
+        );
+      })();
     if (
       profileStore !== undefined
       && searchParams.get('server_profiles') === 'multiple'
+      && !addServerAttemptOpen
     ) {
       const originalId = await profileStore.activeProfileId();
       const officeId = await profileStore.ensureProfile(
@@ -10002,6 +10083,8 @@ void (async (): Promise<void> => {
       // credential-free BroadcastChannel observer and distinguishes an active
       // profile change from replacement credentials within one profile.
       const handleRef: { current: WebclientHandle | null } = { current: null };
+      // A pairing link (`?code=`) reaches the boot as in production.
+      const profilesPairEntry = parsePairEntryHandoff(window.location.href);
       const outcome = await runBootstrapWithPairFallback({
         root,
         localStore,
@@ -10011,6 +10094,7 @@ void (async (): Promise<void> => {
           transport.transport as PairFallbackBootstrapDeps['transport'],
         handleRef,
         cryptoKeysWiper: async () => undefined,
+        ...(profilesPairEntry.active ? { deeplinkSeed: profilesPairEntry.seed } : {}),
         bootstrap: (options) => bootstrapWebclient({
           ...options,
           rpcMaxInFlight: HARNESS_RPC_MAX_IN_FLIGHT,
@@ -10022,12 +10106,21 @@ void (async (): Promise<void> => {
         }),
         document,
       });
-      if (outcome.kind !== 'mounted' || handleRef.current === null) {
+      // An open add-a-server attempt lands on the pair form by design; the
+      // splash stays because it is the live surface.
+      const pairingAnotherServer =
+        addServerAttemptOpen && outcome.kind === 'pair-form';
+      if (
+        !pairingAnotherServer
+        && (outcome.kind !== 'mounted' || handleRef.current === null)
+      ) {
         throw new Error(
           `full-app server-profile harness: boot ended as ${outcome.kind}`,
         );
       }
-      document.getElementById('webclient-boot-splash')?.remove();
+      if (!pairingAnotherServer) {
+        document.getElementById('webclient-boot-splash')?.remove();
+      }
       window.__app = {
         ready: true,
         setHash: (hash) => hashSource.setHash(hash),

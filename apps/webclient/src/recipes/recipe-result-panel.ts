@@ -46,7 +46,8 @@ import {
   isResolvedRecordColumnsDescriptor, NUMERIC_FIELD_KINDS, tableColumnInputType,
 } from '@recued/contracts';
 import { copyRecipeRunSummary, renderRecipeRunSummary, RUN_SUMMARY_COPY_ATTR } from './recipe-run-summary.js';
-import { parseLogsRunAddress, serializeLogsRunAddress } from '../shell/route.js';
+import type { RunReviewWorkspace } from '../shell/route.js';
+import { RUN_REVIEW_LABEL, RUN_REVIEW_LINK_ATTR, runReviewHref } from '../logs/run-review.js';
 import {
   formatValue,
   renderAiAnalysisBlock,
@@ -204,6 +205,27 @@ ${REFERENCE_PROVENANCE_STYLES}
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-tools > .recipes-button {
+  box-sizing: border-box;
+  min-height: 36px;
+  max-width: 100%;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-details {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary { display: grid; gap: 6px; min-width: 0; font-size: 12px; }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary > button { justify-self: start; min-height: 36px; max-width: 100%; }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary > p { margin: 0; overflow-wrap: anywhere; }
@@ -212,6 +234,7 @@ ${REFERENCE_PROVENANCE_STYLES}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; margin-top: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); font: 12px/1.5 var(--mono, monospace); resize: vertical; }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary :is(button, summary, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 520px) {
+  [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-tools > .recipes-button,
   [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-run-link,
   [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary > button,
   [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary summary { min-height: 44px; }
@@ -987,6 +1010,7 @@ export interface RecipesResultFilterState extends OutputFilterState {
  *  surface; Pack Use keeps the shared provenance receipt, hides legacy inline
  *  metrics, keeps audit-backed run facts, and supplies its own heading. */
 export interface RecipeResultPanelPresentation {
+  readonly run_review_return?: RunReviewWorkspace;
   /** `undefined` = "Result" (Recipes default), `null` = no panel heading. */
   readonly heading?: string | null;
   /** Render recipe ids, origin, and source recipe. Default true. */
@@ -2856,13 +2880,11 @@ export const renderRecipeResultPanel = (
     : ` · ${e(String(result.duration_ms))} ms · ${e(plural(result.steps.length, 'step'))}`;
   // Only this response's persisted anchor can identify its run. In particular,
   // a previous result or the recipe-wide history cannot substitute for it.
-  const runId = result?.run_id;
-  const runAddress = typeof runId === 'string' && runId.trim().length > 0
-    ? parseLogsRunAddress({ surface: 'logs', segments: [runId] })
-    : null;
-  const runLink = runAddress === null
+  const reviewHref = runReviewHref(result?.run_id, presentation.run_review_return === undefined
+    ? {} : { returnToWorkspace: presentation.run_review_return });
+  const runLink = reviewHref === null
     ? ''
-    : `<a class="recipes-button recipes-result-run-link" href="${e(serializeLogsRunAddress(runAddress))}">Open this run in Logs</a>`;
+    : `<a class="recipes-button recipes-result-run-link" ${RUN_REVIEW_LINK_ATTR}="" href="${e(reviewHref)}">${RUN_REVIEW_LABEL}</a>`;
   return `
     <section class="recipes-detail-section recipes-result-panel" ${RECIPE_RESULT_HOST_ATTR}${
     presentation.display_mode === true ? ` ${RESULT_DISPLAY_MODE_ATTR}` : ''}
@@ -2879,14 +2901,18 @@ export const renderRecipeResultPanel = (
               : `<p class="recipes-result-reason" ${RECIPES_ROUTE_RESULT_REASON_ATTR}>${e(failureReason)}</p>`}
           </div>`
         : ''}
-      ${runLink}
-      ${result === null ? '' : renderRecipeRunSummary(result)}
       ${refusedNote}
-      ${provenance}
-      ${returnControl}
-      ${fullscreenControl}
-      ${displayModeControl}
+      <div class="recipes-result-tools">
+        ${runLink}
+        ${returnControl}
+        ${fullscreenControl}
+        ${displayModeControl}
+      </div>
       ${body}
+      ${result === null ? '' : `<div class="recipes-result-details">
+        ${renderRecipeRunSummary(result)}
+        ${provenance}
+      </div>`}
     </section>
   `;
 };

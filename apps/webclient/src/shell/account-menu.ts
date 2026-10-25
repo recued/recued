@@ -37,7 +37,9 @@ import {
   buildServerUpdateReceiptDiagnostic,
 } from '../connections/server-update-receipt-verification.js';
 import {
+  leaveServerWorkConsequence,
   mountProfileList,
+  serverSwitchReviewCoversWorkState,
   type ProfileListMount,
   type ServerProfileRemovalMode,
   type ServerSwitchWorkState,
@@ -65,6 +67,17 @@ export const ACCOUNT_MENU_SERVERS_ROW_ATTR = 'data-recued-account-menu-servers';
 export const ACCOUNT_MENU_SERVERS_DETAIL_ATTR =
   'data-recued-account-menu-servers-detail';
 export const ACCOUNT_MENU_ADD_SERVER_ATTR = 'data-recued-account-menu-add-server';
+/** "Add another server…" reloads this tab, as a switch does: with unsent work
+ *  in it, the owner reviews what is lost first. */
+export const ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR = 'data-recued-account-menu-add-server-review';
+export const ACCOUNT_MENU_ADD_SERVER_COMMIT_ATTR = 'data-recued-account-menu-add-server-commit';
+export const ACCOUNT_MENU_ADD_SERVER_CANCEL_ATTR = 'data-recued-account-menu-add-server-cancel';
+/** A pairing link (`?code=`) opened while this browser already uses a
+ *  server: the menu says what the link is for and offers to add a server
+ *  with it, through the same entry (and review) as "Add another server…". */
+export const ACCOUNT_MENU_PAIRING_LINK_ATTR = 'data-recued-account-menu-pairing-link';
+export const ACCOUNT_MENU_PAIRING_LINK_ADD_ATTR = 'data-recued-account-menu-pairing-link-add';
+export const ACCOUNT_MENU_PAIRING_LINK_DISMISS_ATTR = 'data-recued-account-menu-pairing-link-dismiss';
 export const ACCOUNT_MENU_SERVER_SLOT_ATTR = 'data-recued-account-menu-server-slot';
 export const ACCOUNT_MENU_RECOVERY_ATTR = 'data-recued-account-menu-recovery';
 export const ACCOUNT_MENU_RECOVERY_STEPS_ATTR = 'data-recued-account-menu-recovery-steps';
@@ -449,6 +462,8 @@ export interface MountAccountMenuOptions {
    *  their mind would be stranded there with no route to the server that
    *  still works — the exact dead end this whole surface removed. */
   onAddServer?: () => void;
+  /** "Not now" on the pairing-link offer (see `offerPairingLink`). */
+  onDismissPairingLink?: () => void;
   /** Href for the Settings entry in the quick row. */
   settingsHref: string;
   /** Explicit clipboard handoff for the owner-reviewed safe diagnostic. When
@@ -530,6 +545,10 @@ export interface AccountMenuMount {
    *  a readout — it carries the D-188 pause / restart controls — so removing
    *  it from the topbar means rehoming it, not deleting it. */
   serverSlot(): HTMLElement;
+  /** Show the pairing-link offer above "Add another server…" and open on it.
+   *  Its Add takes the same path as that entry, review included. Does
+   *  nothing without `onAddServer`. */
+  offerPairingLink(): void;
   /** Update the roster and/or the reachability that drives the badge. */
   refresh(
     profiles: ReadonlyArray<WebclientServerProfile>,
@@ -566,8 +585,8 @@ export const ACCOUNT_MENU_STYLES = `
   color: inherit;
   cursor: pointer;
 }
-[${ACCOUNT_MENU_TRIGGER_ATTR}]:hover { background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
-[${ACCOUNT_MENU_TRIGGER_ATTR}]:focus-visible { outline: 2px solid var(--recued-focus, #4c8dff); outline-offset: 2px; }
+[${ACCOUNT_MENU_TRIGGER_ATTR}]:hover { background: var(--surface-subtle, rgba(127,127,127,0.12)); }
+[${ACCOUNT_MENU_TRIGGER_ATTR}]:focus-visible { outline: 2px solid var(--accent, #4c8dff); outline-offset: 2px; }
 [${ACCOUNT_MENU_BADGE_ATTR}] {
   position: absolute;
   top: 1px;
@@ -578,23 +597,23 @@ export const ACCOUNT_MENU_STYLES = `
   width: 12px;
   height: 12px;
   border-radius: 999px;
-  background: var(--recued-danger, #b3261e);
-  color: #fff;
+  background: var(--danger, #b3261e);
+  color: var(--on-danger, #fff);
   font-size: 9px;
   line-height: 1;
   font-weight: 700;
   /* Ring in the bar's own colour so the badge reads as attached to the glyph
      rather than floating over whatever is behind it. */
-  box-shadow: 0 0 0 2px var(--recued-surface, #fff);
+  box-shadow: 0 0 0 2px var(--surface, #fff);
 }
 [${ACCOUNT_MENU_BADGE_ATTR}][data-state="unreachable"] { display: inline-flex; }
 [${ACCOUNT_MENU_BADGE_ATTR}][data-state="working"],
 [${ACCOUNT_MENU_BADGE_ATTR}][data-state="result-ready"] {
   display: inline-flex;
-  background: var(--recued-accent, #147d9e);
+  background: var(--accent, #147d9e);
 }
 [${ACCOUNT_MENU_BADGE_ATTR}][data-state="result-ready"] {
-  background: var(--recued-success, #25834f);
+  background: var(--success, #25834f);
 }
 [${ACCOUNT_MENU_POPOVER_ATTR}] {
   position: absolute;
@@ -608,13 +627,17 @@ export const ACCOUNT_MENU_STYLES = `
   overscroll-behavior: contain;
   padding: 8px;
   border-radius: 12px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,0.28));
-  background: var(--recued-surface, #fff);
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
+  background: var(--surface, #fff);
+  /* Its own text colour, paired with its own background: inherited, it came
+     from the account button, which is muted until hovered and fades 90ms on
+     a theme change while this background switches at once. */
+  color: var(--fg, #27272a);
   box-shadow: 0 12px 32px rgba(0,0,0,0.18);
 }
 [${ACCOUNT_MENU_POPOVER_ATTR}][hidden] { display: none; }
 [${ACCOUNT_MENU_POPOVER_ATTR}]:focus-visible {
-  outline: 2px solid var(--recued-focus, #4c8dff);
+  outline: 2px solid var(--accent, #4c8dff);
   outline-offset: 2px;
 }
 [${ACCOUNT_MENU_TITLE_ATTR}] {
@@ -643,7 +666,7 @@ export const ACCOUNT_MENU_STYLES = `
   font-size: 20px;
   cursor: pointer;
 }
-[${ACCOUNT_MENU_CLOSE_ATTR}]:hover { background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
+[${ACCOUNT_MENU_CLOSE_ATTR}]:hover { background: var(--surface-subtle, rgba(127,127,127,0.12)); }
 [${ACCOUNT_MENU_CLOSE_ATTR}]:focus-visible,
 [${ACCOUNT_MENU_SETTINGS_ATTR}]:focus-visible,
 [${ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR}]:focus-visible,
@@ -652,7 +675,7 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_SERVER_UPDATE_RETRY_ATTR}]:focus-visible,
 [${ACCOUNT_MENU_SERVER_UPDATE_DISMISS_ATTR}]:focus-visible,
 [${ACCOUNT_MENU_ADD_SERVER_ATTR}]:focus-visible {
-  outline: 2px solid var(--recued-focus, #4c8dff);
+  outline: 2px solid var(--accent, #4c8dff);
   outline-offset: 2px;
 }
 [${ACCOUNT_MENU_QUICK_ROW_ATTR}] {
@@ -660,7 +683,7 @@ export const ACCOUNT_MENU_STYLES = `
   align-items: center;
   gap: 6px;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--recued-border, rgba(127,127,127,0.2));
+  border-bottom: 1px solid var(--border, rgba(127,127,127,0.2));
 }
 [${ACCOUNT_MENU_THEME_SLOT_ATTR}] { display: inline-flex; align-items: center; }
 [${ACCOUNT_MENU_SETTINGS_ATTR}] {
@@ -674,18 +697,18 @@ export const ACCOUNT_MENU_STYLES = `
   text-decoration: none;
   font-size: 13px;
 }
-[${ACCOUNT_MENU_SETTINGS_ATTR}]:hover { background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
+[${ACCOUNT_MENU_SETTINGS_ATTR}]:hover { background: var(--surface-subtle, rgba(127,127,127,0.12)); }
 [${ACCOUNT_MENU_SERVER_SLOT_ATTR}]:not(:empty) {
   padding: 8px 6px;
   display: block;
-  border-bottom: 1px solid var(--recued-border, rgba(127,127,127,0.2));
+  border-bottom: 1px solid var(--border, rgba(127,127,127,0.2));
   scroll-margin-block: 12px;
 }
 [${ACCOUNT_MENU_SERVER_SLOT_ATTR}][hidden] { display: none; }
 [${ACCOUNT_MENU_SERVER_SLOT_ATTR}][${ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR}] {
   border-radius: 8px;
-  background: color-mix(in srgb, var(--recued-accent, #147d9e) 8%, transparent);
-  outline: 2px solid color-mix(in srgb, var(--recued-accent, #147d9e) 52%, transparent);
+  background: color-mix(in srgb, var(--accent, #147d9e) 8%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--accent, #147d9e) 52%, transparent);
   outline-offset: -2px;
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] {
@@ -693,8 +716,8 @@ export const ACCOUNT_MENU_STYLES = `
   padding: 10px 12px;
   border-left: 3px solid var(--warning, #9a6700);
   border-radius: 8px;
-  background: var(--recued-surface-muted, #f6f7f9);
-  background: color-mix(in srgb, var(--warning, #9a6700) 7%, var(--recued-surface, #fff));
+  background: var(--surface-sunk, #f6f7f9);
+  background: color-mix(in srgb, var(--warning, #9a6700) 7%, var(--surface, #fff));
   overflow-wrap: anywhere;
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}][hidden] { display: none; }
@@ -712,13 +735,13 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR}] { font-weight: 600; }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}] {
   padding: 8px 9px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,.24));
+  border: 1px solid var(--border, rgba(127,127,127,.24));
   border-radius: 7px;
-  background: var(--recued-surface, #fff);
+  background: var(--surface, #fff);
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][hidden] { display: none; }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="confirmed"] {
-  border-color: color-mix(in srgb, var(--recued-accent, #147d9e) 45%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #147d9e) 45%, transparent);
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="failed"],
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="unconfirmed"],
@@ -737,7 +760,7 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}] {
   flex: 1 1 140px;
   min-height: 44px;
-  border: 1px solid var(--recued-accent-border, rgba(63, 99, 255, .4));
+  border: 1px solid color-mix(in srgb, var(--accent, #147d9e) 40%, transparent);
   border-radius: 7px;
   padding: 6px 10px;
   font: inherit;
@@ -746,17 +769,17 @@ export const ACCOUNT_MENU_STYLES = `
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}] {
   background: transparent;
-  color: var(--recued-accent, #147d9e);
+  color: var(--accent, #147d9e);
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}],
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}] {
-  background: var(--recued-accent, #3f63ff);
-  color: #fff;
+  background: var(--accent, #147d9e);
+  color: var(--on-accent, #fff);
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}]:not([hidden])
   + [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}] {
   background: transparent;
-  color: var(--recued-fg-muted, #52525b);
+  color: var(--fg-muted, #52525b);
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}][disabled],
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}][disabled] {
@@ -766,22 +789,22 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}][data-control-review="active"]
   [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}][disabled] {
   opacity: 1;
-  color: var(--recued-fg-muted, #52525b);
+  color: var(--fg-muted, #52525b);
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}]:not([disabled]):hover {
-  background: var(--recued-surface-hover, rgba(127,127,127,.12));
+  background: var(--surface-subtle, rgba(127,127,127,.12));
 }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}]:not([disabled]):hover,
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}]:hover { filter: brightness(.96); }
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}]:focus-visible,
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}]:focus-visible,
 [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}]:focus-visible {
-  outline: 2px solid var(--recued-focus, #4c8dff);
+  outline: 2px solid var(--accent, #4c8dff);
   outline-offset: 2px;
 }
 [${ACCOUNT_MENU_RECOVERY_ATTR}] {
   padding: 8px 6px 0;
-  border-bottom: 1px solid var(--recued-border, rgba(127,127,127,0.2));
+  border-bottom: 1px solid var(--border, rgba(127,127,127,0.2));
   padding-bottom: 8px;
 }
 [${ACCOUNT_MENU_RECOVERY_ATTR}][hidden] { display: none; }
@@ -789,7 +812,7 @@ export const ACCOUNT_MENU_STYLES = `
   margin: 0 0 4px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--recued-danger, #b3261e);
+  color: var(--danger, #b3261e);
 }
 [${ACCOUNT_MENU_RECOVERY_ATTR}] p { margin: 0 0 6px; font-size: 12px; opacity: 0.8; }
 [${ACCOUNT_MENU_RECOVERY_STEPS_ATTR}] {
@@ -813,7 +836,63 @@ export const ACCOUNT_MENU_STYLES = `
   text-align: left;
   cursor: pointer;
 }
-[${ACCOUNT_MENU_ADD_SERVER_ATTR}]:hover { background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
+[${ACCOUNT_MENU_ADD_SERVER_ATTR}]:hover { background: var(--surface-subtle, rgba(127,127,127,0.12)); }
+[${ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR}] {
+  margin: 4px 0 2px;
+  padding: 10px;
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
+  border-radius: 10px;
+  background: var(--surface-subtle, rgba(127,127,127,0.08));
+}
+/* Inside the servers row, whose own h3 rule (faded, 12px) would otherwise win. */
+[${ACCOUNT_MENU_SERVERS_ROW_ATTR}] [${ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR}] h3,
+[${ACCOUNT_MENU_SERVERS_ROW_ATTR}] [${ACCOUNT_MENU_PAIRING_LINK_ATTR}] h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 1;
+}
+[${ACCOUNT_MENU_PAIRING_LINK_ATTR}] {
+  margin: 4px 0 6px;
+  padding: 10px;
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
+  border-radius: 10px;
+  background: var(--surface-subtle, rgba(127,127,127,0.08));
+}
+[${ACCOUNT_MENU_PAIRING_LINK_ATTR}] p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.4; }
+[${ACCOUNT_MENU_PAIRING_LINK_ATTR}] .recued-account-pairing-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+[${ACCOUNT_MENU_PAIRING_LINK_ATTR}] button {
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+[${ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR}] p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.4; }
+[${ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR}] .recued-account-add-server-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+[${ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR}] button {
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--border, rgba(127,127,127,0.28));
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
 [${ACCOUNT_MENU_SERVERS_ROW_ATTR}] h3 {
   margin: 0 6px 6px;
   font-size: 12px;
@@ -829,9 +908,9 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_ACTIVE_WORK_ATTR}] {
   margin: 8px 0;
   padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--recued-accent, #147d9e) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #147d9e) 30%, transparent);
   border-radius: 9px;
-  background: color-mix(in srgb, var(--recued-accent, #147d9e) 7%, transparent);
+  background: color-mix(in srgb, var(--accent, #147d9e) 7%, transparent);
 }
 [${ACCOUNT_MENU_ACTIVE_WORK_ATTR}] h3,
 [${ACCOUNT_MENU_ACTIVE_WORK_ATTR}] p { margin: 0; }
@@ -866,7 +945,7 @@ export const ACCOUNT_MENU_STYLES = `
   flex: 0 0 auto;
   min-height: 44px;
   padding: 6px 9px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,.28));
+  border: 1px solid var(--border, rgba(127,127,127,.28));
   border-radius: 7px;
   background: transparent;
   color: inherit;
@@ -876,14 +955,14 @@ export const ACCOUNT_MENU_STYLES = `
   cursor: pointer;
 }
 [${ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR}]:hover {
-  background: var(--recued-surface-hover, rgba(127,127,127,.12));
+  background: var(--surface-subtle, rgba(127,127,127,.12));
 }
 [${ACCOUNT_MENU_SERVER_UPDATE_ATTR}] {
   margin: 8px 0;
   padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--recued-accent, #147d9e) 34%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #147d9e) 34%, transparent);
   border-radius: 9px;
-  background: color-mix(in srgb, var(--recued-accent, #147d9e) 8%, transparent);
+  background: color-mix(in srgb, var(--accent, #147d9e) 8%, transparent);
 }
 [${ACCOUNT_MENU_SERVER_UPDATE_ATTR}][hidden] { display: none; }
 [${ACCOUNT_MENU_SERVER_UPDATE_ATTR}] h3,
@@ -908,7 +987,7 @@ export const ACCOUNT_MENU_STYLES = `
   gap: 6px;
   margin-top: 9px;
   padding-top: 9px;
-  border-top: 1px solid color-mix(in srgb, var(--recued-accent, #147d9e) 24%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--accent, #147d9e) 24%, transparent);
 }
 .recued-account-server-update-diagnostic[hidden] { display: none; }
 .recued-account-server-update-diagnostic pre {
@@ -917,13 +996,13 @@ export const ACCOUNT_MENU_STYLES = `
   padding: 8px;
   overflow: auto;
   border-radius: 6px;
-  background: var(--recued-surface-sunken, rgba(0,0,0,.06));
+  background: var(--surface-sunk, rgba(0,0,0,.06));
   font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .recued-account-server-update-diagnostic pre:focus-visible {
-  outline: 2px solid var(--recued-accent, #147d9e);
+  outline: 2px solid var(--accent, #147d9e);
   outline-offset: 2px;
 }
 .recued-account-server-update-actions {
@@ -939,7 +1018,7 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_COPY_ATTR}] {
   min-height: 44px;
   padding: 7px 10px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,.28));
+  border: 1px solid var(--border, rgba(127,127,127,.28));
   border-radius: 7px;
   color: inherit;
   font: inherit;
@@ -948,9 +1027,9 @@ export const ACCOUNT_MENU_STYLES = `
   cursor: pointer;
 }
 [${ACCOUNT_MENU_SERVER_UPDATE_OPEN_ATTR}] {
-  background: var(--recued-accent, #147d9e);
-  border-color: var(--recued-accent, #147d9e);
-  color: #fff;
+  background: var(--accent, #147d9e);
+  border-color: var(--accent, #147d9e);
+  color: var(--on-accent, #fff);
 }
 [${ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR}],
 [${ACCOUNT_MENU_SERVER_UPDATE_RETRY_ATTR}],
@@ -961,16 +1040,19 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_SERVER_UPDATE_RETRY_ATTR}]:hover,
 [${ACCOUNT_MENU_SERVER_UPDATE_DISMISS_ATTR}]:hover,
 [${ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_COPY_ATTR}]:hover {
-  background: var(--recued-surface-hover, rgba(127,127,127,.12));
+  background: var(--surface-subtle, rgba(127,127,127,.12));
+}
+/* The amber heading has no theme token, so its dark shade follows the theme
+   the way tokens.css does: a pinned Dark, or the OS's dark when nothing is
+   pinned. ⛔ Not the OS media query alone — this menu holds the theme button,
+   and with Dark pinned on a light OS (or Light on a dark one) the old
+   OS-only rules left light text on white, or dark text on near-black. */
+:root[data-theme="dark"] [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] h3 {
+  color: #f2c15c;
 }
 @media (prefers-color-scheme: dark) {
-  [${ACCOUNT_MENU_POPOVER_ATTR}] { background: var(--recued-surface, #1b1b1f); }
-  [${ACCOUNT_MENU_BADGE_ATTR}] { box-shadow: 0 0 0 2px var(--recued-surface, #1b1b1f); }
-  [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] {
-    background: color-mix(in srgb, var(--warning, #9a6700) 10%, var(--recued-surface, #1b1b1f));
-  }
-  [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] h3 {
-    color: var(--recued-warning-on-dark, #f2c15c);
+  :root:not([data-theme]) [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] h3 {
+    color: #f2c15c;
   }
 }
 `;
@@ -1016,6 +1098,15 @@ export const mountAccountMenu = (
   // with, or a switch followed by an outage would repaint the stale list.
   let profiles = opts.profiles;
   let activeId = opts.activeProfileId;
+  // The open "Add another server?" review, if any (see the add button below).
+  // Declared with the menu's state: closing the menu closes it.
+  let addServerReview: { workState: ServerSwitchWorkState; panel: HTMLElement } | null = null;
+  const closeAddServerReview = (returnFocus: boolean): void => {
+    if (addServerReview === null) return;
+    serversRow.removeChild(addServerReview.panel);
+    addServerReview = null;
+    if (returnFocus) focusElement(addServer);
+  };
   let activeWork = opts.activeWork?.map((work) => ({ ...work })) ?? [];
   let serverUpdateGuide: AccountServerUpdateGuide | null = null;
   let serverUpdateFinishReturnRequested = false;
@@ -2590,6 +2681,7 @@ export const mountAccountMenu = (
       renderConnectionDiagnosis();
       // A live "Remove?" must not survive a close and greet the next open.
       profileList.disarm();
+      closeAddServerReview(false);
       if (behavior?.returnFocus === true) focusElement(trigger);
       if (wasOpen) opts.onClose?.();
       if (wasOpen && closedDiagnosis !== null) {
@@ -2770,10 +2862,124 @@ export const mountAccountMenu = (
     setOpen(false);
   });
 
-  addServer.addEventListener('click', () => {
+  // ⛔ Adding a server reloads this tab onto a pairing page. It used to do so
+  // at once, leaving an unsent Chat message to the browser's own "Leave
+  // site?" box — and Stay left the tab half-moved: the saved pointer already
+  // on the new attempt, the page still on the old server.
+  const showAddServerReview = (workState: ServerSwitchWorkState): void => {
+    if (addServerReview !== null) closeAddServerReview(false);
+    const panel = doc.createElement('div');
+    panel.setAttribute(ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR, '');
+    panel.setAttribute('role', 'group');
+    panel.setAttribute('aria-labelledby', 'recued-account-add-server-title');
+    const title = doc.createElement('h3');
+    title.setAttribute('id', 'recued-account-add-server-title');
+    title.textContent = 'Add another server?';
+    panel.appendChild(title);
+    const sourceLabel = profiles.find((profile) => profile.id === activeId)?.label
+      ?? 'this server';
+    const consequence = doc.createElement('p');
+    consequence.textContent = leaveServerWorkConsequence(workState, 'Adding a server', sourceLabel) ?? '';
+    panel.appendChild(consequence);
+    const actions = doc.createElement('div');
+    actions.className = 'recued-account-add-server-actions';
+    const commit = doc.createElement('button');
+    commit.setAttribute('type', 'button');
+    commit.setAttribute(ACCOUNT_MENU_ADD_SERVER_COMMIT_ATTR, '');
+    commit.textContent = 'Add a server';
+    commit.addEventListener('click', () => {
+      const latest = opts.switchWorkState?.() ?? 'clean';
+      if (!serverSwitchReviewCoversWorkState(workState, latest)) {
+        // The work changed under the open review: show what it costs NOW.
+        showAddServerReview(latest);
+        return;
+      }
+      closeAddServerReview(false);
+      setOpen(false, { returnFocus: true });
+      opts.onAddServer?.();
+    });
+    const cancel = doc.createElement('button');
+    cancel.setAttribute('type', 'button');
+    cancel.setAttribute(ACCOUNT_MENU_ADD_SERVER_CANCEL_ATTR, '');
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => closeAddServerReview(true));
+    actions.appendChild(commit);
+    actions.appendChild(cancel);
+    panel.appendChild(actions);
+    // The add entry is the row's last child, so the review lands right under it.
+    serversRow.appendChild(panel);
+    addServerReview = { workState, panel };
+    // The choice warns of a loss: start on the safe answer.
+    focusElement(cancel);
+  };
+  const startAddServer = (): void => {
+    const workState = opts.switchWorkState?.() ?? 'clean';
+    if (workState !== 'clean') {
+      showAddServerReview(workState);
+      return;
+    }
     setOpen(false, { returnFocus: true });
     opts.onAddServer?.();
-  });
+  };
+  addServer.addEventListener('click', startAddServer);
+
+  // ⛔ A pairing link opened while this browser already used a server was
+  // dropped without a word: the boot mounted that server and wiped the code
+  // from the address bar. The offer says what the link is for, here beside
+  // the entry it uses.
+  let pairingLinkOffer: { panel: HTMLElement; add: HTMLElement; text: HTMLElement } | null = null;
+  /** Names the server in use; the roster can arrive after the offer does. */
+  const renderPairingLinkText = (): void => {
+    if (pairingLinkOffer === null) return;
+    const label = profiles.find((profile) => profile.id === activeId)?.label.trim();
+    pairingLinkOffer.text.textContent = label !== undefined && label.length > 0
+      ? `This browser is using ${label}. The link can add another server here.`
+      : 'This browser already uses a server. The link can add another server here.';
+  };
+  const offerPairingLink = (): void => {
+    if (disposed || opts.onAddServer === undefined) return;
+    if (pairingLinkOffer === null) {
+      const panel = doc.createElement('div');
+      panel.setAttribute(ACCOUNT_MENU_PAIRING_LINK_ATTR, '');
+      panel.setAttribute('role', 'group');
+      panel.setAttribute('aria-labelledby', 'recued-account-pairing-link-title');
+      const title = doc.createElement('h3');
+      title.setAttribute('id', 'recued-account-pairing-link-title');
+      title.textContent = 'You opened a pairing link';
+      panel.appendChild(title);
+      const text = doc.createElement('p');
+      panel.appendChild(text);
+      const actions = doc.createElement('div');
+      actions.className = 'recued-account-pairing-link-actions';
+      const add = doc.createElement('button');
+      add.setAttribute('type', 'button');
+      add.setAttribute(ACCOUNT_MENU_PAIRING_LINK_ADD_ATTR, '');
+      add.textContent = 'Add a server with this link';
+      add.addEventListener('click', startAddServer);
+      const dismiss = doc.createElement('button');
+      dismiss.setAttribute('type', 'button');
+      dismiss.setAttribute(ACCOUNT_MENU_PAIRING_LINK_DISMISS_ATTR, '');
+      dismiss.textContent = 'Not now';
+      dismiss.addEventListener('click', () => {
+        serversRow.removeChild(panel);
+        pairingLinkOffer = null;
+        opts.onDismissPairingLink?.();
+        focusElement(addServer);
+      });
+      actions.appendChild(add);
+      actions.appendChild(dismiss);
+      panel.appendChild(actions);
+      // Just above the entry it uses (re-appended after it: the entry is
+      // the row's last child).
+      serversRow.removeChild(addServer);
+      serversRow.appendChild(panel);
+      serversRow.appendChild(addServer);
+      pairingLinkOffer = { panel, add, text };
+      renderPairingLinkText();
+    }
+    setOpen(true);
+    focusElement(pairingLinkOffer.add);
+  };
 
   serverUpdateReturn.addEventListener('click', () => {
     const guide = serverUpdateGuide;
@@ -2969,6 +3175,18 @@ export const mountAccountMenu = (
         `[${SERVER_CONTROL_POPOVER_ATTR}]`,
       ) !== null
     ) return;
+    // The innermost open thing takes the Escape: a rename, a review, the
+    // add-server review. ⛔ It closed the whole menu, and a half-typed name
+    // went with it.
+    if (profileList.dismissNested()) {
+      event.preventDefault?.();
+      return;
+    }
+    if (addServerReview !== null) {
+      event.preventDefault?.();
+      closeAddServerReview(true);
+      return;
+    }
     setOpen(false, { returnFocus: true });
   };
   const docEvents = doc as unknown as {
@@ -2986,6 +3204,7 @@ export const mountAccountMenu = (
   return {
     isOpen: () => open,
     open: () => setOpen(true, { focusContent: true }),
+    offerPairingLink,
     close: () => {
       if (disposed || profileList.hasInFlightAction()) return false;
       setOpen(false, { returnFocus: true });
@@ -3196,6 +3415,7 @@ export const mountAccountMenu = (
       }
       profileList.refresh(profiles, activeId, unreachable, activeConnected);
       renderServerUpdateGuide();
+      renderPairingLinkText();
       renderBadge();
     },
     setUnreachable(next) {

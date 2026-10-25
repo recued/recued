@@ -818,7 +818,7 @@ describe('D-169 pair-code-input-host — lock and preflight integration', () => 
     expect(onAfterPair).not.toHaveBeenCalled();
     expect(fake.getStatus()?.dataset.error).toBe('pair_code_input_already_paired');
     expect(fake.getStatus()?.textContent).toBe(
-      'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
+      'Another tab paired this browser while this form was open. Reload the page to use it. To add a different server, choose Add another server in Account & servers: your other servers stay as they are.',
     );
   });
 
@@ -979,7 +979,7 @@ describe('D-169 pair-code-input-host — post-submit lifecycle', () => {
 
   it('PAIR_CODE_INPUT_ERROR_COPY covers pair_code_input_already_paired', () => {
     expect(PAIR_CODE_INPUT_ERROR_COPY.pair_code_input_already_paired).toBe(
-      'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
+      'Another tab paired this browser while this form was open. Reload the page to use it. To add a different server, choose Add another server in Account & servers: your other servers stay as they are.',
     );
   });
 });

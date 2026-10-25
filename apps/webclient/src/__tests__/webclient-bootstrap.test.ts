@@ -46,6 +46,7 @@ import { RECIPES_ROUTE_RECIPE_CARD_ATTR, type RecipeExecuteCaller } from '../rec
 import { RunModal } from '@recued/ui-shared';
 import { generateRecoveryKey } from '@recued/crypto';
 import type { WebclientLocalStore } from '../storage/local-store.js';
+import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
 import type {
   WebclientTokenStore,
   WebclientTokenAad,
@@ -84,7 +85,7 @@ import {
   RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR,
 } from '../kitchen/recipe-editor/recipe-editor-route.js';
 import { SERVER_PILL_HOST_ATTR } from '../shell/server-pill-host.js';
-import { SERVER_SWITCH_CONTINUITY_SESSION_KEY } from '../shell/server-switch-continuity.js';
+import { SERVER_SWITCH_CONTINUITY_SESSION_KEY, peekServerSwitchArrival } from '../shell/server-switch-continuity.js';
 import { createFoundationalOAuthReloadStore } from '../connections/foundational-oauth-reload.js';
 import {
   CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
@@ -129,12 +130,19 @@ import {
 import { THEME_TOGGLE_ATTR } from '../shell/theme-controller.js';
 import { WEBCLIENT_DEFAULT_SUBSCRIPTIONS } from '../realtime/subscriber.js';
 import {
+  WEBCLIENT_FIRST_CONNECT_GRACE_MS,
+  WEBCLIENT_OFFLINE_GRACE_MS,
+} from '../realtime/connection-status.js';
+import {
   GLOBAL_RUN_PALETTE_SHORTCUT,
   GLOBAL_RUN_PALETTE_TRIGGER_ATTR,
 } from '../shell/global-run-palette.js';
 import { WebclientReauthRequiredError } from '../realtime/ws-client.js';
 import {
   ACCOUNT_MENU_ADD_SERVER_ATTR,
+  ACCOUNT_MENU_PAIRING_LINK_ADD_ATTR,
+  ACCOUNT_MENU_PAIRING_LINK_ATTR,
+  ACCOUNT_MENU_PAIRING_LINK_DISMISS_ATTR,
   ACCOUNT_MENU_ACTIVE_WORK_ATTR,
   ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR,
   ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
@@ -1247,7 +1255,8 @@ describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
     const shellStyle = fixture.fakeDoc.styleElements.find((style) =>
       style.attrs.has(WEBCLIENT_SHELL_STYLES_MARKER),
     );
-    expect(shellStyle?.textContent).toContain('height: 100dvh');
+    // The dynamic viewport, less the connection banner while it shows.
+    expect(shellStyle?.textContent).toContain('height: calc(100dvh - var(--wc-connection-banner-h, 0px))');
     expect(shellStyle?.textContent).toContain('backdrop-filter: blur(14px)');
     expect(shellStyle?.textContent).toContain(
       '.webclient-shell-brand:focus-visible',
@@ -5311,6 +5320,51 @@ describe('D-148 § A.4 — bootstrapWebclient: bearer rotation', () => {
   });
 });
 
+describe('bootstrapWebclient: a tab keeps to the server it started on', () => {
+  // ⛔ Another tab's switch moves the active pointer every tab shares. Read
+  // through it, this tab's next reconnect dialed the other server — with
+  // THIS server's token when that one had no sign-in of its own.
+  for (const officeSignedIn of [true, false]) {
+    it(`reconnects to its own server after another tab switches (Office ${officeSignedIn ? 'signed in' : 'without a sign-in'})`, async () => {
+      const store = createInMemoryWebclientLocalStore();
+      const office = await store.ensureProfile('wss://office.example/ws');
+      if (officeSignedIn) {
+        await store.set('server_public_key', 'KEY-OFFICE');
+        await store.set('webclient_token', sampleToken('tok-office'));
+      }
+      await store.ensureProfile('wss://alice.recued.cloud:8443/ws');
+      await store.set('server_public_key', 'spki-base64');
+      await store.set('webclient_token', sampleToken('tok-abc'));
+      const fixture = buildOpts();
+      const handle = await bootstrapWebclient({
+        ...fixture.opts,
+        localStore: store,
+        profileStore: store,
+        enablePassportFetchVerify: false,
+      });
+      expect(fixture.transportControls.lastOpenArgs()?.server_url)
+        .toBe('wss://alice.recued.cloud:8443/ws');
+
+      await store.switchProfile(office); // another tab chose Office
+      vi.useFakeTimers();
+      try {
+        fixture.transportControls.fireState('disconnected');
+        await vi.advanceTimersByTimeAsync(10_000);
+      } finally {
+        vi.useRealTimers();
+        await flush();
+      }
+
+      const reopened = fixture.transportControls.lastOpenArgs();
+      expect(reopened?.server_url).toBe('wss://alice.recued.cloud:8443/ws');
+      expect(reopened?.bearer.startsWith('tok-abc.')).toBe(true);
+      expect(fixture.tokenStoreControls.unwrapCalls().map((c) => c.record_id))
+        .not.toContain('tok-office');
+      await handle.dispose();
+    });
+  }
+});
+
 // ══════════════════════════════════════════════════════════════════
 // Tier 3 — server_heartbeat demux wire (half-open detection)
 // ══════════════════════════════════════════════════════════════════
@@ -5389,6 +5443,31 @@ describe('Tier 3 — bootstrapWebclient: server_heartbeat feeds half-open detect
     });
     expect(announcer!.textContent).toBe('');
 
+    await handle.dispose();
+  });
+});
+
+describe('bootstrapWebclient: the offline window at launch vs after a drop', () => {
+  it('waits the first-connect window at launch and the shorter one after a drop', async () => {
+    const fixture = buildOpts();
+    // Every delay the connection-status controller asks for, in order.
+    const delays: number[] = [];
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      setConnectionStatusTimer: (_handler, delayMs) => {
+        delays.push(delayMs);
+        return { cancel: () => undefined };
+      },
+    });
+    await flush();
+
+    // Armed before the socket opened, so it is the launch window. Passing
+    // `connectionStatusGraceMs` would have set it to the shorter one.
+    expect(delays[0]).toBe(WEBCLIENT_FIRST_CONNECT_GRACE_MS);
+
+    // The fake transport connected on open; now the socket drops.
+    fixture.transportControls.fireState('reconnecting');
+    expect(delays[delays.length - 1]).toBe(WEBCLIENT_OFFLINE_GRACE_MS);
     await handle.dispose();
   });
 });
@@ -6037,6 +6116,10 @@ const buildProfileStore = (
       calls.push(`ensure:${url}`);
       return state.activeId ?? '';
     },
+    async commitPair(url) {
+      calls.push(`commit:${url}`);
+      return state.activeId ?? '';
+    },
     async switchProfile(id) {
       calls.push(`switch:${id}`);
       state.activeId = id;
@@ -6065,6 +6148,8 @@ const buildProfileStore = (
   return { store, calls, state };
 };
 
+/** A saved server as this browser holds one: signed in. (One without a
+ *  sign-in is a different case — switching to it opens pairing.) */
 const switcherProfile = (
   id: string,
   label: string,
@@ -6073,7 +6158,7 @@ const switcherProfile = (
   id,
   label,
   server_url,
-  webclient_token: null,
+  webclient_token: sampleToken(`tok-${id}`),
   server_public_key: null,
   pair_metadata: null,
   cert_pin_state: null,
@@ -9429,6 +9514,48 @@ describe('bootstrapWebclient: Account server profiles', () => {
     ]);
     expect(reload).toHaveBeenCalledTimes(1);
     expect(onActiveServerProfileChanged).toHaveBeenCalledOnce();
+    await handle.dispose();
+  });
+
+  it('switching to a saved server with no sign-in opens pairing for it instead', async () => {
+    // ⛔ Making its address-only record active read, at every start, as a
+    // pairing cut short: "Another tab is saving your sign-in" over an empty
+    // address box, and in the real app a repair card whose Clear deleted it.
+    const fixture = buildOpts();
+    const lab: WebclientServerProfile = { ...OFFICE_PROFILE, label: 'Lab', webclient_token: null };
+    const profiles = buildProfileStore([HOME_PROFILE, lab], 'p1');
+    profiles.store.beginNewProfile = async () => {
+      profiles.calls.push('begin');
+      profiles.state.profiles = [
+        ...profiles.state.profiles,
+        { ...switcherProfile('pending', '', ''), webclient_token: null },
+      ];
+      profiles.state.activeId = 'pending';
+    };
+    const storage = memorySessionStorage();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    expect(subtreeText(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!))
+      .toContain('Switching opens the pairing page for it, with its address filled in.');
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('begin');
+    expect(profiles.calls).not.toContain('switch:p2');
+    // Lab keeps its record and its name for pairing to re-attach to, and the
+    // pair form learns which server to fill in.
+    expect(profiles.state.profiles.find((p) => p.id === 'p2')?.label).toBe('Lab');
+    expect(peekServerSwitchArrival(storage)).toEqual({ targetProfileId: 'p2' });
+    expect(reload).toHaveBeenCalledTimes(1);
     await handle.dispose();
   });
 
@@ -14505,8 +14632,8 @@ describe('bootstrapWebclient: Account server profiles', () => {
       + 'recued-server-switch-convergence-detail '
       + 'recued-server-switch-convergence-boundary',
     );
-    expect(subtreeText(dialog!)).toContain('home (wss://home.example/ws)');
-    expect(subtreeText(dialog!)).toContain('office (wss://office.example/ws)');
+    expect(subtreeText(dialog!)).toContain('home (home.example)');
+    expect(subtreeText(dialog!)).toContain('office (office.example)');
     expect(subtreeText(dialog!)).toContain('never move it to another server');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
       .toBe('Private source-server thought');
@@ -14559,7 +14686,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
 
     expect(reload).not.toHaveBeenCalled();
     const dialog = findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR)!;
-    expect(subtreeText(dialog)).toContain('studio (wss://studio.example/ws)');
+    expect(subtreeText(dialog)).toContain('studio (studio.example)');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ERROR_ATTR)?.textContent)
       .toContain('changed again');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
@@ -14666,6 +14793,77 @@ describe('bootstrapWebclient: Account server profiles', () => {
       findByAttr(fixture.root, ACCOUNT_MENU_POPOVER_ATTR)?.hasAttribute('hidden'),
     ).toBe(true);
 
+    await handle.dispose();
+  });
+
+  it('forgetting the CURRENT server lands on the next one the way a switch does', async () => {
+    // ⛔ It reloaded bare onto the fallback server: siblings untold, the old
+    // route kept, and no word of where the tab had gone.
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings/server/reachability');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const storage = memorySessionStorage();
+    const replaceHashForServerSwitch = vi.fn();
+    const onActiveServerProfileChanged = vi.fn();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch,
+      onActiveServerProfileChanged,
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR)
+      .find((button) => button.getAttribute('data-profile-id') === 'p1')!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('remove:p1');
+    expect(onActiveServerProfileChanged).toHaveBeenCalled();
+    expect(replaceHashForServerSwitch).toHaveBeenCalledWith('#settings/server');
+    expect(peekServerSwitchArrival(storage)).toEqual({ targetProfileId: 'p2' });
+    expect(reload).toHaveBeenCalledTimes(1);
+    await handle.dispose();
+  });
+
+  it('forgetting the current server opens pairing for a next one with no sign-in', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore(
+      [HOME_PROFILE, { ...OFFICE_PROFILE, webclient_token: null }],
+      'p1',
+    );
+    profiles.store.beginNewProfile = async () => {
+      profiles.calls.push('begin');
+      profiles.state.profiles = [
+        ...profiles.state.profiles,
+        { ...switcherProfile('pending', '', ''), webclient_token: null },
+      ];
+      profiles.state.activeId = 'pending';
+    };
+    const storage = memorySessionStorage();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR)
+      .find((button) => button.getAttribute('data-profile-id') === 'p1')!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('begin');
+    // The pair form fills in the server the marker names.
+    expect(peekServerSwitchArrival(storage)).toEqual({ targetProfileId: 'p2' });
+    expect(reload).toHaveBeenCalledTimes(1);
     await handle.dispose();
   });
 
@@ -14923,6 +15121,115 @@ describe('bootstrapWebclient: adding a server', () => {
       'begin',
     ]);
     expect(reload).toHaveBeenCalledTimes(1);
+    await handle.dispose();
+  });
+
+  it('leaves the way a switch does: siblings told, only a safe area kept, the attempt named', async () => {
+    // ⛔ It reloaded bare: other tabs were not told, and the old server's
+    // route and record ids rode along to whichever server was paired next.
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings/server/reachability');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    profiles.store.beginNewProfile = async () => {
+      profiles.calls.push('begin');
+      profiles.state.profiles = [
+        ...profiles.state.profiles,
+        { ...switcherProfile('pending', '', ''), webclient_token: null },
+      ];
+      profiles.state.activeId = 'pending';
+    };
+    const storage = memorySessionStorage();
+    const replaceHashForServerSwitch = vi.fn();
+    const onActiveServerProfileChanged = vi.fn();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch,
+      onActiveServerProfileChanged,
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(fixture.root, ACCOUNT_MENU_ADD_SERVER_ATTR)!.click();
+    await flush();
+
+    expect(onActiveServerProfileChanged).toHaveBeenCalledOnce();
+    expect(replaceHashForServerSwitch).toHaveBeenCalledWith('#settings/server');
+    expect(peekServerSwitchArrival(storage)).toEqual({ targetProfileId: 'pending' });
+    expect(reload).toHaveBeenCalledTimes(1);
+    await handle.dispose();
+  });
+
+  // ⛔ A pairing link opened while this browser already used a server was
+  // dropped: the boot mounted that server and wiped the code from the address
+  // bar, and said nothing.
+  it('answers a pairing link with the Add offer, and carries its code into the add-server reload', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    profiles.store.beginNewProfile = async () => {
+      profiles.calls.push('begin');
+      profiles.state.activeId = 'pending';
+    };
+    const carried: string[] = [];
+    const reload = vi.fn(() => { carried.push('reload'); });
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: vi.fn(),
+      pairingLinkCode: 'K7Q2-M9XA',
+      carryPairingLinkCode: (code) => { carried.push(`code:${code}`); },
+    });
+    await flush();
+
+    const offer = findByAttr(fixture.root, ACCOUNT_MENU_PAIRING_LINK_ATTR);
+    expect(offer).not.toBeNull();
+    findByAttr(fixture.root, ACCOUNT_MENU_PAIRING_LINK_ADD_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('begin');
+    expect(carried).toEqual(['code:K7Q2-M9XA', 'reload']);
+    await handle.dispose();
+  });
+
+  it('carries no code once the pairing link offer is set aside', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    profiles.store.beginNewProfile = async () => { profiles.state.activeId = 'pending'; };
+    const carryPairingLinkCode = vi.fn();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: vi.fn(),
+      pairingLinkCode: 'K7Q2-M9XA',
+      carryPairingLinkCode,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_PAIRING_LINK_DISMISS_ATTR)!.click();
+    findByAttr(fixture.root, ACCOUNT_MENU_ADD_SERVER_ATTR)!.click();
+    await flush();
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(carryPairingLinkCode).not.toHaveBeenCalled();
+    await handle.dispose();
+  });
+
+  it('opens no offer without a pairing link', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_PAIRING_LINK_ATTR)).toBeNull();
     await handle.dispose();
   });
 

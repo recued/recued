@@ -390,6 +390,7 @@ export const createWatchedFolderCollection = (
     get: (record_id) => table.get(record_id),
     list: (query: CollectionListQuery) => table.list(query),
     search: (query: CollectionSearchQuery): CollectionSearchMatch[] => table.search(query),
+    checkSpelling: (query: string) => table.checkSpelling(query),
     health,
     runRetention: async (): Promise<CollectionPruneResult> => retention.run(),
     async close() {},

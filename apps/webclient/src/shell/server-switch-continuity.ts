@@ -335,6 +335,27 @@ export const consumeServerSwitchArrival = (
   }
   if (raw === null) return null;
   retireMarker(resolved);
+  return parseServerSwitchArrival(raw);
+};
+
+/** Read the pending switch WITHOUT retiring it. The pair form uses it when a
+ * switch to a saved server with no sign-in opened pairing instead: it names
+ * which server to fill in, and the shell still consumes the marker (and
+ * confirms the arrival) once pairing has brought that server up. */
+export const peekServerSwitchArrival = (
+  storage?: ServerSwitchContinuityStorage | null,
+): ServerSwitchArrival | null => {
+  const resolved = resolveStorage(storage);
+  if (resolved === undefined) return null;
+  try {
+    const raw = resolved.getItem(SERVER_SWITCH_CONTINUITY_SESSION_KEY);
+    return raw === null ? null : parseServerSwitchArrival(raw);
+  } catch {
+    return null;
+  }
+};
+
+const parseServerSwitchArrival = (raw: string): ServerSwitchArrival | null => {
   if (raw === RETIRED_MARKER) return null;
   try {
     const parsed: unknown = JSON.parse(raw);

@@ -21,6 +21,7 @@ import {
 import {
   WEBCLIENT_SHELL_STYLES,
   WEBCLIENT_SHELL_DRAWER_ATTR,
+  WEBCLIENT_SHELL_HOST_ATTR,
 } from '../webclient-bootstrap.js';
 
 interface El {
@@ -165,5 +166,18 @@ describe('the drawer keeps clear of the banner', () => {
     ).split('}')[0]!;
     expect(drawerRule).toContain(`var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px)`);
     expect(drawerRule).toMatch(/padding:[^;]*calc\(/);
+  });
+});
+
+describe('the shell ends above the banner', () => {
+  // ⛔ A full viewport tall, the shell ran under the fixed banner: on a phone it
+  // covered the Chat box and its Send button.
+  it('takes the published banner height off its own height, not a literal', () => {
+    const hostRule = WEBCLIENT_SHELL_STYLES.slice(
+      WEBCLIENT_SHELL_STYLES.indexOf(`[${WEBCLIENT_SHELL_HOST_ATTR}] {`),
+    ).split('}')[0]!;
+    expect(hostRule).toContain(`height: calc(100dvh - var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));`);
+    expect(hostRule).toContain(`min-height: calc(100dvh - var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));`);
+    expect(hostRule).not.toMatch(/(^|[\s;])height: 100dvh;/);
   });
 });

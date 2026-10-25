@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { isAssetDate, nextAnnualDate, validateAssetRule, type Episode, type EpisodeInput, type Occasion, type OccasionInput,
-  type SituationPlace, type SituationRef } from '@recued/contracts';
+  type ProactiveSuppression, type SituationPlace, type SituationRef } from '@recued/contracts';
 import type { ProactiveProposalStore } from './proactive-proposal-store.js';
 
 const validText = (value: unknown, maximum: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= maximum;
@@ -54,7 +54,10 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
     db.prepare('INSERT INTO proactive_episodes(id,updated_at,value) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,value=excluded.value').run(id, at, JSON.stringify(value));
     return value;
   };
-  const suppressed = (input: Pick<Episode, 'id' | 'when' | 'where' | 'people'> & { class_id?: string }): boolean => proposals.suppressions().some(row =>
+  /** `current` is the suppressions a caller already read, for one that checks many
+   * items in a pass, as `allows` takes them; otherwise each call reads them. */
+  const suppressed = (input: Pick<Episode, 'id' | 'when' | 'where' | 'people'> & { class_id?: string },
+    current?: readonly ProactiveSuppression[]): boolean => (current ?? proposals.suppressions()).some(row =>
     row.kind === 'episode' && row.value === input.id || row.kind === 'person' && input.people.includes(row.value ?? '')
     || row.kind === 'place' && row.value === input.where?.key
     || row.kind === 'date_range' && row.from! <= input.when.to && row.to! >= input.when.from

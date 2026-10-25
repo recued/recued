@@ -144,6 +144,79 @@ for (const width of [390, 1280]) {
     });
   }
 
+  for (const field of fields) {
+    test(`Certificates local validation links ${field}, focuses it and preserves correction at ${width}px`, async ({ page, browserName }) => {
+      await open(page, width);
+      const pem = '-----BEGIN CERTIFICATE-----\nSYNTHETIC\n-----END CERTIFICATE-----';
+      const key = '-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----';
+      const valid: Record<Field, string> = { domain: drafts.domain, cert_pem: pem, private_key_pem: key, chain_pem: pem };
+      const labels: Record<Field, string> = { domain: 'Hostname', cert_pem: 'Certificate (PEM)', private_key_pem: 'Private key (PEM)', chain_pem: 'Issuer chain (PEM, optional)' };
+      for (const name of fields) await control(page, name).fill(name === field ? (name === 'chain_pem' ? 'invalid chain' : '') : valid[name]);
+      const input = control(page, field), helpId = `tls-validation-help-${width}-${field}`;
+      await input.evaluate((input, id) => {
+        const help = document.createElement('p'); help.id = id; help.textContent = 'Synthetic field help.';
+        input.parentElement!.parentElement!.appendChild(help); input.setAttribute('aria-describedby', id);
+      }, helpId);
+      const originalForm = await form(page).elementHandle();
+      const originals = await Promise.all(fields.map(name => control(page, name).elementHandle()));
+      for (const name of fields) await expect(control(page, name)).not.toHaveAttribute('aria-invalid');
+      const submit = panel(page).getByRole('button', { name: 'Upload certificate', exact: true });
+      await submit.focus(); await submit.press('Enter');
+      const error = panel(page).locator('[data-recued-tls-certs-error]');
+      await expect(error).toBeVisible(); await expect(input).toBeFocused();
+      const id = await error.getAttribute('id'); expect(id).toBeTruthy();
+      await expect(input).toHaveAttribute('aria-invalid', 'true');
+      await expect(input).toHaveAttribute('aria-describedby', `${helpId} ${id}`);
+      await expect(input).toHaveAccessibleName(labels[field]);
+      await expect(input).toHaveAccessibleDescription(`Synthetic field help. ${await error.innerText()}`);
+      expect(await input.evaluate((input, id) => input.parentElement!.parentElement!.contains(document.getElementById(id!)) && !input.parentElement!.contains(document.getElementById(id!)), id)).toBe(true);
+      for (const name of fields.filter(name => name !== field)) await expect(control(page, name)).not.toHaveAttribute('aria-invalid');
+      await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
+      await expect(field === 'domain' ? control(page, 'cert_pem') : picker(page, field)).toBeFocused();
+      await submit.focus(); await submit.press('Enter');
+      await expect(error).toHaveAttribute('id', id!);
+      await expect(input).toHaveAttribute('aria-describedby', `${helpId} ${id}`);
+      await expect(input).toBeFocused();
+      const before = await input.inputValue(), range = await selection(input);
+      await page.keyboard.type('X');
+      const edited = before.slice(0, range.start!) + 'X' + before.slice(range.end!);
+      await expect(input).toHaveValue(edited); await expect(input).toBeFocused();
+      await expect(input).not.toHaveAttribute('aria-invalid');
+      await expect(input).toHaveAttribute('aria-describedby', helpId); await expect(error).toHaveCount(0);
+      // The browser may include the fixture fill in its native undo group.
+      await page.keyboard.press('ControlOrMeta+z'); expect(await input.inputValue()).not.toBe(edited);
+      await page.keyboard.press('ControlOrMeta+Shift+z'); await expect(input).toHaveValue(edited);
+      await expect(error).toHaveCount(0);
+      await input.fill(field === 'chain_pem' ? 'invalid chain' : '');
+      await submit.focus(); await submit.press('Enter'); await expect(input).toHaveAttribute('aria-invalid', 'true');
+      if (field === 'domain') await input.fill(valid[field]);
+      else {
+        const hostname = control(page, 'domain'); await hostname.focus(); await select(hostname, 2, 5);
+        const selected = await selection(hostname);
+        await picker(page, field).setInputFiles({ name: 'fixture.pem', mimeType: 'text/plain', buffer: Buffer.from(valid[field]) });
+        await expect(input).toHaveValue(valid[field]); await expect(hostname).toBeFocused();
+        expect(await selection(hostname)).toEqual(selected);
+        await expect(picker(page, field)).toHaveAccessibleName(`Choose file: ${labels[field]}`);
+      }
+      await expect(input).not.toHaveAttribute('aria-invalid'); await expect(input).toHaveAttribute('aria-describedby', helpId);
+      await expect(error).toHaveCount(0);
+      for (const node of originals) expect(await node!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await originalForm!.evaluate(node => node.isConnected)).toBe(true);
+      await page.evaluate(() => { window.__certificateEditing.expectedUploads = 1; });
+      await submit.focus(); await submit.press('Enter'); await expect(error).toContainText('Synthetic certificate refused.');
+      for (const name of fields) await expect(control(page, name)).not.toHaveAttribute('aria-invalid');
+      await expect(input).toHaveAttribute('aria-describedby', helpId);
+      await expect(input).toHaveAccessibleDescription('Synthetic field help.');
+      await form(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+      expect(await originalForm!.evaluate(node => node.isConnected)).toBe(false);
+      await expect(page.locator(`[id="${id}"]`)).toHaveCount(0);
+      await panel(page).getByRole('button', { name: 'Upload a certificate', exact: true }).click();
+      await expect(control(page, field)).not.toHaveAttribute('aria-invalid');
+      await expect(control(page, field)).not.toHaveAttribute('aria-describedby');
+      await expect(panel(page).locator('[data-recued-tls-certs-error]')).toHaveCount(0);
+    });
+  }
+
   for (const refusal of ['local', 'issues', 'error'] as const) {
     test(`Certificates correction clears ${refusal} feedback while keeping the draft editable at ${width}px`, async ({ page }) => {
       await open(page, width, refusal === 'issues' ? 'issues' : 'error');
@@ -182,6 +255,7 @@ interface CertificateNavigationFixture {
   installed: boolean;
   failRead: boolean;
   failUpload: boolean;
+  uploadIssues?: boolean;
   failRemove: boolean;
 }
 declare global { interface Window { __certificateNavigation: CertificateNavigationFixture } }
@@ -208,7 +282,8 @@ const certNavOpen = async (page: Page, width: number, seed = false, openForm = t
         }
         if (method === 'tls_domain.upload') {
           fixture.uploads.push(args);
-          if (nav.failUpload) return { error: { code: 'UNAVAILABLE', message: 'Synthetic upload failed.' } };
+          if (nav.failUpload) return { error: { code: nav.uploadIssues ? 'INVALID_ARGUMENT' : 'UNAVAILABLE', message: 'Synthetic upload failed.',
+            ...(nav.uploadIssues ? { details: { issues: [{ code: 'tls_san_mismatch' }, { code: 'tls_chain_invalid' }] } } : {}) } };
           nav.installed = true;
           return { result: { fingerprint: 'cd'.repeat(32), expires_at: Date.now() + 90 * 86400000, san: ['server.example.test'] } };
         }
@@ -234,13 +309,15 @@ const certNavFill = async (page: Page) => {
   await control(page, 'cert_pem').fill('-----BEGIN CERTIFICATE-----\nSYNTHETIC\n-----END CERTIFICATE-----');
   await control(page, 'private_key_pem').fill('-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----');
 };
-const certNavBeginUpload = async (page: Page, fail = false) => {
-  await certNavFill(page);
+const certNavStartUpload = async (page: Page, fail = false) => {
   await page.evaluate(fail => {
     window.__certificateEditing.expectedUploads++; window.__certificateNavigation.failUpload = fail;
     window.__app.holdRpcResponses?.('tls_domain.upload');
   }, fail);
   await certNavUpload(page).press('Enter'); await expect(form(page).getByRole('button', { name: 'Uploading…', exact: true })).toBeDisabled();
+};
+const certNavBeginUpload = async (page: Page, fail = false) => {
+  await certNavFill(page); await certNavStartUpload(page, fail);
 };
 
 for (const width of [390, 1280]) {
@@ -523,5 +600,121 @@ for (const width of [390, 1280]) {
     const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
     await certNavLeave(page); await expect.poll(() => dialogs).toEqual([certDraftPrompt]);
     await picker(page, 'private_key_pem').setInputFiles([]); expect(await certNavUnload(page)).toBe(false);
+  });
+}
+
+const certDraftStatus = (page: Page) => panel(page).locator('[data-recued-tls-certs-upload-draft-status]');
+for (const width of [390, 1280]) {
+  for (const field of fields) {
+    test(`Certificates pending upload keeps newer ${field} text, selection, undo and navigation guard at ${width}px`, async ({ page }) => {
+      await certNavOpen(page, width); await certNavBeginUpload(page);
+      const input = control(page, field), original = await input.elementHandle(), originalForm = await form(page).elementHandle();
+      await input.fill(field === 'domain' ? 'newer.example.test' : `SYNTHETIC NEWER ${field}`); await page.keyboard.type('X');
+      const edited = await input.inputValue();
+      await page.keyboard.press('ControlOrMeta+z'); const undone = await input.inputValue(); expect(undone).not.toBe(edited);
+      await page.keyboard.press('ControlOrMeta+Shift+z'); await expect(input).toHaveValue(edited);
+      await select(input, 2, 5); const selected = await selection(input);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('tls_domain.upload'))).toBe(1);
+      await expect(certDraftStatus(page)).toContainText(`Certificate installed for ${drafts.domain}.`);
+      await expect(certDraftStatus(page)).toContainText('Your newer edits still need uploading.');
+      await expect(certNavLoading(page)).toHaveCount(0); await expect(certNavUpload(page)).toBeEnabled();
+      await expect(input).toHaveValue(edited); await expect(input).toBeFocused(); expect(await selection(input)).toEqual(selected);
+      expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await originalForm!.evaluate(node => node.isConnected)).toBe(true);
+      await page.keyboard.press('ControlOrMeta+z'); await expect(input).toHaveValue(undone);
+      await page.keyboard.press('ControlOrMeta+Shift+z'); await expect(input).toHaveValue(edited);
+      expect(await certNavUnload(page)).toBe(true);
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await certNavLeave(page); await expect.poll(() => dialogs).toEqual([certDraftPrompt]);
+      await expect(input).toHaveValue(edited); await expect(input).toBeFocused();
+      const uploads = await page.evaluate(() => window.__certificateEditing.uploads);
+      expect(uploads).toHaveLength(1); expect(uploads[0]).toMatchObject({ domain: drafts.domain, source: 'byo_upload' });
+      await form(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(form(page)).toHaveCount(0); expect(await certNavUnload(page)).toBe(false);
+    });
+  }
+
+  for (const refusal of ['generic', 'issues'] as const) {
+    test(`Certificates pending upload qualifies the earlier ${refusal} failure without blaming newer edits at ${width}px`, async ({ page }) => {
+      await certNavOpen(page, width);
+      await page.evaluate(issues => { window.__certificateNavigation.uploadIssues = issues; }, refusal === 'issues');
+      await certNavBeginUpload(page, true);
+      await control(page, 'domain').fill('newer.example.test');
+      const key = control(page, 'private_key_pem'), original = await key.elementHandle();
+      await key.fill('SYNTHETIC NEWER KEY'); await select(key, 2, 5); const selected = await selection(key);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('tls_domain.upload'))).toBe(1);
+      await expect(certDraftStatus(page)).toContainText(`The submitted upload for ${drafts.domain} failed.`);
+      await expect(certDraftStatus(page)).toContainText('Your newer edits still need uploading.');
+      await expect(form(page).locator(refusal === 'issues' ? '[data-recued-tls-certs-issue]' : '[data-recued-tls-certs-error]')).toHaveCount(refusal === 'issues' ? 2 : 1);
+      await expect(key).toHaveValue('SYNTHETIC NEWER KEY'); await expect(key).toBeFocused(); expect(await selection(key)).toEqual(selected);
+      expect(await original!.evaluate(node => node.isConnected)).toBe(true); expect(await certNavUnload(page)).toBe(true);
+      for (const field of fields) await expect(control(page, field)).not.toHaveAttribute('aria-invalid');
+      await control(page, 'domain').fill('corrected.example.test'); await expect(certDraftStatus(page)).toHaveCount(0);
+      await certNavUpload(page).press('Enter'); await expect(key).toHaveAttribute('aria-invalid', 'true'); await expect(key).toBeFocused();
+      await expect(certDraftStatus(page)).toHaveCount(0); await expect(form(page).locator('[data-recued-tls-certs-issue]')).toHaveCount(0);
+      expect(await page.evaluate(() => window.__certificateEditing.uploads)).toHaveLength(1);
+    });
+  }
+
+  for (const mode of ['before-submit', 'after-submit', 'read-first', 'empty'] as const) {
+    test(`Certificates pending upload preserves the ${mode} file choice and delayed read at ${width}px`, async ({ page }) => {
+      await certNavOpen(page, width); await certNavFill(page); await holdCertificateFiles(page);
+      const text = mode === 'empty' ? '' : '-----BEGIN PRIVATE KEY-----\nSYNTHETIC NEWER KEY\n-----END PRIVATE KEY-----';
+      const input = control(page, 'private_key_pem'), file = picker(page, 'private_key_pem');
+      const original = await input.elementHandle(), originalFile = await file.elementHandle(), originalForm = await form(page).elementHandle();
+      if (mode === 'before-submit') await pickCertificateFile(page, 'private_key_pem', text, 'newer.pem');
+      await certNavStartUpload(page);
+      if (mode !== 'before-submit') await pickCertificateFile(page, 'private_key_pem', text, 'newer.pem');
+      const hostname = control(page, 'domain'); await hostname.focus(); await select(hostname, 2, 5); const selected = await selection(hostname);
+      if (mode === 'read-first' || mode === 'empty') await releaseCertificateFile(page, 0);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('tls_domain.upload'))).toBe(1);
+      await expect(certDraftStatus(page)).toContainText(`Certificate installed for ${drafts.domain}.`);
+      await expect(form(page)).toBeVisible(); await expect(certNavLoading(page)).toHaveCount(0);
+      expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await originalFile!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await originalForm!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await file.evaluate((node: HTMLInputElement) => node.files?.[0]?.name)).toBe('newer.pem');
+      if (mode === 'before-submit' || mode === 'after-submit') await releaseCertificateFile(page, 0);
+      if (mode === 'empty') {
+        await expect(input).toHaveValue('-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----');
+        expect(await file.evaluate((node: HTMLInputElement) => node.files?.[0]?.size)).toBe(0);
+      } else await expect(input).toHaveValue(text);
+      await expect(hostname).toBeFocused(); expect(await selection(hostname)).toEqual(selected);
+      expect(await certNavUnload(page)).toBe(true); expect(await page.evaluate(() => window.__certificateEditing.uploads)).toHaveLength(1);
+      await form(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(form(page)).toHaveCount(0); expect(await certNavUnload(page)).toBe(false);
+    });
+  }
+}
+
+for (const width of [390, 1280]) {
+  test(`Certificates retained upload notice follows cleared text and file drafts at ${width}px`, async ({ page }) => {
+    await certNavOpen(page, width); await certNavBeginUpload(page);
+    const original = await form(page).elementHandle();
+    for (const field of fields) await control(page, field).fill('');
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('tls_domain.upload'))).toBe(1);
+    const caption = panel(page).locator('[data-recued-tls-certs-result] .tls-certs-ok');
+    await expect(caption).toHaveText(`Certificate installed for ${drafts.domain}.`);
+    await expect(certDraftStatus(page)).toHaveCount(0); expect(await certNavUnload(page)).toBe(false);
+    await expect(certNavLoading(page)).toHaveCount(0); await certNavBeginUpload(page);
+    await control(page, 'private_key_pem').fill('SYNTHETIC NEWER KEY');
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('tls_domain.upload'))).toBe(1);
+    await expect(certDraftStatus(page)).toContainText('Your newer edits still need uploading.');
+    await expect(certNavLoading(page)).toHaveCount(0);
+    for (const field of fields) await control(page, field).fill('');
+    await expect(caption).toHaveText(`Certificate installed for ${drafts.domain}.`);
+    await expect(certDraftStatus(page)).toHaveCount(0); expect(await certNavUnload(page)).toBe(false);
+    const key = control(page, 'private_key_pem'); await key.focus(); await page.keyboard.type('x');
+    await expect(certDraftStatus(page)).toHaveCount(1); expect(await certNavUnload(page)).toBe(true);
+    await page.keyboard.press('Backspace'); await expect(key).toHaveValue(''); await expect(key).toBeFocused();
+    expect(await selection(key)).toMatchObject({ start: 0, end: 0 });
+    await expect(certDraftStatus(page)).toHaveCount(0); expect(await certNavUnload(page)).toBe(false);
+    await picker(page, 'private_key_pem').setInputFiles({ name: 'empty-fixture.pem', mimeType: 'text/plain', buffer: Buffer.from('') });
+    await expect(certDraftStatus(page)).toHaveCount(1); expect(await certNavUnload(page)).toBe(true);
+    await picker(page, 'private_key_pem').setInputFiles([]);
+    await expect(caption).toHaveText(`Certificate installed for ${drafts.domain}.`);
+    await expect(certDraftStatus(page)).toHaveCount(0); expect(await certNavUnload(page)).toBe(false);
+    await expect(key).toBeFocused(); expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+    expect(await page.evaluate(() => window.__certificateEditing.uploads)).toHaveLength(2);
   });
 }

@@ -1091,7 +1091,9 @@ describe('File-source authentication entry and preparation', () => {
     expect(call).toHaveBeenCalledWith({ action: 'file_authentication_prepare', name: 'work-drive', expected_updated_at: 2 });
     expect(f.mount.getState().dialog.values['auth.type']).toBe('oauth2_refresh');
     expect(f.mount.getState().dialog.values['auth.refresh_token']).toBeUndefined();
-    expect(f.getHtml()).toContain('complete file visibility'); expect(f.getHtml()).not.toContain('data-conn-field="switch.verification_url"');
+    // The same account, seeing every file; and the check is the file source's, not a URL to paste.
+    expect(f.getHtml()).toContain('account, with access to every file'); expect(f.getHtml()).not.toContain('data-conn-field="switch.verification_url"');
+    expect(f.getHtml()).toContain('checks the file source with the new sign-in');
     expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runEnroll).not.toHaveBeenCalled(); f.mount.dispose();
   });
   it.each([false,true])('keeps selected-file verification required when oldServer=%s',async oldServer=>{
@@ -1624,6 +1626,20 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
     // Seeded so an untouched select projects as `bearer`, not `none`.
     expect(dialog.values['auth.type']).toBe('bearer');
     expect(getHtml()).toContain('Add HTTP API');
+    mount.dispose();
+  });
+
+  it('sets the sign-in method from its card as the select would, and ignores a method the form does not offer', async () => {
+    const { mount, getHtml, click } = mountPanel({ connections: [] });
+    await mount.whenLoaded();
+    click({ action: 'connections-open-add' }); click({ action: 'connections-pick-kind', kind: 'api' });
+    click({ action: 'connections-choose-auth', authType: 'oauth2_refresh' });
+    expect(mount.getState().dialog.values['auth.type']).toBe('oauth2_refresh');
+    // The same re-render a select change brings: the OAuth fields, and the card shown as chosen.
+    expect(getHtml()).toContain('data-conn-field="auth.client_id"');
+    expect(getHtml()).toMatch(/data-auth-type="oauth2_refresh" aria-pressed="true"/);
+    click({ action: 'connections-choose-auth', authType: 'not-a-method' });
+    expect(mount.getState().dialog.values['auth.type']).toBe('oauth2_refresh');
     mount.dispose();
   });
 
@@ -3044,7 +3060,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.hasUnsavedChanges()).toBe(false);
     expect(mount.unsavedChangesPrompt()).toBeNull();
     expect(getHtml()).toMatch(
-      /changes you make stay only in this tab.*credential fields are not saved in your browser.*cannot be\s+restored/is,
+      /changes stay in this tab until you save.*credential fields are never kept in your browser.*discard or reload clears them/is,
     );
 
     field('auth.token', 'private-replacement-secret');
@@ -12293,6 +12309,22 @@ describe('Manage authentication on existing API connections', () => {
     f.click({ action: 'connections-authentication-choice', choice: 'app' });
     await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationManagement).toBe('app'));
     expect(f.mount.getState().dialog.values['auth.type']).toBe('oauth2_refresh'); expect(f.mount.getState().dialog.values.name).toBe('work-api');
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); f.mount.dispose();
+  });
+  it('opens the manager from a broker connection’s row, not the plain editor', async () => {
+    const brokered: ConnectionView = { kind: 'api', name: 'mail-broker', display_name: 'Mail via Nango', auth_type: 'managed_oauth', vendor: 'google',
+      base_url: 'https://gmail.googleapis.com', updated_at: 2, managed_oauth: { type: 'managed_oauth', broker_profile_id: 'nango-work', integration_id: 'google-mail',
+        connection_id: 'existing-account', target_origin: 'https://gmail.googleapis.com', requested_scopes: ['https://www.googleapis.com/auth/gmail.readonly'] } };
+    // The broker panel's own reads stay pending: a manager that waited for them would never open.
+    const profiles = deferred<import('@recued/contracts').ManagedOAuthResponse>();
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request =>
+      request.action === 'profiles' ? profiles.promise : Promise.reject(new Error('Unexpected ' + request.action)));
+    const f = mountPanel({ connections: [brokered], runManagedOAuth: call }); await f.mount.whenLoaded();
+    f.click({ action: 'connections-manage-row-authentication', kind: 'api', name: 'mail-broker' });
+    await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationManagement).toBe('reauthorize'));
+    const dialog = f.mount.getState().dialog;
+    expect(dialog.values['auth.type']).toBe('managed_oauth'); expect(dialog.values['auth.connection_id']).toBe('existing-account');
+    expect(f.getHtml()).toContain('Manage authentication for Mail via Nango');
     expect(f.calls.runUpdate).not.toHaveBeenCalled(); f.mount.dispose();
   });
   it('does not reopen a cancelled manager when its current-app read completes late', async () => {

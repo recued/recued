@@ -51,6 +51,7 @@ import {
 import type {
   AuditLogStore,
   CheckpointStore,
+  Collection,
   CommitStore,
 } from '@recued/storage';
 import type {
@@ -73,6 +74,7 @@ import type { RecordsStore } from '../../records/index.js';
 import type { ServerExecutorConfig } from '../../server-executor.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import type { UserMemoryStore } from '../../user-memory-store.js';
+import type { MemoryRedactionRecord } from '../../memory-rpc-handler.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
 import type { AnnotationStore } from '../../storage/annotation-store.js';
 import type { ContactStore } from '../../storage/contact-store.js';
@@ -166,6 +168,9 @@ export interface ComposeExecuteDepsDeps {
    *  execution context; the sink does not exist when this runs. */
   readonly getRunSettledSink?: () =>
     ((settled: PreflightRunSettled) => void) | undefined;
+  /** D-329 — late-bound, like the sink: the Tier-1 tool registry a held tool call resumes
+   *  through. Chat builds it after these deps. */
+  readonly tier1Registry?: ExecuteHandlerDeps['tier1Registry'];
   /** Forwarded to the notification block: keeps what an owner's page-started
    *  run answered once its approval let it finish, for `execution.get`. */
   readonly settledRunResults?: SettledRunResults;
@@ -199,6 +204,8 @@ export interface ComposeExecuteDepsDeps {
   /** D-231 — backs `{{data.memory.<memory_id>}}`. Undefined on db-less
    *  daemon paths; the namespace then reads undefined, like `sharedStore`. */
   userMemoryStore?: UserMemoryStore | undefined;
+  /** D-198 §10 — the redaction overlay `data.memory.*` must honour. */
+  memoryRedactionStore?: Collection<MemoryRedactionRecord> | undefined;
   db: Database.Database | undefined;
   enrichmentStore: EnrichmentStore | undefined;
   commitStore: CommitStore | undefined;
@@ -206,6 +213,8 @@ export interface ComposeExecuteDepsDeps {
   checkpointStore: CheckpointStore | undefined;
   mcpActionStore?: McpActionStore;
   gatedActionStore?: GatedActionStore;
+  /** D-329 §3.4 — see `ExecuteHandlerDeps.writeRules`. */
+  writeRules?: ExecuteHandlerDeps['writeRules'];
   /** Notification-block prereq beyond the four executeDeps shares above
    *  (db / auditLog / checkpointStore). Helper composes the block only
    *  when all four are present together. ALSO forwarded onto
@@ -951,6 +960,7 @@ export const composeExecuteDeps = (
 
   const executeDeps: ExecuteHandlerDeps = {
     ...(deps.situationAccess ? { situationAccess: deps.situationAccess } : {}),
+    ...(deps.tier1Registry !== undefined ? { tier1Registry: deps.tier1Registry } : {}),
     // D-210 Phase C — the device-fanout branch reads this at each preflight
     // raise. Absent ⇒ every hold raises the actionable ask.
     ...(deps.resolveInboxFanoutMode !== undefined
@@ -981,6 +991,7 @@ export const composeExecuteDeps = (
     // exactly that shape — a declared namespace nothing wired — for its entire
     // life. Asserted by `d-231-execute-deps-wiring.test.ts`.
     ...(deps.userMemoryStore ? { userMemoryStore: deps.userMemoryStore } : {}),
+    ...(deps.memoryRedactionStore ? { memoryRedactionStore: deps.memoryRedactionStore } : {}),
     // D-120 Phase 3 — provenance link emission. When db is wired,
     // execute-handler resolves recipe_insights.id pre-run, buffers
     // EmittedLinks via the engine's linkSink, and writes them to the
@@ -1047,6 +1058,7 @@ export const composeExecuteDeps = (
     ...(peerAskOutbox ? { peerAskOutbox } : {}),
     ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
     ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
+    ...(deps.writeRules ? { writeRules: deps.writeRules } : {}),
     // D-157 server-wiring — the D-158 notification block, threaded as
     // the preflight notifier. `execute-handler` calls `raisePreflightAsk`
     // on this dep when the engine pauses on a policy `ask`; the

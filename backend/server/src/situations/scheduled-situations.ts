@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { recordFirstDigest } from './measures.js';
-import { assetDateAt, calendarDayMs, shiftAssetDate, dueSpan,
+import { assetDateAt, calendarDayMs, shiftAssetDate, dueSpan, zonedWallClockToEpochMs,
   type ProactiveToday, type SituationCluster, type SituationDeliverySettings, type SituationDeliveryStatus, type SituationItem, type SituationResult } from '@recued/contracts';
 import type { NotificationSendArgs } from '../notification-handler.js';
 import type { SituationStore } from '../storage/situation-store.js';
@@ -15,11 +15,19 @@ import type { SituationAccess } from './access.js';
 import type { createSituationQuery, SituationReadContext } from './query.js';
 import { wholeSituationSnapshotAllowed } from './event-visibility.js';
 import { selectDayOfClusterItems, shouldSendDayOfCluster } from './notification-overlap-policy.js';
+import { assetRenewal } from './asset-rule-timing.js';
 
 export const DEFAULT_SITUATION_DELIVERY: SituationDeliverySettings = { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true };
 const ownerSource = { channel: 'chat', actor: 'user_self', user_id: 'owner', chat_session_id: 'scheduled-situations' } as const;
 const uiContext: SituationReadContext = { owner: true, grants: { isVerbOpGranted: () => true, isCollectionReadGranted: () => true, isTopicReadGranted: () => true } };
-const identity = (value: unknown): string => JSON.stringify(value, (key, field) => key === 'updated_at' || key === '__entity' ? undefined : field);
+/** An asset's details and a trip's destination and days are read-time context,
+ * not the situation: editing an attribute or a trip must not show a group again
+ * as changed, and adding them to items must not make every saved group a new
+ * revision. */
+const CONTEXT_FIELDS: ReadonlySet<string> = new Set(['details', 'trip']);
+const identity = (value: unknown): string => JSON.stringify(value, (key, field) => key === 'updated_at' || key === '__entity' || CONTEXT_FIELDS.has(key) ? undefined : field);
+const withoutContext = (cluster: SituationCluster): SituationCluster =>
+  ({ ...cluster, items: cluster.items.map(({ details: _details, trip: _trip, ...item }) => item) });
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 /** What a summary describes: the items and their values, not the verdicts a query
  * window gives them. Today and the brief read different windows, and a verdict
@@ -30,19 +38,22 @@ const contentKey = (cluster: SituationCluster): string => hash(JSON.stringify(cl
 /** How a line's date misses its group's own (§6.2), named by the item the group is anchored on,
  * as the query picks it: the lines of every group run on together, so "this" would name
  * nothing. A fit needs no words, nor does a group whose anchor is not among its lines. */
-const missedBy = (item: SituationItem, cluster: SituationCluster): string => {
+const missedBy = (item: SituationItem, cluster: SituationCluster, named: (anchor: SituationItem) => string): string => {
   if (item.reasons.includes('last_time')) return ' · from last time';
   const value = item.when.value; const span = cluster.span; const verdict = item.when.verdict;
   if (!value || !span || (verdict !== 'near' && verdict !== 'outside')) return '';
   const opens = (other: SituationItem) => other !== item && Boolean(other.what.value) && other.when.value?.from === span.from;
   const anchor = cluster.items.find(other => opens(other) && ['booking', 'calendar', 'occasion'].includes(other.kind)) ?? cluster.items.find(opens);
   const side = value.from > span.to ? 'after' : value.to < span.from ? 'before' : null;
-  return anchor && side ? ` · ${verdict === 'near' ? 'shortly' : 'well'} ${side} “${anchor.what.value}”` : '';
+  return anchor && side ? ` · ${verdict === 'near' ? 'shortly' : 'well'} ${side} ${named(anchor)}` : '';
 };
 interface RunRow { id: string; mode: string; day: string; at: number; state: string; attempts: number; text: string; delivered_to: string }
 export const createScheduledSituations = (deps: {
   db: Database.Database; store: SituationStore; work: WorkEntityStore; query: ReturnType<typeof createSituationQuery>;
   timeZone: () => string; isVaultUnlocked: () => boolean; isQuiet: (at: number) => boolean;
+  /** `quietHoursEndFor`: when a send set for this minute of day may go, if it
+   *  falls inside quiet hours. Absent ⇒ each send waits only for its own time. */
+  quietEnd?: (minute: number) => number | null;
   overview: () => Promise<Omit<ProactiveToday, 'situations' | 'occurrences'>>;
   send: (message: NotificationSendArgs) => Promise<{ delivered_to: readonly string[] }>;
   mailHealth?: () => Array<{ name: string; last_success_at: number; needs_attention: boolean }>;
@@ -56,7 +67,22 @@ export const createScheduledSituations = (deps: {
   const now = deps.now ?? Date.now; let access: SituationAccess | undefined; let active: Promise<unknown> | undefined; let stopped = false;
   const occurrences = createAssetOccurrenceStore(deps.db); const points = createOccurrenceReminderStore(deps.db);
   const dismissals = createSituationDismissalStore(deps.db);
-  const dayOfAllowed = (cluster: SituationCluster): boolean => shouldSendDayOfCluster(cluster,
+  // What an item's own reminder keeps private stays out of every message the brief
+  // sends, as there: a sensitive asset, and an occasion with people in it
+  // (asset-reminder-service, occasion-clock-service). Today, in the app, names them.
+  // `gone` is what a record no longer on file counts as: a resolution's stored line
+  // may outlive its record (a deleted occasion leaves none), so it is private there.
+  const occasions = createProactiveHistoryStore(deps.db, createProactiveProposalStore(deps.db));
+  const privateRecord = (ref: { collection: string; id: string }, gone = false): boolean => {
+    if (ref.collection === 'asset') { const asset = deps.work.readAsset(ref.id); return asset ? asset.settings.sensitive === true : gone; }
+    if (ref.collection === 'occasion') { const occasion = occasions.occasion(ref.id); return occasion ? occasion.people.length > 0 : gone; }
+    const row = ref.collection === 'commitment' ? occurrences.byCommitment(ref.id) : null;
+    return row ? privateRecord({ collection: row.subject_kind === 'occasion' ? 'occasion' : 'asset', id: row.asset_id }, gone) : false;
+  };
+  /** An item is private when it, or a record it cites, is: a trip check cites the visas it lists. */
+  const privateItem = (item: SituationItem, gone = false): boolean => privateRecord(item.ref, gone) || item.evidence.some(ref => privateRecord(ref, gone));
+  const named = (item: SituationItem): string => privateItem(item) ? 'a private reminder' : `“${item.what.value}”`;
+  const dayOfAllowed =(cluster: SituationCluster): boolean => shouldSendDayOfCluster(cluster,
     id => deps.work.readCommitment(id)?.derivation === 'rule_emitted');
   deps.db.exec(`CREATE TABLE IF NOT EXISTS scheduled_situation_runs (
     id TEXT PRIMARY KEY, mode TEXT NOT NULL, day TEXT NOT NULL, at INTEGER NOT NULL, state TEXT NOT NULL,
@@ -85,10 +111,58 @@ export const createScheduledSituations = (deps: {
   const status = (): SituationDeliveryStatus => {
     const row = deps.db.prepare('SELECT * FROM scheduled_situation_runs ORDER BY at DESC,rowid DESC LIMIT 1').get() as RunRow | undefined;
     const sent = deps.db.prepare("SELECT * FROM scheduled_situation_runs WHERE state='sent' ORDER BY at DESC,rowid DESC LIMIT 1").get() as RunRow | undefined;
+    const next = nextDigest();
     return { settings: settings(), last_run: row ? { at: row.at, mode: row.mode, state: row.state, text: row.text, delivered_to: JSON.parse(row.delivered_to) } : null,
       last_sent: sent ? { at: sent.at, mode: sent.mode, text: sent.text, delivered_to: JSON.parse(sent.delivered_to) } : null,
       pending: (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_runs WHERE state IN ('pending','sending')").get() as { n: number }).n,
-      uncertain: (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_runs WHERE state='uncertain'").get() as { n: number }).n };
+      uncertain: (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_runs WHERE state='uncertain'").get() as { n: number }).n,
+      ...(next === null ? {} : { next_at: next, time_zone: deps.timeZone() }) };
+  };
+  const hhmm = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+  // When the digest is due on a day, and whose run that is. Shared by the tick that sends
+  // it and the status that says when it next goes, so the two cannot disagree.
+  const dueTime = (config: SituationDeliverySettings): { due: string; late: boolean } => {
+    // A time inside quiet hours goes out when they end: by its own time alone, an
+    // evening time in a window past midnight never came round.
+    const set = Number(config.time.slice(0, 2)) * 60 + Number(config.time.slice(3, 5));
+    const end = deps.quietEnd?.(set) ?? null;
+    return { due: end === null ? config.time : hhmm(end), late: end !== null && end < set };
+  };
+  const overviewRun = (config: SituationDeliverySettings, day: string, late: boolean, changedDay: string): string | null => {
+    if (config.frequency === 'daily') return `overview:${day}`;
+    if (config.frequency !== 'weekly') return null;
+    // Carried past midnight, a weekly send goes the morning after its day, not
+    // the morning of it.
+    const sendDay = late ? shiftAssetDate(day, { amount: 1, unit: 'days' }, -1) : day;
+    const weekday = ((new Date(`${sendDay}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+    const weeklyDay = shiftAssetDate(sendDay, { amount: (weekday - config.weekday + 7) % 7, unit: 'days' }, -1);
+    return weeklyDay >= changedDay ? `overview:${weeklyDay}` : null;
+  };
+  const changedDayIn = (zone: string): string => {
+    const changedAt = deps.store.readSetting<number>('situations.schedule_changed_at', 0);
+    return changedAt > 0 ? assetDateAt(changedAt, zone) : '0001-01-01';
+  };
+  /** §15.7 amendment — when the next digest goes, as `tickOnce` would send it: the first day
+   *  from today whose run is not done yet, at its due time, or now when that has passed.
+   *  Inside quiet hours it waits for their end that day, else for the next day's run. Null
+   *  when the digest is off or nothing can send. */
+  const nextDigest = (): number | null => {
+    const config = settings();
+    if (config.frequency === 'off' || stopped || !access || !deps.isVaultUnlocked()) return null;
+    const at = now(); const zone = deps.timeZone(); const today = assetDateAt(at, zone);
+    const { due, late } = dueTime(config); const changedDay = changedDayIn(zone);
+    const done = deps.db.prepare("SELECT 1 FROM scheduled_situation_runs WHERE id=? AND state IN ('sent','skipped','uncertain')");
+    const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    for (let offset = 0; offset <= 8; offset++) {
+      const day = shiftAssetDate(today, { amount: offset, unit: 'days' });
+      const run = overviewRun(config, day, late, changedDay); if (!run || done.get(run)) continue;
+      const dueAt = zonedWallClockToEpochMs(`${day}T${due}`, zone); if (dueAt === null) return null;
+      const from = Math.max(dueAt, at); if (!deps.isQuiet(from)) return from;
+      const minute = clock.format(from); const set = Number(minute.slice(0, 2)) * 60 + Number(minute.slice(3, 5));
+      const end = deps.quietEnd?.(set) ?? null;
+      if (end !== null && end > set) return zonedWallClockToEpochMs(`${day}T${hhmm(end)}`, zone);
+    }
+    return null;
   };
   const collect = async (from: number, to: number, surface: 'today' | 'digest' | 'push', context: SituationReadContext): Promise<SituationResult> => {
     const opted = surface === 'digest' && deps.store.readSetting<string>('last_time.choice', 'unasked') === 'on';
@@ -142,9 +216,12 @@ export const createScheduledSituations = (deps: {
       }
       const commitment = deps.work.readCommitment(row.commitment_id); const asset = deps.work.readAssetEffective(row.asset_id);
       if (!commitment || commitment.lifecycle_state !== 'pending' || !asset) continue;
+      // §15.7 (2026-10-24) — a renewal says so, and whether the owner acknowledged its latest reminder.
+      const rule = asset.rules.find(item => item.id === row.rule_id); const renewal = rule ? assetRenewal(asset, rule) : null;
       visibleOccurrences.push({ id: row.id, asset_id: row.asset_id, asset_name: asset.name, question: row.question,
         reminders_started: points.control(row.id).last_notified_on !== null, commitment,
-        ...(asset.sphere_override ?? asset.sphere ? { sphere: asset.sphere_override ?? asset.sphere } : {}) });
+        ...(asset.sphere_override ?? asset.sphere ? { sphere: asset.sphere_override ?? asset.sphere } : {}),
+        ...(renewal?.current === row.cycle ? { renewal, ...(points.acknowledged(row.id) ? { acknowledged: true as const } : {}) } : {}) });
     }
     const summaries: Record<string, string> = {};
     for (const cluster of situations.clusters) {
@@ -161,15 +238,12 @@ export const createScheduledSituations = (deps: {
     const at = now(); const zone = deps.timeZone(); const day = assetDateAt(at, zone); const config = settings();
     const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     const minute = clock.format(at);
-    if (!manual && minute < config.time) return;
+    const { due, late } = dueTime(config);
+    if (!manual && minute < due) return;
     if (!manual && deps.isQuiet(at)) return;
-    const weekday = ((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
-    const weeklyDay = shiftAssetDate(day, { amount: (weekday - config.weekday + 7) % 7, unit: 'days' }, -1);
-    const changedAt = deps.store.readSetting<number>('situations.schedule_changed_at', 0);
-    const changedDay = changedAt > 0 ? assetDateAt(changedAt, zone) : '0001-01-01';
+    const overview = overviewRun(config, day, late, changedDayIn(zone));
     const tasks: Array<{ id: string; mode: string }> = manual ? [{ id: `manual:${randomUUID()}`, mode: 'manual' }] : [
-      ...(config.frequency === 'daily' ? [{ id: `overview:${day}`, mode: 'overview' }] :
-        config.frequency === 'weekly' && weeklyDay >= changedDay ? [{ id: `overview:${weeklyDay}`, mode: 'overview' }] : []),
+      ...(overview ? [{ id: overview, mode: 'overview' }] : []),
       ...(config.day_of ? [{ id: `day_of:${day}`, mode: 'day_of' }] : []),
     ];
     if (!manual) {
@@ -212,7 +286,7 @@ export const createScheduledSituations = (deps: {
       });
       for (const cluster of result.clusters) {
         const current = deps.store.get(cluster.id);
-        deps.store.save({ ...current?.snapshot, id: cluster.id, state: current?.snapshot.state === 'resolved' ? 'new' : current?.snapshot.state ?? 'new', cluster,
+        deps.store.save({ ...current?.snapshot, id: cluster.id, state: current?.snapshot.state === 'resolved' ? 'new' : current?.snapshot.state ?? 'new', cluster: withoutContext(cluster),
           urgency: cluster.items.some(item => item.consequence === 'floor') ? 'floor' : mode === 'day_of' ? 'day_of' : 'routine' },
         { source: 'scheduled-situations' }, at);
         listed.run(cluster.id, at);
@@ -275,14 +349,19 @@ export const createScheduledSituations = (deps: {
           }); } catch { /* Values remain usable without a model. */ }
           if (summary) deps.db.prepare('INSERT INTO scheduled_situation_summaries(id,fingerprint,summary) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,summary=excluded.summary').run(cluster.id, fingerprint, summary);
         }
-        if (summary) lines.push(summary);
-        for (const item of cluster.items) lines.push(`${item.what.value} · ${item.when_day ?? (item.when.value ? assetDateAt(item.when.value.from, zone) : 'date unknown')}${missedBy(item, cluster)}${item.basis === 'inferred' ? ' · Recued’s guess' : ''}`);
+        // A model's summary of a group may name what its lines keep private.
+        if (summary && !cluster.items.some(item => privateItem(item))) lines.push(summary);
+        for (const item of cluster.items) lines.push(privateItem(item) ? 'Private reminder · open Today for the details'
+          : `${item.what.value} · ${item.when_day ?? (item.when.value ? assetDateAt(item.when.value.from, zone) : 'date unknown')}${missedBy(item, cluster, named)}${item.basis === 'inferred' ? ' · Recued’s guess' : ''}`);
       }
-      for (const revision of resolved) lines.push(`Resolved · ${revision.after.cluster.items[0]?.what.value ?? 'Situation'}`);
+      for (const revision of resolved) {
+        const first = revision.after.cluster.items[0];
+        lines.push(`Resolved · ${first && privateItem(first, true) ? 'a private reminder' : first?.what.value ?? 'Situation'}`);
+      }
       const open = result.omitted + result.clusters.filter(cluster => !shown.includes(cluster)).reduce((sum, cluster) => sum + cluster.items.length, 0);
       if (open) lines.push(`Still open: ${open} more items. Open Today for the rest.`);
       if (result.partial?.length) lines.push(`Not fully checked: ${result.partial.map(collection => `${collection.replaceAll('_', ' ')}s`).join(', ')}. There were more than one read can hold, so some may be missing.`);
-      const mailShown = context.grants.isVerbOpGranted('core.data.mail.get') && context.grants.isCollectionReadGranted('mail');
+      const mailShown = context.grants.isVerbOpGranted('core.mail.get') && context.grants.isCollectionReadGranted('mail');
       if (mailShown) {
         for (const mailbox of deps.mailHealth?.() ?? []) lines.push(`${mailbox.name}: ${mailbox.last_success_at > 0 ? `last successful mail sync ${assetDateAt(mailbox.last_success_at, zone)} ${clock.format(mailbox.last_success_at)}` : 'mail has not synced yet'}${mailbox.needs_attention ? ' · needs attention' : ''}`);
       }
@@ -297,7 +376,7 @@ export const createScheduledSituations = (deps: {
       const finalContext = access.context(ownerSource, null);
       if (identity(fresh) !== identity(result)
         || (mode === 'day_of' && shown.some(cluster => !dayOfAllowed(cluster)))
-        || (mailShown && (!finalContext.grants.isVerbOpGranted('core.data.mail.get') || !finalContext.grants.isCollectionReadGranted('mail')))
+        || (mailShown && (!finalContext.grants.isVerbOpGranted('core.mail.get') || !finalContext.grants.isCollectionReadGranted('mail')))
         || resolved.some(revision => !wholeSituationSnapshotAllowed(revision.after, finalContext.grants, finalContext) || deps.memoryAllowed?.(revision.after.cluster) === false)) continue;
       if (stopped || !deps.isVaultUnlocked() || (!manual && deps.isQuiet(now()))) return;
       const sendAt = now(); const sendDay = assetDateAt(sendAt, zone);

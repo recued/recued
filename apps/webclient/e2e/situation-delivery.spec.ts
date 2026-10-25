@@ -2,11 +2,11 @@ import { expect, test, type Page } from '@playwright/test';
 
 const panel = (page: Page) => page.locator('[data-situation-delivery]');
 const time = (page: Page) => panel(page).getByLabel('Time', { exact: true });
-const save = (page: Page) => panel(page).getByRole('button', { name: 'Save overview schedule', exact: true });
+const save = (page: Page) => panel(page).getByRole('button', { name: 'Save digest settings', exact: true });
 const send = (page: Page) => panel(page).getByRole('button', { name: 'Send now', exact: true });
 const notice = (page: Page) => panel(page).locator('[data-situation-delivery-message]');
 const outside = (page: Page) => page.getByRole('button', { name: 'Outside panel', exact: true });
-const retry = (page: Page) => page.getByRole('button', { name: 'Retry overview settings', exact: true });
+const retry = (page: Page) => page.getByRole('button', { name: 'Retry digest settings', exact: true });
 const reads = (page: Page) => page.evaluate(() => window.__overview.calls.filter(call => call.kind === 'read').length);
 const changes = (page: Page) => page.evaluate(() => window.__overview.calls.filter(call => call.kind !== 'read'));
 const release = (page: Page, kind: 'read' | 'save' | 'send', index = 0, outcome: 'success' | 'error' | 'unsupported' = 'success') =>
@@ -18,15 +18,16 @@ const open = async (page: Page) => {
   await release(page, 'read'); await expect(time(page)).toHaveValue('09:00');
 };
 const edit = async (page: Page) => {
-  await panel(page).getByLabel('Overview', { exact: true }).selectOption('daily');
-  await panel(page).getByLabel('Weekly day', { exact: true }).selectOption('5');
-  await time(page).fill('23:30'); await panel(page).getByLabel('Day-of notes', { exact: true }).uncheck();
+  // The day is shown only for a weekly digest, so it is chosen before leaving weekly.
+  await panel(page).getByLabel('Day', { exact: true }).selectOption('5');
+  await panel(page).getByLabel('How often', { exact: true }).selectOption('daily');
+  await time(page).fill('23:30'); await panel(page).getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
 };
 const expectDraft = async (page: Page) => {
-  await expect(panel(page).getByLabel('Overview', { exact: true })).toHaveValue('daily');
-  await expect(panel(page).getByLabel('Weekly day', { exact: true })).toHaveValue('5');
+  await expect(panel(page).getByLabel('How often', { exact: true })).toHaveValue('daily');
+  await expect(panel(page).getByLabel('Day', { exact: true })).toHaveValue('5');
   await expect(time(page)).toHaveValue('23:30');
-  await expect(panel(page).getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
+  await expect(panel(page).getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
 };
 const finish = async (page: Page, kind: 'save' | 'send', index = 0, readIndex = 1) => {
   await release(page, kind, index); await expect.poll(() => reads(page)).toBeGreaterThan(readIndex); await release(page, 'read', readIndex);
@@ -34,9 +35,9 @@ const finish = async (page: Page, kind: 'save' | 'send', index = 0, readIndex = 
 const draft = { frequency: 'daily', weekday: 5, time: '23:30', day_of: false };
 const unsaved = (page: Page) => page.evaluate(() => window.__overview.hasUnsavedChanges());
 const restore = async (page: Page) => {
-  await panel(page).getByLabel('Overview', { exact: true }).selectOption('weekly');
-  await panel(page).getByLabel('Weekly day', { exact: true }).selectOption('1');
-  await time(page).fill('09:00'); await panel(page).getByLabel('Day-of notes', { exact: true }).check();
+  await panel(page).getByLabel('How often', { exact: true }).selectOption('weekly');
+  await panel(page).getByLabel('Day', { exact: true }).selectOption('1');
+  await time(page).fill('09:00'); await panel(page).getByLabel('Also send a note on the day something is due', { exact: true }).check();
 };
 const errors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => { const list: string[] = []; errors.set(page, list); page.on('pageerror', error => list.push(error.message)); });
@@ -52,9 +53,9 @@ for (const width of [390, 1280]) {
       window.__overview.refresh();
     });
     await release(page, 'read', 1);
-    await expect(panel(page).getByLabel('Overview', { exact: true })).toHaveValue('off');
-    await expect(panel(page).getByLabel('Weekly day', { exact: true })).toHaveValue('7');
-    await expect(time(page)).toHaveValue('12:00'); await expect(panel(page).getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
+    await expect(panel(page).getByLabel('How often', { exact: true })).toHaveValue('off');
+    await expect(panel(page).getByLabel('Day', { exact: true })).toHaveValue('7');
+    await expect(time(page)).toHaveValue('12:00'); await expect(panel(page).getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
     expect(await unsaved(page)).toBe(false); await expect(outside(page)).toBeFocused(); expect(await changes(page)).toEqual([]);
     expect(await original!.evaluate(input => input.isConnected)).toBe(true);
   });
@@ -67,15 +68,15 @@ for (const width of [390, 1280]) {
     });
     await release(page, 'read', 1); await expectDraft(page); expect(await unsaved(page)).toBe(true);
     await restore(page); expect(await unsaved(page)).toBe(true);
-    await panel(page).getByLabel('Overview', { exact: true }).selectOption('off');
-    await panel(page).getByLabel('Weekly day', { exact: true }).selectOption('7'); await time(page).fill('12:00');
-    expect(await unsaved(page)).toBe(true); await panel(page).getByLabel('Day-of notes', { exact: true }).uncheck();
+    await panel(page).getByLabel('Day', { exact: true }).selectOption('7');
+    await panel(page).getByLabel('How often', { exact: true }).selectOption('off'); await time(page).fill('12:00');
+    expect(await unsaved(page)).toBe(true); await panel(page).getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
     expect(await unsaved(page)).toBe(false); expect(await changes(page)).toEqual([]); expect(await reads(page)).toBe(2);
   });
 
   test(`a confirmed save becomes the baseline for later reverts at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 }); await open(page); await edit(page);
-    await activate(page, 'save'); await finish(page, 'save'); await expect(notice(page)).toHaveText('Overview schedule saved.');
+    await activate(page, 'save'); await finish(page, 'save'); await expect(notice(page)).toHaveText('Digest settings saved.');
     expect(await unsaved(page)).toBe(false); await restore(page); expect(await unsaved(page)).toBe(true);
     await edit(page); expect(await unsaved(page)).toBe(false);
     expect(await changes(page)).toEqual([{ kind: 'save', settings: draft }]); expect(await reads(page)).toBe(2);
@@ -91,9 +92,9 @@ for (const width of [390, 1280]) {
       await expect(notice(page)).toHaveAttribute('role', 'alert'); expect(await unsaved(page)).toBe(true); await expect(time(page)).toHaveValue('09:00');
       const before = await reads(page); await page.evaluate(() => window.__overview.refresh()); await release(page, 'read', before);
       await expect(time(page)).toHaveValue('09:00');
-      await expect(panel(page).getByLabel('Overview', { exact: true })).toHaveValue('weekly');
-      await expect(panel(page).getByLabel('Weekly day', { exact: true })).toHaveValue('1');
-      await expect(panel(page).getByLabel('Day-of notes', { exact: true })).toBeChecked();
+      await expect(panel(page).getByLabel('How often', { exact: true })).toHaveValue('weekly');
+      await expect(panel(page).getByLabel('Day', { exact: true })).toHaveValue('1');
+      await expect(panel(page).getByLabel('Also send a note on the day something is due', { exact: true })).toBeChecked();
       expect(await unsaved(page)).toBe(phase === 'confirmation');
       if (phase === 'confirmation') { await edit(page); expect(await unsaved(page)).toBe(false); }
       expect(await changes(page)).toEqual([{ kind: 'save', settings: draft }]); expect(await reads(page)).toBe(before + 1);
@@ -109,7 +110,7 @@ for (const width of [390, 1280]) {
     await panel(page).getByText('What it sent', { exact: true }).click(); await expect(panel(page)).toContainText('Fixture overview');
     expect(await changes(page)).toEqual([{ kind: 'send' }]);
     await activate(page, 'save'); expect(await changes(page)).toEqual([{ kind: 'send' }, { kind: 'save', settings: draft }]);
-    await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('Overview schedule saved.');
+    await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('Digest settings saved.');
     await expectDraft(page); await expect(save(page)).toBeFocused();
     expect(await original!.evaluate(input => input.isConnected && input === document.querySelector('[name="time"]'))).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -130,7 +131,7 @@ test('a failed schedule save retains its draft, announces the error and retries 
   await expect(notice(page)).toHaveAttribute('role', 'alert'); await expect(notice(page)).toHaveText('Could not save the overview schedule. Try again.');
   await expect(save(page)).toBeFocused(); await expectDraft(page); await page.keyboard.press('Enter');
   expect(await changes(page)).toEqual([{ kind: 'save', settings: draft }, { kind: 'save', settings: draft }]);
-  await finish(page, 'save', 1); await expect(notice(page)).toHaveText('Overview schedule saved.');
+  await finish(page, 'save', 1); await expect(notice(page)).toHaveText('Digest settings saved.');
 });
 
 for (const kind of ['save', 'send'] as const) {
@@ -153,7 +154,23 @@ test('an initial read failure can be retried from the keyboard', async ({ page }
   expect(await changes(page)).toEqual([]);
 });
 
-test('a server without overview settings omits the initial panel', async ({ page }) => {
+test('the day shows only for a weekly digest, and a refresh leaves a focused day in place', async ({ page }) => {
+  await open(page); const often = panel(page).getByLabel('How often', { exact: true }), day = panel(page).getByLabel('Day', { exact: true });
+  await expect(day).toBeVisible();
+  await often.selectOption('daily'); await expect(day).toBeHidden();
+  await often.selectOption('off'); await expect(day).toBeHidden(); await expect(time(page)).toBeVisible();
+  await often.selectOption('weekly'); await expect(day).toBeVisible(); expect(await unsaved(page)).toBe(false);
+  await day.focus();
+  await page.evaluate(() => {
+    window.__overview.setServer({ settings: { frequency: 'daily', weekday: 1, time: '09:00', day_of: true } });
+    window.__overview.refresh();
+  });
+  await release(page, 'read', 1); await expect(often).toHaveValue('daily');
+  await expect(day).toBeVisible(); await expect(day).toBeFocused();
+  await outside(page).focus(); await expect(day).toBeHidden(); expect(await changes(page)).toEqual([]);
+});
+
+test('a server without digest settings omits the initial panel', async ({ page }) => {
   await page.goto('/situation-delivery-harness.html'); await page.waitForFunction(() => window.__overview !== undefined);
   await release(page, 'read', 0, 'unsupported'); await expect(panel(page)).toHaveCount(0);
   expect(await changes(page)).toEqual([]);
@@ -163,8 +180,8 @@ test('refresh updates delivery results while retaining the form draft and active
   await open(page); await edit(page); await time(page).focus(); const original = await time(page).elementHandle();
   await page.evaluate(() => { window.__overview.setServer({ pending: 2, uncertain: 1 }); window.__overview.refresh(); });
   await expectDraft(page); await release(page, 'read', 1); await expectDraft(page); await expect(time(page)).toBeFocused();
-  await expect(panel(page)).toContainText('2 overview deliveries are waiting.');
-  await expect(panel(page)).toContainText('1 deliveries could not be confirmed');
+  await expect(panel(page)).toContainText('2 digests are waiting to be sent.');
+  await expect(panel(page)).toContainText('1 delivery could not be confirmed');
   expect(await original!.evaluate(input => input.isConnected && document.activeElement === input)).toBe(true);
 });
 
@@ -178,7 +195,7 @@ for (const kind of ['save', 'send'] as const) {
   test(`an older read cannot replace a ${kind} confirmation`, async ({ page }) => {
     await open(page); await page.evaluate(() => window.__overview.refresh()); await edit(page); await activate(page, kind);
     await finish(page, kind, 0, 2); await release(page, 'read', 1); await expectDraft(page);
-    if (kind === 'save') await expect(notice(page)).toHaveText('Overview schedule saved.');
+    if (kind === 'save') await expect(notice(page)).toHaveText('Digest settings saved.');
     else await expect(panel(page).getByText('What it sent', { exact: true })).toBeVisible();
   });
 }
@@ -243,7 +260,7 @@ test('a different confirmation preserves the submitted draft and does not claim 
   await expect(notice(page)).toContainText('could not be confirmed');
 });
 
-test('refresh keeps the sent overview disclosure open and its summary focused', async ({ page }) => {
+test('refresh keeps the sent digest disclosure open and its summary focused', async ({ page }) => {
   await open(page); await activate(page, 'send'); await finish(page, 'send');
   const summary = panel(page).getByText('What it sent', { exact: true }); await summary.click(); await summary.focus();
   await page.evaluate(() => { window.__overview.setServer({ pending: 2 }); window.__overview.refresh(); }); await release(page, 'read', 2);
@@ -272,3 +289,16 @@ for (const [segment, index, text, expected] of [['hour', 0, '10', '10:30'], ['mi
       await finish(page, 'save', 0, action === 'validation' ? 1 : 2); await expect(save(page)).toBeFocused();
     });
   }
+
+test('the card says when the next digest goes, in the server’s zone, and nothing from a server that does not say', async ({ page }) => {
+  await open(page);
+  // An older server sends no next time, and the card adds no line for it.
+  await expect(panel(page).locator('[data-situation-next]')).toHaveCount(0);
+  // 07:00 UTC on Monday 28 October 2030 is 08:00 in Paris, whose clocks went back the day before.
+  await page.evaluate(() => { window.__overview.setServer({ next_at: Date.parse('2030-10-28T07:00:00Z'), time_zone: 'Europe/Paris' }); window.__overview.refresh(); });
+  await expect.poll(() => reads(page)).toBe(2); await release(page, 'read', 1);
+  const expected = await page.evaluate(() => new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit',
+    minute: '2-digit', timeZone: 'Europe/Paris' }).format(Date.parse('2030-10-28T07:00:00Z')));
+  await expect(panel(page).locator('[data-situation-next]')).toHaveText(`Next digest: ${expected}`);
+  expect(expected).toContain('08:00');
+});

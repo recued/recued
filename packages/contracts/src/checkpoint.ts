@@ -158,7 +158,22 @@ export interface PreflightCheckpointContext {
  *  there is no `{{config.*}}` / connection re-resolution drift the recipe path
  *  must guard against; the resume's `preflight_approved_target` is exactly
  *  `(catalog_slug, operation, connection_name)`. */
+/** D-329 — the `catalog_slug` of a held Tier-1 tool call ({@link RawOpCheckpoint.tier1_tool}).
+ *  The colon keeps it out of the ingredient slug space, so no pack can name it. */
+export const TIER1_HOLD_CATALOG_SLUG = 'recued:tier1';
+
 export interface RawOpCheckpoint {
+  /** D-329 — set when the held call is a Tier-1 tool (`calendar.create`, `work.update`, …)
+   *  rather than a Tier-P catalog op: the tool's name. The hold rides this recipe-less block,
+   *  so its receipt, ask, boot recovery and retention are a raw op's; only the resume differs,
+   *  re-dispatching `op_args` through the Tier-1 tool registry instead of a catalog. Such a
+   *  hold has `op_id` = `operation` = the tool name, `catalog_slug` =
+   *  {@link TIER1_HOLD_CATALOG_SLUG} and `connection_name` = `''`. */
+  tier1_tool?: string;
+  /** D-329 — the chat session a held chat write came from, so the resumed call runs in it as
+   *  the chat ran it (a memory records its conversation; a created thing its origin). A
+   *  messenger's source names no session, so it is carried here. Tier-1 holds only. */
+  tier1_session_id?: string;
   /** The full Tier-P wire op id (`<publisher>.<pack>.<operation>`) — display
    *  + agent-facing message + audit continuity. */
   op_id: string;
@@ -483,6 +498,12 @@ const isRawOpCheckpoint = (value: unknown): boolean => {
   if (v.contract_snapshot !== undefined && !plainObject(v.contract_snapshot)) {
     return false;
   }
+  // D-329 — a Tier-1 hold names its tool everywhere, and only it carries the slug.
+  if (v.tier1_tool !== undefined) {
+    if (!nonEmpty(v.tier1_tool) || v.catalog_slug !== TIER1_HOLD_CATALOG_SLUG
+      || v.op_id !== v.tier1_tool || v.operation !== v.tier1_tool || v.connection_name !== '') return false;
+  } else if (v.catalog_slug === TIER1_HOLD_CATALOG_SLUG) return false;
+  if (v.tier1_session_id !== undefined && (v.tier1_tool === undefined || !nonEmpty(v.tier1_session_id))) return false;
   return true;
 };
 

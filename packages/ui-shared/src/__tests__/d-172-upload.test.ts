@@ -699,6 +699,51 @@ describe('upload engine — cancel / destroy reaping', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('upload widget — wire', () => {
+  it('keeps a choice from an open native picker across a host repaint', async () => {
+    const first = buildShell(), next = buildShell(), socket = makeSocket(), callers = makeCallers(), onDone = vi.fn();
+    const send = socket.send; socket.send = data => { send(data); setTimeout(() => socket.pushAckOk({ total: 0, complete: true }), 0); };
+    const handle = wireUploadWidget(asParent(first.root), { callers, connect: async () => socket, config: { widgetId: 'w1' }, digest: fakeDigest, onDone });
+    dispatch(first.input, 'click', {}); handle.rewire(asParent(next.root));
+    setFiles(first.input, [makeFile(bytesOf(6))]); dispatch(first.input, 'change', {});
+    await waitFor(() => next.progress.innerHTML.includes('Uploaded'), 'pending picker choice');
+    expect(callers.create).toHaveBeenCalledOnce(); expect(onDone).toHaveBeenCalledOnce(); handle.destroy();
+  });
+
+  it.each(['cancel', 'destroy', 'missing shell'] as const)('drops an old pending picker on %s', async action => {
+    const first = buildShell(), next = buildShell(), callers = makeCallers(), socket = makeSocket();
+    const handle = wireUploadWidget(asParent(first.root), { callers, connect: async () => socket, config: { widgetId: 'w1' }, digest: fakeDigest });
+    dispatch(first.input, 'click', {}); handle.rewire(asParent(next.root));
+    if (action === 'cancel') dispatch(first.input, 'cancel', {});
+    else if (action === 'destroy') handle.destroy();
+    else handle.rewire(asParent(makeNode('div')));
+    setFiles(first.input, [makeFile(bytesOf(6))]); dispatch(first.input, 'change', {}); await flush();
+    expect(callers.create).not.toHaveBeenCalled();
+    if (action === 'cancel') {
+      setFiles(next.input, [makeFile(bytesOf(8))]); dispatch(next.input, 'change', {}); await flush();
+      expect(callers.create).toHaveBeenCalledOnce();
+    }
+    handle.destroy();
+  });
+
+  it('keeps only the latest pending picker across repeated repaints and releases it after the choice', async () => {
+    const first = buildShell(), second = buildShell(), third = buildShell(), callers = makeCallers(), socket = makeSocket();
+    const send = socket.send; socket.send = data => { send(data); setTimeout(() => socket.pushAckOk({ total: 0, complete: true }), 0); };
+    const handle = wireUploadWidget(asParent(first.root), { callers, connect: async () => socket, config: { widgetId: 'w1' }, digest: fakeDigest });
+    dispatch(first.input, 'click', {}); handle.rewire(asParent(second.root)); dispatch(second.input, 'click', {});
+    handle.rewire(asParent(third.root)); handle.rewire(asParent(third.root));
+    setFiles(first.input, [makeFile(bytesOf(4))]); dispatch(first.input, 'change', {}); await flush(); expect(callers.create).not.toHaveBeenCalled();
+    setFiles(second.input, [makeFile(bytesOf(6))]); dispatch(second.input, 'change', {});
+    await waitFor(() => third.progress.innerHTML.includes('Uploaded'), 'latest picker choice'); expect(callers.create).toHaveBeenCalledOnce();
+    setFiles(second.input, [makeFile(bytesOf(8))]); dispatch(second.input, 'change', {}); await flush(); expect(callers.create).toHaveBeenCalledOnce(); handle.destroy();
+  });
+
+  it('ignores a detached input that never opened a chooser', async () => {
+    const first = buildShell(), next = buildShell(), callers = makeCallers(), socket = makeSocket();
+    const handle = wireUploadWidget(asParent(first.root), { callers, connect: async () => socket, config: { widgetId: 'w1' }, digest: fakeDigest });
+    handle.rewire(asParent(next.root)); setFiles(first.input, [makeFile(bytesOf(6))]); dispatch(first.input, 'change', {}); await flush();
+    expect(callers.create).not.toHaveBeenCalled(); handle.destroy();
+  });
+
   it('a file-input change drives the engine to done and paints the progress region', async () => {
     const { root, input, progress } = buildShell();
     const socket = makeSocket();

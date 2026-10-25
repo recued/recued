@@ -591,6 +591,23 @@ describe('renderAccountsPanel', () => {
     expect(mailbox(undefined)).not.toContain('data-action="accounts-resync"');
   });
 
+  it('shows a mailbox past its first import as Connected, keeping the import on its own line', () => {
+    const rows = [{
+      slug: 'work',
+      adapterType: 'gmail',
+      authState: 'healthy' as const,
+      lastSyncedAt: 1_700_000_000_000,
+      mailSync: { access_verified: true, initial_sync_complete: true },
+    }];
+    const list = renderAccountsPanel({ state: base({ lane: 'mail', rows }) });
+    const detail = renderAccountsPanel({ state: base({ lane: 'mail', stage: 'detail', detailSlug: 'work', rows }) });
+    for (const html of [list, detail]) {
+      expect(html).toContain('<span class="accounts-status" data-state="healthy">Connected</span>');
+      expect(html).not.toContain('Initial sync complete');
+    }
+    expect(detail).toContain('<dt>Initial sync</dt><dd>Complete</dd>');
+  });
+
   it('renders the IMAP form on the form stage', () => {
     const html = renderAccountsPanel({
       state: base({ stage: 'form', providerId: 'imap', values: seedAccountFormValues(imap()) }),

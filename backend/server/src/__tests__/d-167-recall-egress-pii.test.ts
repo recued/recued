@@ -685,14 +685,18 @@ describe('createContactKnownValueIndexBuilder', () => {
       const ledgerRealValues = [...plan.ledger.byKindRealValue.values()]
         .map((entry) => entry.real_value);
 
-      expect(output).toContain('m1@d1.invalid');
+      // D-326 — the address carries the contact it belongs to, whose name row rides
+      // it as the domain row does; the owner of an ABSENT address is never minted.
+      expect(output).toContain('pii.Person1@d1.invalid');
       expect(output).toContain('pii.Phone1.us');
       expect(output).not.toContain(contactA.email);
       expect(output).not.toContain(contactA.phone);
       expect(ledgerRealValues).toContain(contactA.email);
       expect(ledgerRealValues).toContain(contactA.phone);
+      expect(ledgerRealValues).toContain('Athena Alpha');
       expect(ledgerRealValues).not.toContain(contactB.email);
       expect(ledgerRealValues).not.toContain(contactB.phone);
+      expect(ledgerRealValues).not.toContain('Bruno Beta');
     } finally {
       db.close();
     }
@@ -782,9 +786,10 @@ describe('createContactKnownValueIndexBuilder — CRM mirror (Tier 2)', () => {
           }),
         );
 
-        // Every one of the four kinds is shielded, from a warehouse with no contacts.
+        // Every one of the four kinds is shielded, from a warehouse with no contacts —
+        // and the address says whose it is (D-326: the mirror row carries both).
         expect(firstOutputString(packet)).toBe(
-          'pii.Person1 at pii.Org1 — reach her on pii.Phone1.us or m1@d1.invalid',
+          'pii.Person1 at pii.Org1 — reach her on pii.Phone1.us or pii.Person1@d1.invalid',
         );
         expect(rawPrompt).not.toContain('Ilana Vukovic');
         expect(rawPrompt).not.toContain('Northwind Traders');
@@ -1289,7 +1294,7 @@ describe('createContactKnownValueIndexBuilder — street lines + known domains',
     );
   });
 
-  it('aliases a URL at a KNOWN domain (scheme + path preserved) and leaves a PUBLIC one raw', async () => {
+  it('aliases a URL at a KNOWN domain (scheme + path preserved), and an UNKNOWN one whole', async () => {
     await withContact(
       (c) => c.upsertManual(ILANA, 2_000),
       async (plan) => {
@@ -1306,22 +1311,27 @@ describe('createContactKnownValueIndexBuilder — street lines + known domains',
         expect(out).toContain('https://d1.invalid/login');
         expect(out).toContain('d1.invalid/x');
         expect(out).not.toContain('northwind.example');
-        // …and the PUBLIC domain is untouched — it is not PII, and hiding it would blind the
-        // model to a link it may need to reason about.
-        expect(out).toContain('https://docs.python.org/3/library');
+        // …and a URL on a host it does NOT know is aliased WHOLE (owner decision 2026-10-24,
+        // D-167 amendment). This line used to leave it raw because hiding a public site
+        // blinds the model to which site it is; the owner chose the alias anyway, since an
+        // unknown URL's path or query is where a token or a document id sits.
+        expect(out).toContain('pii.Url1');
+        expect(out).not.toContain('docs.python.org');
       },
     );
   });
 
-  it('a domain the warehouse does NOT know stays raw (known-only, not unconditional)', async () => {
+  it('a domain the warehouse does NOT know stays raw (known-only); a URL on it is aliased whole', async () => {
     await withContact(
       (c) => c.upsertManual({ email: 'a@known.example', name: 'Ada Known' } as never, 2_000),
       async (plan) => {
         const { packet } = await egress(
           plan,
-          priorPrompt({ call: memorySearchEntry('see https://unknown-vendor.example/pricing') }),
+          priorPrompt({ call: memorySearchEntry('see https://unknown-vendor.example/pricing at unknown-vendor.example') }),
         );
-        expect(firstOutputString(packet)).toBe('see https://unknown-vendor.example/pricing');
+        // The bare domain is seeded known-only, as before; the URL needs no anchor since
+        // 2026-10-24 (D-167 amendment).
+        expect(firstOutputString(packet)).toBe('see pii.Url1 at unknown-vendor.example');
       },
     );
   });

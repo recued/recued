@@ -448,6 +448,17 @@ describe('D-158 P2a Telegram parseInboundChoice', () => {
     });
   });
 
+  it('names the presser when Telegram sends a name, and leaves a blank one out', () => {
+    expect(telegram.parseInboundChoice(telegramChoicePayload('invite-1|join', {
+      from: { id: 7002, is_bot: false, first_name: ' Ben ', last_name: 'Kim', username: 'ben_k' },
+    }))).toEqual({
+      correlation_id: 'invite-1', option_id: 'join', from: '7002', from_name: 'Ben Kim', from_username: 'ben_k', vendor_message_id: '42',
+    });
+    expect(telegram.parseInboundChoice(telegramChoicePayload('invite-1|join', {
+      from: { id: 7003, is_bot: false, first_name: '  ', username: '' },
+    }))).toEqual({ correlation_id: 'invite-1', option_id: 'join', from: '7003', vendor_message_id: '42' });
+  });
+
   it.each([
     ['bot sender', telegramChoicePayload('ask-1|approve', { from: { id: 7001, is_bot: true } })],
     ['missing callback_query', { update_id: 10 }],

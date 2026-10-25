@@ -711,6 +711,9 @@ export const createInboundFileCollection = (
     search(query: CollectionSearchQuery): CollectionSearchMatch[] {
       return table.search(query);
     },
+    checkSpelling(query: string) {
+      return table.checkSpelling(query);
+    },
     health,
     runRetention: async (): Promise<CollectionPruneResult> => retention.run(),
     async close() {

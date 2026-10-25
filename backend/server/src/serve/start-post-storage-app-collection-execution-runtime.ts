@@ -55,6 +55,7 @@ type AppContextKey = 'app';
 type RuntimeDerivedKeys = 'getContactMergeCycleObserver';
 
 export interface StartPostStorageAppCollectionExecutionRuntimeOptions {
+  readonly bootTrace?: BaseContext['bootTrace'];
   readonly app: Omit<ComposeAppContextOptions, 'chatLateBound'>;
   /** Slice 3b — publish the composed KeyManager back to the boot runtime
    *  (called right after `composeAppContext`) so the post-boot
@@ -281,6 +282,7 @@ export const startPostBaseStorageVaultRuntime = async (
     const keyStore = signingIdentityRef?.keyStore;
     if (keysRef && keyStore) {
       try {
+        base.bootTrace.mark('vault-unlock-start');
         const outcome = await autoUnlockServerVaultFromKeyfile({ keys: keysRef, keyStore });
         if (outcome === 'unlocked') {
           // Slice 4 — the vault sub-DEK is now available. Re-load the vault
@@ -288,6 +290,7 @@ export const startPostBaseStorageVaultRuntime = async (
           // first load) populate the STABLE baseVault the executor reads.
           await initVault();
         }
+        base.bootTrace.mark('vault-unlock-complete');
       } catch (err) {
         console.error(
           '[vault] boot auto-unlock failed — server stays locked '
@@ -311,6 +314,7 @@ export const startPostBaseStorageVaultRuntime = async (
   base.bootTrace.mark('dispatch-subcommand', base.subcommand ?? 'serve');
 
   const postStorage = await startPostStorageAppCollectionExecutionRuntime({
+    bootTrace: base.bootTrace,
     app: {
       db: storageContext.db,
       dbPath: base.dbPath,
@@ -367,6 +371,7 @@ export const startPostBaseStorageVaultRuntime = async (
           backgroundServices,
         },
         runtime: {
+          bootTrace: base.bootTrace,
           lifecycle: {
             db: storageContext.db,
             base: {
@@ -459,10 +464,12 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
   options: StartPostStorageAppCollectionExecutionRuntimeOptions,
 ): Promise<PostStorageAppCollectionExecutionRuntimeResult> => {
   const lateBound = createExecutionLateBoundRefs();
+  options.bootTrace?.mark('app-compose-start');
   const app = composeAppContext({
     ...options.app,
     chatLateBound: lateBound,
   });
+  options.bootTrace?.mark('app-compose-complete');
   options.postApp.postExecution.maintenance.backgroundServices.register({
     name: 'warehouse-event-bridges',
     kind: 'emitter',

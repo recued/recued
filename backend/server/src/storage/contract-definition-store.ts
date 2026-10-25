@@ -54,6 +54,8 @@ import {
   isReservedPublicContractId,
   isStandingContractDefinition,
   isWellFormedOpenProjection,
+  contractUsePeriod,
+  derivedDoorType,
   rolledContractUses,
   usageCapWindowStart,
   scopedContainmentAdmits,
@@ -62,6 +64,7 @@ import {
   type DoorExecutionPolicy,
   type ContractScope,
   type DoorType,
+  type KeyAuthority,
   type RiskTier,
   type ScopedGrantSource,
   type UsageCapPeriod,
@@ -88,6 +91,9 @@ export interface MintContractInput {
   read_spheres?: import('@recued/contracts').Sphere[];
   /** Server-derived per-run limits for a door. Not exposed by the generic owner mint RPC. */
   door_execution_policy?: DoorExecutionPolicy;
+  /** D-327 — `'contract'`: the agreement is its key's whole authority and
+   *  grants nothing by default (`isKeyAuthorityContract`). Standing only. */
+  key_authority?: KeyAuthority;
   /** D-187 §6 (step 7) — the level-1 door types this contract may back
    *  (`'mcp'` / `'mcp_chat'`). Omit or `[]` = wildcard (any door type — the
    *  behaviour-preserving default); a non-empty list restricts the contract to
@@ -490,6 +496,22 @@ export interface ContractDefinitionStore {
     contract_id: string,
     door_types: ReadonlyArray<DoorType>,
   ): ContractDefinition | null;
+  /** D-327 — REPLACE a standing agreement's limits in place (see
+   *  `SetContractLimitsRequest`). `null` clears a limit. A new count — or a new
+   *  refill period — starts the budget again from full, as a mint does; an
+   *  unchanged count and period keep the uses already spent, so changing only
+   *  the expiry never hands out a fresh budget. Returns the updated row, or
+   *  `null` when the id names no row, a non-standing row, or a derived
+   *  reception/webhook door (their limits are their own lifecycle's). Does not
+   *  touch revocation; the caller refuses a revoked agreement. */
+  setLimits(
+    contract_id: string,
+    limits: {
+      readonly max_uses: number | null;
+      readonly use_period: UsageCapPeriod;
+      readonly expiry_at: number | null;
+    },
+  ): ContractDefinition | null;
   /** D-186 Slice C — early-revoke ONE session grant (the live-control
    *  bubble's "Active passes" revoke). A SESSION-SCOPED guard over the same
    *  lifecycle as {@link revoke}: it stamps `revoked_at` (expire-early →
@@ -763,6 +785,9 @@ export const createContractDefinitionStore = (
         ...(input.door_execution_policy !== undefined
           ? { door_execution_policy: input.door_execution_policy }
           : {}),
+        ...(input.key_authority !== undefined
+          ? { key_authority: input.key_authority }
+          : {}),
         ...(input.grant_kind !== undefined
           ? { grant_kind: input.grant_kind }
           : {}),
@@ -944,6 +969,39 @@ export const createContractDefinitionStore = (
       delete (base as Record<string, unknown>).door_types;
       const updated: ContractDefinition =
         door_types.length === 0 ? base : { ...base, door_types: [...door_types] };
+      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+      return updated;
+    },
+
+    setLimits(contract_id, limits) {
+      const def = read(contract_id);
+      if (!def || !isStandingContractDefinition(def) || derivedDoorType(def.door_types) !== null) {
+        return null;
+      }
+      const base = { ...def } as Record<string, unknown>;
+      for (const field of ['max_uses', 'uses_remaining', 'use_period', 'use_period_start', 'expiry_at']) {
+        delete base[field];
+      }
+      if (limits.max_uses !== null) {
+        const sameBudget = def.max_uses === limits.max_uses
+          && contractUsePeriod(def) === limits.use_period;
+        base.max_uses = limits.max_uses;
+        if (sameBudget) {
+          // Keep what has been spent, and the window it was spent in.
+          if (def.uses_remaining !== undefined) base.uses_remaining = def.uses_remaining;
+          if (def.use_period !== undefined) base.use_period = def.use_period;
+          if (def.use_period_start !== undefined) base.use_period_start = def.use_period_start;
+        } else {
+          base.uses_remaining = limits.max_uses;
+          if (limits.use_period !== 'total') {
+            base.use_period = limits.use_period;
+            const start = usageCapWindowStart(limits.use_period, now());
+            if (start !== null) base.use_period_start = start;
+          }
+        }
+      }
+      if (limits.expiry_at !== null) base.expiry_at = limits.expiry_at;
+      const updated = base as unknown as ContractDefinition;
       store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
       return updated;
     },

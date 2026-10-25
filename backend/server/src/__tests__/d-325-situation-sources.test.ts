@@ -226,4 +226,67 @@ describe('D-325 warehouse-backed situation sources', () => {
     expect(items).toHaveLength(1); expect(items[0]?.ref.collection).toBe('commitment'); expect(items[0]?.reasons).toContain('due');
     expect(items[0]?.when.value?.from).toBe(Date.parse('2027-04-01')); expect(result.omitted).toBe(0);
   });
+  it('gives every item an asset produces the asset’s own fields, and keeps its identifying strings on the record', async () => {
+    const fixture = build();
+    work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, name: 'Boiler',
+      dates: { last_serviced_on: null }, readings: { pressure: { value: 1.4, unit: 'bar', as_of: now - 1000, evidence: [] } },
+      attributes: { make: 'Vaillant', model_year: 2019, gas_safe: true }, settings: { service_plan: { provider: 'HomeServe' }, engineer: 'Ana' },
+      document_number: 'DOC-123', serial_number: 'SN-999', exact_address: '14 Cedar Avenue', anchors: [{ kind: 'identifier', scheme: 'GC', value: 'GC-47-123' }],
+      values: [{ amount: '2400', currency: 'GBP', as_of: now - 1000, basis: 'purchase', evidence: [] }],
+      observations: { offline: { active: true, certainty: 'confirmed', as_of: now - 1000, evidence: [], source: 'owner' } },
+      rules: [{ id: 'offline', title: 'Check offline boiler', enabled: true, muted: false, pinned: false, consequence: 'floor', expiry_policy: 'indefinite',
+        when: { kind: 'condition', field: 'offline', certainty: 'confirmed' }, reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [], on_day: true } }] }, now);
+    // An asset with no clock is still an item a question can find, with its fields.
+    work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, name: 'Kettle', attributes: { colour: 'Red' } }, now);
+    const item = (await fixture.run()).clusters.flatMap(cluster => cluster.items).find(row => row.what.value === 'Check offline boiler · Boiler')!;
+    expect(item.details).toEqual({ status: 'active', dates: { last_serviced_on: null }, readings: { pressure: { value: 1.4, unit: 'bar', as_of: now - 1000 } },
+      settings: { engineer: 'Ana' }, attributes: { make: 'Vaillant', model_year: 2019, gas_safe: true }, left_out: ['settings.service_plan'] });
+    expect(JSON.stringify(item)).not.toMatch(/DOC-123|SN-999|Cedar|GC-47|2400/);
+    const kettle = (await fixture.run({ text: 'Kettle' })).clusters.flatMap(cluster => cluster.items).filter(row => row.what.value === 'Kettle');
+    expect(kettle.map(row => [row.kind, row.details])).toEqual([['asset', { status: 'active', attributes: { colour: 'Red' } }]]);
+  });
+  it('tells where a trip goes and its days, and leaves its travellers to who', async () => {
+    const fixture = build();
+    work.writeBooking({ source_id: 'recued.booking', title: 'Hotel Okura', slot_start_at: now + 3 * DAY, slot_end_at: now + 6 * DAY,
+      source_extension_blob: { trip: { destination_country: 'JP', entry_on: '2026-10-20', exit_on: '2026-10-23', traveller_contact_ids: ['contact-ana'] } } }, now);
+    work.writeBooking({ source_id: 'recued.booking', title: 'Dinner', slot_start_at: now + DAY, slot_end_at: now + DAY + 3_600_000 }, now);
+    const items = (await fixture.run()).clusters.flatMap(cluster => cluster.items);
+    const hotel = items.find(item => item.what.value === 'Hotel Okura'); const dinner = items.find(item => item.what.value === 'Dinner');
+    expect(hotel?.trip).toEqual({ destination_country: 'JP', entry_on: '2026-10-20', exit_on: '2026-10-23' });
+    expect(hotel?.who.value).toEqual(['contact-ana']);
+    expect(dinner).toBeDefined(); expect(dinner!.trip).toBeUndefined();
+  });
+  it('answers a question about a past span with the trips that ended in it, and keeps them off every forward list', async () => {
+    const fixture = build();
+    work.writeBooking({ source_id: 'recued.booking', title: 'Hotel Okura', slot_start_at: now - 100 * DAY, slot_end_at: now - 90 * DAY,
+      source_extension_blob: { trip: { destination_country: 'JP' } } }, now);
+    // A reservation read from email is `derived`, and still a record of the past.
+    const day = (offset: number) => new Date(now + offset * DAY).toISOString().slice(0, 10);
+    fixture.mailFacts.saveThing({ thing_id: 'ryokan', type: 'reservation', identity_keys: ['reservation:ryokan'], variables: { kind: 'lodging', provider: 'Kyoto ryokan',
+      confirmation_code: 'R1', starts_at: day(-89), ends_at: day(-85), state: 'confirmed' }, passes: {}, variable_email_at: {}, last_email_at: now, missing: [], complete: true,
+      created_at: now, updated_at: now });
+    const past = { from: now - 120 * DAY, to: now - 60 * DAY };
+    const titles = async (input: Partial<SituationQuery>) => (await fixture.run(input)).clusters.flatMap(cluster => cluster.items).map(item => item.what.value);
+    const asked = (await fixture.run({ time: past })).clusters.flatMap(cluster => cluster.items);
+    // Over, not due: they are here because the question asked about their time.
+    expect(asked.map(item => [item.what.value, item.reasons, item.when.verdict]).sort()).toEqual([['Hotel Okura', ['ended'], 'match'], ['Reservation: Kyoto ryokan', ['ended'], 'match']]);
+    expect(asked.find(item => item.what.value === 'Hotel Okura')?.trip).toEqual({ destination_country: 'JP' });
+    expect(await titles({ time: { from: now - 30 * DAY, to: now } })).toEqual([]);
+    expect(await titles({})).toEqual([]);
+    for (const surface of ['today', 'digest', 'push'] as const) expect(await titles({ time: past, surface })).toEqual([]);
+    expect(await titles({ time: past, surface: 'prefetch', text: 'Hotel Okura' })).toEqual([]);
+  });
+  it('keeps the asset’s fields on the one item kept when its clock folds into the obligation', async () => {
+    const fixture = build();
+    const rule: AssetRule = { id: 'renew', title: 'Renew passport', when: { kind: 'expiry', field: 'expires_on' },
+      enabled: true, muted: false, pinned: false, consequence: 'floor', expiry_policy: 'escalate_overdue',
+      reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [{ amount: 6, unit: 'months' }], on_day: true } };
+    const asset = work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, name: 'Passport',
+      dates: { expires_on: '2027-04-01' }, settings: { nationality: 'CN' }, rules: [rule] }, now);
+    const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => now });
+    await createAssetOccurrenceService({ db, work, dispatchers, now: () => now, timeZone: () => 'UTC' }).reconcileAsset(asset.id);
+    const items = (await fixture.run()).clusters.flatMap(cluster => cluster.items);
+    expect(items.map(item => item.ref.collection)).toEqual(['commitment']);
+    expect(items[0]!.details?.settings).toEqual({ nationality: 'CN' });
+  });
 });

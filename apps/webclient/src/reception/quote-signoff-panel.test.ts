@@ -3,11 +3,13 @@ import type { QuoteSignoffFollowUp, QuoteSignoffListInput, QuoteSignoffListResul
 import { mountQuoteCompletionPanel } from './quote-completion-panel.js';
 import { mountQuoteSignoffPanel, type QuoteSignoffConn } from './quote-signoff-panel.js';
 
+const paymentState = vi.hoisted(() => ({ dirty: false }));
 vi.mock('./quote-signoff-payment.js', async importOriginal => {
   const actual = await importOriginal<typeof import('./quote-signoff-payment.js')>();
   return { ...actual, createQuoteSignoffPayment: (options: Parameters<typeof actual.createQuoteSignoffPayment>[0]) => ({
-    open: async (offer: QuoteSignoffSummary) => { await options.readOffer(offer.signoff_id); },
-    hasInFlightWork: () => false, dispose: () => {},
+    open: async (offer: QuoteSignoffSummary) => { await options.readOffer(offer.signoff_id); paymentState.dirty = true; },
+    hasUnsavedChanges: () => paymentState.dirty,
+    hasInFlightWork: () => false, dispose: () => { paymentState.dirty = false; },
   }) };
 });
 
@@ -75,6 +77,22 @@ const setup = (withPayments = false) => {
 };
 
 describe('sign-off panel — owner follow-up', () => {
+  it('reports creation edits and open payment drafts to the route leave guard', async () => {
+    const h = setup(true);
+    try {
+      await flush();
+      expect(h.panel.hasUnsavedChanges()).toBe(false);
+      const form = nodes(h.host).find(n => n.tag === 'form')!;
+      const scope = nodes(form).find(n => n.attrs.get('name') === 'scope')!;
+      scope.value = 'A scope that has not been published.'; form.fire('input');
+      expect(h.panel.hasUnsavedChanges()).toBe(true);
+      scope.value = ''; form.fire('input');
+      expect(h.panel.hasUnsavedChanges()).toBe(false);
+      nodes(h.host).find(n => n.textContent === 'Record payment')!.click(); await flush();
+      expect(h.panel.hasUnsavedChanges()).toBe(true);
+    } finally { h.panel.dispose(); }
+  });
+
   it('offers Record payment only for its current open invoice', async () => {
     const h = setup(true);
     try {
@@ -149,7 +167,7 @@ describe('sign-off panel — owner follow-up', () => {
 describe('sign-off panel — search and older requests', () => {
   const button = (root: Node, label: string) => nodes(root).find(n => n.tag === 'button' && n.textContent === label)!;
   const titles = (root: Node) => nodes(root).filter(n => n.tag === 'article')
-    .map(card => card.children.find(n => n.tag === 'h3')?.textContent);
+    .map(card => nodes(card).find(n => n.tag === 'h3')?.textContent);
   const search = (root: Node) => nodes(root).find(n => n.attrs.get('name') === 'signoff_search')!;
   const state = (root: Node) => nodes(root).find(n => n.attrs.get('name') === 'signoff_state')!;
   const submit = (root: Node) => nodes(root).find(n => n.attrs.get('role') === 'search')!.fire('submit');

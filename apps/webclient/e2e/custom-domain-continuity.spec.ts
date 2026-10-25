@@ -807,3 +807,86 @@ for (const obsolete of ['success', 'error'] as const) {
     await expect(input(page)).toBeFocused();
   });
 }
+
+
+const emptyDomainMessage = 'Type the name you want to use.';
+const expectDomainValidation = async (page: Page, hint = '') => {
+  await expect(error(page)).toHaveText(emptyDomainMessage); await expect(error(page)).toHaveAttribute('role','alert');
+  const id = (await error(page).getAttribute('id'))!; expect(id).toMatch(/^custom-domain-validation-\d+$/);
+  await expect(input(page)).toHaveAccessibleName('Domain name'); await expect(input(page)).toHaveAttribute('aria-invalid','true');
+  expect((await input(page).getAttribute('aria-describedby'))!.split(/\s+/)).toContain(id);
+  await expect(input(page)).toHaveAccessibleDescription([hint,emptyDomainMessage].filter(Boolean).join(' '));
+  expect(await page.locator('[id]').evaluateAll((nodes,id) => nodes.filter(node => node.id===id).length,id)).toBe(1);
+  return id;
+};
+const expectNoDomainValidation = async (page: Page) => {
+  await expect(input(page)).not.toHaveAttribute('aria-invalid'); await expect(input(page)).not.toHaveAttribute('aria-describedby'); await expect(input(page)).toHaveAccessibleDescription('');
+};
+for (const width of [390,1280]) {
+  test(`Domain validation associations describe empty Enter and preserve native correction at ${width}px`,async ({page}) => {
+    const {oldInput}=await open(page,width); await input(page).fill(''); await input(page).press('Enter'); await expectDomainValidation(page); await expect(input(page)).toBeFocused();
+    const raw='  AlPhA.Example.test  '; await page.keyboard.type(raw); await expect(error(page)).toHaveCount(0); await expectNoDomainValidation(page); await expect(input(page)).toHaveValue(raw);
+    expect(await oldInput.evaluate(node => node.isConnected && node===document.activeElement)).toBe(true);
+    await input(page).evaluate(node => (node as HTMLInputElement).setSelectionRange(2,6,'backward'));
+    expect(await input(page).evaluate(node => [(node as HTMLInputElement).selectionStart,(node as HTMLInputElement).selectionEnd,(node as HTMLInputElement).selectionDirection])).toEqual([2,6,'backward']);
+    await page.keyboard.press('ControlOrMeta+z'); await expect(input(page)).not.toHaveValue(raw); await expectNoDomainValidation(page);
+    await page.keyboard.press('ControlOrMeta+Shift+z'); await expect(input(page)).toHaveValue(raw); await expect(input(page)).toBeFocused(); expect(await reads(page)).toEqual([]);
+  });
+  test(`Domain validation associations keep native button focus and one message identity at ${width}px`,async ({page}) => {
+    await open(page,width); await input(page).fill(''); await check(page).focus(); await page.keyboard.press(keyFor(width)); const id=await expectDomainValidation(page); await expect(check(page)).toBeFocused();
+    await panel(page).getByText('Domain name',{exact:true}).click(); await expect(input(page)).toBeFocused(); await input(page).press('Enter'); expect(await expectDomainValidation(page)).toBe(id);
+    expect(await input(page).getAttribute('aria-describedby')).toBe(id); expect(await reads(page)).toEqual([]);
+  });
+  test(`Domain validation associations clear whitespace feedback without interrupting composition at ${width}px`,async ({page}) => {
+    const {oldInput}=await open(page,width); await input(page).fill(''); await input(page).press('Enter'); const id=await expectDomainValidation(page);
+    await input(page).evaluate(node => node.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}))); await page.keyboard.type(' ');
+    await expect(error(page)).toHaveCount(0); await expectNoDomainValidation(page); await expect(input(page)).toHaveValue(' ');
+    await page.keyboard.press('Enter'); await expect(error(page)).toHaveCount(0);
+    await input(page).evaluate(node => node.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}))); await page.keyboard.press('Enter');
+    expect(await expectDomainValidation(page)).toBe(id); expect(await oldInput.evaluate(node => node.isConnected && node===document.activeElement)).toBe(true); expect(await reads(page)).toEqual([]);
+  });
+  test(`Domain validation associations preserve existing hints and invalid state at ${width}px`,async ({page}) => {
+    await open(page,width); await input(page).fill(''); await input(page).evaluate(node => {
+      const hint=document.createElement('span'); hint.id='domain-fixture-hint'; hint.textContent='Synthetic hostname hint.'; node.closest('[data-recued-custom-domains]')!.appendChild(hint);
+      node.setAttribute('aria-describedby',hint.id); node.setAttribute('aria-invalid','grammar');
+    });
+    await input(page).press('Enter'); const id=await expectDomainValidation(page,'Synthetic hostname hint.'); await input(page).press('Enter'); expect(await expectDomainValidation(page,'Synthetic hostname hint.')).toBe(id);
+    expect(await input(page).getAttribute('aria-describedby')).toBe(`domain-fixture-hint ${id}`); await input(page).fill(ALPHA);
+    await expect(input(page)).toHaveAttribute('aria-describedby','domain-fixture-hint'); await expect(input(page)).toHaveAttribute('aria-invalid','grammar');
+    await expect(input(page)).toHaveAccessibleDescription('Synthetic hostname hint.'); await expect(error(page)).toHaveCount(0);
+  });
+  test(`Domain validation associations stay absent during a check and its DNS error at ${width}px`,async ({page}) => {
+    await open(page,width); await input(page).fill(''); await input(page).press('Enter'); await expectDomainValidation(page); await input(page).fill(ALPHA); await startCheck(page,width); await expectNoDomainValidation(page);
+    await release(page,0,'error'); await expectOutcome(page,'error',ALPHA); await expectNoDomainValidation(page); await expect(check(page)).toBeFocused();
+  });
+  for (const outcome of ['success','error'] as const) {
+    test(`Domain validation associations survive a stale DNS ${outcome} at ${width}px`,async ({page}) => {
+      await open(page,width); await startCheck(page,width); await input(page).fill(''); await input(page).press('Enter'); const id=await expectDomainValidation(page); const message=(await error(page).elementHandle())!;
+      await release(page,0,outcome); await drain(page); expect(await expectDomainValidation(page)).toBe(id); expect(await message.evaluate(node => node.isConnected)).toBe(true); await expect(input(page)).toBeFocused();
+    });
+  }
+  test(`Domain validation associations retire on route teardown and use a fresh identity on return at ${width}px`,async ({page}) => {
+    const {oldInput}=await open(page,width); await input(page).fill(''); await input(page).press('Enter'); const id=await expectDomainValidation(page);
+    await domainLeave(page); await expect(panel(page)).toHaveCount(0);
+    expect(await oldInput.evaluate(node => [node.isConnected,node.getAttribute('aria-invalid'),node.getAttribute('aria-describedby')])).toEqual([false,null,null]);
+    await page.evaluate(() => window.__app.setHash('#settings/server/hostnames')); await expect(input(page)).toBeVisible(); await expectNoDomainValidation(page); await input(page).press('Enter');
+    expect(await expectDomainValidation(page)).not.toBe(id); expect(await reads(page)).toEqual([]);
+  });
+}
+
+
+for (const width of [390,1280]) {
+  test(`Domain validation ownership audit keeps a newer invalid state after revalidation at ${width}px`,async ({page}) => {
+    const {oldInput}=await open(page,width); await input(page).fill(''); await input(page).press('Enter'); const id=await expectDomainValidation(page);
+    await input(page).evaluate(node => {
+      const hint=document.createElement('span'); hint.id='new-domain-owner-hint'; hint.textContent='Another field hint.';
+      node.closest('[data-recued-custom-domains]')!.appendChild(hint); node.setAttribute('aria-invalid','spelling');
+      node.setAttribute('aria-describedby',`${hint.id} ${node.getAttribute('aria-describedby')}`);
+    });
+    await input(page).press('Enter'); expect(await expectDomainValidation(page,'Another field hint.')).toBe(id);
+    await page.keyboard.type(ALPHA); await expect(error(page)).toHaveCount(0);
+    await expect(input(page)).toHaveAttribute('aria-invalid','spelling'); await expect(input(page)).toHaveAttribute('aria-describedby','new-domain-owner-hint');
+    await expect(input(page)).toHaveAccessibleDescription('Another field hint.'); expect(await oldInput.evaluate(node => node.isConnected && node===document.activeElement)).toBe(true);
+    expect(await reads(page)).toEqual([]);
+  });
+}

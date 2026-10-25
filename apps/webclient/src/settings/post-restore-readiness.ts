@@ -39,14 +39,14 @@ export const buildRestoreReadiness = (snapshot: Snapshot, now: number): Row[] =>
     && Array.isArray(destinations) && destinations.some((value: unknown) => {
       const d = record(value); return d?.connection_name === settings.connection_name && d?.destination_id === settings.destination_id;
     });
-  if (u?.configured === false) set('schedule', 'attention', 'Set up unattended backups on this server with your recovery words once. The words are not saved.');
+  if (u?.configured === false) set('schedule', 'attention', 'Set up unattended backups on this server with your recovery key once. The key is not saved.');
   else if (u?.configured === true && settings?.enabled === false) set('schedule', 'attention', 'Scheduled backups are paused. Review the saved schedule before enabling it.');
   else if (u?.configured === true && settings?.enabled === true) {
     const run = record(u.last_run);
     if (!bound) set('schedule', 'attention', 'Refresh backup storage and choose the current destination before relying on this schedule.');
     else if (run?.issue === 'setup_required' || run?.issue === 'vault_unavailable') set('schedule', 'attention', 'The saved backup key needs attention. Check the vault and complete setup if required.');
     else if (run?.outcome === 'failed' || run?.issue === 'retention_pending' || u.alert_pending === true) set('schedule', 'attention', 'The latest backup run or its failure alert needs attention. Review its result before relying on the schedule.');
-    else set('schedule', 'ready', 'The saved schedule is enabled and its storage connection is available. Check the next run in Unattended encrypted backups.');
+    else set('schedule', 'ready', 'The saved schedule is enabled and its storage connection is available. Check the next run in Automatic backups.');
   }
   const h = record(snapshot.health), policy = record(h?.policy);
   const matches = (value: Record<string, unknown> | undefined) => {
@@ -124,7 +124,7 @@ export const mountPostRestoreReadiness = (options: RestoreReadinessOptions & {
   };
   host.setAttribute('data-restore-readiness', ''); host.setAttribute('hidden', '');
   host.appendChild(make('h3', 'After restore: check backups and alerts'));
-  host.appendChild(make('p', 'This restore is confirmed. Review this server’s current setup and saved proof below. Backup keys and monitor setup may need attention after a move. Keep your recovery words separately.'));
+  host.appendChild(make('p', 'This restore is confirmed. Review this server’s current setup and saved proof below. Backup keys and monitor setup may need attention after a move. Keep your recovery key separately.'));
   host.appendChild(make('style', '[data-restore-readiness]{min-width:0;overflow-wrap:anywhere}[data-restore-readiness] ul{padding-inline-start:1.25rem}[data-restore-readiness] li{margin-block:1rem}[data-restore-readiness] button{max-width:100%;white-space:normal}'));
   const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('data-restore-readiness-status', ''); host.appendChild(status);
   const check = make('button', 'Refresh readiness'); check.type = 'button'; check.className = 'rx-btn rx-btn-secondary'; check.setAttribute('data-restore-readiness-refresh', ''); host.appendChild(check);

@@ -68,6 +68,7 @@ import type { WebclientBundleFile, WebclientBundleManifest } from '@recued/contr
 import { createHostnameSniBindingLookup } from './hostname/index.js';
 import type { PairingManager } from './pairing.js';
 import { isClientKind, type ClientKind } from './pairing/client-tokens.js';
+import { createPairAttemptLimiter } from './pairing/pair-attempt-limiter.js';
 import { handlePassportFetch } from './passport/fetch-handler.js';
 import type { ScheduleHandlerDeps } from './schedule-handler.js';
 import type { CacheRpcDeps } from './cache-rpc-handler.js';
@@ -851,6 +852,8 @@ export interface ServerHandlerSet {
  *  + dev compositions. */
 export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandlerSet => {
   const now = config.now ?? (() => Date.now());
+  // Failed `/auth/pair` checks, bounded per source and in total (see the module).
+  const pairAttempts = createPairAttemptLimiter();
 
   // ─── health role ────────────────────────────────────────────────
   const healthHandler: PortRequestHandler = (req, res) => {
@@ -967,6 +970,13 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
           respond(res, { ok: false, status: 400, error: { code: 'bad_request', message: 'code is required for the first pair on this server' } });
           return;
         }
+        // Refused BEFORE any check, so a source past its limit learns nothing.
+        const pairSource = req.socket?.remoteAddress ?? 'unknown';
+        if (pairAttempts.refused(pairSource, now())) {
+          res.setHeader('Retry-After', '60');
+          respond(res, { ok: false, status: 429, error: { code: 'too_many_attempts', message: 'Too many wrong codes or recovery keys. Wait a minute, then try again.' } });
+          return;
+        }
         // Prove the pairing code BEFORE any recovery-key side effect. Every
         // step below this line is durable and realm-binding — the sentinel,
         // the vault bundle, the database rekey — so running them ahead of
@@ -982,6 +992,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
         // the caller held a valid code, so the key that bound the realm is
         // theirs, and their retry with a fresh code verifies against it.
         if (code && !config.pairing.checkCode(code)) {
+          pairAttempts.failed(pairSource, now());
           respond(res, { ok: false, status: 401, error: { code: 'invalid_code', message: 'Invalid, expired, or already-used pairing code' } });
           return;
         }
@@ -1001,6 +1012,27 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
           return;
         }
         const clientKind: ClientKind = isClientKind(clientKindRaw) ? clientKindRaw : 'webclient';
+        // Same reason as `clientKind`: a non-string name threw at the roster
+        // insert — AFTER the code was used — and the honest retry got
+        // `invalid_code`. It reads only the body, so it may come first.
+        if (body?.displayName !== undefined && typeof body.displayName !== 'string') {
+          respond(res, { ok: false, status: 400, error: { code: 'bad_request', message: 'displayName must be a string' } });
+          return;
+        }
+        // ⛔ A sign-in exists only for a NAMED device. Without an `instanceId`
+        // this route issued a working bearer that no Devices row showed and
+        // `pair.revoke` could not name — a single-use code was enough to get
+        // one. A code pairing that names no device is refused here, before
+        // the code is spent; a recovery-key request with no device (`recued
+        // unlock`, which never used the token) still unlocks, below, and
+        // gets no sign-in.
+        const instanceId = typeof body?.instanceId === 'string' && body.instanceId.length > 0
+          ? body.instanceId
+          : null;
+        if (config.clientTokens && instanceId === null && code) {
+          respond(res, { ok: false, status: 400, error: { code: 'bad_request', message: 'instanceId is required to pair a device' } });
+          return;
+        }
         if (recoveryKey) {
           if (!config.recoveryKeyCheck) {
             respond(res, { ok: false, status: 503, error: { code: 'server_not_configured', message: 'Server has no recovery-key check store.' } });
@@ -1019,6 +1051,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
             database: config.database,
           });
           if (!verify.ok) {
+            if (verify.code === 'mismatch') pairAttempts.failed(pairSource, now());
             respond(res, {
               ok: false,
               status: verify.code === 'mismatch'
@@ -1044,29 +1077,45 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
             return;
           }
         }
+        // Reject a re-pair that reuses a REVOKED instance_id. The roster
+        // upsert below would otherwise clear `revoked_at` (resurrecting the
+        // device) and a later re-revoke would reuse the deterministic
+        // `pair_revoke:<instance_id>` audit id, overwriting the original
+        // signed revocation row. A revoked device must re-pair under a fresh
+        // identity — the webclient already wipes its persisted
+        // instance_id on the 4003 reauth path, so a legitimate re-pair mints
+        // a new id and never trips this. Checked only AFTER the
+        // code/recoveryKey is verified so it never leaks revoked-status to an
+        // unauthenticated prober — and BEFORE the code is used (`pair()`
+        // below): refused after, the honest retry under a fresh id got
+        // `invalid_code` for a code that was good.
+        if (config.pairedInstances
+            && typeof body?.instanceId === 'string' && body.instanceId.length > 0
+            && config.pairedInstances.isRevoked(body.instanceId)) {
+          respond(res, { ok: false, status: 403, error: { code: 'instance_revoked', message: 'this instance was previously revoked; re-pair as a new device' } });
+          return;
+        }
+        if (config.clientTokens && instanceId === null) {
+          // Only a recovery-key request reaches here without a device (a code
+          // pairing was refused above): the key did its work — the realm is
+          // unlocked — and no device means no sign-in to issue.
+          pairAttempts.succeeded(pairSource);
+          respond(res, {
+            ok: true,
+            status: 200,
+            body: {
+              message: 'Recovery key accepted',
+              ...(config.serverId ? { serverId: config.serverId } : {}),
+            },
+          });
+          return;
+        }
         if (code) {
           const token = config.pairing.pair(code);
           if (!token) {
             respond(res, { ok: false, status: 401, error: { code: 'invalid_code', message: 'Invalid, expired, or already-used pairing code' } });
             return;
           }
-        }
-        // Reject a re-pair that reuses a REVOKED instance_id. The roster
-        // upsert below would otherwise clear `revoked_at` (resurrecting the
-        // device) and a later re-revoke would reuse the deterministic
-        // `pair_revoke:<instance_id>` audit id, overwriting the original
-        // signed revocation row. Mirror the WS register guard (ws-server.ts
-        // `isRevoked` → close 4003): a revoked device must re-pair under a
-        // fresh identity — the webclient already wipes its persisted
-        // instance_id on the 4003 reauth path, so a legitimate re-pair mints
-        // a new id and never trips this. Checked only AFTER the
-        // code/recoveryKey is verified so it never leaks revoked-status to an
-        // unauthenticated prober.
-        if (config.pairedInstances
-            && typeof body?.instanceId === 'string' && body.instanceId.length > 0
-            && config.pairedInstances.isRevoked(body.instanceId)) {
-          respond(res, { ok: false, status: 403, error: { code: 'instance_revoked', message: 'this instance was previously revoked; re-pair as a new device' } });
-          return;
         }
         // `clientKind` is resolved above, before the code is consumed — the
         // durable row still records the surface this device paired as (D-156
@@ -1134,6 +1183,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
             passport = undefined;
           }
         }
+        pairAttempts.succeeded(pairSource);
         respond(res, {
           ok: true,
           status: 200,
@@ -1232,6 +1282,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
         ...(config.mcpHttpDeps.subscriptions
           ? { subscriptions: config.mcpHttpDeps.subscriptions }
           : {}),
+        ...(config.lifecycleState ? { lifecycle_state: config.lifecycleState } : {}),
       })
     : (_req, res) => {
         respond(res, { ok: false, status: 404, error: { code: 'not_found', message: 'mcp http transport reserved' } });

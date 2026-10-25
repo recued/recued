@@ -4,6 +4,8 @@
   "ai-models.spec.ts",
   "settings.spec.ts",
   "certificate-upload-editing.spec.ts",
+  "certificate-upload-focus.spec.ts",
+  "certificate-removal-focus.spec.ts",
   "certificate-read-recovery.spec.ts",
   "tls-renew-focus.spec.ts",
   "hostnames-form-focus.spec.ts",

@@ -10,6 +10,28 @@ const parseTrace = (line: string): BootTraceEvent =>
   JSON.parse(line.replace(/^\[recued boot\] /, '')) as BootTraceEvent;
 
 describe('boot trace', () => {
+  it('does not sample process CPU unless both trace switches are enabled', () => {
+    for (const env of [{ RECUED_BOOT_TRACE_CPU: '1' }, { RECUED_BOOT_TRACE: '1' }]) {
+      let samples = 0;
+      const trace = createBootTrace({ entrypoint: 'bin', profile: 'serve', env,
+        sink: () => {}, cpuUsage: () => { samples++; return { user: 0, system: 0 }; } });
+      trace.mark('storage-open-start'); trace.finish();
+      expect(samples).toBe(0);
+    }
+  });
+
+  it('separates elapsed wall time from cumulative user and system CPU', () => {
+    const lines: string[] = [];
+    let wall = 100; let cpu = { user: 100_000, system: 20_000 };
+    const trace = createBootTrace({ entrypoint: 'serve-entry', profile: 'serve',
+      env: { RECUED_BOOT_TRACE: '1', RECUED_BOOT_TRACE_CPU: '1' }, now: () => wall,
+      cpuUsage: () => cpu, sink: line => lines.push(line) });
+    wall = 250; cpu = { user: 140_000, system: 25_000 };
+    trace.mark('identity-boot-complete');
+    expect(parseTrace(lines[0]!)).toMatchObject({ elapsed_ms: 0, cpu_user_ms: 0, cpu_system_ms: 0 });
+    expect(parseTrace(lines[1]!)).toMatchObject({ elapsed_ms: 150, cpu_user_ms: 40, cpu_system_ms: 5 });
+  });
+
   it('stays disabled unless RECUED_BOOT_TRACE=1', () => {
     const lines: string[] = [];
     const trace = createBootTrace({

@@ -90,8 +90,11 @@ import type {
   PreflightRequiredSignal,
   RiskTier,
   SessionGrantOffer,
+  ChatDispatchContext,
 } from '@recued/contracts';
 import {
+  primitiveGrantEntry,
+  TIER1_HOLD_CATALOG_SLUG,
   deriveDispatchScope,
   executionSourceContractId,
   isDoorDispatchSource,
@@ -109,6 +112,7 @@ import {
 import {
   deriveChannelSessionId,
   evaluatePreflightAdmission,
+  planApproval,
   raisePreflightAsk,
   type PreflightAskContext,
   type PreflightNotifier,
@@ -236,6 +240,8 @@ export type RawOpDispatchDeps = Pick<
   | 'preflightNotifier'
   | 'sessionGrantResolver'
   | 'gatedActionStore'
+  // D-329 — a held Tier-1 tool call resumes through the tool registry.
+  | 'tier1Registry'
 > & {
   /** Test seam — substitute the IO executor UNDER the gateway (mirrors
    *  `CanonicalPollDeps.buildExecutor`): tests script wire responses while the
@@ -359,8 +365,19 @@ const routingManifestForRawOp = (
 
 /** Dispatch a raw catalog op for an external door, recipe-less. Returns a
  *  {@link RawOpDispatchOutcome}; re-throws any non-preflight error from the
- *  gateway (the route's catch maps it to an MCP error envelope). */
-export const dispatchRawOp = async (
+ *  gateway (the route's catch maps it to an MCP error envelope). An AI app's
+ *  identical calls run one at a time ({@link oneIdenticalMcpCallAtATime}). */
+export const dispatchRawOp = (
+  deps: RawOpDispatchDeps,
+  req: RawOpDispatchRequest,
+): Promise<RawOpDispatchOutcome> => oneIdenticalMcpCallAtATime(
+  req.executionSource,
+  req.opId,
+  req.args,
+  () => dispatchRawOpOnce(deps, req),
+);
+
+const dispatchRawOpOnce = async (
   deps: RawOpDispatchDeps,
   req: RawOpDispatchRequest,
 ): Promise<RawOpDispatchOutcome> => {
@@ -456,7 +473,18 @@ export const dispatchRawOp = async (
         + 'Ask the owner to grant it on this door, or use a permitted operation.',
     };
   }
+  // D-329 — an AI app's repeat of a call still waiting for the owner is that call: one ask,
+  // and one run on the yes. Asked here, where it would be held: its grant cannot admit the
+  // repeat meanwhile, since a raw-op grant is minted by answering an ask.
+  const waitingRun = (): Promise<string | undefined> => findWaitingHold(deps, {
+    executionSource,
+    opId,
+    connectionName,
+    opArgs,
+  });
   if (admission.verdict === 'ask') {
+    const waiting = await waitingRun();
+    if (waiting !== undefined) return { kind: 'held', op_id: opId, run_id: waiting };
     // Inc B-writes — the contract policy cell escalated this op to approval.
     // HOLD it durably (a recipe-less checkpoint + the D-158 ask). No
     // action-identity hashes are available here (admission runs BEFORE the
@@ -502,6 +530,8 @@ export const dispatchRawOp = async (
     executionSource,
   });
   if (dispatch.kind === 'preflight') {
+    const waiting = await waitingRun();
+    if (waiting !== undefined) return { kind: 'held', op_id: opId, run_id: waiting };
     // The catalog gateway held this op (a write / ask-tier OP). Build the
     // durable recipe-less hold off the signal's action identity — its hashes
     // make a `raw_op` grant mintable on an `allow_session` answer.
@@ -1178,6 +1208,13 @@ interface RawOpHoldInput {
   executionSource: ExecutionSource;
   contractSnapshot?: ContractSnapshot;
   correlationId?: string;
+  /** D-329 — the Tier-1 tool this hold is, when it is one (`RawOpCheckpoint.tier1_tool`). */
+  tier1Tool?: string;
+  /** D-329 — the run id, when the caller stored it first (a chat proposal is saved with its
+   *  hold before the hold is raised). Absent ⇒ minted here. */
+  runId?: string;
+  /** D-329 — the chat session a held chat write came from (`RawOpCheckpoint.tier1_session_id`). */
+  tier1SessionId?: string;
 }
 
 /** Resolve the `raw_op` session-grant offer for a hold — the `(mcp ×
@@ -1234,7 +1271,7 @@ const buildRawOpHold = async (
   }
   const newId = deps.newId ?? randomUUID;
   const createdAt = (deps.now ?? Date.now)();
-  const run_id = newId();
+  const run_id = hold.runId ?? newId();
   const checkpoint: Checkpoint = {
     checkpoint_id: newId(),
     run_id,
@@ -1273,6 +1310,10 @@ const buildRawOpHold = async (
         : {}),
     },
     raw_op: {
+      ...(hold.tier1Tool !== undefined ? { tier1_tool: hold.tier1Tool } : {}),
+      ...(hold.tier1Tool !== undefined && hold.tier1SessionId !== undefined
+        ? { tier1_session_id: hold.tier1SessionId }
+        : {}),
       op_id: hold.opId,
       catalog_slug: hold.catalogSlug,
       operation: hold.operation,
@@ -1334,6 +1375,9 @@ const buildRawOpHold = async (
       return { kind: 'held', op_id: hold.opId, run_id };
     }
   }
+  // D-329 — a Tier-1 hold carries no payload hashes, so it gets no "allow this session":
+  // that grant would be a raw op's, which nothing on the Tier-1 path consults. Repeated
+  // approvals learn instead (D-329 §3.4).
   const offer = resolveRawOpOffer(
     deps,
     hold.executionSource,
@@ -1402,6 +1446,114 @@ const buildRawOpHold = async (
   return { kind: 'held', op_id: hold.opId, run_id };
 };
 
+/** D-329 — hold a Tier-1 tool call (`calendar.create`, `work.update`, …) for the owner, the
+ *  way a write raw op is held: a recipe-less checkpoint carrying the tool and its arguments,
+ *  the receipt an AI app's `action_ref` follows, and the D-158 ask fanned out to every
+ *  approval channel. Approving runs it through the tool registry ({@link resumeRawOp}). */
+export const holdTier1Call = (
+  deps: RawOpDispatchDeps,
+  call: {
+    tool: string;
+    args: Record<string, unknown>;
+    executionSource: ExecutionSource;
+    contractSnapshot?: ContractSnapshot;
+    correlationId?: string;
+    runId?: string;
+    sessionId?: string;
+  },
+): Promise<RawOpDispatchOutcome> => buildRawOpHold(deps, {
+  opId: call.tool,
+  catalogSlug: TIER1_HOLD_CATALOG_SLUG,
+  operation: call.tool,
+  opArgs: call.args,
+  connectionName: '',
+  executionSource: call.executionSource,
+  ...(call.contractSnapshot !== undefined ? { contractSnapshot: call.contractSnapshot } : {}),
+  ...(call.correlationId !== undefined ? { correlationId: call.correlationId } : {}),
+  ...(call.runId !== undefined ? { runId: call.runId } : {}),
+  ...(call.sessionId !== undefined ? { tier1SessionId: call.sessionId } : {}),
+  tier1Tool: call.tool,
+}, { risk_tier: 'write' });
+
+/** D-329 — the run of a call still waiting for the owner that this call repeats: a held
+ *  checkpoint for the same op (and Tier-1 tool), connection and arguments, from the same AI
+ *  app (its MCP token and contract). An app that sends a waiting write again is retrying: a
+ *  second ask could be approved too, and a rule accepted meanwhile would run it at once and
+ *  again on the yes. The oldest, as the owner was asked first. Undefined for a caller that is
+ *  not an AI app (the chat keeps its own), when none waits, or when the store cannot be read.
+ *  An approved call claimed its checkpoint, so it is not one; a refused or expired one may
+ *  keep its checkpoint a while (the answer handler deletes it after the refusal), and its
+ *  receipt then says it was answered. */
+export const findWaitingHold = async (
+  stores: Pick<RawOpDispatchDeps, 'checkpointStore' | 'gatedActionStore'>,
+  call: {
+    executionSource: ExecutionSource;
+    opId: string;
+    connectionName: string;
+    opArgs: Record<string, unknown>;
+    tier1Tool?: string;
+  },
+): Promise<string | undefined> => {
+  const source = call.executionSource;
+  if (stores.checkpointStore === undefined || source.channel !== 'mcp') return undefined;
+  let checkpoints: Checkpoint[];
+  try {
+    checkpoints = await stores.checkpointStore.list();
+  } catch {
+    return undefined;
+  }
+  const argsHash = planApproval.computePlanArgsHash(call.opArgs);
+  const repeated = checkpoints.filter((checkpoint) => {
+    const raw = checkpoint.raw_op;
+    if (raw === undefined || raw.op_id !== call.opId || raw.tier1_tool !== call.tier1Tool) return false;
+    if (raw.connection_name !== call.connectionName) return false;
+    const asker = raw.execution_source;
+    return asker.channel === 'mcp'
+      && asker.mcp_token_id === source.mcp_token_id
+      && asker.contract_id === source.contract_id
+      && planApproval.computePlanArgsHash(raw.op_args) === argsHash;
+  });
+  for (const checkpoint of repeated) {
+    let receipt: Awaited<ReturnType<NonNullable<RawOpDispatchDeps['gatedActionStore']>['getBySubject']>>;
+    try {
+      receipt = await stores.gatedActionStore?.getBySubject(checkpoint.run_id, RAW_OP_STEP_ID) ?? null;
+    } catch {
+      continue;
+    }
+    // No receipt: none is kept here, or its write failed and boot recovery makes it.
+    if (receipt === null || receipt.status === 'awaiting_approval') return checkpoint.run_id;
+  }
+  return undefined;
+};
+
+/** D-329 — an AI app's identical calls (its MCP token and contract, the tool, the arguments),
+ *  one at a time: a second arriving while the first is being held then finds it waiting
+ *  ({@link findWaitingHold}) instead of raising its own ask. Calls that differ in anything,
+ *  and every caller that is not an AI app, run as they come. Process-local: one app's calls
+ *  reach one process. */
+const identicalMcpCalls = new Map<string, Promise<void>>();
+export const oneIdenticalMcpCallAtATime = async <T>(
+  source: ExecutionSource,
+  tool: string,
+  args: Record<string, unknown>,
+  run: () => Promise<T>,
+): Promise<T> => {
+  if (source.channel !== 'mcp') return run();
+  const key = [source.mcp_token_id, source.contract_id, tool, planApproval.computePlanArgsHash(args)]
+    .join('\u0000');
+  const prior = identicalMcpCalls.get(key);
+  let release = (): void => undefined;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  identicalMcpCalls.set(key, mine);
+  try {
+    if (prior !== undefined) await prior;
+    return await run();
+  } finally {
+    release();
+    if (identicalMcpCalls.get(key) === mine) identicalMcpCalls.delete(key);
+  }
+};
+
 // ────────────────────────────────────────────────────────────────
 // Resume / deny — the answer round-trip (called by the PreflightResumer).
 // ────────────────────────────────────────────────────────────────
@@ -1466,6 +1618,103 @@ export const resumeRawOp = async (
   }
 };
 
+/** D-329 — the claimed body of a held Tier-1 tool call's resume. The checkpoint proves what
+ *  the owner approved; the call runs on authority re-read now, as a fresh call would meet it:
+ *  the bearer and its contract (D-196 R2), the bound contract's liveness, and the tool's own
+ *  switch (`primitive.<tool>`). The handler then checks its op grants as on any call. A call
+ *  that throws once running may have written, so it is reported in doubt, never retried. */
+const dispatchResumedTier1Call = async (
+  deps: RawOpDispatchDeps,
+  raw: RawOpHold,
+  tool: string,
+): Promise<RawOpResumeOutcome> => {
+  if (!deps.approvalResumeAuthority) {
+    console.warn(`[tier1-resume] '${tool}' approval-resume authority resolver is unavailable — not running`);
+    return {
+      kind: 'failed',
+      code: 'resume_authority_unavailable',
+      message: 'Fresh authority could not be resolved, so the approved tool call was not run.',
+    };
+  }
+  let authority: ReturnType<NonNullable<RawOpDispatchDeps['approvalResumeAuthority']>['resolve']>;
+  try {
+    authority = deps.approvalResumeAuthority.resolve({
+      execution_source: raw.execution_source,
+      required_bearer_tool_names: [tool],
+    });
+  } catch (error) {
+    console.warn(`[tier1-resume] '${tool}' fresh authority resolution failed: `
+      + (error instanceof Error ? error.message : String(error)) + ' — not running');
+    return {
+      kind: 'failed',
+      code: 'resume_authority_error',
+      message: 'Fresh authority resolution failed, so the approved tool call was not run.',
+    };
+  }
+  if (!authority.admitted) {
+    console.warn(`[tier1-resume] '${tool}' fresh authority denied (${authority.reason}: ${authority.detail}) — not running`);
+    return {
+      kind: 'failed',
+      code: authority.reason,
+      message: `Fresh authority denied the approved tool call: ${authority.detail}`,
+    };
+  }
+  if (raw.bound_contract_id !== undefined
+    && deps.contractOverlay?.isContractLive(raw.bound_contract_id) !== true) {
+    return {
+      kind: 'failed',
+      code: 'bound_contract_inactive',
+      message: 'The MCP contract was revoked, expired, or exhausted while approval was pending.',
+    };
+  }
+  const source = authority.execution_source;
+  if (deps.opAdmissionGate !== undefined && !deps.opAdmissionGate.isOpGranted(source, primitiveGrantEntry(tool))) {
+    return {
+      kind: 'failed',
+      code: 'tool_not_granted',
+      message: `The contract no longer grants ${tool}, so the approved call was not run.`,
+    };
+  }
+  const registry = deps.tier1Registry?.();
+  if (registry === undefined) {
+    return {
+      kind: 'failed',
+      code: 'tier1_registry_unavailable',
+      message: 'The tool registry was not available, so the approved call was not run.',
+    };
+  }
+  const snapshot = authority.contract_snapshot !== undefined
+    ? { contract_snapshot: authority.contract_snapshot } : {};
+  // A chat's call runs as the chat ran it, in its session (`work.create` records its origin
+  // from `session_id`, `memory.write` its conversation); an AI app's as its wire did.
+  const session_id = raw.tier1_session_id ?? (source.channel === 'chat' ? source.chat_session_id : undefined);
+  const ctx: ChatDispatchContext = source.channel === 'mcp'
+    ? { channel: 'mcp_wire', mcp_token_id: source.mcp_token_id, execution_source: source, ...snapshot }
+    : {
+        channel: 'internal_function_call',
+        ...(session_id !== undefined ? { session_id } : {}),
+        ...(source.channel === 'chat' && source.turn_id !== undefined ? { turn_id: source.turn_id } : {}),
+        execution_source: source,
+        ...snapshot,
+      };
+  let result: Awaited<ReturnType<typeof registry.dispatch>>;
+  try {
+    result = await registry.dispatch(tool, raw.op_args, ctx);
+  } catch (error) {
+    console.warn(`[tier1-resume] '${tool}' threw while running: `
+      + (error instanceof Error ? error.message : String(error)));
+    return {
+      kind: 'in_doubt',
+      code: 'tier1_call_threw',
+      message: `${tool} stopped while it ran and may have made its change; check before trying again.`,
+    };
+  }
+  if (!result.ok) {
+    return { kind: 'failed', code: result.reason, message: result.detail ?? result.reason };
+  }
+  return { kind: 'completed', result: result.result };
+};
+
 /** The claimed body of {@link resumeRawOp} (runs under the in-process claim). */
 const dispatchResumedRawOp = async (
   deps: RawOpDispatchDeps,
@@ -1526,6 +1775,9 @@ const dispatchResumedRawOp = async (
       message: 'The held raw operation could not claim its checkpoint and was not dispatched.',
     };
   }
+
+  // D-329 — a held Tier-1 tool call has no catalog binding to re-resolve.
+  if (raw.tier1_tool !== undefined) return dispatchResumedTier1Call(deps, raw, raw.tier1_tool);
 
   // 2 — re-resolve the op (the pack may have been uninstalled while paused) +
   //     §8 KIND fence.

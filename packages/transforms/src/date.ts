@@ -383,7 +383,10 @@ export const event_when: TransformFn = (p) => {
   return (EVENT_WHEN_PARTS as readonly unknown[]).includes(p.part) ? when[p.part as typeof EVENT_WHEN_PARTS[number]] : null;
 };
 
-const eventWhen = (p: Record<string, unknown>): {
+/** `event_when` without the transform shell, for the server's own projections
+ *  (chat's `calendar.search` writes each event's `when` with it), so a recipe and
+ *  the chat render one event the same way. */
+export const eventWhen = (p: Record<string, unknown>): {
   start: number; end: number; day: string; time: string; date_time: string; text: string;
 } | null => {
   const event = p.event;

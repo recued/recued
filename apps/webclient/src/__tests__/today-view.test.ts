@@ -67,6 +67,20 @@ describe('Today projection', () => {
     expect(html).toContain('Coming up'); expect(html).toContain('Done: renew · Ana’s passport'); expect(html).not.toContain('last-done-question');
     expect(html).toContain('2 proposals and questions wait'); expect(html).toContain('LG television'); expect(html).toContain('Unmatched replies'); expect(html).toContain('#connections');
   });
+  it('lets Done acknowledge a renewal, and leaves one acknowledged out until its next reminder (§15.7, 2026-10-24)', async () => {
+    const coming = commitment('renew', before + 30 * 86_400_000); const near = commitment('renew-near', now + 3_600_000);
+    const occurrence = (entity: WorkEntity, patch: Partial<ProactiveToday['occurrences'][number]>): ProactiveToday['occurrences'][number] => ({ id: `occ-${entity.id}`,
+      asset_id: 'passport', asset_name: 'Ana’s passport', question: false, reminders_started: true, commitment: entity as Extract<WorkEntity, { _kind: 'commitment' }>, ...patch });
+    const proactive = (occurrences: ProactiveToday['occurrences']): ProactiveToday => ({ situations: { clusters: [], omitted: 0, ambiguous: [] }, occurrences,
+      proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true });
+    const renewal = { field: 'expires_on', current: '2027-04-17' };
+    const shown = await loadToday({ ...readers([coming, near]), proactiveTodayCaller: async () => proactive([occurrence(coming, { renewal }), occurrence(near, { renewal })]) }, now);
+    expect(shown.items.map(item => [item.commitmentId, item.renewalOccurrenceId])).toEqual([['renew-near', 'occ-renew-near'], ['renew', 'occ-renew']]);
+    // Acknowledged, both leave Today: the one Coming up, and the one due within the window.
+    const quiet = await loadToday({ ...readers([coming, near]), proactiveTodayCaller: async () => proactive([
+      occurrence(coming, { renewal, acknowledged: true }), occurrence(near, { renewal, acknowledged: true })]) }, now);
+    expect(quiet.items).toEqual([]);
+  });
   it('attaches a shared cluster to its actual calendar row and renders near misses and source links', async () => {
     const evidence = [{ collection: 'asset', id: 'passport' }];
     const dimension = <T>(value: T | null, verdict: 'match' | 'outside' | 'unknown') => ({ value, verdict, basis: 'declared' as const, evidence });

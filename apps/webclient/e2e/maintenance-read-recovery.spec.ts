@@ -94,7 +94,7 @@ const open = async (page: Page, width: number, outcome: Outcome = 'error') => {
   if (outcome === 'error') {
     await expect(panel(page).getByRole('alert')).toContainText('Maintenance status temporarily unavailable.');
     await expect(retry(page)).toBeVisible();
-    expect((await retry(page).boundingBox())?.height).toBeGreaterThanOrEqual(36);
+    expect((await retry(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
   } else await expect(heading(page)).toBeVisible();
   await drain(page);
   await expect(outside(page)).toBeFocused();

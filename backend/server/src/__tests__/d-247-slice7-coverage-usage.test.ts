@@ -77,6 +77,63 @@ describe('readRecipeCoverageUsage', () => {
   });
 });
 
+/** D-327 — the Contracts page shows ONE agreement, so its "ran N times" must count
+ *  that agreement's runs. Before rows named their agreement, the count was every
+ *  agreement's, and an owner's own runs read as an AI app's on the app's page. */
+describe('readRecipeCoverageUsage — one agreement', () => {
+  const forContract = (target: string, granting: string, contract_id: string, agoDays = 1) =>
+    row(target, granting, agoDays, JSON.stringify({ granting_recipe: granting, contract_id }));
+
+  it('counts only the runs recorded under the named agreement', async () => {
+    const rows = [
+      forContract('core.mail.send', 'recued-core/chase', 'door_a'),
+      forContract('core.mail.send', 'recued-core/chase', 'door_a', 2),
+      forContract('core.mail.send', 'recued-core/reply', 'door_b'),
+      forContract('core.mail.send', 'recipe.recued-core/chase', 'user_self'),
+    ];
+    const a = await readRecipeCoverageUsage(store(rows), { window_days: 30, now: () => NOW, contract_id: 'door_a' });
+    expect(a.byOperation.get('core.mail.send')).toEqual({ count: 2, recipes: ['recued-core/chase'] });
+    const owner = await readRecipeCoverageUsage(store(rows), { window_days: 30, now: () => NOW, contract_id: 'user_self' });
+    expect(owner.byOperation.get('core.mail.send')).toEqual({ count: 1, recipes: ['recipe.recued-core/chase'] });
+    // Unnamed ⇒ every agreement, as before.
+    const all = await readRecipeCoverageUsage(store(rows), { window_days: 30, now: () => NOW });
+    expect(all.byOperation.get('core.mail.send')?.count).toBe(4);
+  });
+
+  it('places an older row by the shape of its grant: the owner\'s is a recipe. entry key', async () => {
+    // A door's grant is the bare `<publisher>/<id>` wire name and cannot say WHICH
+    // door, so it counts for every door — overstating, never understating.
+    const rows = [
+      row('core.mail.send', 'recipe.recued-core/chase', 1),
+      row('core.mail.send', 'recued-core/chase', 2),
+    ];
+    const owner = await readRecipeCoverageUsage(store(rows), { window_days: 30, now: () => NOW, contract_id: 'user_self' });
+    expect(owner.byOperation.get('core.mail.send')).toEqual({ count: 1, recipes: ['recipe.recued-core/chase'] });
+    for (const door of ['door_a', 'door_b']) {
+      const d = await readRecipeCoverageUsage(store(rows), { window_days: 30, now: () => NOW, contract_id: door });
+      expect(d.byOperation.get('core.mail.send')).toEqual({ count: 1, recipes: ['recued-core/chase'] });
+    }
+  });
+
+  it('counts an unreadable row for every agreement — understating reads as "safe to revoke"', async () => {
+    const r = await readRecipeCoverageUsage(
+      store([row('core.mail.send', '', 1, '{not json')]),
+      { window_days: 30, now: () => NOW, contract_id: 'door_a' },
+    );
+    expect(r.byOperation.get('core.mail.send')).toEqual({ count: 1, recipes: [] });
+  });
+
+  it('still reports the oldest row scanned, whichever agreement it belongs to', async () => {
+    // Retention is a property of the ledger, not of one agreement.
+    const r = await readRecipeCoverageUsage(
+      store([forContract('core.mail.send', 'recued-core/chase', 'door_b', 90)]),
+      { window_days: 30, now: () => NOW, contract_id: 'door_a' },
+    );
+    expect(r.byOperation.size).toBe(0);
+    expect(r.oldest_scanned_at).toBe(NOW - 90 * DAY);
+  });
+});
+
 /** ⛔ THE RPC HANDLER, DRIVEN — because a reader with a typed caller and no test
  *  through it is the same shape as a reader with no caller: nothing proves the
  *  wiring, only that it compiles. */
@@ -109,6 +166,21 @@ describe('contract.recipeOpUsage — the rpc that makes both halves read', () =>
       }],
       window_days: 30,
     });
+  });
+
+  it('D-327 — narrows the count to the agreement the caller names', async () => {
+    const live = (contract_id: string) => ({
+      activity_id: `live-${contract_id}`,
+      timestamp: Date.now() - 60_000,
+      action: 'recipe_coverage_admission' as const,
+      target: 'core.mail.send',
+      detail: JSON.stringify({ granting_recipe: 'recued-core/chase', contract_id }),
+    });
+    const handler = await build([live('door_a'), live('door_b')]);
+    const one = await handler!({ contract_id: 'door_a' } as never, {} as never);
+    expect((one as { operations: { count: number }[] }).operations[0]!.count).toBe(1);
+    const every = await handler!({} as never, {} as never);
+    expect((every as { operations: { count: number }[] }).operations[0]!.count).toBe(2);
   });
 
   it('defaults the window rather than scanning everything', async () => {

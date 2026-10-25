@@ -200,12 +200,18 @@ describe('renderBootBanner', () => {
     // loopback URL — which would load a page on a phone and then refuse to run.
     expect(output).toContain('From another device');
     expect(output).toContain('Settings — Server — Connect a device.');
-    // LOOPBACK, both here and in the Server URL. A LAN origin is not a secure
+    // LOOPBACK, both here and in the server address. A LAN origin is not a secure
     // context, so `crypto.subtle` is absent and the webclient stops at its
     // secure-context guard — printing a LAN URL here would hand the operator a
     // link that loads a page and then refuses to run. Reaching the server from
     // another device needs TLS in front and lives in the docs.
-    expect(output).toContain('Server URL:    http://127.0.0.1:8123');
+    // "Server address" is the label on the webclient's and the Bridge's pair
+    // forms, and the code's value starts in the same column as the address's.
+    expect(output).toContain('Server address: http://127.0.0.1:8123');
+    const lines = output.split('\n');
+    const addressLine = lines.find((line) => line.includes('Server address:')) ?? '';
+    const codeLine = lines.find((line) => line.includes('Pairing code:')) ?? '';
+    expect(codeLine.indexOf('ABCDEFGH')).toBe(addressLine.indexOf('http://127.0.0.1:8123'));
     // `127.0.0.1`, not `localhost`: the listener binds 0.0.0.0 (IPv4) and
     // `localhost` resolves to ::1 first on many systems.
     expect(output).not.toContain('http://localhost:8123');

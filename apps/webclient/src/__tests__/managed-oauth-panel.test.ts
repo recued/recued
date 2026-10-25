@@ -111,6 +111,25 @@ const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) =
     currentAuth: () => currentAuth, invalidations: () => invalidations, complete: () => { completed = true; } };
 };
 
+describe('broker panel inside a connection editor', () => {
+  it('keeps broker administration out of an existing connection and names the account it signs in with', async () => {
+    const f = fixture(false, undefined, false, { mode: 'edit', profile_id: 'cloud', integration_id: 'sheets-prod', connection_id: 'existing-account' }); await settle();
+    const html = f.host.innerHTML;
+    expect(html).toMatch(/data-managed-field="profile"[^>]*disabled/);
+    for (const action of ['add', 'edit', 'delete', 'refresh', 'add-integration']) expect(html).not.toContain(`data-managed-action="${action}"`);
+    expect(html).toContain('Signed in as Nango account <code>existing-account</code>');
+    expect(html).not.toContain('managed-oauth-trust'); f.panel.dispose();
+  });
+  it('lets a new connection add or edit a broker and leaves removing one to broker management', async () => {
+    const f = fixture(); await settle();
+    expect(f.host.innerHTML).toContain('data-managed-action="add"'); expect(f.host.innerHTML).toContain('data-managed-action="edit"');
+    expect(f.host.innerHTML).not.toContain('data-managed-action="delete"'); f.panel.dispose();
+    const managed = fixture(false, undefined, true); await settle();
+    expect(managed.host.innerHTML).toContain('data-managed-action="delete"'); expect(managed.host.innerHTML).toContain('managed-oauth-trust');
+    managed.panel.dispose();
+  });
+});
+
 describe('managed OAuth browser controller', () => {
   it.each([false, true])('keeps a newly authorized switch account after an impact read fails, with recovery %s', async recover => {
     const auth: ManagedOAuthAuth = { type: 'managed_oauth', broker_profile_id: 'cloud', integration_id: 'sheets-prod',
@@ -417,7 +436,7 @@ describe('managed OAuth browser controller', () => {
     finish({ action: 'preview', preview: permissionPreview({ decision: 'reuse', added_scopes: [], retained_scopes: ['write'],
       previous_scopes: ['read', 'write'], sources: [{ kind: 'pack', label: 'Other pack', scopes: ['write'] }] }) });
     await settle(); expect(f.host.innerHTML).toContain('Reuse current authorization');
-    expect(f.host.innerHTML).toContain('Other pack'); expect(f.host.innerHTML).toContain('Permissions retained');
+    expect(f.host.innerHTML).toContain('Other pack'); expect(f.host.innerHTML).toContain('Also kept for other uses');
     f.click('authorize'); await settle();
     expect(f.open).not.toHaveBeenCalled(); expect(f.authorized).toHaveLength(1);
     expect(f.calls.find(r => r.action === 'start')).toMatchObject({ preview_fingerprint: 'reviewed-permissions' });

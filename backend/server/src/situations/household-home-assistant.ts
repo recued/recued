@@ -1,16 +1,21 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { ConnectionRow, HouseholdHomeAssistantSelection } from '@recued/contracts';
+import type { ConnectionRow, HouseholdHomeAssistantList, HouseholdHomeAssistantSelection } from '@recued/contracts';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
 import { createHouseholdDeliveryStore } from '../storage/household-delivery-store.js';
 import { makeBoundedOriginHttpFetcher, type BoundedHttpFetcher } from '../bounded-origin-http-fetcher.js';
-import type { AssetOccurrenceService } from './asset-occurrence-service.js';
 
 type Selection = HouseholdHomeAssistantSelection;
 type Projection = { scope: string; occurrence_id: string; binding: Selection; marker: string; uid: string | null;
-  started: boolean; completed_seen_at?: number; withdrawn?: boolean; content?: string };
+  started: boolean; withdrawn?: boolean; content?: string };
 type TodoItem = { uid: string; summary: string; status: 'needs_action' | 'completed'; description?: string };
+/** A Home Assistant to-do list's entity id, as `configure` accepts and `lists` offers. */
+const TODO_ENTITY_ID = /^todo\.[a-z0-9_]{1,200}$/u;
+/** What a list must do for Recued to keep tasks there without duplicates: add (1),
+ *  remove (2) and keep a description (64), which holds each task's marker. */
+const REQUIRED_FEATURES: ReadonlyArray<[flag: number, missing: string]> = [
+  [1, 'can’t add items'], [2, 'can’t remove items'], [64, 'can’t keep the note Recued adds to each item']];
 export const homeAssistantBaseUrl = (row: ConnectionRow): string | null => {
   if (row.kind !== 'api') return null;
   try { const raw = JSON.parse(row.config_json).base_url; if (typeof raw !== 'string') return null;
@@ -20,7 +25,7 @@ export const homeAssistantBaseUrl = (row: ConnectionRow): string | null => {
 };
 const scopeOf = (value: Selection) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export interface HouseholdHomeAssistantDeps {
-  db: Database.Database; work: WorkEntityStore; occurrences: AssetOccurrenceService;
+  db: Database.Database; work: WorkEntityStore;
   /** Only connections bound to the installed Home Assistant catalog. */
   connections(): readonly ConnectionRow[];
   credential(row: ConnectionRow): Promise<string | null>;
@@ -31,6 +36,8 @@ export interface HouseholdHomeAssistantDeps {
 export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) => {
   const settings = createHouseholdDeliveryStore(deps.db); const occurrences = createAssetOccurrenceStore(deps.db);
   const now = deps.now ?? Date.now; const fetcher = deps.fetch ?? makeBoundedOriginHttpFetcher({ timeoutMs: 5000, maxResponseBytes: 2_000_000, redirectPolicy: 'error' });
+  // Every entity's state, read to find the to-do lists, outgrows one list's items on a large home.
+  const listFetcher = deps.fetch ?? makeBoundedOriginHttpFetcher({ timeoutMs: 10_000, maxResponseBytes: 16_000_000, redirectPolicy: 'error' });
   deps.db.exec(`CREATE TABLE IF NOT EXISTS household_ha_projections(scope TEXT NOT NULL,occurrence_id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,occurrence_id));
     CREATE TABLE IF NOT EXISTS household_ha_status(id INTEGER PRIMARY KEY CHECK(id=1),issue TEXT);`);
   const save = (row: Projection) => deps.db.prepare('INSERT INTO household_ha_projections(scope,occurrence_id,value) VALUES(?,?,?) ON CONFLICT(scope,occurrence_id) DO UPDATE SET value=excluded.value')
@@ -39,13 +46,13 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
   const issue = (text: string | null) => { deps.db.prepare('INSERT INTO household_ha_status(id,issue) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET issue=excluded.issue').run(text); };
   const current = (binding: Selection): ConnectionRow | undefined => deps.connections().find(row => row.name === binding.connection_name
     && row.enrolled_at === binding.connection_enrolled_at && homeAssistantBaseUrl(row) === binding.base_url);
-  const request = async (binding: Selection, path: string, body?: Record<string, unknown>, guard?: () => boolean, beforeSend?: () => void) => {
+  const request = async (binding: Selection, path: string, body?: Record<string, unknown>, guard?: () => boolean, beforeSend?: () => void, via = fetcher) => {
     if (deps.isVaultUnlocked?.() === false) throw new Error('Unlock the vault to reach Home Assistant');
     const row = current(binding); if (!row) throw new Error('The selected Home Assistant connection is unavailable');
     const token = await deps.credential(row);
     if (!token || !current(binding) || deps.isVaultUnlocked?.() === false || guard?.() === false) throw new Error('The Home Assistant projection changed before delivery');
     beforeSend?.();
-    const response = await fetcher(`${binding.base_url}${path}`, { method: body ? 'POST' : 'GET',
+    const response = await via(`${binding.base_url}${path}`, { method: body ? 'POST' : 'GET',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     if (!current(binding) || deps.isVaultUnlocked?.() === false) throw new Error('Home Assistant connection changed during the request');
     if (!response.ok) throw new Error(`Home Assistant returned ${response.status}`);
@@ -95,12 +102,8 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
         if (matching.length > 1) { issue('Duplicate Home Assistant projection markers need review; Recued will not choose a task.'); continue; }
         const item = matching[0]; if (item && !row.uid) { row.uid = item.uid; save(row); }
         const active = settings.homeAssistant(); const allowed = !!active && scopeOf(active) === scope && scope === selectedScope;
-        const value = allowed ? context(row.occurrence_id) : null;
-        if (value && group.binding.mode === 'interactive' && (item?.status === 'completed' || row.completed_seen_at)) {
-          if (!(flags & 4)) { issue('This to-do list no longer supports completion updates; it is display-only.'); continue; }
-          row.completed_seen_at ??= now(); save(row);
-          await deps.occurrences.completeOccurrence({ occurrence_id: row.occurrence_id, answered_at: row.completed_seen_at, actual_time_unknown: true });
-        }
+        // D-325 §15.7 (2026-10-24) — the household only receives: a task ticked off on
+        // the list changes nothing in Recued.
         if (!allowed || !context(row.occurrence_id)) {
           if (!item && !row.started) { row.withdrawn = true; save(row); continue; }
           if (!item && row.started && !row.uid) { issue('An earlier to-do write is uncertain. Recued is waiting for its original marker, without sending another copy.'); continue; }
@@ -111,8 +114,10 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
         }
         const live = context(row.occurrence_id)!;
         const due = live.commitment.promised_for_at === undefined ? undefined : new Date(live.commitment.promised_for_at).toISOString().slice(0, 10);
-        const content = JSON.stringify([live.commitment.statement, due]);
-        const description = `${row.marker}\n${group.binding.mode === 'display_only' ? 'Display only. Complete this task in Recued.' : 'Done closes the original task in Recued. Service dates and readings are confirmed separately.'}`;
+        const description = `${row.marker}\nDisplay only. Complete this task in Recued.`;
+        // The note is compared too, so a task posted with an older one ("Done closes the
+        // original task in Recued") is rewritten where the list lets Recued edit it.
+        const content = JSON.stringify([live.commitment.statement, due, description]);
         if (!item) {
           if (row.started) { issue('A to-do write is uncertain. Recued is waiting for its original marker, without sending another copy.'); continue; }
           if (writes >= 16) continue;
@@ -134,25 +139,51 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
   let configuring = 0;
   return {
     tick,
-    read() { return { selection: settings.homeAssistant(), connections: deps.connections().filter(row => homeAssistantBaseUrl(row)).map(row => ({ name: row.name, enrolled_at: row.enrolled_at })),
+    read() { return { selection: settings.homeAssistant(), connections: deps.connections().filter(row => homeAssistantBaseUrl(row))
+        .map(row => ({ name: row.name, enrolled_at: row.enrolled_at, ...(row.display_name ? { display_name: row.display_name } : {}) })),
       issue: (deps.db.prepare('SELECT issue FROM household_ha_status WHERE id=1').get() as { issue: string | null } | undefined)?.issue ?? null,
       uncertain: all().filter(row => !row.withdrawn && row.started && !row.uid).length }; },
+    /** §15.7 amendment — the to-do lists this connection offers, so the owner picks one by
+     *  name. Each says whether Recued can use it, by the features `configure` requires. */
+    async lists(input: { connection_name: string; connection_enrolled_at: number }): Promise<{ lists: HouseholdHomeAssistantList[] }> {
+      if (deps.isVaultUnlocked?.() === false) throw new Error('Unlock the vault to read Home Assistant');
+      const row = deps.connections().find(row => row.name === input?.connection_name && row.enrolled_at === input.connection_enrolled_at);
+      const base = row ? homeAssistantBaseUrl(row) : null;
+      if (!row || !base) throw new Error('Choose an enrolled Home Assistant connection');
+      const binding: Selection = { connection_name: row.name, connection_enrolled_at: row.enrolled_at, base_url: base, entity_id: '', selected_at: now() };
+      const states = await request(binding, '/api/states', undefined, undefined, undefined, listFetcher) as unknown;
+      if (!Array.isArray(states)) throw new Error('Home Assistant returned no entities');
+      const lists = states.flatMap((state): HouseholdHomeAssistantList[] => {
+        const entity_id = (state as { entity_id?: unknown } | null)?.entity_id;
+        if (typeof entity_id !== 'string' || !TODO_ENTITY_ID.test(entity_id)) return [];
+        const { state: status, attributes } = state as { state?: unknown; attributes?: { friendly_name?: unknown; supported_features?: unknown } };
+        const label = typeof attributes?.friendly_name === 'string' && attributes.friendly_name.trim() ? attributes.friendly_name.trim().slice(0, 200) : entity_id;
+        const flags = Number.isSafeInteger(attributes?.supported_features) && Number(attributes!.supported_features) >= 0 ? Number(attributes!.supported_features) : 0;
+        const missing = REQUIRED_FEATURES.filter(([flag]) => !(flags & flag)).map(([, words]) => words);
+        const reason = status === 'unavailable' || status === 'unknown' ? 'isn’t available right now' : missing.length ? missing.join(' and ') : undefined;
+        return [{ entity_id, name: label, usable: reason === undefined, ...(reason ? { reason } : {}) }];
+      });
+      return { lists: lists.sort((a, b) => a.name.localeCompare(b.name) || a.entity_id.localeCompare(b.entity_id)).slice(0, 200) };
+    },
     async configure(input: { connection_name: string | null; connection_enrolled_at?: number; entity_id?: string }) {
       const revision = ++configuring;
       if (deps.isVaultUnlocked?.() === false) throw new Error('Unlock the vault to configure Home Assistant');
       if (input.connection_name === null) { settings.setHomeAssistant(null); await tick(); return; }
       const row = deps.connections().find(row => row.name === input.connection_name && row.enrolled_at === input.connection_enrolled_at);
       const base = row ? homeAssistantBaseUrl(row) : null;
-      if (!row || !base || typeof input.entity_id !== 'string' || !/^todo\.[a-z0-9_]{1,200}$/u.test(input.entity_id)) throw new Error('Choose an enrolled Home Assistant connection and one to-do entity id');
-      const candidate: Selection = { connection_name: row.name, connection_enrolled_at: row.enrolled_at, base_url: base, entity_id: input.entity_id, mode: 'interactive', selected_at: now() };
+      if (!row || !base || typeof input.entity_id !== 'string' || !TODO_ENTITY_ID.test(input.entity_id)) throw new Error('Choose an enrolled Home Assistant connection and one to-do entity id');
+      const candidate: Selection = { connection_name: row.name, connection_enrolled_at: row.enrolled_at, base_url: base, entity_id: input.entity_id, selected_at: now() };
       const flags = await features(candidate);
-      if ((flags & (1 | 2 | 64)) !== (1 | 2 | 64)) throw new Error('This list must support creating and removing items and keeping their descriptions');
-      await items(candidate); candidate.mode = flags & 4 ? 'interactive' : 'display_only';
+      if (REQUIRED_FEATURES.some(([flag]) => !(flags & flag))) throw new Error('This list must support creating and removing items and keeping their descriptions');
+      await items(candidate);
+      // The same list saved again keeps the selection stored for it, as it was stored (one
+      // saved before 2026-10-24 also carries a `mode`): its tasks' scope is a hash of it, so
+      // they stay where they are rather than being removed and posted again.
       const old = settings.homeAssistant();
-      if (old && old.connection_name === candidate.connection_name && old.connection_enrolled_at === candidate.connection_enrolled_at
-        && old.base_url === candidate.base_url && old.entity_id === candidate.entity_id && old.mode === candidate.mode) candidate.selected_at = old.selected_at;
-      if (revision !== configuring || !current(candidate) || deps.isVaultUnlocked?.() === false) throw new Error('Home Assistant changed while checking the selected list');
-      settings.setHomeAssistant(candidate); issue(null); await tick();
+      const next = old && old.connection_name === candidate.connection_name && old.connection_enrolled_at === candidate.connection_enrolled_at
+        && old.base_url === candidate.base_url && old.entity_id === candidate.entity_id ? old : candidate;
+      if (revision !== configuring || !current(next) || deps.isVaultUnlocked?.() === false) throw new Error('Home Assistant changed while checking the selected list');
+      settings.setHomeAssistant(next); issue(null); await tick();
     },
   };
 };

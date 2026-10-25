@@ -30,9 +30,11 @@ import type { ClientTokenStore } from './client-tokens.js';
 export interface TokenRotationEmitter {
   /** Rotate the bearer behind `token_id`, then broadcast
    *  `token.rotated` to every paired subscriber. The bearer
-   *  plaintext rides ONLY through the broadcast — the rpc result
-   *  carries the public token ids + issue timestamp for the caller's
-   *  audit / display surfaces, never the bearer. */
+   *  plaintext rides ONLY through the broadcast, and only to a
+   *  connection authenticated under `token_id` — `events/handler.ts`
+   *  blanks it for every other subscriber. The rpc result carries the
+   *  public token ids + issue timestamp for the caller's audit /
+   *  display surfaces, never the bearer. */
   rotate(token_id: string): Promise<RotateOutcome>;
 }
 

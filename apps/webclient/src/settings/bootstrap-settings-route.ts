@@ -1,3 +1,6 @@
+import { BACKUP_WORKSPACE_STYLES } from './backup-workspace-styles.js';
+import { SERVERS_WORKSPACE_STYLES } from './servers-workspace-styles.js';
+import { NOTIFICATIONS_WORKSPACE_STYLES } from './notifications-workspace-styles.js';
 /** D-148 § A.4 — Settings route bootstrap (NEXT-#2 advance, slices 110 + 111 + D-156 P5).
  *
  *  Mounts the Settings surface as a sibling of the Reception route
@@ -71,6 +74,8 @@
  *  browser" + closed-list state). */
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import { PRIVACY_WORKSPACE_STYLES } from './privacy-workspace-styles.js';
+import { MAINTENANCE_WORKSPACE_STYLES } from './maintenance-workspace-styles.js';
 import type {
   DiagnosticResponse,
   RotationResult,
@@ -129,11 +134,20 @@ import {
   mountDevicesPage,
   type DevicesPageMount,
   type PairListCaller,
+  type PairRenameCaller,
   type PairRevokeCaller,
 } from './devices-page-mount.js';
-import { mountSituationDeliveryPanel, type SituationDeliveryPanelOptions } from './situation-delivery-panel.js';
+import {
+  mountSituationDeliveryPanel,
+  SITUATION_DELIVERY_PANEL_STYLES,
+  type SituationDeliveryPanelOptions,
+} from './situation-delivery-panel.js';
 import { mountLastTimePanel, type LastTimePanelOptions } from './last-time-panel.js';
-import { mountHouseholdDeliveryPanel, type HouseholdDeliveryPanelOptions } from './household-delivery-panel.js';
+import {
+  HOUSEHOLD_DELIVERY_PANEL_STYLES,
+  mountHouseholdDeliveryPanel,
+  type HouseholdDeliveryPanelOptions,
+} from './household-delivery-panel.js';
 import {
   NOTIFICATIONS_PANEL_STYLES,
   mountNotificationsPanel,
@@ -440,6 +454,8 @@ export interface BootstrapSettingsRouteOptions {
       id: string,
       next_url: string,
       next_token: WebclientServerProfile['webclient_token'],
+      /** Save only while the stored token is still this one. */
+      expected_token_id: string | null,
     ) => Promise<string | null>;
     /** Which profile this tab is connected through. */
     activeProfileId?: () => Promise<string | null>;
@@ -626,6 +642,9 @@ export interface BootstrapSettingsRouteOptions {
    *  `(args) => conn('pair.revoke', args)` from the bootstrap's rpc
    *  conn; tests inject a fake. See `pairListCaller` for the gate. */
   pairRevokeCaller?: PairRevokeCaller;
+  /** `pair.rename` caller for the Devices section's Rename. Optional: absent,
+   *  no row offers it. */
+  pairRenameCaller?: PairRenameCaller;
   /** D-156 P5 — the locally-known instance id for this client. When
    *  supplied, the matching row in `pair.list` results renders as
    *  "This device" + denies its own Revoke button (self-revoke
@@ -1247,7 +1266,10 @@ export const SETTINGS_ROUTE_STYLES = `
     padding-bottom: 6px;
     border-bottom: 1px solid var(--border);
   }
+  /* A finger's height once the rail is a strip of tabs. ⛔ They stayed at
+     the rail's 36px. */
   [${SETTINGS_ROUTE_NAV_ITEM_ATTR}] {
+    min-height: 44px;
     white-space: nowrap;
     box-shadow: none;
   }
@@ -1308,6 +1330,15 @@ export const SETTINGS_ROUTE_STYLES = `
   font-size: 12px;
   color: var(--muted);
 }
+/* Devices → "Add a device" is the page's way to its other half, drawn as the
+   button it is. ⛔ It was the browser's default blue link, 78×16, under a
+   table of full-size buttons. */
+.settings-devices-add-hint {
+  margin: 12px 0 0;
+}
+.settings-devices-add-hint a.rx-btn {
+  text-decoration: none;
+}
 /* In-section sub-tab strip (Privacy / Server) — underline-active, same
    language as the Housekeeping / AI-Models panel tabs. */
 [${SETTINGS_ROUTE_ROOT_ATTR}] .settings-subtabs {
@@ -1341,6 +1372,19 @@ export const SETTINGS_ROUTE_STYLES = `
 [${SETTINGS_ROUTE_ROOT_ATTR}] .settings-subtab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+@media (max-width: 720px) {
+  [${SETTINGS_ROUTE_ROOT_ATTR}] .settings-subtab {
+    min-height: 44px;
+  }
+}
+/* Two panels draw a button with no class of its own: Servers' "Change
+   address" and the timezone's retry. A finger's height on a phone. ⛔ 22px. */
+@media (max-width: 640px) {
+  [${SETTINGS_ROUTE_ROOT_ATTR}] [data-server-address-panel] button,
+  [${SETTINGS_ROUTE_ROOT_ATTR}] [data-recued-server-timezone-retry] {
+    min-height: 44px;
+  }
 }
 [${SETTINGS_ROUTE_ROOT_ATTR}] .settings-subtabpanel {
   display: flex;
@@ -1445,6 +1489,7 @@ export const bootstrapSettingsRoute = (
     style.textContent = [
       PRIMITIVE_STYLES,
       SETTINGS_ROUTE_STYLES,
+      SERVERS_WORKSPACE_STYLES,
       // D-156 P5 — the Devices roster table renderer ships no CSS of its
       // own; bundle the mount's table + revoke-confirm styles so a cold
       // `#settings` load renders the Devices section carded + token-aligned
@@ -1476,6 +1521,10 @@ export const bootstrapSettingsRoute = (
       // each is inert when its callers are absent and the panel never mounts.
       KIND_POLICY_PANEL_STYLES,
       QUIET_HOURS_PANEL_STYLES,
+      // D-325 — and the two its overview and household parts added did the
+      // same, rendering unpadded browser defaults under the styled cards.
+      SITUATION_DELIVERY_PANEL_STYLES,
+      HOUSEHOLD_DELIVERY_PANEL_STYLES,
       // D-318 step 7 — Settings → Email chat. Scoped to its own panel
       // attribute, so inert when its callers are absent.
       MAIL_CHAT_DOOR_PANEL_STYLES,
@@ -1526,6 +1575,9 @@ export const bootstrapSettingsRoute = (
       // styled. Selectors scope to `.housekeeping-*` so the rules are
       // inert when the bootstrap omits the panel callers + it never mounts.
       HOUSEKEEPING_PANEL_STYLES,
+      PRIVACY_WORKSPACE_STYLES,
+      MAINTENANCE_WORKSPACE_STYLES,
+      NOTIFICATIONS_WORKSPACE_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -1780,10 +1832,17 @@ export const bootstrapSettingsRoute = (
   if (archiveCallersReady) {
     const backupSection = doc.createElement('section');
     backupSection.setAttribute(SETTINGS_ROUTE_SECTION_ATTR, 'backup');
+    backupSection.setAttribute('data-backup-workspace', '');
+    const backupStyles = doc.createElement('style'); backupStyles.textContent = BACKUP_WORKSPACE_STYLES;
+    backupSection.appendChild(backupStyles);
 
     const backupHeading = doc.createElement('h2');
     backupHeading.textContent = 'Backup & Recovery';
     backupSection.appendChild(backupHeading);
+
+    const manualCard = doc.createElement('div'); manualCard.setAttribute('data-backup-card', 'manual');
+    const manualHeading = doc.createElement('h3'); manualHeading.textContent = 'Back up or restore';
+    manualCard.appendChild(manualHeading); backupSection.appendChild(manualCard);
 
     if (opts.archiveRemoteBackups) {
       const remoteHost = doc.createElement('div'); backupSection.appendChild(remoteHost);
@@ -1792,7 +1851,7 @@ export const bootstrapSettingsRoute = (
     }
 
     const archiveHost = doc.createElement('div');
-    backupSection.appendChild(archiveHost);
+    manualCard.appendChild(archiveHost);
     archiveBackup = mountArchiveBackupPanel({
       host: archiveHost,
       document: doc,
@@ -2437,6 +2496,9 @@ export const bootstrapSettingsRoute = (
       // Both narrowed above by `canMountDevicesPage`.
       runPairList: opts.pairListCaller as PairListCaller,
       runPairRevoke: opts.pairRevokeCaller as PairRevokeCaller,
+      ...(opts.pairRenameCaller !== undefined
+        ? { runPairRename: opts.pairRenameCaller }
+        : {}),
       ...(opts.currentInstanceId !== undefined
         ? { currentInstanceId: opts.currentInstanceId }
         : {}),
@@ -2461,6 +2523,7 @@ export const bootstrapSettingsRoute = (
     addLink.className = 'settings-devices-add-hint';
     addLink.setAttribute(SETTINGS_ROUTE_DEVICES_ADD_LINK_ATTR, 'true');
     const anchor = doc.createElement('a');
+    anchor.className = 'rx-btn rx-btn-secondary';
     anchor.setAttribute('href', '#settings/server/connect-device');
     anchor.textContent = DEVICES_ADD_LINK_LABEL;
     addLink.appendChild(anchor);
@@ -2591,6 +2654,13 @@ export const bootstrapSettingsRoute = (
       });
     }
 
+    // D-325 §15.7 — the digest is another answer to "what am I told about",
+    // so it sits with the kinds, above the quiet hours that hold both.
+    if (opts.situationDelivery) {
+      const host = doc.createElement('div'); notifSection.appendChild(host);
+      situationDelivery = mountSituationDeliveryPanel({ host, document: doc, ...opts.situationDelivery });
+    }
+
     // D-269 step 3 — quiet hours joins the section that already pairs approval
     // and notification, which is the exact pairing D-269 splits into policies.
     // The section's own note anticipated this: "future surfaces ... can append
@@ -2606,15 +2676,16 @@ export const bootstrapSettingsRoute = (
       });
     }
 
-    if (opts.situationDelivery) {
-      const host = doc.createElement('div'); notifSection.appendChild(host);
-      situationDelivery = mountSituationDeliveryPanel({ host, document: doc, ...opts.situationDelivery });
-    }
+    // Last: the household is reached in addition to the owner, never instead.
     if (opts.householdDelivery) {
       const host = doc.createElement('div'); notifSection.appendChild(host);
       householdDelivery = mountHouseholdDeliveryPanel({ host, document: doc, ...opts.householdDelivery });
     }
-    registerSubview('notifications', 'Approval & notifications', notifSection);
+    // Back on the page, the household card catches up on what changed while it
+    // was hidden (an asset shared, a connection added), without a Loading swap.
+    registerSubview('notifications', 'Approval & notifications', notifSection, {
+      onActivate: () => { void householdDelivery?.refreshQuietly(); },
+    });
   }
 
   // ── Email chat section (D-318 step 7) ─────────────────────────────
@@ -3444,7 +3515,7 @@ export const bootstrapSettingsRoute = (
         return 'Discard the unsaved notification verification phrase?';
       }
       if (quietHours?.hasUnsavedChanges() === true) return 'Discard the unsaved quiet hours window?';
-      if (situationDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved overview schedule?';
+      if (situationDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved digest settings?';
       if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household delivery settings?';
       if (serverTimeZone?.hasUnsavedChanges() === true) return 'Discard the unsaved server timezone?';
       if (tlsCertificates?.hasUnsavedChanges() === true) return 'Discard the unsaved certificate upload?';
@@ -3460,7 +3531,7 @@ export const bootstrapSettingsRoute = (
         return 'A notification setting is still updating. Leave Settings anyway?';
       }
       if (quietHours?.hasInFlightWork() === true) return 'A quiet hours setting is still updating. Leave Settings anyway?';
-      if (situationDelivery?.hasInFlightWork() === true) return 'An overview action is still in progress. Leave Settings anyway?';
+      if (situationDelivery?.hasInFlightWork() === true) return 'A digest action is still in progress. Leave Settings anyway?';
       if (householdDelivery?.hasInFlightWork() === true) return 'Household Telegram is still updating. Leave Settings anyway?';
       if (serverTimeZone?.isSaving() === true) return 'The server timezone is still updating. Leave Settings anyway?';
       if (tlsCertificates?.hasInFlightWork() === true) return 'A certificate change is still in progress. Leave Settings anyway?';
@@ -3473,7 +3544,7 @@ export const bootstrapSettingsRoute = (
         return 'An account setting is still updating. Leave Settings anyway?';
       }
       if (devicesPage?.hasInFlightWork() === true) {
-        return 'Recued is still shutting a device out. Leave Settings anyway?';
+        return 'Recued is still revoking a device. Leave Settings anyway?';
       }
       if (updatesPage?.hasInFlightWork() === true) {
         return 'A server update change is still in progress. Leave Settings anyway?';

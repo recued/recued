@@ -35,6 +35,7 @@ const PALETTE_FALLBACKS = `
   --ok-soft: var(--surface-sunk);
   --warn: var(--fg);
   --warn-soft: var(--surface-sunk);
+  --warning: var(--warn);
   --bg-code: var(--surface-sunk);
   --fg-dim: var(--fg-muted);
   --panel-bg: var(--surface);

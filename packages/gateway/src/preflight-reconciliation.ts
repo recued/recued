@@ -57,6 +57,11 @@ import {
   isOperationSpecHash,
   kernelWriteStaysInRecued,
   renderBatchItemsBlock,
+  isTier1ToolName,
+  tier1WriteStaysInRecued,
+  TIER1_TOOL_GUIDE,
+  getMessengerVendorDeclaration,
+  MAIL_CHAT_DOOR_VENDOR,
   WRITE_STAYS_IN_RECUED_CLAUSE,
 } from '@recued/contracts';
 import type {
@@ -445,6 +450,38 @@ const heldConsequence = (
     ? LOCAL_WRITE_CLAUSE
     : tierClause(riskTier);
 
+/** D-329 — who proposed a held Tier-1 write, in the owner's words: their own chat in the
+ *  app, their own chat on a messenger, or an AI agent (an AI app, or anyone acting under a
+ *  contract; a door's starter is named on its own line, `startedByPhrase`). The owner reads
+ *  it on a phone or in Telegram, away from the conversation, so the chat is named. */
+const tier1Proposer = (source: unknown): string => {
+  const s = source as { channel?: unknown; actor?: unknown; vendor?: unknown } | null | undefined;
+  if (s?.actor !== 'user_self') return 'An AI agent';
+  if (s.channel === 'chat') return 'Your chat';
+  if (s.channel !== 'messenger' || typeof s.vendor !== 'string') return 'An AI agent';
+  if (s.vendor === MAIL_CHAT_DOOR_VENDOR) return 'Your email chat';
+  const name = getMessengerVendorDeclaration(s.vendor)?.display_name;
+  return name !== undefined ? `Your ${oneLine(name)} chat` : 'Your chat';
+};
+
+/** D-329 — a held Tier-1 tool call (`Checkpoint.raw_op.tier1_tool`): its tool, its switch
+ *  title in the owner's words ("Add a calendar event"), who proposed it, the arguments it
+ *  would run with, and why it was held, judged by the kernel op the tool writes with. Read
+ *  off the checkpoint, so a boot re-raise words it the same. */
+const tier1HoldOf = (checkpoint: Checkpoint, riskTier: string | undefined) => {
+  const tool = checkpoint.raw_op?.tier1_tool;
+  if (tool === undefined) return undefined;
+  const args = checkpoint.raw_op!.op_args;
+  return {
+    tool,
+    title: oneLine(isTier1ToolName(tool) ? TIER1_TOOL_GUIDE[tool].title : tool),
+    proposer: tier1Proposer(checkpoint.raw_op!.execution_source),
+    args,
+    clause: riskTier === 'write' && tier1WriteStaysInRecued(tool, args) ? LOCAL_WRITE_CLAUSE : tierClause(riskTier),
+  };
+};
+const lowerFirst = (text: string): string => text.charAt(0).toLowerCase() + text.slice(1);
+
 /** The origin unit, in words. `turn` / `burst` / `fire` / `run` are the
  *  aggregation-key vocabulary (`deriveOriginUnit`) — precise internally,
  *  meaningless to a reader, and "3 pending actions in this burst" is not
@@ -808,8 +845,11 @@ export const buildPreflightAsk = (args: {
   // line right after the consequence, where the approval card reads them. A
   // hold with no recorded title (an older checkpoint) keeps its old sentence.
   const recipeTitle = context.raw_op === undefined ? recipeTitleOf(checkpoint) : undefined;
+  const tier1 = tier1HoldOf(checkpoint, context.risk_tier);
   const opening =
-    context.raw_op !== undefined
+    tier1 !== undefined
+      ? `${tier1.proposer} wants to ${lowerFirst(tier1.title)}.`
+      : context.raw_op !== undefined
       ? `An AI agent wants to run ${action}${onConnection}.`
       : recipeTitle !== undefined
         ? count > 1 && batch !== undefined
@@ -833,7 +873,7 @@ export const buildPreflightAsk = (args: {
   // Sentence 2 — why it stopped here. The tier IS the reason; naming the
   // consequence answers "should I care?" in a way `risk_tier='write'`
   // never did.
-  const clause = heldConsequence(
+  const clause = tier1 !== undefined ? tier1.clause : heldConsequence(
     context.risk_tier,
     named,
     coveredCallArgs(checkpoint, batch, cover),
@@ -858,7 +898,9 @@ export const buildPreflightAsk = (args: {
   // and lets the card claim it with a rule of its own.
   // Line 3 when the opening is in the owner's words: the ids, for reference and
   // for the card, which reads them from exactly this line.
-  const technicalLine = recipeTitle !== undefined
+  const technicalLine = tier1 !== undefined
+    ? `\nTechnical: tool ${tier1.tool}.`
+    : recipeTitle !== undefined
     ? `\nTechnical: recipe ${clipRecipeId(context.recipe_id)}, step ${context.gated_step_id}, `
       + `action ${action}${onConnection}.`
     : '';
@@ -913,7 +955,9 @@ export const buildPreflightAsk = (args: {
   // as its address, as the server recorded it when it held the run.
   const valueLabels = checkpoint.preflight_context?.value_labels;
   const itemsBlock =
-    batch !== undefined
+    tier1 !== undefined
+      ? `\n\n${renderBatchItemsBlock([{ summary: tier1.title, args_preview: tier1.args }], valueLabels)}`
+      : batch !== undefined
       ? `\n\n${renderBatchItemsBlock(batch.items, valueLabels)}`
       : cover?.items !== undefined
         ? `\n\n${renderBatchItemsBlock(cover.items, valueLabels)}`
@@ -971,7 +1015,7 @@ export const buildPreflightAsk = (args: {
   // held; any other by its operation. The tier is said in words only where it
   // changes the decision. The approval card reads it from the body's second
   // line, which states it in full (`askConsequence`, `@recued/ui-shared`).
-  const subject = recipeTitleOf(checkpoint) ?? (named !== undefined ? titleOperation(named) : undefined);
+  const subject = tier1?.title ?? recipeTitleOf(checkpoint) ?? (named !== undefined ? titleOperation(named) : undefined);
   const scope = count > 1 ? `, ${upTo}${count} ${batch !== undefined ? 'actions' : 'items'}` : '';
   const title =
     subject !== undefined
@@ -1400,9 +1444,12 @@ export const raisePreflightNotify = async (
   const action = named ?? 'a boundary-crossing call';
   const onConnection = connectionPhrase(context.connection_name, named);
   const recipeTitle = context.raw_op === undefined ? recipeTitleOf(checkpoint) : undefined;
+  const tier1 = tier1HoldOf(checkpoint, context.risk_tier);
 
   const opening =
-    context.raw_op !== undefined
+    tier1 !== undefined
+      ? `${tier1.proposer} asked to ${lowerFirst(tier1.title)}.`
+      : context.raw_op !== undefined
       ? `An AI agent asked to run ${action}${onConnection}.`
       : recipeTitle !== undefined
         ? `"${recipeTitle}" is waiting for your approval${onConnection}.`
@@ -1413,7 +1460,7 @@ export const raisePreflightNotify = async (
   const cover = readForeachCover(
     context.foreach_cover ?? checkpoint.preflight_context?.foreach_cover,
   );
-  const clause = heldConsequence(
+  const clause = tier1 !== undefined ? tier1.clause : heldConsequence(
     context.risk_tier,
     named,
     coveredCallArgs(checkpoint, undefined, cover),
@@ -1432,7 +1479,7 @@ export const raisePreflightNotify = async (
   // The ask's subject: the notice names the hold as its approval would have.
   // The tier is said in words only where it changes the decision; the body's
   // second line states it in full.
-  const subject = recipeTitle ?? (named !== undefined ? titleOperation(named) : undefined);
+  const subject = tier1?.title ?? recipeTitle ?? (named !== undefined ? titleOperation(named) : undefined);
   await notifier.notify({
     title:
       subject !== undefined

@@ -3,8 +3,7 @@ import {
   type ConnectionRow,
 } from '@recued/contracts';
 import type { AskDestinationResolution, AskDeliveryDestination, ChannelName, NotificationSettings } from '@recued/notification';
-import type { AskReplyOrigin } from '@recued/notification';
-import type { InboundReply } from '@recued/notification';
+import { receivesOnly, type AskReplyOrigin } from '@recued/notification';
 import type { HouseholdDeliveryStore } from '../storage/household-delivery-store.js';
 
 /** The one address an email connection notifies: its `default_recipient`, or,
@@ -72,13 +71,22 @@ export const resolveOwnerReminderDestinations = (input: {
     }
     if (!recipient) { issues.push({ channel, reason: 'configuration_invalid' }); continue; }
     if (input.isHousehold?.(row) || channel === 'telegram' && recipient.startsWith('-')) { issues.push({ channel, reason: 'configuration_invalid' }); continue; }
-    if (!expected_sender) { issues.push({ channel, reason: 'principal_missing' }); continue; }
+    // D-325 §15.7 (2026-10-24) — a reminder is a notification, never an approval: it goes
+    // wherever Notify is on. A principal, when the connection names one (D-238), is the
+    // only sender who answers; without one, the owner's own conversation answers.
     destinations.push({ id: `owner:${channel}:${encodeURIComponent(row.name)}:${row.enrolled_at}`,
-      channel, connection_name: row.name, connection_enrolled_at: row.enrolled_at, recipient, expected_sender,
+      channel, connection_name: row.name, connection_enrolled_at: row.enrolled_at, recipient,
+      ...(expected_sender ? { expected_sender } : {}),
       ...(channel === 'email' ? { sender_source: config.sender_mail_instance as string } : {}) });
   }
   return { destinations, issues };
 };
+
+/** D-325 — whether a reminder reaches the owner away from Recued: a destination other
+ *  than the app and the Browser Bridge. Yours' `phone_ready`, the offer of a phone channel
+ *  and Settings' `reaches_phone` all read this one rule. */
+export const reachesPhone = (destinations: ReadonlyArray<{ channel: string }> | undefined): boolean =>
+  destinations?.some(destination => destination.channel !== 'ui' && destination.channel !== 'bridge') ?? false;
 
 /** The connection an owner notification (the brief, a day-of note, a plain
  * reminder) goes through: the one the owner named for the channel, else the only
@@ -102,16 +110,19 @@ export const selectOwnerNotificationConnection = (input: {
 };
 
 /** Answer authority is public enrollment/configuration, so an authenticated
- * reply can be journaled while the vault is sealed. It never decrypts a token. */
+ * reply can be journaled while the vault is sealed. It never decrypts a token.
+ * D-325 §15.7 (2026-10-24) — a reminder is a notification, never an approval: on the
+ * owner's own connection its principal answers when it names one, and without one the
+ * owner's own private conversation does. ⛔ A copy that only receives (`receivesOnly`:
+ * the household's, or one in a conversation others may be in) answers nothing, and
+ * nothing from the household connection answers. */
 export const authorizeReminderOrigin = (destination: AskDeliveryDestination, origin: AskReplyOrigin,
-  connections: readonly ConnectionRow[], household: HouseholdDeliveryStore, reply?: Pick<InboundReply, 'option'>,
+  connections: readonly ConnectionRow[], household: Pick<HouseholdDeliveryStore, 'isHousehold'>,
   mailboxAddress?: (slug: string) => string | undefined): boolean => {
   const row = connections.find(row => row.kind === 'notification' && row.name === destination.connection_name && row.enrolled_at === destination.connection_enrolled_at
     && (row.subtype ?? row.name) === destination.channel);
   if (!row || destination.connection_name !== origin.connection_name || destination.connection_enrolled_at !== origin.connection_enrolled_at || destination.recipient !== origin.recipient) return false;
-  if (destination.audience === 'household') return household.permitsMember(destination, origin.sender, connections)
-    && (origin.sender === destination.expected_sender || !!reply && ['done', 'later', 'not_needed', 'later_tomorrow', 'later_week', 'later_month', 'later_custom'].includes(reply.option));
-  if (household.isHousehold(row)) return false;
+  if (receivesOnly(destination) || household.isHousehold(row)) return false;
   try {
     const config = JSON.parse(row.config_json) as Record<string, unknown>;
     if (destination.channel === 'email') {
@@ -120,9 +131,12 @@ export const authorizeReminderOrigin = (destination: AskDeliveryDestination, ori
         && config.sender_mail_instance === destination.sender_source;
     }
     const declaration = getMessengerVendorDeclaration(destination.channel); const recipient = declaration ? config[declaration.recipient.field] : undefined;
-    const principal = config[MESSENGER_PRINCIPAL_CONFIG_KEY];
+    const value = config[MESSENGER_PRINCIPAL_CONFIG_KEY];
+    const principal = typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    // The principal is pinned as the reminder was sent: one named or dropped since
+    // answers nothing that went out without it, or with another.
     return (typeof recipient === 'string' || typeof recipient === 'number') && String(recipient).trim() === destination.recipient
-      && !(destination.channel === 'telegram' && String(recipient).startsWith('-')) && typeof principal === 'string'
-      && principal.trim() === destination.expected_sender && principal.trim() === origin.sender;
+      && !(destination.channel === 'telegram' && String(recipient).startsWith('-'))
+      && principal === destination.expected_sender && (principal === undefined || principal === origin.sender);
   } catch { return false; }
 };

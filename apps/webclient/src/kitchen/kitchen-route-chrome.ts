@@ -106,6 +106,14 @@ const KITCHEN_ROUTE_STYLES = `
   border-bottom-color: var(--accent);
   background: var(--accent-weak);
 }
+/* A finger's height on a phone. ⛔ 40px. */
+@media (max-width: 640px) {
+  [${KITCHEN_ROUTE_TABS_ATTR}] .kitchen-route-tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
 @media (max-width: 560px) {
   [${KITCHEN_ROUTE_TABS_ATTR}] {
     gap: 2px;

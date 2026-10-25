@@ -9,6 +9,7 @@ import {
   buildRedactionSummary,
   createSessionLedgerStore,
   noopFieldPrivacyResolver,
+  ownerTextAsSent,
   restoreArgsForApproval,
   restoreForDisplay,
   shouldAliasForEgress,
@@ -242,11 +243,46 @@ describe('aliasArgsForEgress — forward re-alias of restored args (D-167 N.10)'
     expect((aliased as Record<string, unknown>)['filter.email']).toBe('m1@d1.invalid');
   });
 
-  it('passes an unknown value through with an empty summary (ledger-anchored)', () => {
+  it('passes an unknown name through with an empty summary (ledger-anchored)', () => {
+    const ledger = seeded();
+    const { aliased, summary } = aliasArgsForEgress(ledger, { note: 'Zoe Park' });
+    expect(aliased).toEqual({ note: 'Zoe Park' });
+    expect(Object.keys(summary.counts)).toHaveLength(0);
+  });
+
+  // 2026-10-24 (D-167 amendment) — an address needs no ledger anchor: restored
+  // args going back to the model carry it aliased, as the owner's message did.
+  it('aliases an unknown address by its shape, and it restores', () => {
     const ledger = seeded();
     const { aliased, summary } = aliasArgsForEgress(ledger, { to: 'zoe@elsewhere.com' });
-    expect(aliased).toEqual({ to: 'zoe@elsewhere.com' });
-    expect(Object.keys(summary.counts)).toHaveLength(0);
+    expect(aliased).toEqual({ to: 'm2@d2.invalid' });
+    expect(summary.counts).toEqual({ content_text_replacements: 1 });
+    expect(restoreForDisplay(ledger, 'm2@d2.invalid')).toBe('zoe@elsewhere.com');
+  });
+
+  describe('ownerTextAsSent — the owner\'s words as the model receives them (D-224 amendment)', () => {
+    const blank = (token: string): string => ' '.repeat(token.length);
+
+    it('blanks each alias in place and says which real value it stands for, in order', () => {
+      const ledger = seeded();
+      const { aliased } = aliasArgsForEgress(ledger, 'Did Alice Chen (alice@acme.com) reply?');
+      expect(aliased).toBe('Did pii.Person1 (m1@d1.invalid) reply?');
+      expect(ownerTextAsSent(ledger, aliased)).toEqual({
+        readable: `Did ${blank('pii.Person1')} (${blank('m1@d1.invalid')}) reply?`,
+        aliases: [
+          { token: 'pii.Person1', real: 'Alice Chen' },
+          { token: 'm1@d1.invalid', real: 'alice@acme.com' },
+        ],
+      });
+    });
+
+    it('blanks a tailed alias whole, and an alias the ledger never issued without naming it', () => {
+      const ledger = seeded();
+      expect(ownerTextAsSent(ledger, 'pii.Person1.alice and pii.Person9 met')).toEqual({
+        readable: `${blank('pii.Person1.alice')} and ${blank('pii.Person9')} met`,
+        aliases: [{ token: 'pii.Person1.alice', real: 'Alice Chen' }],
+      });
+    });
   });
 });
 

@@ -34,6 +34,7 @@ import type {
   RedactionAliasEntry,
   RedactionSummary,
 } from '@recued/contracts';
+import { shouldSeedEntityValue } from '@recued/contracts';
 
 import {
   buildAhoCorasick,
@@ -103,6 +104,14 @@ export interface Ledger {
   /** `${kind}::${n}` for every reservation not yet consumed. `nextCounter` steps
    *  past these so an UNRESERVED value can never take a reserved slot. */
   reservedSlotKeys: Set<string>;
+  /** D-326 — the name of the contact an address belongs to, asked when an address
+   *  is first aliased: the moment its domain row is allocated, and the owner's name
+   *  row is allocated with it. The caller's own data (this layer stays store-free).
+   *
+   *  ⚠ A LOOKUP, NOT STATE: set on a request's staged clone only. `cloneLedger` and
+   *  `commitLedger` copy data maps, never this, so it never reaches the session
+   *  ledger and cannot go stale across turns. */
+  ownerOfEmail?: (email: string) => string | undefined;
 }
 
 /**
@@ -322,13 +331,24 @@ const ALL_DIGITS_RE = /^\d+$/;
  *
  * `phone` is EXEMPT because it owns its digit logic (the ≥ 7-digit floor plus
  * the national / trunk-zero variant rows, which are all-digit by construction).
+ *
+ * ⛔ A NAME OR ORG THAT IS ONE COMMON WORD, OR ONE CHARACTER, IS NEVER BLIND-
+ * REPLACED EITHER (2026-10-24) — the B4 gate (`shouldSeedEntityValue`) applied at
+ * the prose pass, not only where the prefetch seeds. A tagged field put one in the
+ * ledger anyway — a calendar attendee shown as "Me" in a situation's `who`, a
+ * contact named "Will" — and this pass then rewrote the word in the owner's own
+ * words: "Help me interpret…" reached the model as "Help pii.Person2 interpret…",
+ * "will you email Will Harper" as "cap_pii.Person1 you email pii.Person1 Harper",
+ * which garbles the sentence and leaves the surname raw. The value stays aliased
+ * in its field and restores as before; only the prose replacement is withheld.
  */
 export const isBlindReplaceableKnownValue = (
   kind: LedgerKind,
   real_value: string,
 ): boolean =>
   real_value.length > 0
-  && (kind === 'phone' || !ALL_DIGITS_RE.test(real_value));
+  && (kind === 'phone' || !ALL_DIGITS_RE.test(real_value))
+  && ((kind !== 'name' && kind !== 'org') || shouldSeedEntityValue(real_value));
 
 /**
  * Next free per-kind counter — SKIP-aware (D-167 Slice 3). Increments past any
@@ -789,12 +809,21 @@ export const parseAddressComponents = (
  */
 const FULL_ALIAS_SHAPES: readonly RegExp[] = [
   // ⚠ D-167 overlap-reveal: the local part may carry a disclosed-overlap tail
-  // (`m1.northwind@d1.invalid`). FIVE regexes encode this shape and MUST move
-  // together — `FULL_ALIAS_SHAPES`, `ALIAS_SURFACE_CI`, `ALIAS_TOKEN_PATTERN`,
+  // (`m1.northwind@d1.invalid`), and since D-326 a person's later address carries
+  // its slot inside the base (`pii.Person1.m2[.tail]@d1.invalid`). FIVE regexes
+  // encode this shape and MUST move together — `FULL_ALIAS_SHAPES`, `ALIAS_SURFACE_CI`, `ALIAS_TOKEN_PATTERN`,
   // the exposure-scan variant, and `POTENTIAL_PII_ALIAS_LITERAL`. A missed one
   // fails SILENTLY: the decorated alias stops being recognised and survives
   // restore unchanged, which is the hard round-trip invariant.
-  /^(?:cap\d*_)?(?:m\d+|pii\.Person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid$/, // email composite
+  // ⛔⛔ CASE-INSENSITIVE, unlike the shapes below: an email reaches this guard
+  // CANONICALIZED (text-driven extraction lowercases it), so the D-227 composite
+  // arrives as `pii.person1@d1.invalid`. Read case-sensitively, the recall pass took
+  // it for a real address and aliased it again (`m2@d2.invalid`) — an alias of an
+  // alias, which no restore can unwind, minted afresh every round, so a follow-up
+  // by that address was refused until the tool budget ran out. The other four
+  // regexes of this family already carry `i`; the reserved `.invalid` TLD keeps it
+  // collision-free.
+  /^(?:cap\d*_)?(?:m\d+|pii\.Person\d+(?:\.m\d+)?)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid$/i, // email composite
   /^(?:cap\d*_)?d\d+\.invalid$/,                                       // bare / sibling domain
   /^cap\d*_pii\.(?:Person|Org|Phone|Address)\d+(?:\.[a-z0-9-]+){0,3}$/, // casing sibling
   /^pii\.(?:Person|Org|Phone|Address)\d+(?:\.[a-z0-9-]+){0,3}$/,        // base alias (+ geo/iso suffix)
@@ -879,10 +908,11 @@ const nameFold = (s: string): string => s.toLowerCase().replace(/[._\-\s]/g, '')
 /** The `pii.Person<N>` alias of a ledger contact whose NAME the local part
  *  renders — or undefined when the local part earns no link.
  *
- *  ⚠ The link is EARNED by the local part, never granted by ownership: `sc@` and
- *  `sarah.s@` stay `m<N>` even when they are demonstrably Sarah's, because they
- *  disclose nothing about whose they are and pretending otherwise would invent
- *  the very relationship the alias is supposed to report. */
+ *  ⚠ THE FALLBACK, asked only when no owner is known (D-326): where the request
+ *  can look an address's owner up (`Ledger.ownerOfEmail`), the owner's data
+ *  decides the person and this is not asked. Without it the spelling is all there
+ *  is, so `sc@` and `sarah.s@` stay `m<N>` here: nothing else says whose they are,
+ *  and a guessed link would invent the very relationship the alias reports. */
 const personAliasForEmailLocal = (
   ledger: Ledger,
   local: string,
@@ -923,28 +953,44 @@ const aliasEmail = (
   const domainEntry = getOrAllocate(ledger, 'domain', parts.domain, {
     via_side_effect_of: 'email',
   });
+  const composite = `${parts.local}@${parts.domain}`;
+  // ⛔ An address the ledger holds keeps its alias, even once its owner is known:
+  // a token that changes mid-conversation is worse than one that never linked.
+  // Checked before the owner lookup, so a held address mints no name row.
+  const held = ledger.byKindRealValue.get(kindKey('email_local', composite));
+  if (held !== undefined) return `${held.alias_value}@${domainEntry.alias_value}`;
   // D-227 — when the local part RENDERS a known contact's name, the composite
   // carries that person's alias instead of an opaque `m<N>`, so the model can
   // see WHOSE address this is: `pii.Person1@d1.invalid`. The domain half is
   // untouched, so two people at one company still share `d1` and "they work
   // together" survives.
   //
-  // ⛔ FIRST MATCH EARNS IT; a later name-matching address at the SAME domain
-  // falls back to `m<N>`. Sarah with both `sarah.chen@acme.com` and
-  // `sarahchen@acme.com` would otherwise mint ONE token for TWO real addresses
-  // and restore could not tell them apart — the hard round-trip invariant. The
-  // link is a HINT, not a guarantee: her primary reads `pii.Person1@d1.invalid`
-  // and her aliases read `m<N>@d1.invalid`, which is honest.
-  const personAlias = personAliasForEmailLocal(ledger, parts.local);
-  const composite = `${parts.local}@${parts.domain}`;
+  // ⛔ ONE TOKEN PER ADDRESS. Sarah with both `sarah.chen@acme.com` and
+  // `sarahchen@acme.com` must not share `pii.Person1`, or restore could not tell
+  // them apart — the hard round-trip invariant. D-227 let the first address earn
+  // the person and dropped the rest to `m<N>`; D-326 keeps the person on every
+  // one and makes the later ones unique by their own slot: `pii.Person1.m2`.
+  //
+  // D-326 — WHOSE address is decided by the owner's data when the request knows it
+  // (`Ledger.ownerOfEmail`, the contact the address belongs to), and the owner's
+  // NAME row is allocated here as a side effect, exactly as the domain row is: the
+  // two halves of the composite are aliased together, whichever reached the ledger
+  // first, however the address is spelled. Without it, D-227's spelling rule
+  // (`personAliasForEmailLocal`) still links an address that renders a known name.
+  const owner = ledger.ownerOfEmail?.(composite);
+  const personAlias = owner !== undefined && owner.trim().length > 0
+    ? getOrAllocate(ledger, 'name', owner).alias_value
+    : personAliasForEmailLocal(ledger, parts.local);
   // ⛔⛔ GLOBAL, NOT PER-DOMAIN. `byKindBaseAlias` keys on the BASE alone
   // (`email_local::pii.Person1`), so `pii.Person1@d1.invalid` and
   // `pii.Person1@d2.invalid` collapse to ONE ledger row and restore returns
   // whichever was written last. Caught by a round-trip probe: Sarah's
   // `sarah.chen@acme.com` restored to `sarah-chen@other.com`. The existing
   // `m<N>` counter is global for exactly this reason — every composite's base is
-  // unique. So the person link is minted ONCE, for the first address that earns
-  // it; every later one, at any domain, falls back to `m<N>`.
+  // unique. So the bare person alias is minted ONCE, for the first address; every
+  // later one, at any domain, appends its own slot (`pii.Person1.m<N>`), which is
+  // as unique as `m<N>` and still says whose it is. `stripAliasSuffix` keeps that
+  // segment in the base, and `overlapSuffix` never emits an `m<N>`-shaped word.
   const taken = personAlias !== undefined && [...ledger.byKindRealValue].some(
     ([key, e]) => key.startsWith('email_local::')
       && e.alias_value === personAlias
@@ -953,9 +999,12 @@ const aliasEmail = (
   const emailEntry = getOrAllocate(ledger, 'email_local', composite, {
     via_side_effect_of: 'email',
     ...(source_ref ? { source_ref } : {}),
-    ...(personAlias !== undefined && !taken
-      ? { aliasBuilder: () => ({ alias_value: personAlias, base_alias: personAlias }) }
-      : {}),
+    ...(personAlias === undefined
+      ? {}
+      : { aliasBuilder: (n: number) => {
+          const alias = taken ? `${personAlias}.m${n}` : personAlias;
+          return { alias_value: alias, base_alias: alias };
+        } }),
   });
   return `${emailEntry.alias_value}@${domainEntry.alias_value}`;
 };
@@ -1277,9 +1326,63 @@ const phoneDigits = (s: string): string => s.replace(/\D+/gu, '');
  *  an adjacent number). */
 const PHONE_INNER_SEP = '[ .()+-]*';
 
+/** An `http(s)` URL in prose, up to whitespace, a quote or an angle bracket.
+ *  Sentence punctuation and an unbalanced closing bracket at its end are not
+ *  part of it (`unknownUrlEnd`). */
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+
+/** Where a URL matched by `URL_IN_TEXT` really ends: without trailing sentence
+ *  punctuation (`…/pricing.`) or a closing bracket it does not open
+ *  (`(see https://x.test/a)`), so the prose around it is never swallowed. */
+const unknownUrlEnd = (match: string): number => {
+  let end = match.length;
+  for (;;) {
+    const last = match[end - 1];
+    if (last === undefined) return end;
+    if ('.,;:!?'.includes(last)) { end -= 1; continue; }
+    const open = last === ')' ? '(' : last === ']' ? '[' : last === '}' ? '{' : undefined;
+    if (open !== undefined) {
+      const head = match.slice(0, end);
+      if (head.split(open).length - 1 < head.split(last).length - 1) { end -= 1; continue; }
+    }
+    return end;
+  }
+};
+
+/** An issued alias host (`d3.invalid`): a URL or address already aliased. */
+const ALIAS_DOMAIN = /^d\d+\.invalid$/i;
+
+/** An email address the ledger does not know: `local@domain.tld`, the top-level
+ *  label LETTERS only, so a package version (`react@18.3.1`) is not one. The
+ *  local part takes the same letters as the domain-anchored pass. */
+const UNKNOWN_EMAIL_IN_TEXT = new RegExp(
+  `(?<![\\w.+%${EMAIL_LOCAL_LETTERS}${EMAIL_LOCAL_MARKS}-])`
+    + `([\\w${EMAIL_LOCAL_LETTERS}][\\w.+%${EMAIL_LOCAL_LETTERS}${EMAIL_LOCAL_MARKS}-]*)`
+    + '@((?:[a-z0-9-]+\\.)+[a-z]{2,})(?![\\w-])(?!\\.[\\w-])',
+  // `gi`, never `u`, as the domain-anchored pattern: no Unicode case folding.
+  'gi',
+);
+
+/** Whether `text` holds an email address or `http(s)` URL that `scanContent`
+ *  aliases without a ledger anchor (2026-10-24) — by the SAME patterns, so a
+ *  caller deciding whether to run the pass at all cannot disagree with the pass.
+ *  An alias already issued (`m1@d1.invalid`, `https://d2.invalid/x`) does not
+ *  count. */
+export const hasShapeToAlias = (text: string): boolean => {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  for (const match of text.matchAll(URL_IN_TEXT)) {
+    const parts = splitUrl(match[0].slice(0, unknownUrlEnd(match[0])));
+    if (parts !== undefined && !ALIAS_DOMAIN.test(parts.host)) return true;
+  }
+  for (const match of text.matchAll(UNKNOWN_EMAIL_IN_TEXT)) {
+    if (!ALIAS_DOMAIN.test(match[2] ?? '')) return true;
+  }
+  return false;
+};
+
 /**
- * Content-pass — substring-replace ledger-known real values plus one
- * anchored allocation exception (domain-anchored email completion).
+ * Content-pass — substring-replace ledger-known real values, plus three
+ * allocations anchored by an unmistakable SHAPE rather than by the ledger.
  *
  * Spec §"Runtime flow" step 3:
  *   - protect complete domain-anchored emails before scanning their components
@@ -1289,9 +1392,23 @@ const PHONE_INNER_SEP = '[ .()+-]*';
  *     a sibling row keyed on the variant casing
  *   - domain-anchored email completion: `[^@\s]+@<known_domain>` →
  *     allocate fresh email_local and emit `m<N>@d<N>.invalid`
- *   - NO NER, NO regex extraction without a ledger anchor, NO fresh
- *     allocation for unanchored spans
- *   - unknown spans pass through unchanged
+ *   - NO NER, and no fresh allocation for an unanchored name, org, phone or
+ *     street; unknown spans of those pass through unchanged
+ *
+ * 2026-10-24 (owner decision, D-167 amendment) — an email or `http(s)` URL is PII
+ * whether or not the ledger knows it, and its shape is unambiguous, so step 3d's
+ * "no regex extraction without a ledger anchor" no longer covers those two:
+ *   - an `http(s)` URL whose host the ledger does not hold becomes ONE whole-URL
+ *     alias (`pii.Url<N>`): its path and query are where a token or a document id
+ *     sits, so hiding the host alone would hide the least of it. Runs FIRST, on
+ *     the text as written, so the alias's real value is the raw URL (an address
+ *     or a name inside it is part of the URL, never aliased into it). A URL on a
+ *     KNOWN host is left to the domain pass and keeps `https://d<N>.invalid/path`,
+ *     the form its field gets, so one URL never changes alias mid-session.
+ *   - an address at a domain the ledger does not hold is aliased like any other
+ *     (`aliasEmail`), after the domain-anchored pass and before names are
+ *     replaced, so a name inside it cannot be aliased into its local part.
+ *   The recall path already seeded every email in recalled text this way.
  */
 export const scanContent = (
   ledger: Ledger,
@@ -1310,6 +1427,17 @@ export const scanContent = (
 
   let working = text;
   let replacements = 0;
+
+  // A URL on a host the ledger does not hold → one whole-URL alias (see above).
+  working = working.replace(URL_IN_TEXT, (match: string) => {
+    const end = unknownUrlEnd(match);
+    const url = match.slice(0, end);
+    const parts = splitUrl(url);
+    if (parts === undefined || ALIAS_DOMAIN.test(parts.host)) return match;
+    if (ledger.byKindRealValue.has(kindKey('domain', parts.host))) return match;
+    replacements += 1;
+    return aliasSimple(ledger, 'url', url) + match.slice(end);
+  });
 
   const replaceKnownValue = (entry: RedactionAliasEntry): void => {
     const real = entry.real_value;
@@ -1406,13 +1534,23 @@ export const scanContent = (
       // A Unicode label continuation the ASCII lookaheads can't see → leave raw.
       if (startsLabelContinuation(str.slice(offset + _full.length))) return _full;
       const full_email = `${String(local).toLowerCase()}@${real_domain}`;
-      const emailEntry = getOrAllocate(ledger, 'email_local', full_email, {
-        via_side_effect_of: 'email',
-      });
       replacements += 1;
-      return `${emailEntry.alias_value}@${dom.alias_value}`;
+      // D-326 — the same rule as every other address: its person when the ledger
+      // knows its owner or its spelling earns one (the domain row is already held).
+      return aliasEmail(ledger, full_email);
     });
   }
+
+  // An address at a domain the ledger does not hold (2026-10-24, see above):
+  // aliased whole, and its domain row allocated with it, before names are
+  // replaced so a name cannot be aliased into its local part. An issued alias
+  // (`m1@d1.invalid`) is not an address.
+  working = working.replace(UNKNOWN_EMAIL_IN_TEXT, (full: string, local: string, domain: string, offset: number, str: string) => {
+    if (ALIAS_DOMAIN.test(domain)) return full;
+    if (startsLabelContinuation(str.slice(offset + full.length))) return full;
+    replacements += 1;
+    return aliasEmail(ledger, `${String(local).toLowerCase()}@${String(domain).toLowerCase()}`);
+  });
 
   for (const entry of literalEntries) {
     if (!entry.real_value.includes('@')) replaceKnownValue(entry);
@@ -1777,6 +1915,13 @@ const stripAliasSuffix = (alias: string): string => {
   // as-is.
   const pref = alias.match(/^(?:cap\d*_)?pii\./);
   const from = pref ? pref[0].length : 0;
+  // D-326 — a person's LATER address keeps its slot in the base:
+  // `pii.Person1.m2.leo.marsh` → `pii.Person1.m2`, the row of THAT address. Cut at
+  // the first dot it would restore to the person's first address instead — a send
+  // to the wrong one. Safe for a bare name alias only because `overlapSuffix`
+  // never emits an `m<N>`-shaped word.
+  const later = pref ? /^Person\d+\.m\d+(?=\.|$)/.exec(alias.slice(from)) : null;
+  if (later) return alias.slice(0, from + later[0].length);
   const dot = alias.indexOf('.', from);
   if (dot < 0) return alias;
   return alias.slice(0, dot);
@@ -1842,7 +1987,7 @@ const lookupAliasReal = (ledger: Ledger, token: string): string | undefined => {
  * are not re-routed either).
  */
 const ALIAS_SURFACE_CI =
-  /^(?:cap\d*_)?(?:pii\.(?:person|org|phone|address|url|id|account|email)\d+(?:\.[a-z0-9-]+){0,3}|(?:m\d+|pii\.person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid|d\d+\.invalid)$/i;
+  /^(?:cap\d*_)?(?:pii\.(?:person|org|phone|address|url|id|account|email)\d+(?:\.[a-z0-9-]+){0,3}|(?:m\d+|pii\.person\d+(?:\.m\d+)?)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid|d\d+\.invalid)$/i;
 /** ⛔⛔ AN `@` DECIDES THE KIND, BEFORE THE LOCAL PART IS READ. The composite's
  *  local half may now be a PERSON alias (`pii.Person1@d1.invalid`, D-227), and
  *  `kindFromBase('pii.Person1')` answers `'name'` — so typing by the local part
@@ -1994,20 +2139,20 @@ export const ledgerKindForAlias = (token: string): LedgerKind | undefined => {
  *  "M1"/"m2" (model codes, "M1 MacBook"); every emitted email alias is the
  *  composite or `pii.Email<N>`, never a standalone `m<N>`. */
 const ALIAS_TOKEN_PATTERN =
-  /\b(?:cap\d*_)?(?:m\d+|pii\.Person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid\b|\b(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}\b|\b(?:cap\d*_)?d\d+\.invalid\b/gi;
+  /\b(?:cap\d*_)?(?:m\d+|pii\.Person\d+(?:\.m\d+)?)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid\b|\b(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}\b|\b(?:cap\d*_)?d\d+\.invalid\b/gi;
 
 /** The exposure scan also admits an alias after JSON-key separators such as
  * `_`, `.`, or `-`. The key-aware egress pass deliberately emits
  * `owner_pii.Person1`; `\b` would miss it because `_` is a regex word
  * character, leaving a shown alias outside the request restore authority. */
 const EXPOSED_ALIAS_TOKEN_PATTERN =
-  /(?<![A-Za-z0-9])(?:cap\d*_)?(?:m\d+|pii\.Person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?d\d+\.invalid(?![A-Za-z0-9])/gi;
+  /(?<![A-Za-z0-9])(?:cap\d*_)?(?:m\d+|pii\.Person\d+(?:\.m\d+)?)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?d\d+\.invalid(?![A-Za-z0-9])/gi;
 
 /** Cheap conservative gate before a caller pays for a whole-value walk. False
  * positives are harmless; false negatives would skip literal collision
  * protection. */
 const POTENTIAL_PII_ALIAS_LITERAL =
-  /pii\.|(?:cap\d*_)?(?:(?:m\d+|pii\.person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid|d\d+\.invalid)/i;
+  /pii\.|(?:cap\d*_)?(?:(?:m\d+|pii\.person\d+(?:\.m\d+)?)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid|d\d+\.invalid)/i;
 export const containsPotentialPiiAliasLiteral = (text: string): boolean =>
   typeof text === 'string' && POTENTIAL_PII_ALIAS_LITERAL.test(text);
 
@@ -2095,6 +2240,15 @@ export const derivePiiRestoreAuthority = (
       if (at >= 0 && at < token.length - 1) {
         const domain = reverseKeyForAliasToken(ledger, token.slice(at + 1));
         if (domain !== undefined) reverseKeys.add(domain);
+        // D-326 — and a person-linked composite its PERSON half, the same way:
+        // the model saw `pii.Person1` inside `pii.Person1@d1.invalid` and may
+        // write it alone ("it is from pii.Person1"). Without this it reached the
+        // owner unrestored whenever the name itself was not in the packet.
+        const person = /^(?:cap\d*_)?pii\.Person\d+/i.exec(token.slice(0, at))?.[0];
+        if (person !== undefined) {
+          const name = reverseKeyForAliasToken(ledger, person);
+          if (name !== undefined) reverseKeys.add(name);
+        }
       }
     }
   }
@@ -2197,10 +2351,15 @@ const toCanonicalCasing = (alias: string): string => {
   // (`D1.INVALID`) canonicalizes to `d1.invalid` and matches the lowercase
   // byKindBaseAlias key + `kindFromBase`'s domain test. Geo/iso suffixes on
   // other kinds (`pii.Phone1.GB`) are stripped before lookup, so they don't need it.
-  const tail = m[2].replace(/\.invalid$/i, '.invalid');
+  let tail = m[2].replace(/\.invalid$/i, '.invalid');
   const word = wordRaw.length > 1
     ? wordRaw[0].toUpperCase() + wordRaw.slice(1).toLowerCase()
     : wordRaw.toLowerCase();   // single letter (m, d) stays lowercase
+  // ⛔ D-326 — a person's LATER address keeps `.m<N>` in its base, and
+  // `stripAliasSuffix` reads that slot lowercase only. Left as `.M2`, an all-caps
+  // echo (`PII.PERSON1.M2@D2.INVALID`) was cut at the first dot and restored to the
+  // person's FIRST address: a send to the wrong one (found 2026-10-24).
+  if (word === 'Person') tail = tail.replace(/^(\d+)\.m(\d+)(?=[.@]|$)/i, '$1.m$2');
   return `${word}${tail}`;
 };
 
@@ -2257,7 +2416,9 @@ const overlapSuffix = (realValue: string, disclosed: ReadonlySet<string>): strin
   for (const tok of realValue.match(/[\p{L}\p{N}]+/gu) ?? []) {
     if (!disclosed.has(normalizeForMatch(tok))) continue;
     const seg = tok.toLowerCase().replace(/[^a-z0-9-]+/g, '');
-    if (seg.length === 0 || seen.has(seg)) continue;
+    // ⛔ D-326 — never an `m<N>` word: after a person alias it is an ADDRESS slot
+    // (`pii.Person1.m2`), and `stripAliasSuffix` keeps it in the base.
+    if (seg.length === 0 || seen.has(seg) || /^m\d+$/.test(seg)) continue;
     seen.add(seg);
     segs.push(seg);
     if (segs.length >= MAX_OVERLAP_SEGMENTS) break;
@@ -3046,9 +3207,10 @@ const aliasContentPass = (
     }
     // ANY other present shape — a list of free-text lines, a structured body — deep-walks
     // every STRING leaf and scans it. Unlike the identifier pass, recursing here is safe by
-    // CONSTRUCTION and needs no fail-closed branch: `content` is SCAN-ONLY. It replaces
-    // values ALREADY in the ledger and never seeds new ones, so it cannot over-alias a
-    // coarse field the way a blanket identifier alias would. `walk` is prototype-safe.
+    // CONSTRUCTION and needs no fail-closed branch: `content` replaces values ALREADY in the
+    // ledger, and the only values it seeds itself are email addresses and `http(s)` URLs,
+    // matched by SHAPE (2026-10-24), so it cannot over-alias a coarse field the way a
+    // blanket identifier alias would. `walk` is prototype-safe.
     setAtPath(
       clone,
       field.path,

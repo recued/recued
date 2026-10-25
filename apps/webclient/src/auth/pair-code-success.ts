@@ -118,8 +118,10 @@ export const PAIR_CODE_SUCCESS_ERROR_COPY: Readonly<
     "Pairing worked, but Recued could not read the details your server sent back. Reload the page and try again.",
   pair_code_success_invalid_server_url:
     "That server address is not quite right, so Recued could not connect. Type the address your server printed, then try again.",
+  // ⛔ This said to "clear this browser" to pair a different server: that
+  // wipes every saved server and the key that seals their sign-ins.
   pair_code_success_already_paired:
-    'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
+    'Another tab paired this browser while this form was open. Reload the page to use it. To add a different server, choose Add another server in Account & servers: your other servers stay as they are.',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -215,6 +217,12 @@ export const resolveBrowserPairFinalizeLockProvider = (): PairFinalizeLockProvid
  *      appended (the server's `upgradeHandler` only accepts `/ws`
  *      per `backend/server/src/ws-server.ts:1152-1156`).
  *
+ *    - The scheme and host are written as `URL` serialises them:
+ *      lower-case, without the scheme's default port (443 / 80).
+ *      ⛔ Kept as typed, `https://Host` and `https://host:443` each
+ *      saved a second entry for a server already in the list (saved
+ *      servers are matched by this string).
+ *
  *  Returns null when the URL is structurally invalid (no
  *  protocol, empty host) so the orchestrator can surface a
  *  targeted error code instead of persisting a stub. */
@@ -247,16 +255,32 @@ export const normaliseServerUrlToWs = (raw: string): string | null => {
   // Host portion is everything before the first `/` (if any).
   const pathIdx = trimmedRemainder.indexOf('/');
   if (pathIdx === 0) return null; // `ws:///ws` — empty host
-  const protocol = withProtocol.slice(0, protoEnd);
+  const protocol = withProtocol.slice(0, protoEnd).toLowerCase();
+  const host = canonicalHost(
+    protocol,
+    pathIdx < 0 ? trimmedRemainder : trimmedRemainder.slice(0, pathIdx),
+  );
+  if (host === null) return null;
   if (pathIdx < 0) {
     // No path — bare host. Append `/ws`.
-    return `${protocol}${trimmedRemainder}/ws`;
+    return `${protocol}${host}/ws`;
   }
   const path = trimmedRemainder.slice(pathIdx);
   if (path === '/ws' || path.endsWith('/ws')) {
-    return `${protocol}${trimmedRemainder}`;
+    return `${protocol}${host}${path}`;
   }
-  return `${protocol}${trimmedRemainder}/ws`;
+  return `${protocol}${host}${path}/ws`;
+};
+
+/** The host as `URL` serialises it — lower-case, no default port — or null
+ *  when it does not parse. */
+const canonicalHost = (protocol: string, host: string): string | null => {
+  try {
+    const parsed = new URL(`${protocol}${host}`);
+    return parsed.host.length > 0 ? parsed.host : null;
+  } catch {
+    return null;
+  }
 };
 
 export type PairCodeSuccessResult =
@@ -293,7 +317,8 @@ export interface PairCodeSuccessOptions {
    *  this explicitly so choosing the paired server does not depend on the
    *  five-key store's legacy `set('server_url')` compatibility interception.
    *  Optional only for older embedders and narrow hand-rolled tests. */
-  profileStore?: Pick<WebclientProfileStore, 'ensureProfile'>;
+  profileStore?: Pick<WebclientProfileStore, 'ensureProfile'>
+    & Partial<Pick<WebclientProfileStore, 'commitPair'>>;
   /** Token store that wraps the bearer with the non-extractable
    *  AES-GCM key. */
   tokenStore: WebclientTokenStore;
@@ -663,16 +688,30 @@ const finalizePairCodeSuccessLocked = async (
   //    just authenticated against. The bare `server_url` write remains only
   //    for older callers that do not yet expose the roster surface.
   try {
-    if (options.profileStore !== undefined) {
-      await options.profileStore.ensureProfile(wsServerUrl);
+    if (options.profileStore?.commitPair !== undefined) {
+      // A roster saves the whole pairing as ONE write — there is no partial
+      // state to order around. ⛔ Field by field, re-adding a saved server
+      // cleared its working sign-in first, so a later failure left it
+      // "Needs pairing again".
+      const pairing = {
+        pair_metadata,
+        cert_pin_state,
+        server_public_key: fields.server_public_key,
+        webclient_token: tokenRecord,
+      };
+      await options.profileStore.commitPair(wsServerUrl, pairing);
     } else {
-      await options.localStore.set('server_url', wsServerUrl);
+      if (options.profileStore !== undefined) {
+        await options.profileStore.ensureProfile(wsServerUrl);
+      } else {
+        await options.localStore.set('server_url', wsServerUrl);
+      }
+      await options.localStore.remove('webclient_token');
+      await options.localStore.set('pair_metadata', pair_metadata);
+      await options.localStore.set('cert_pin_state', cert_pin_state);
+      await options.localStore.set('server_public_key', fields.server_public_key);
+      await options.localStore.set('webclient_token', tokenRecord);
     }
-    await options.localStore.remove('webclient_token');
-    await options.localStore.set('pair_metadata', pair_metadata);
-    await options.localStore.set('cert_pin_state', cert_pin_state);
-    await options.localStore.set('server_public_key', fields.server_public_key);
-    await options.localStore.set('webclient_token', tokenRecord);
   } catch (err) {
     return {
       ok: false,

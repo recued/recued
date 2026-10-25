@@ -330,6 +330,27 @@ export interface PlanApprovalStore {
     plan_id: string,
     execution: ChatPlanExecutionReceipt,
   ): MaybePromise<ChatPlanExecutionReceipt | undefined>;
+  /** D-329 — forget a hold that was never raised: the proposal is `put` WITH its hold, so it
+   * never exists unlinked while an ask may be out, and loses it only when nothing was held.
+   * A link naming another run is kept. */
+  unlinkHold?(plan_id: string, run_id: string): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-329 — the proposal a hold's run belongs to, once it settles. */
+  findByHoldRun?(run_id: string): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-329 — the hold expired unanswered: cancel the still-proposed plan and stamp
+   * `hold.lapsed_at`. A plan already resolved, or held by another run, is returned as it is. */
+  lapseHold?(plan_id: string, run_id: string, lapsed_at: number): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-329 — the newest held proposal for the exact call in this session that is still
+   * waiting for its answer, in any turn: asking it again re-shows this one, so one write
+   * never raises two asks. */
+  findPendingHeld?(
+    session_id: string,
+    tool: string,
+    args_hash: string,
+  ): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-329 — the answer of the turn that proposed this plan (`linkTurnToMessage`), once that
+   * turn has answered. A held write's reply waits for it, so "done" never arrives before
+   * "I've asked for your approval". */
+  answerMessageId?(plan_id: string): MaybePromise<string | undefined>;
 }
 
 /** Concrete default store stays synchronous for unit tests and lightweight
@@ -376,6 +397,15 @@ export interface SynchronousPlanApprovalStore extends PlanApprovalStore {
     plan_id: string,
     execution: ChatPlanExecutionReceipt,
   ): ChatPlanExecutionReceipt | undefined;
+  unlinkHold(plan_id: string, run_id: string): ChatPlanProposal | undefined;
+  findByHoldRun(run_id: string): ChatPlanProposal | undefined;
+  lapseHold(plan_id: string, run_id: string, lapsed_at: number): ChatPlanProposal | undefined;
+  findPendingHeld(
+    session_id: string,
+    tool: string,
+    args_hash: string,
+  ): ChatPlanProposal | undefined;
+  answerMessageId(plan_id: string): string | undefined;
 }
 
 /** § A.11 — default in-memory store factory. */
@@ -440,6 +470,9 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
       if (plan.args_hash !== args_hash) continue;
       if (plan.status !== 'approved') continue;
       if (plan.consumed_at !== undefined) continue;
+      // D-329 — a held proposal runs from its hold when approved. A re-issue
+      // spending the same approval would run it twice.
+      if (plan.hold !== undefined) continue;
       // TTL gates on approval freshness (`resolved_at` = the approve
       // instant). A hand-seeded approved row without `resolved_at`
       // falls back to `created_at` rather than being silently
@@ -513,6 +546,56 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
       consumed_at - approvedAt > PLAN_APPROVAL_CONSUMPTION_TTL_MS
     ) return undefined;
     return markConsumed(plan_id, consumed_at, execution_turn_id);
+  };
+
+  const unlinkHold = (
+    plan_id: string,
+    run_id: string,
+  ): ChatPlanProposal | undefined => {
+    const existing = byPlanId.get(plan_id);
+    if (!existing) return undefined;
+    if (existing.hold?.run_id !== run_id) return existing;
+    const { hold: _hold, ...next } = existing;
+    byPlanId.set(plan_id, next);
+    return next;
+  };
+
+  const findByHoldRun = (run_id: string): ChatPlanProposal | undefined => {
+    for (const plan of byPlanId.values()) if (plan.hold?.run_id === run_id) return plan;
+    return undefined;
+  };
+
+  const lapseHold = (
+    plan_id: string,
+    run_id: string,
+    lapsed_at: number,
+  ): ChatPlanProposal | undefined => {
+    const existing = byPlanId.get(plan_id);
+    if (!existing) return undefined;
+    if (existing.status !== 'proposed' || existing.hold?.run_id !== run_id) return existing;
+    const next: ChatPlanProposal = {
+      ...existing,
+      status: 'cancelled',
+      resolved_at: lapsed_at,
+      hold: { run_id, lapsed_at },
+    };
+    byPlanId.set(plan_id, next);
+    return next;
+  };
+
+  const findPendingHeld = (
+    session_id: string,
+    tool: string,
+    args_hash: string,
+  ): ChatPlanProposal | undefined => {
+    let newest: ChatPlanProposal | undefined;
+    for (const plan of byPlanId.values()) {
+      if (plan.session_id !== session_id || plan.tool !== tool) continue;
+      if (plan.args_hash !== args_hash || plan.status !== 'proposed') continue;
+      if (plan.hold === undefined) continue;
+      if (newest === undefined || plan.created_at >= newest.created_at) newest = plan;
+    }
+    return newest;
   };
 
   const resolve = (
@@ -610,5 +693,10 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
     listForSession,
     linkTurnToMessage,
     recordExecution,
+    unlinkHold,
+    findByHoldRun,
+    lapseHold,
+    findPendingHeld,
+    answerMessageId: (plan_id: string): string | undefined => messageIdByPlanId.get(plan_id),
   };
 };

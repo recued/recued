@@ -17,6 +17,7 @@ import type { CalendarCollectionTable } from '../collections/calendar/calendar-t
 import { createProactiveHistoryStore, episodeCandidateId } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { createProactiveTraceStore, traceId, type ProactiveTrace } from '../storage/proactive-trace-store.js';
+import { createTripDetailsStore, tripFromSource } from '../storage/trip-details-store.js';
 import type { SituationStore } from '../storage/situation-store.js';
 import { assembleEpisodes, type EpisodePlan } from './episode-assembly.js';
 import { SituationScanBoundError, type SituationReadContext, type SituationSource } from './query.js';
@@ -25,7 +26,8 @@ import { situationSourceReadOp } from './event-visibility.js';
 const DAY = 86_400_000;
 const MAX_ROWS = 20_000;
 const RECALL_CLASSES = ['flowers', 'gifts', 'restaurants', 'photos', 'checkin'] as const;
-const PRIVATE = /\b(health|hospital|clinic|medic(?:ine|al|ation)|pharmac\w*|prescription|pregnan\w*|fertility|miscarriage|cancer|therapy|insulin|contracepti\w*|debt|overdraft|arrears|bankruptcy|divorce|breakup|ex.partner|dating|romance|relationship)\b/iu;
+/** P21 — topics never volunteered from history; the trip learner reads it too. */
+export const PRIVATE = /\b(health|hospital|clinic|medic(?:ine|al|ation)|pharmac\w*|prescription|pregnan\w*|fertility|miscarriage|cancer|therapy|insulin|contracepti\w*|debt|overdraft|arrears|bankruptcy|divorce|breakup|ex.partner|dating|romance|relationship)\b/iu;
 const object = (raw: unknown): Record<string, unknown> => raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
 const string = (raw: unknown): string | undefined => typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
 const hash = (raw: unknown) => createHash('sha256').update(JSON.stringify(raw)).digest('hex');
@@ -62,6 +64,7 @@ export interface EpisodeRuntimeDeps {
 export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
   const now = deps.now ?? Date.now; const proposals = createProactiveProposalStore(deps.db);
   const history = createProactiveHistoryStore(deps.db, proposals); const retained = createProactiveTraceStore(deps.db);
+  const trips = createTripDetailsStore(deps.db);
   let memory: UserMemoryStore | undefined; let notifier: NotificationBlock | undefined; let running: Promise<void> | undefined; let stopped = false;
   let records: RecordsStore | undefined;
   const candidates = new Map<string, { episode: EpisodeInput; for_on: string }>();
@@ -113,7 +116,7 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
     });
   };
   const liveTraces = async (context: SituationReadContext, signal?: AbortSignal): Promise<ProactiveTrace[]> => {
-    if (!deps.mailFacts || !context.grants.isVerbOpGranted('core.mail.fact.list') || !context.grants.isVerbOpGranted('core.data.mail.get') || !context.grants.isCollectionReadGranted('mail')) return [];
+    if (!deps.mailFacts || !context.grants.isVerbOpGranted('core.mail.fact.list') || !context.grants.isVerbOpGranted('core.mail.get') || !context.grants.isCollectionReadGranted('mail')) return [];
     const result: ProactiveTrace[] = []; let scanned = 0; let before: import('@recued/contracts').MailFactRowsCursor | undefined;
     for (;;) {
       const page = deps.mailFacts.listFactPage({ type: 'purchase', limit: 200, ...(before ? { before } : {}) });
@@ -133,8 +136,9 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
   const collect = async (context: SituationReadContext, signal?: AbortSignal): Promise<{ plans: EpisodePlan[]; traces: ProactiveTrace[]; owners: EpisodeInput[] }> => {
     if (!deps.isVaultUnlocked()) throw new Error('Unlock Recued to assemble episodes');
     const plans: EpisodePlan[] = []; const traces = await liveTraces(context, signal); const owners: EpisodeInput[] = [];
+    const booked = new Set<string>();
     traces.push(...await arrivalTraces(context, signal));
-    if (records && context.owner && context.grants.isVerbOpGranted('core.data.file.get') && context.grants.isCollectionReadGranted('file')) {
+    if (records && context.owner && context.grants.isVerbOpGranted('core.storage.file.get') && context.grants.isCollectionReadGranted('file')) {
       const people = deps.photoFilePath && deps.contacts && context.grants.isVerbOpGranted('core.contact.resolve') && context.grants.isCollectionReadGranted('contact')
         ? { filePath: deps.photoFilePath, contact: (email: string) => { const row = deps.contacts!.get(email.trim().toLowerCase());
           return row && !contactExcludedFromProactive(row) ? row.contact_id ?? row.email : undefined; } } : undefined;
@@ -160,8 +164,9 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
           const sphere = deps.sphere?.(ref, `calendar:${calendar.slug}:${row.hot.calendar_id}`);
           if (!sourceAllowed(context, ref, sphere) || row.hot.status === 'cancelled' || row.hot.is_recurring || row.event.recurrence_rule) continue;
           const when = eventSpanIn(row.hot, deps.timeZone()); if (when.end > now()) continue;
+          const country = trips.get(ref)?.destination_country;
           plans.push({ ref, title: row.hot.summary, when: { from: when.start, to: when.end }, people: people(row.event.attendees?.filter(person => !person.is_self).map(person => person.email)),
-            subjects: [], ...(row.hot.location ? { where: history.place(row.hot.location) } : {}), ...(sphere ? { sphere } : {}) });
+            subjects: [], ...(row.hot.location ? { where: history.place(row.hot.location) } : {}), ...(sphere ? { sphere } : {}), ...(country ? { country } : {}) });
         }
         scanned += page.length; await bound(scanned, signal); if (page.length < 500) break;
       }
@@ -175,8 +180,12 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
           if (!sourceAllowed(context, ref, sphere)) continue;
           if (row._kind === 'booking' && row.lifecycle_state !== 'cancelled' && row.slot_start_at !== undefined && row.slot_end_at !== undefined && row.slot_end_at <= now()) {
             const location = string(row.source_extension_blob?.location);
+            const country = (trips.get(ref) ?? tripFromSource(ref, row.source_extension_blob))?.destination_country;
+            // Made from a reservation read from email: this booking stands for it.
+            const thing = row.source_extension_blob?.kind === 'mail_fact' ? string(row.source_extension_blob.thing_id) : undefined; if (thing) booked.add(thing);
             plans.push({ ref, title: row.title, when: { from: row.slot_start_at, to: row.slot_end_at }, subjects: [ref],
-              people: people(row.counterparty_contact_id ? [row.counterparty_contact_id] : []), ...(location ? { where: history.place(location) } : {}), ...(sphere ? { sphere } : {}) });
+              people: people(row.counterparty_contact_id ? [row.counterparty_contact_id] : []), ...(location ? { where: history.place(location) } : {}), ...(sphere ? { sphere } : {}),
+              ...(country ? { country } : {}) });
           } else if (row._kind === 'commitment') {
             const when = row.lifecycle_state === 'fulfilled' ? row.lifecycle_changed_at : row.promised_for_at;
             if (when === undefined || when > now() || !['pending', 'fulfilled'].includes(row.lifecycle_state)) continue;
@@ -187,6 +196,31 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
           }
         }
         await bound(offset + page.length, signal); if (page.length < 500) break;
+      }
+    }
+    // A hotel or a journey read from email is a plan too: the check-in an email reports
+    // joins it by its provider or place within its dates. One a booking was made from is
+    // that booking's plan already; two plans one trace matches would leave it unjoined.
+    if (deps.mailFacts && context.grants.isVerbOpGranted('core.mail.fact.list') && context.grants.isVerbOpGranted('core.mail.get') && context.grants.isCollectionReadGranted('mail')) {
+      for (let cursor: { updated_at: number; thing_id: string } | undefined; ;) {
+        const page = deps.mailFacts.listThings({ type: 'reservation', limit: 500, ...(cursor ? { cursor_before: cursor } : {}) });
+        for (const row of page) {
+          const variables = row.variables; const from = instant(variables.starts_at); const to = instant(variables.ends_at) ?? from;
+          if (variables.state === 'cancelled' || !['lodging', 'transport'].includes(String(variables.kind)) || from === undefined || to === undefined || to > now()
+            || booked.has(row.thing_id)) continue;
+          const ref = { collection: 'mail_fact', id: row.thing_id };
+          const mailboxes = [...new Set(deps.mailFacts.factsForThing(row.thing_id).map(fact => fact.email.slug))];
+          if (!mailboxes.every(slug => proposals.sourceEnabled(`mail:${slug}`))) continue;
+          const spheres = mailboxes.map(slug => deps.sphere?.({ collection: 'mail', id: `${slug}:source` }, `mail:${slug}`));
+          const sphere = spheres.length && spheres.every(value => value !== undefined && value === spheres[0]) ? spheres[0] : undefined;
+          if (!sourceAllowed(context, ref, sphere)) continue;
+          const provider = string(variables.provider); const location = string(variables.location); const trip = trips.get(ref) ?? tripFromSource(ref, variables);
+          if (!provider || PRIVATE.test(provider)) continue;
+          plans.push({ ref, title: provider, when: { from, to }, people: people(trip?.travellers), subjects: [ref], where: history.place(location ?? provider),
+            ...(sphere ? { sphere } : {}), ...(trip?.destination_country ? { country: trip.destination_country } : {}) });
+        }
+        await bound(plans.length, signal); if (page.length < 500) break;
+        cursor = { updated_at: page.at(-1)!.updated_at, thing_id: page.at(-1)!.thing_id };
       }
     }
     if (memory && context.grants.isVerbOpGranted('core.memory.read') && context.grants.isCollectionReadGranted('memory')) {
@@ -209,7 +243,7 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
     return { plans, traces: [...new Map(traces.map(trace => [trace.id, trace])).values()], owners };
   };
   const arrivalTraces = async (context: SituationReadContext, signal?: AbortSignal, mailbox?: string): Promise<ProactiveTrace[]> => {
-    if (!context.owner || !context.grants.isVerbOpGranted('core.data.mail.get') || !context.grants.isCollectionReadGranted('mail')) return [];
+    if (!context.owner || !context.grants.isVerbOpGranted('core.mail.get') || !context.grants.isCollectionReadGranted('mail')) return [];
     const result: ProactiveTrace[] = []; let scanned = 0;
     for (const source of deps.mailboxes?.() ?? []) {
       if (mailbox && source.slug !== mailbox || !proposals.sourceEnabled(`mail:${source.slug}`)) continue;

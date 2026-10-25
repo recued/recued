@@ -16,6 +16,17 @@ for (const width of [280, 1280]) {
       await page.keyboard.press('Enter');
       await expect(host.locator('[data-local-update-undo-preview]')).toContainText(surface === 'chat' ? 'Original meeting' : 'First row');
       await expect(host.getByRole('heading', { name: 'Review reverse changes' })).toBeFocused();
+      if (surface === 'runs') {
+        const listCalls = await page.evaluate(() => window.__app.rpcCallCount('execution.list'));
+        await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
+          kind: 'session_lifecycle', session_id: 'session-verification',
+          state: 'closed', prev_state: 'active', cursor: 210,
+        } }));
+        await page.waitForFunction(count => window.__app.rpcCallCount('execution.list') > count, listCalls);
+        await expect(page.locator('[data-recued-logs-route]')).toHaveAttribute('data-recued-logs-history-loading', 'false');
+        await expect(host.locator('[data-local-update-undo-preview]')).toContainText('First row');
+        await expect(host.getByRole('heading', { name: 'Review reverse changes' })).toBeFocused();
+      }
       expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.decide'))).toBe(0);
       await host.getByRole('button', { name: 'Approve undo', exact: true }).focus(); await page.keyboard.press('Enter');
       await expect(host).toContainText('Undo confirmed. Original receipt: lmr_77777777');
@@ -25,6 +36,49 @@ for (const width of [280, 1280]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     });
   }
+  test(`runs reviews undo without leaving while its decision is pending at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(HARNESS_URL + '?journey=verification&local_mutation_receipt=1#logs/run-verify');
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const host = page.locator('[data-local-update-undo]').first();
+    const review = host.getByRole('button', { name: 'Review undo', exact: true });
+    await expect(review).toBeVisible();
+    const appearance = await review.evaluate(node => ({
+      height: node.getBoundingClientRect().height,
+      background: getComputedStyle(node).backgroundColor,
+      surface: getComputedStyle(node.closest('[data-recued-logs-detail]')!).backgroundColor,
+      color: getComputedStyle(node).color,
+    }));
+    expect(appearance.height).toBeGreaterThanOrEqual(44);
+    expect(appearance.background).toBe(appearance.surface);
+    await review.focus(); await page.keyboard.press('Enter');
+    await expect(host.locator('[data-local-update-undo-preview]')).toBeVisible();
+    await page.evaluate(() => {
+      window.__app.holdRpcResponses?.('local_undo.decide');
+      document.documentElement.setAttribute('data-undo-leave-prompts', '0');
+      window.confirm = message => {
+        document.documentElement.setAttribute('data-undo-leave-message', message ?? '');
+        const count = Number(document.documentElement.getAttribute('data-undo-leave-prompts'));
+        document.documentElement.setAttribute('data-undo-leave-prompts', String(count + 1));
+        return false;
+      };
+    });
+    await host.getByRole('button', { name: 'Approve undo', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(host.getByRole('status')).toHaveText('Applying the reviewed undo…');
+    await page.getByRole('link', { name: 'Back to history' }).click();
+    await expect(page).toHaveURL(/#logs\/run-verify$/);
+    await expect(page.locator('html')).toHaveAttribute('data-undo-leave-message', 'An undo action is still in progress. Leave Logs anyway?');
+    await expect(host.locator('[data-local-update-undo-preview]')).toBeVisible();
+    await page.evaluate(() => window.__app.setHash('#recipes'));
+    await expect(page).toHaveURL(/#logs\/run-verify$/);
+    await expect(page.locator('html')).toHaveAttribute('data-undo-leave-prompts', '2');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.decide'))).toBe(1);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('local_undo.decide'))).toBe(1);
+    await expect(host.getByRole('status')).toContainText('Undo confirmed.');
+    await page.getByRole('link', { name: 'Back to history' }).click();
+    await expect(page).toHaveURL(/#logs$/);
+  });
   test(`declining undo preserves the original action at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 800 });
     await page.goto(HARNESS_URL + '?chat=session&local_mutation_receipt=1#chat/session/chat_1');

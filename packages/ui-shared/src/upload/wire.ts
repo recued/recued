@@ -68,6 +68,9 @@ export const wireUploadWidget = (
 
   let shellEl: ElementLike | null = null;
   let inputEl: ElementLike | null = null;
+  // A native chooser may still belong to the previous input after a host
+  // repaint. Keep only that chooser's completion/cancel listeners until it ends.
+  let pendingInput: ElementLike | null = null;
   let dropzoneEl: ElementLike | null = null;
   let progressEl: ElementLike | null = null;
   let lastProgress: UploadProgress | null = null;
@@ -107,7 +110,28 @@ export const wireUploadWidget = (
     files !== null && files !== undefined && files.length > 0 ? files[0]! : null;
 
   // ── event handlers ─────────────────────────────────────────────────
+  const releasePendingInput = (): void => {
+    const previous = pendingInput;
+    pendingInput = null;
+    if (previous === null || previous === inputEl) return;
+    for (let i = bound.length - 1; i >= 0; i--) {
+      const [el, type, fn] = bound[i]!;
+      if (el !== previous) continue;
+      el.removeEventListener(type, fn);
+      bound.splice(i, 1);
+    }
+  };
+  const onInputClick = (event: EventLike): void => {
+    if (destroyed || event.target !== inputEl) return;
+    releasePendingInput();
+    pendingInput = inputEl;
+  };
+  const onInputCancel = (event: EventLike): void => {
+    if (event.target === pendingInput) releasePendingInput();
+  };
   const onInputChange = (event: EventLike): void => {
+    if (destroyed || (event.target !== inputEl && event.target !== pendingInput)) return;
+    releasePendingInput();
     const files = (event.target as { files?: ArrayLike<UploadFile> } | null)?.files;
     startFile(firstFile(files));
   };
@@ -120,6 +144,7 @@ export const wireUploadWidget = (
   };
   const onDrop = (event: EventLike): void => {
     prevent(event);
+    releasePendingInput();
     dropzoneEl?.removeAttribute('data-dragover');
     startFile(firstFile(event.dataTransfer?.files));
   };
@@ -133,9 +158,14 @@ export const wireUploadWidget = (
   };
 
   // ── attach / detach ────────────────────────────────────────────────
-  const detach = (): void => {
-    for (const [el, type, fn] of bound) el.removeEventListener(type, fn);
-    bound.length = 0;
+  const detach = (keepPending = false): void => {
+    const retained: typeof bound = [];
+    for (const binding of bound) {
+      const [el, type, fn] = binding;
+      if (keepPending && el === pendingInput && (type === 'change' || type === 'cancel')) retained.push(binding);
+      else el.removeEventListener(type, fn);
+    }
+    bound.splice(0, bound.length, ...retained);
   };
 
   const bind = (
@@ -143,28 +173,35 @@ export const wireUploadWidget = (
     type: string,
     fn: (event: EventLike) => void,
   ): void => {
+    if (bound.some(binding => binding[0] === el && binding[1] === type && binding[2] === fn)) return;
     el.addEventListener(type, fn);
     bound.push([el, type, fn]);
   };
 
   const attach = (searchRoot: ParentNode): void => {
-    detach();
+    detach(true);
     const queryable = searchRoot as unknown as ElementLike;
     // Degrade on a root that can't be queried (a string-only test host /
     // surface): don't mount rather than throw.
     if (typeof queryable.querySelector !== 'function') {
       shellEl = inputEl = dropzoneEl = progressEl = null;
+      releasePendingInput();
       return;
     }
     shellEl = queryable.querySelector(`[${UPLOAD_SHELL_ATTR}="${config.widgetId}"]`);
     if (shellEl === null) {
       inputEl = dropzoneEl = progressEl = null;
+      releasePendingInput();
       return;
     }
     inputEl = shellEl.querySelector(`[${UPLOAD_INPUT_ATTR}]`);
     dropzoneEl = shellEl.querySelector(`[${UPLOAD_DROPZONE_ATTR}]`);
     progressEl = shellEl.querySelector(`[${UPLOAD_PROGRESS_ATTR}]`);
-    if (inputEl !== null) bind(inputEl, 'change', onInputChange);
+    if (inputEl !== null) {
+      bind(inputEl, 'click', onInputClick);
+      bind(inputEl, 'change', onInputChange);
+      bind(inputEl, 'cancel', onInputCancel);
+    }
     if (dropzoneEl !== null) {
       bind(dropzoneEl, 'dragover', onDragover);
       bind(dropzoneEl, 'dragleave', onDragleave);
@@ -187,6 +224,7 @@ export const wireUploadWidget = (
       destroyed = true;
       offProgress();
       engine.destroy();
+      pendingInput = null;
       detach();
     },
   };

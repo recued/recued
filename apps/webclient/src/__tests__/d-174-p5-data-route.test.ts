@@ -28,6 +28,8 @@ import type { ReminderView } from '@recued/contracts';
 import { MAIL_FACTS_FIELD_ATTR } from '../data/mail-fact-templates.js';
 import { reconcileRecoveryContext } from '../shell/recovery-return-reconciliation.js';
 import {
+  SEARCH_DID_YOU_MEAN_ACTION,
+  SEARCH_DID_YOU_MEAN_QUERY_ATTR,
   SEARCH_INPUT_ATTR,
   SEARCH_OPEN_RECORD_ACTION,
   SEARCH_GROUP_SLUG_ATTR,
@@ -126,6 +128,7 @@ import {
   MEMORY_DELETE_ACTION,
   MEMORY_DELETE_CANCEL_ACTION,
   MEMORY_DELETE_CONFIRM_ACTION,
+  MEMORY_RESTORE_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
   MEMORY_EDIT_ACTION,
   MEMORY_FIELD_ATTR,
@@ -613,6 +616,7 @@ const mountRoute = (overrides: {
   memoryUpdateCaller?: NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>;
   memoryDeleteCaller?: NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>;
   memoryImportCaller?: NonNullable<BootstrapDataRouteOptions['memoryImportCaller']>;
+  memoryRestoreCaller?: NonNullable<BootstrapDataRouteOptions['memoryRestoreCaller']>;
   collectionListInstancesCaller?: BootstrapDataRouteOptions['collectionListInstancesCaller'];
   collectionListCaller?: BootstrapDataRouteOptions['collectionListCaller'];
   collectionGetCaller?: BootstrapDataRouteOptions['collectionGetCaller'];
@@ -850,6 +854,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.memoryImportCaller !== undefined
       ? { memoryImportCaller: overrides.memoryImportCaller }
+      : {}),
+    ...(overrides.memoryRestoreCaller !== undefined
+      ? { memoryRestoreCaller: overrides.memoryRestoreCaller }
       : {}),
     ...(overrides.collectionListInstancesCaller !== undefined
       ? { collectionListInstancesCaller: overrides.collectionListInstancesCaller }
@@ -1538,6 +1545,44 @@ describe('D-174 P5 Data route', () => {
 
     rig.route.dispose();
     expect(rig.root.children).toHaveLength(0);
+  });
+
+  it('D-198 §10 — Restore brings back an entry an agent forgot, then refreshes the feed', async () => {
+    let restored = false;
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({
+        entries: [restored
+          ? { memory_id: 'umem_7', origin_actor: 'contracted_user', kind: 'chat_memory', summary: 'Back again', ts: NOW }
+          : { memory_id: 'umem_7', origin_actor: 'contracted_user', kind: 'chat_memory', ts: NOW, redacted: true, forgotten_by: 'your chat' }],
+      }),
+    );
+    const memoryRestoreCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryRestoreCaller']>>(
+      async ({ memory_id }) => {
+        restored = true;
+        return { memory_id, restored: 1 };
+      },
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller: vi.fn(async ({ memory_id }) => ({ memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory', ts: NOW })),
+      memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+      memoryUpdateCaller: vi.fn(async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 })),
+      memoryDeleteCaller: vi.fn(async ({ memory_id }) => ({ memory_id, deleted: false, redacted: true })),
+      memoryRestoreCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    expect(routeRoot.innerHTML).toContain('Forgotten by your chat');
+
+    emitClick(routeRoot, MEMORY_RESTORE_ACTION, { 'data-memory-id': 'umem_7' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    await rig.route.whenLoaded();
+
+    expect(memoryRestoreCaller).toHaveBeenCalledWith({ memory_id: 'umem_7' });
+    expect(routeRoot.innerHTML).toContain('Back again');
+    expect(routeRoot.innerHTML).not.toContain('Forgotten by your chat');
+    rig.route.dispose();
   });
 
   it('reviews an unfinished Memory compose before Cancel discards it', async () => {
@@ -7896,6 +7941,60 @@ describe('Data → Search wiring', () => {
     const html = rig.root.children[0]!.innerHTML;
     expect(html).toContain('Kestrel pricing');
     expect(html).toContain(SEARCH_OPEN_RECORD_ACTION);
+  });
+
+  it('⛔ "did you mean" runs the corrected query, and the box takes it', async () => {
+    const calls: string[] = [];
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async ({ query }) => {
+        calls.push(query);
+        return query === 'Castelanos invoice'
+          ? {
+            groups: [],
+            did_you_mean: {
+              query: 'Castellanos invoice',
+              corrections: [{ typed: 'Castelanos', word: 'Castellanos', records: 2 }],
+            },
+          }
+          : { groups: [] };
+      },
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'Castelanos invoice');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rig.root.children[0]!.innerHTML).toContain(SEARCH_DID_YOU_MEAN_ACTION);
+    emitClick(rig.root.children[0]!, SEARCH_DID_YOU_MEAN_ACTION, {
+      [SEARCH_DID_YOU_MEAN_QUERY_ATTR]: 'Castellanos invoice',
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toEqual(['Castelanos invoice', 'Castellanos invoice']);
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).toContain('value="Castellanos invoice"');
+    // The suggestion belonged to the old query; the new query's answer has none.
+    expect(html).not.toContain(SEARCH_DID_YOU_MEAN_ACTION);
+    rig.route.dispose();
+  });
+
+  it('shows which words the stores dropped beside the results they returned', async () => {
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async () => ({
+        groups: [{
+          platform: 'mail', slug: 'inbox', more: false, source_freshness: { stale: false },
+          matches: [{ record_id: 'm1', hot_fields: { subject: 'Car lease invoice' }, rank: -1, body: 'body' }],
+        }] as never,
+        absent_words: ['Castelanos'],
+      }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'Castelanos invoice');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rig.root.children[0]!.innerHTML)
+      .toContain('No record holds “Castelanos”, so these results match only your other words.');
+    rig.route.dispose();
   });
 
   it('says so when search is not wired, rather than looking empty', async () => {

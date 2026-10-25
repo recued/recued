@@ -101,7 +101,7 @@ export const createManagedOAuthMigrationPanel = (deps: {
           + 'Protected read-only access check URL<input type="url" data-bulk-url="' + escape(c.name) + '" value="' + escape(urls.get(c.name) ?? '') + '"></label>').join('')
         + '<p>A private Google Sheets link can be used as its read check. Review the combined needs of these connections.</p>'
         + '<label>New authentication<select data-bulk-target><option value="direct_oauth"' + (target === 'direct_oauth' ? ' selected' : '') + '>Recued direct OAuth — your OAuth app</option>'
-        + '<option value="managed_oauth"' + (target === 'managed_oauth' ? ' selected' : '') + '>Managed OAuth — broker account</option></select></label>'
+        + '<option value="managed_oauth"' + (target === 'managed_oauth' ? ' selected' : '') + '>OAuth broker (Nango) — a Nango account</option></select></label>'
         + (target === 'direct_oauth' ? '<label>Direct OAuth connection<select data-bulk-source><option value="">Select a direct OAuth connection</option>'
           + directSources().map(c => '<option value="' + escape(c.name) + '"' + (source === c.name ? ' selected' : '') + '>'
             + escape(c.display_name + ' · ' + c.name) + '</option>').join('') + '</select></label>'

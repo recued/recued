@@ -26,6 +26,7 @@ import {
   syncVendorOAuthEndpointValue,
 } from '../connection-schemas/index.js';
 import {
+  getFileVendorDeclaration,
   getMessengerVendorDeclaration,
   getVendorProvider,
   resolveMessengerConnectionIngressMode,
@@ -257,7 +258,7 @@ export interface ConnectionEditDialogPatch {
 export const resolveConnectionViewVendor = (view: ConnectionView): string | null => {
   if (view.kind !== 'api') return null;
   if (typeof view.vendor !== 'string') return null;
-  return getVendorProvider(view.vendor) ? view.vendor : null;
+  return getVendorProvider(view.vendor) || getFileVendorDeclaration(view.vendor) ? view.vendor : null;
 };
 
 /** Build the host patch for editing an enrolled connection. Auth

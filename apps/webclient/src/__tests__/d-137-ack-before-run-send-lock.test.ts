@@ -634,8 +634,31 @@ describe('D-259 ack-before-run — dispatch-only send lock', () => {
    *
    *  The message itself was always dispatched to the right session; only the
    *  client-side paint diverged. Dropping the scaffold loses nothing — the
-   *  turn is durable server-side and rehydrates when chat_1 is reopened. */
-  it('does not scaffold the acked turn onto a session opened while the send was in flight', async () => {
+   *  turn is durable server-side and rehydrates when chat_1 is reopened.
+   *
+   *  🔑 `644f86298` closed the window itself: Send waits while a conversation is
+   *  loading (`composerNavigationPending`, also checked in `sendMessage`, where
+   *  every send path meets), so no send can start inside a switch. The ack's
+   *  identity re-check still guards the order that remains: a send already out
+   *  when the switch starts, acked after the next chat lands. */
+  it('starts no send while a switch is loading, and with the send already out, scaffolds no late ack onto the next chat', async () => {
+    const loading = deferred<unknown>();
+    const dispatch = vi.fn(async () => ({ turn_id: 't_never' }));
+    const waiting = mountChatRoute(dispatch, new Map([['chat_2', loading.promise]]));
+    await tick();
+    await waiting.route.openSession('chat_1');
+    const opening = waiting.route.openSession('chat_2');
+    await tick();
+    expect(waiting.route.getThread().session?.id).toBe('chat_1');
+    typeDraft(waiting.root, 'typed into the thread I can still see');
+    expect(sendButton(waiting.root).disabled).toBe(true);
+    await waiting.route.sendMessage('typed into the thread I can still see');
+    expect(dispatch).not.toHaveBeenCalled();
+    loading.resolve({ ...chatSession('chat_2'), messages: [] });
+    await opening;
+    waiting.route.dispose();
+
+    // The order still possible: the send is out, THEN the switch starts.
     const hydrateChat2 = deferred<unknown>();
     const send = deferred<{ turn_id: string }>();
     const h = mountChatRoute(
@@ -644,15 +667,10 @@ describe('D-259 ack-before-run — dispatch-only send lock', () => {
     );
     await tick();
     await h.route.openSession('chat_1');
-
-    // The switch to chat_2 is in flight — its snapshot has not landed, so
-    // chat_1 is still the visible thread and Send is still live.
-    const switching = h.route.openSession('chat_2');
-    await tick();
-    expect(h.route.getThread().session?.id).toBe('chat_1');
-    typeDraft(h.root, 'typed into the thread I can still see');
-    expect(sendButton(h.root).disabled).toBe(false);
+    typeDraft(h.root, 'sent just before I clicked away');
     sendButton(h.root).click();
+    await tick();
+    const switching = h.route.openSession('chat_2');
     await tick();
 
     // chat_2 lands FIRST, then the ack for chat_1's turn.

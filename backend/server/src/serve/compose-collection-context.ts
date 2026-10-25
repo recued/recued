@@ -99,6 +99,8 @@ import { createWatcherDispatcher } from '../watchers/index.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createAssetOccurrenceService, type AssetOccurrenceService } from '../situations/asset-occurrence-service.js';
 import { createOwnerCompletionWriter } from '../situations/owner-completion.js';
+import { createRenewalFulfillGuard } from '../situations/renewal-guard.js';
+import { assetTypes } from '../situations/asset-types.js';
 import { createAssetReminderService, type AssetReminderService } from '../situations/asset-reminder-service.js';
 import { createHouseholdHomeAssistant, type HouseholdHomeAssistant } from '../situations/household-home-assistant.js';
 import { createProactiveLearning, type ProactiveLearning } from '../situations/learning-runtime.js';
@@ -119,14 +121,14 @@ import { createProactiveProposalStore } from '../storage/proactive-proposal-stor
 import { createYoursService, type YoursService } from '../situations/yours-service.js';
 import { createSphereStore, nonAssetSphereOrigins } from '../storage/sphere-store.js';
 import { createQuietHoursStore } from '../storage/quiet-hours-store.js';
-import { shouldSuppressForQuietHours } from '@recued/contracts';
+import { quietHoursEndFor, shouldSuppressForQuietHours } from '@recued/contracts';
 import { createSituationStore, type SituationStore } from '../storage/situation-store.js';
 import { occasionRuleSituation, resolveRuleSituation, ruleSituation } from '../situations/rule-situation.js';
 import { createClusterSummary } from '../situations/cluster-summary.js';
 import { createScheduledSituations, type ScheduledSituations } from '../situations/scheduled-situations.js';
 import { handleNotificationSend } from '../notification-handler.js';
 import { createSituationQuery } from '../situations/query.js';
-import { createSituationNamedPeople } from '../situations/named-people.js';
+import { createSituationNamedPeople, createSituationPeopleFor } from '../situations/named-people.js';
 import { recordDigestResponse } from '../situations/measures.js';
 import { buildSituationSources, situationSourceAccess } from '../situations/sources.js';
 import { createAssetClassStore } from '../situations/asset-classes.js';
@@ -768,7 +770,8 @@ export const composeCollectionContext = (
   const workEntityDispatchers = workEntityStore
     ? createWorkEntityDispatchers({
         store: workEntityStore,
-        ...(db ? { ownerCompletionWrite: createOwnerCompletionWriter(db, workEntityStore) } : {}),
+        ...(db ? { ownerCompletionWrite: createOwnerCompletionWriter(db, workEntityStore),
+          commitmentFulfillGuard: createRenewalFulfillGuard(db, workEntityStore), assetTypes: assetTypes(db) } : {}),
         resolver: createWorkEntityResolver(workEntityStore),
         timeZone: serverTimeZone,
         bus: warehouseBus,
@@ -802,7 +805,7 @@ export const composeCollectionContext = (
       },
     });
     const quiet = createQuietHoursStore(db);
-    householdHomeAssistant = createHouseholdHomeAssistant({ db, work: workEntityStore, occurrences: assetOccurrences, isVaultUnlocked,
+    householdHomeAssistant = createHouseholdHomeAssistant({ db, work: workEntityStore, isVaultUnlocked,
       connections: () => (connectionStore?.list({ kind: 'api' }) ?? []).filter(row => householdCatalogBindings?.catalogsForConnection(row.name).includes('home-assistant')),
       credential: async row => { const auth = await decodeAuthFromStorage(row.auth_ciphertext, { kind: row.kind, name: row.name }, keys?.keyProvider('connection'));
         return auth.type === 'bearer' && typeof auth.token === 'string' && auth.token ? auth.token : null; },
@@ -882,7 +885,7 @@ export const composeCollectionContext = (
   }) : undefined;
   const querySituation = db && workEntityStore ? createSituationQuery({
     sourceForCollection: situationSourceAccess,
-    ...(contactStore ? { namedPeople: createSituationNamedPeople(contactStore) } : {}),
+    ...(contactStore ? { namedPeople: createSituationNamedPeople(contactStore), peopleFor: createSituationPeopleFor(contactStore) } : {}),
     relate: (facts, _query, context) => [...relateTravelDocuments(facts, createAssetClassStore(db).list().flatMap(preset => preset.travel_validity ?? []), serverTimeZone(),
       travelDocumentsVisible(context, situationSourceAccess('asset'))), ...(proactiveLearning?.related(facts) ?? [])],
     ...(proactiveLearning ? { rank: fact => proactiveLearning.rank(fact), relationClasses: () => proactiveLearning.relationClasses() } : {}),
@@ -912,6 +915,7 @@ export const composeCollectionContext = (
   const scheduledSituations = db && workEntityStore && situationStore && querySituation && yours
     ? createScheduledSituations({ db, work: workEntityStore, store: situationStore, query: querySituation, timeZone: serverTimeZone,
         isVaultUnlocked, isQuiet: at => shouldSuppressForQuietHours({ policy: createQuietHoursStore(db).read(), instant: at, timeZone: serverTimeZone() }),
+        quietEnd: minute => quietHoursEndFor(createQuietHoursStore(db).read(), minute),
         ...(privateAiCall ? { summarize: createClusterSummary({ call: privateAiCall, ready: () => {
           if (!isVaultUnlocked()) return undefined;
           try { if (isAiPaused(db, Date.now()) || backgroundAiBudgetSpent?.()) return undefined;

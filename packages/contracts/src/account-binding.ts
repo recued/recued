@@ -314,9 +314,25 @@ export interface AccountBindingStatusResponse {
   binding: AccountBindingSummary | null;
 }
 
-/** `account.unbind` result. */
+/** What recued.com did when the server disconnected itself (`account.unbind`).
+ *
+ *  - `released` — recued.com no longer lists the server under the account,
+ *    and let go of its Pro authority and its hold on the handle.
+ *  - `not_listed` — recued.com already did not list it under that account
+ *    (released on the account page, or the server is another account's now).
+ *  - `not_told` — recued.com could not be reached, or refused the server's
+ *    sign-in (one the owner rotated, or past its expiry). It still lists the
+ *    server until the owner removes it on the account page.
+ *
+ *  The server forgets its copy in every case — Disconnect is the owner's
+ *  call, and a cloud that cannot be reached must not hold it hostage. */
+export type AccountUnbindCloudOutcome = 'released' | 'not_listed' | 'not_told';
+
+/** `account.unbind` result. `cloud` rides only the server's own unbind; the
+ *  dashboard's (`POST /v1/account/binding/unbind`) is the cloud, so it has
+ *  nothing to report there. */
 export type AccountUnbindResult =
-  | { outcome: 'unbound'; previous: AccountBindingSummary }
+  | { outcome: 'unbound'; previous: AccountBindingSummary; cloud?: AccountUnbindCloudOutcome }
   | { outcome: 'not_bound' };
 
 /** Dashboard credential-rotate result — the binding survives with a

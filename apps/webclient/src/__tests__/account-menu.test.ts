@@ -11,6 +11,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { WebclientServerProfile } from '@recued/contracts';
 import {
   ACCOUNT_MENU_ADD_SERVER_ATTR,
+  ACCOUNT_MENU_ADD_SERVER_CANCEL_ATTR,
+  ACCOUNT_MENU_ADD_SERVER_COMMIT_ATTR,
+  ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR,
+  ACCOUNT_MENU_PAIRING_LINK_ADD_ATTR,
+  ACCOUNT_MENU_PAIRING_LINK_ATTR,
+  ACCOUNT_MENU_PAIRING_LINK_DISMISS_ATTR,
   ACCOUNT_MENU_ACTIVE_WORK_ATTR,
   ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR,
   ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
@@ -63,6 +69,8 @@ import {
   SERVER_SWITCHER_REMOVE_CONFIRM_ATTR,
   SERVER_SWITCHER_REMOVE_LOCAL_ATTR,
   SERVER_SWITCHER_REMOVE_REVOKE_ATTR,
+  SERVER_SWITCHER_RENAME_ATTR,
+  SERVER_SWITCHER_RENAME_FORM_ATTR,
 } from '../shell/server-switcher.js';
 import { SERVER_CONTROL_POPOVER_ATTR } from '../shell/server-pill-host.js';
 
@@ -2541,6 +2549,50 @@ describe('mountAccountMenu', () => {
     expect(dom.activeElement()).toBe(trigger); // focus returns to the trigger
   });
 
+  // ⛔ Escape inside Rename or a review closed the whole menu, and a
+  // half-typed name went with it.
+  it('takes Escape inside Rename, a review, or Add another server first, then closes', () => {
+    const onAddServer = vi.fn();
+    const { host, dom, mount } = setup({
+      onRename: vi.fn(async (_id: string, label: string) => label),
+      onAddServer,
+      switchWorkState: () => 'chat_draft',
+    });
+    findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+
+    const rename = findAllByAttr(host, SERVER_SWITCHER_RENAME_ATTR)[0]!;
+    rename.click();
+    expect(findByAttr(host, SERVER_SWITCHER_RENAME_FORM_ATTR)).not.toBeNull();
+    dom.fire('keydown', { key: 'Escape' });
+    expect(findByAttr(host, SERVER_SWITCHER_RENAME_FORM_ATTR)).toBeNull();
+    expect(mount.isOpen()).toBe(true);
+    expect(dom.activeElement()).toBe(findAllByAttr(host, SERVER_SWITCHER_RENAME_ATTR)[0]);
+
+    findAllByAttr(host, SERVER_SWITCHER_REMOVE_ATTR)[1]!.click();
+    expect(findByAttr(host, SERVER_SWITCHER_REMOVE_CONFIRM_ATTR)).not.toBeNull();
+    dom.fire('keydown', { key: 'Escape' });
+    expect(findByAttr(host, SERVER_SWITCHER_REMOVE_CONFIRM_ATTR)).toBeNull();
+    expect(mount.isOpen()).toBe(true);
+
+    findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    expect(findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)).not.toBeNull();
+    dom.fire('keydown', { key: 'Escape' });
+    expect(findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)).toBeNull();
+    expect(dom.activeElement()).toBe(findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)[1]);
+
+    findByAttr(host, ACCOUNT_MENU_ADD_SERVER_ATTR)!.click();
+    expect(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR)).not.toBeNull();
+    dom.fire('keydown', { key: 'Escape' });
+    expect(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR)).toBeNull();
+    expect(dom.activeElement()).toBe(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_ATTR));
+    expect(mount.isOpen()).toBe(true);
+
+    // Nothing nested is open: Escape closes Account, as before.
+    dom.fire('keydown', { key: 'Escape' });
+    expect(mount.isOpen()).toBe(false);
+    expect(onAddServer).not.toHaveBeenCalled();
+  });
+
   it('following Settings closes the menu', () => {
     const { host, mount } = setup();
     findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
@@ -2642,6 +2694,95 @@ describe('adding a server', () => {
       .toBeLessThan(servers.children.indexOf(add));
     add.click();
     expect(onAddServer).toHaveBeenCalledTimes(1);
+    expect(mount.isOpen()).toBe(false);
+  });
+
+  it('with an unsent message in this tab, asks first — and Cancel changes nothing', () => {
+    // ⛔ It reloaded at once, leaving the message to the browser's own "Leave
+    // site?" box; choosing Stay left the tab half-moved onto the new attempt.
+    const onAddServer = vi.fn();
+    const { host, mount } = setup({ onAddServer, switchWorkState: () => 'chat_draft' });
+    findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(host, ACCOUNT_MENU_ADD_SERVER_ATTR)!.click();
+
+    expect(onAddServer).not.toHaveBeenCalled();
+    expect(subtreeText(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR)!)).toContain(
+      'The Chat message you have not sent is only in this tab. Adding a server reloads this tab, and the message is lost.',
+    );
+    findByAttr(host, ACCOUNT_MENU_ADD_SERVER_CANCEL_ATTR)!.click();
+    expect(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR)).toBeNull();
+    expect(onAddServer).not.toHaveBeenCalled();
+    expect(mount.isOpen()).toBe(true);
+  });
+
+  it('adds the server once confirmed, after showing work that grew while it was open', () => {
+    const onAddServer = vi.fn();
+    let work: 'chat_draft' | 'in_flight_with_chat_draft' = 'chat_draft';
+    const { host, mount } = setup({ onAddServer, switchWorkState: () => work });
+    findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(host, ACCOUNT_MENU_ADD_SERVER_ATTR)!.click();
+
+    work = 'in_flight_with_chat_draft';
+    findByAttr(host, ACCOUNT_MENU_ADD_SERVER_COMMIT_ATTR)!.click();
+    expect(onAddServer).not.toHaveBeenCalled();
+    expect(subtreeText(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR)!))
+      .toContain('Work is still finishing');
+
+    findByAttr(host, ACCOUNT_MENU_ADD_SERVER_COMMIT_ATTR)!.click();
+    expect(onAddServer).toHaveBeenCalledTimes(1);
+    expect(mount.isOpen()).toBe(false);
+  });
+
+  // ⛔ A pairing link opened while this browser already used a server was
+  // dropped without a word.
+  it('answers a pairing link with an offer above the entry, naming the server in use', () => {
+    const onAddServer = vi.fn();
+    const { host, mount, dom } = setup({ onAddServer, profiles: [], activeProfileId: null });
+
+    mount.offerPairingLink();
+
+    expect(mount.isOpen()).toBe(true);
+    const offer = findByAttr(host, ACCOUNT_MENU_PAIRING_LINK_ATTR)!;
+    const add = findByAttr(offer, ACCOUNT_MENU_PAIRING_LINK_ADD_ATTR)!;
+    expect(dom.activeElement()).toBe(add);
+    const servers = findByAttr(host, ACCOUNT_MENU_SERVERS_ROW_ATTR)!;
+    expect(servers.children.indexOf(offer))
+      .toBe(servers.children.indexOf(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_ATTR)!) - 1);
+    expect(subtreeText(offer)).toContain('This browser already uses a server.');
+    // The roster arrives after the offer does.
+    mount.refresh([HOME, OFFICE], 'p1');
+    expect(subtreeText(offer)).toContain('This browser is using home.example:8443.');
+
+    add.click();
+    expect(onAddServer).toHaveBeenCalledTimes(1);
+    expect(mount.isOpen()).toBe(false);
+  });
+
+  it('takes the pairing link’s Add through the same review, and Not now removes the offer', () => {
+    const onAddServer = vi.fn();
+    const onDismissPairingLink = vi.fn();
+    const { host, mount } = setup({
+      onAddServer,
+      onDismissPairingLink,
+      switchWorkState: () => 'chat_draft',
+    });
+    mount.offerPairingLink();
+
+    findByAttr(host, ACCOUNT_MENU_PAIRING_LINK_ADD_ATTR)!.click();
+    expect(onAddServer).not.toHaveBeenCalled();
+    expect(findByAttr(host, ACCOUNT_MENU_ADD_SERVER_REVIEW_ATTR)).not.toBeNull();
+    findByAttr(host, ACCOUNT_MENU_ADD_SERVER_CANCEL_ATTR)!.click();
+
+    findByAttr(host, ACCOUNT_MENU_PAIRING_LINK_DISMISS_ATTR)!.click();
+    expect(findByAttr(host, ACCOUNT_MENU_PAIRING_LINK_ATTR)).toBeNull();
+    expect(onDismissPairingLink).toHaveBeenCalledTimes(1);
+    expect(onAddServer).not.toHaveBeenCalled();
+  });
+
+  it('offers nothing for a pairing link when the caller cannot add a server', () => {
+    const { host, mount } = setup({ onAddServer: undefined });
+    mount.offerPairingLink();
+    expect(findByAttr(host, ACCOUNT_MENU_PAIRING_LINK_ATTR)).toBeNull();
     expect(mount.isOpen()).toBe(false);
   });
 

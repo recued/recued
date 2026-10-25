@@ -49,6 +49,8 @@ export interface BootTraceEvent {
   phase: string;
   elapsed_ms: number;
   db_open_attempted: boolean;
+  cpu_user_ms?: number;
+  cpu_system_ms?: number;
   command?: string;
   detail?: string;
 }
@@ -67,6 +69,8 @@ export interface BootTraceOptions {
   command?: string;
   env?: Record<string, string | undefined>;
   now?: () => number;
+  /** Read only when both boot tracing and RECUED_BOOT_TRACE_CPU=1 are enabled. */
+  cpuUsage?: () => { user: number; system: number };
   sink?: (line: string) => void;
 }
 
@@ -126,11 +130,14 @@ export const createBootTrace = (options: BootTraceOptions): BootTrace => {
   const now = options.now ?? defaultNow;
   const sink = options.sink ?? defaultSink;
   const startedAt = now();
+  const cpuUsage = options.cpuUsage ?? (() => process.cpuUsage());
+  const startedCpu = enabled && (options.env ?? process.env).RECUED_BOOT_TRACE_CPU === '1' ? cpuUsage() : undefined;
   let dbOpenAttempted = false;
   let finished = false;
 
   const emit = (phase: string, detail?: string): void => {
     if (!enabled) return;
+    const cpu = startedCpu ? cpuUsage() : undefined;
     const event: BootTraceEvent = {
       tag: 'recued.boot',
       entrypoint: options.entrypoint,
@@ -138,6 +145,10 @@ export const createBootTrace = (options: BootTraceOptions): BootTrace => {
       phase,
       elapsed_ms: Math.max(0, Math.round(now() - startedAt)),
       db_open_attempted: dbOpenAttempted,
+      ...(cpu && startedCpu ? {
+        cpu_user_ms: Math.max(0, Math.round((cpu.user - startedCpu.user) / 1000)),
+        cpu_system_ms: Math.max(0, Math.round((cpu.system - startedCpu.system) / 1000)),
+      } : {}),
       ...(options.command ? { command: options.command } : {}),
       ...(detail ? { detail } : {}),
     };

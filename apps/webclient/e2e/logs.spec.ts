@@ -1,3 +1,4 @@
+import type { ActiveExecutionEntry, ExecutionListQuery, RunAnchorStatus, RunFeedRow, RunYield } from '@recued/contracts';
 import { expect, test, type Page } from '@playwright/test';
 import {
   HARNESS_URL, LIVE_CONTROL_RUN_CONTROL, LIVE_CONTROL_TOGGLE,
@@ -16,6 +17,100 @@ const LOGS_ERROR = 'data-recued-logs-error';
 
 installFullAppHooks();
 
+declare global {
+  interface Window {
+    __connectionsFixture?: (method: string, args: unknown) => Promise<{ result?: unknown; error?: { code: string; message: string } } | undefined>;
+    __logsManagementQueries?: ExecutionListQuery[];
+    __logsManagementFailList?: boolean;
+  }
+}
+
+const installManagementFixture = async (page: Page, options: { queueId?: string | null } = {}): Promise<void> => {
+  const now = 1_700_000_000_000;
+  const tally = (failed: number, total = 12, stopped_at: string | null = null): RunYield =>
+    ({ steps_run: 2, steps_skipped: 0, items_total: total, items_failed: failed, stopped_at });
+  const cases: Array<{ id: string; name: string; status: RunAnchorStatus; yield?: RunYield }> = [
+    { id: 'finished', name: 'Completed import', status: 'succeeded', yield: tally(0) },
+    { id: 'partial', name: 'Partially completed import', status: 'succeeded', yield: tally(3) },
+    { id: 'refused', name: 'Refused import items', status: 'succeeded', yield: tally(12) },
+    { id: 'stopped', name: 'Recipe stop condition', status: 'succeeded', yield: tally(0, 0, 'nothing_new') },
+    { id: 'approval', name: 'Owner approval hold', status: 'awaiting_approval' },
+    { id: 'peer', name: 'Peer reply hold', status: 'awaiting_peer' },
+    { id: 'unknown', name: 'Uncertain external change', status: 'in_doubt', yield: tally(3) },
+    { id: 'failed', name: 'Failed import', status: 'failed' },
+    { id: 'cancelled', name: 'Cancelled import', status: 'cancelled' },
+    { id: 'killed', name: 'Stopped by owner', status: 'killed' },
+    { id: 'legacy', name: 'Older recorded run', status: 'succeeded' },
+    { id: 'zero', name: 'Run without counted items', status: 'succeeded', yield: tally(0, 0) },
+  ];
+  const rows: RunFeedRow[] = cases.map((entry, index) => ({
+    run_id: `history-${entry.id}`, recipe_id: 'fixture/run-management', name: entry.name,
+    started_at: now - 4_000 - index * 1_000, finished_at: now - 2_000 - index * 1_000, duration_ms: 2_000,
+    origin: { actor: 'user_self', label: 'user_self', channel: 'user' }, status: entry.status,
+    policy_result: entry.status === 'awaiting_approval' ? 'approval-requested' : entry.status === 'failed' ? 'denied' : 'allowed',
+    links: [], ...(entry.yield === undefined ? {} : { run_yield: entry.yield }),
+  }));
+  const run: ActiveExecutionEntry = {
+    entry_kind: 'run', run_id: 'management-running', recipe_id: 'fixture/run-management', step_id: 'import',
+    lane: 'local-heavy', state: 'running', origin: 'attended', source: { channel: 'user', actor: 'user_self', user_id: 'fixture-owner', client_token_id: 'fixture-client' },
+    started_at: now - 30_000, slot_acquired_at: now - 15_000, intent: 'Import reviewed contacts',
+    progress: { contract: 'silent', stalled: false }, kill: { mechanism: 'abandon_await', run_id: 'management-running' },
+  };
+  const entries: ActiveExecutionEntry[] = [run,
+    { ...run, entry_kind: 'queued-call', run_id: 'management-queued',
+      ...(options.queueId === null ? {} : { queued_call_id: options.queueId ?? 'management-call' }),
+      state: 'waiting_slot', intent: 'Wait for import capacity' },
+    { ...run, entry_kind: 'detached-job', run_id: 'management-detached', state: 'detached', intent: 'Watch for a recorded result', progress: { contract: 'silent', stalled: true } },
+  ];
+  await page.addInitScript(({ history, active }) => {
+    let current = [...active];
+    window.__logsManagementQueries = [];
+    window.__connectionsFixture = async (method, raw) => {
+      const args = (raw ?? {}) as ExecutionListQuery & { run_id?: string; queued_call_id?: string };
+      if (method === 'execution.list') {
+        window.__logsManagementQueries!.push(args);
+        if (window.__logsManagementFailList) {
+          window.__logsManagementFailList = false;
+          return { error: { code: 'UNAVAILABLE', message: 'History could not be refreshed.' } };
+        }
+        const filtered = history.filter(row => (args.status === undefined || args.status.includes(row.status))
+          && (args.origin === undefined || args.origin.includes(row.origin.actor))
+          && (args.recipe_id === undefined || args.recipe_id === row.recipe_id)
+          && (args.since === undefined || row.started_at >= args.since));
+        const offset = args.cursor === undefined ? 0 : filtered.findIndex(row => row.run_id === args.cursor?.last_run_id) + 1;
+        const runs = filtered.slice(offset, offset + 4);
+        const last = runs.at(-1);
+        return { result: { runs, ...(last === undefined || offset + runs.length >= filtered.length ? {} : {
+          next_cursor: { last_run_id: last.run_id, last_started_at: last.started_at },
+        }) } };
+      }
+      if (method === 'recipe.list') return { result: { recipes: [{ recipe_id: 'fixture/run-management', name: 'Run management fixture' }] } };
+      if (method === 'execution.get') {
+        const row = history.find(row => row.run_id === args.run_id);
+        if (!row) return { result: { run: null } };
+        return { result: { run: {
+          audit: { ...row, recipe_hash: 'fixture-hash', trigger_source: 'manual', instance_id: 'fixture-server', errors: [] },
+          approvals: { checkpoints: [] }, errors: [], links: [], gateway: { policy_result: row.policy_result, per_call_trace: [] },
+        } } };
+      }
+      if (method === 'execution.active') return { result: { entries: current,
+        lanes: [{ lane: 'local-heavy', capacity: 1, in_use: current.some(row => row.state === 'running') ? 1 : 0,
+          queued: current.filter(row => row.entry_kind === 'queued-call').length, oldest_wait_ms: 3_000 }],
+      } };
+      if (method === 'execution.kill') {
+        current = current.filter(row => row.run_id !== args.run_id);
+        return { result: { status: 'killed' } };
+      }
+      if (method === 'execution.cancel') {
+        current = current.filter(row => row.queued_call_id !== args.queued_call_id);
+        return { result: { status: 'cancelled_before_dispatch' } };
+      }
+      if (method === 'execution.promote') return { result: { status: 'promoted' } };
+      return undefined;
+    };
+  }, { history: rows, active: entries });
+};
+
 const RUN_SUMMARY = '[data-recued-logs-run-summary]';
 const RUN_SUMMARY_STATUS = '[data-recued-logs-run-summary-status]';
 const refreshLogsHistory = async (page: Page, cursor = 400): Promise<void> => {
@@ -25,7 +120,7 @@ const refreshLogsHistory = async (page: Page, cursor = 400): Promise<void> => {
       state: 'closed', prev_state: 'active', cursor: nextCursor },
   }), cursor);
   await page.waitForFunction(previous => window.__app.rpcCallCount('execution.list') > previous, before);
-  await expect(page.locator(`[${LOGS_ACTION}="apply-filters"]`)).not.toHaveAttribute('aria-busy');
+  await expect(page.locator('[data-recued-logs-route]')).toHaveAttribute('data-recued-logs-history-loading', 'false');
 };
 
 declare global {
@@ -154,7 +249,8 @@ for (const mode of ['missing', 'denied', 'throwing-getter', 'throwing-write-gett
     await page.goto(`${HARNESS_URL}?journey=verification&logs_summary=1#logs/run-verify`);
     await page.waitForFunction(() => window.__app?.ready === true);
     const summary = page.locator(RUN_SUMMARY);
-    await summary.getByRole('button', { name: 'Copy run summary', exact: true }).click();
+    await summary.getByRole('button', { name: 'Copy run summary', exact: true }).focus();
+    await page.keyboard.press('Enter');
     const field = summary.getByRole('textbox', { name: 'Run summary text' });
     await expect(field).toBeVisible(); await expect(field).toBeFocused();
     expect(await field.evaluate((node: HTMLTextAreaElement) => node.selectionStart === 0 && node.selectionEnd === node.value.length)).toBe(true);
@@ -227,6 +323,7 @@ for (const success of [true, false]) {
     const summary = page.locator(RUN_SUMMARY);
     const copy = summary.getByRole('button', { name: 'Copy run summary', exact: true });
     await copy.click(); await expect(copy).toHaveAttribute('aria-busy', 'true');
+    await page.getByRole('link', { name: 'Back to history' }).click();
     await page.locator(`[${LOGS_ACTION}="load-more"]`).click();
     await page.locator(`[${LOGS_ROW}="run-verify-older"] [${LOGS_ACTION}="open-detail"]`).click();
     await expect(summary).toHaveAttribute('data-recued-logs-run-summary', 'run-verify-older');
@@ -246,12 +343,12 @@ test('Logs does not move a newer focus when a delayed clipboard denial arrives',
   await page.waitForFunction(() => window.__app?.ready === true);
   const summary = page.locator(RUN_SUMMARY);
   await summary.getByRole('button', { name: 'Copy run summary', exact: true }).click();
-  const status = page.locator('[data-recued-logs-filter="status"]');
-  await status.focus();
+  const back = page.getByRole('link', { name: 'Back to history' });
+  await back.focus();
   await page.evaluate(() => window.__logsSummaryCopy?.reject?.());
   await expect(summary.locator(RUN_SUMMARY_STATUS)).toContainText('Recued could not copy it.');
   await expect(summary.getByRole('textbox', { name: 'Run summary text' })).toBeVisible();
-  await expect(status).toBeFocused();
+  await expect(back).toBeFocused();
 });
 
 test('Logs ignores a pending summary copy after leaving the route', async ({ page }) => {
@@ -322,7 +419,7 @@ test('Logs contains long run identifiers in mobile history and detail', async ({
 
   await row.locator(`[${LOGS_ACTION}="open-detail"]`).click();
   const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
-  await expect(heading).toHaveText(longRecipeId);
+  await expect(heading).toHaveText(longName);
   const detail = page.locator('[data-recued-logs-detail="run-verify"]');
   const detailGeometry = await detail.evaluate((node) => {
     const route = node.closest<HTMLElement>('[data-recued-logs-route]');
@@ -479,7 +576,7 @@ test('Logs moves focus into an opened run detail and preserves it through a feed
 
   const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
   await expect(page).toHaveURL(/#logs\/run-verify$/);
-  await expect(heading).toHaveText('calendar/schedule-review');
+  await expect(heading).toHaveText('Schedule customer review');
   await expect(heading).toHaveAttribute('tabindex', '-1');
   await expect(heading).toBeFocused();
 
@@ -517,7 +614,7 @@ test('Logs renders bare History after opening an in-page run detail', async ({ p
   });
   await openRun.click();
   const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
-  await expect(heading).toHaveText('calendar/schedule-review');
+  await expect(heading).toHaveText('Schedule customer review');
   await expect(page).toHaveURL(/#logs\/run-verify$/);
 
   // The detail was selected through History (which emits no hashchange). A
@@ -542,18 +639,11 @@ test('Logs keeps failed run-detail recovery keyboard-owned and single-flight', a
   await opener.focus();
   await page.keyboard.press('Enter');
 
-  await expect(opener).toHaveAccessibleName(
-    'Opening run detail for Schedule customer review (run-verify)',
-  );
-  await expect(opener).toHaveAttribute('aria-disabled', 'true');
-  await expect(opener).toHaveAttribute('aria-busy', 'true');
-  await expect(opener).not.toHaveAttribute('disabled');
-  await expect(opener).toBeFocused();
-  await opener.dispatchEvent('click');
-  await opener.dispatchEvent('click');
-  await expect.poll(() => page.evaluate(
-    () => window.__app.rpcCallCount('execution.get'),
-  )).toBe(1);
+  await expect(opener).toHaveCount(0);
+  const loadingHeading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
+  await expect(loadingHeading).toBeFocused();
+  await expect(page.locator('[data-recued-logs-detail]')).toHaveAttribute('aria-busy', 'true');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execution.get'))).toBe(1);
 
   await expect(page.getByRole('alert')).toHaveText('Run detail unavailable.');
   const retry = page.locator(`[${LOGS_ACTION}="retry-detail"]`);
@@ -573,7 +663,7 @@ test('Logs keeps failed run-detail recovery keyboard-owned and single-flight', a
   )).toBe(2);
 
   const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
-  await expect(heading).toHaveText('calendar/schedule-review');
+  await expect(heading).toHaveText('Schedule customer review');
   await expect(heading).toBeFocused();
   await expect(retry).toHaveCount(0);
 });
@@ -646,24 +736,20 @@ test('Logs keeps a newer filter draft and its focus when a clear request complet
   await expect(status).toHaveValue('failed');
 });
 
-test('Logs keeps an exact run open when its filtered history is cleared', async ({ page }) => {
+test('Logs keeps history controls out of a directly addressed run workspace', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?journey=verification&logs_filters=1#logs/run-verify`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  const detail = page.locator('[data-recued-logs-detail="run-verify"]');
-  await expect(detail).toBeVisible();
-  const getCalls = await page.evaluate(() => window.__app.rpcCallCount('execution.get'));
-  await page.locator('[data-recued-logs-filter="status"]').selectOption('failed');
-  await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
-  await expect(page.getByText('No runs match these filters.', { exact: true })).toBeVisible();
-  await page.locator(`[${LOGS_ACTION}="clear-filters"]`).click();
+  await expect(page.locator('[data-recued-logs-detail="run-verify"]')).toBeVisible();
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(0);
+  await expect(page.locator('[data-recued-logs-filter]')).toHaveCount(0);
+  await page.getByRole('link', { name: 'Back to history' }).click();
+  await expect(page).toHaveURL(/#logs$/);
   await expect(page.locator(`[${LOGS_ROW}="run-verify"]`)).toBeVisible();
-  await expect(detail).toBeVisible();
-  await expect(page).toHaveURL(/#logs\/run-verify$/);
-  expect(await page.evaluate(() => window.__app.rpcCallCount('execution.get'))).toBe(getCalls);
+  await expect(page.locator('[data-recued-logs-detail]')).toHaveCount(0);
 });
 
 for (const entry of ['history', 'deep-link'] as const) {
-  test(`Logs keeps Clear filters focused when a pending ${entry} run detail arrives`, async ({ page }) => {
+  test(`Logs ignores a pending ${entry} detail after returning to history`, async ({ page }) => {
     const hash = entry === 'history' ? '#logs' : '#logs/run-verify';
     await page.goto(`${HARNESS_URL}?journey=verification&logs_filters=1&hold_rpc=execution.get${hash}`);
     await page.waitForFunction(() => window.__app?.ready === true);
@@ -671,14 +757,13 @@ for (const entry of ['history', 'deep-link'] as const) {
       await page.locator(`[${LOGS_ROW}="run-verify"] [${LOGS_ACTION}="open-detail"]`).click();
     }
     await expect(page.locator('[data-recued-logs-detail]')).toContainText('Loading run-verify');
+    await page.getByRole('link', { name: 'Back to history' }).click();
     const clear = page.locator(`[${LOGS_ACTION}="clear-filters"]`);
-    await expect(clear).not.toHaveAttribute('aria-busy');
-    await clear.click();
-    await expect(clear).not.toHaveAttribute('aria-busy');
-    await expect(clear).toBeFocused();
+    await clear.focus();
     expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.get'))).toBe(1);
-    await expect(page.locator('[data-recued-logs-detail="run-verify"]')).toBeVisible();
+    await expect(page.locator('[data-recued-logs-detail]')).toHaveCount(0);
     await expect(clear).toBeFocused();
+    await expect(page).toHaveURL(/#logs$/);
   });
 }
 
@@ -803,10 +888,10 @@ test('Logs gives history, detail, and live controls full mobile targets', async 
     { display: 'flex', columnGap: '8px' },
     { display: 'flex', columnGap: '8px' },
   ]);
-  const detail = page.getByRole('complementary', {
+  const detail = page.getByRole('region', {
     name: 'Run detail',
   });
-  await expect(detail).toBeVisible();
+  await expect(detail).toHaveCount(0);
   await expectFullTargets();
 
   await page.locator(
@@ -956,6 +1041,7 @@ test('Logs keeps a kill action focused until its run retires', async ({ page }) 
       return false;
     };
   });
+  await page.evaluate(() => window.__app.holdRpcResponses?.('execution.kill'));
   await firstKill.focus();
   await page.keyboard.press('Enter');
 
@@ -982,6 +1068,7 @@ test('Logs keeps a kill action focused until its run retires', async ({ page }) 
     () => window.__app.rpcCallCount('execution.kill'),
   )).toBe(1);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.kill'))).toBe(1);
   await expect(firstRow).toHaveCount(0);
   await expect(nextKill).toBeFocused();
   await page.evaluate(() => window.__app.setHash('#data'));
@@ -1042,6 +1129,7 @@ test('Logs keeps a pass revocation focused until its row retires', async ({ page
     + `[${LOGS_ACTION}="revoke-grant"]`,
   );
   await expect(firstRevoke).toBeVisible();
+  await page.evaluate(() => window.__app.holdRpcResponses?.('collection.contract.session_grant.revoke'));
   await firstRevoke.focus();
   await page.keyboard.press('Enter');
 
@@ -1063,6 +1151,7 @@ test('Logs keeps a pass revocation focused until its row retires', async ({ page
     ),
   )).toBe(1);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('collection.contract.session_grant.revoke'))).toBe(1);
   await expect(firstRow).toHaveCount(0);
   await expect(nextRevoke).toBeFocused();
 });
@@ -1083,6 +1172,8 @@ test('Logs keeps manual refreshes focused, visible, and single-flight', async ({
   )).toBeVisible();
 
   const activeRefresh = page.locator(`[${LOGS_ACTION}="refresh-active"]`);
+  await expect(activeRefresh).not.toHaveAttribute('aria-busy');
+  await page.evaluate(() => window.__app.holdRpcResponses?.('execution.active'));
   const activeBefore = await page.evaluate(() =>
     window.__app.rpcCallCount('execution.active'));
   await activeRefresh.focus();
@@ -1099,10 +1190,13 @@ test('Logs keeps manual refreshes focused, visible, and single-flight', async ({
   });
   await expect.poll(() => page.evaluate(() =>
     window.__app.rpcCallCount('execution.active'))).toBe(activeBefore + 1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.active'))).toBe(1);
   await expect(activeRefresh).toHaveText('Refresh');
   await expect(activeRefresh).toBeFocused();
 
   const passesRefresh = page.locator(`[${LOGS_ACTION}="refresh-passes"]`);
+  await expect(passesRefresh).not.toHaveAttribute('aria-busy');
+  await page.evaluate(() => window.__app.holdRpcResponses?.('collection.contract.session_grant.list'));
   const passesBefore = await page.evaluate(() =>
     window.__app.rpcCallCount('collection.contract.session_grant.list'));
   await passesRefresh.focus();
@@ -1123,6 +1217,341 @@ test('Logs keeps manual refreshes focused, visible, and single-flight', async ({
     window.__app.rpcCallCount(
       'collection.contract.session_grant.list',
     ))).toBe(passesBefore + 1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('collection.contract.session_grant.list'))).toBe(1);
   await expect(passesRefresh).toHaveText('Refresh');
   await expect(passesRefresh).toBeFocused();
 });
+
+
+for (const navigation of ['workspace Back', 'browser Back'] as const) {
+  test(`Run workspace restores filters, loaded pages, focus and scroll with ${navigation}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.goto(`${HARNESS_URL}?journey=verification&logs=paged&logs_filters=1#logs`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const status = page.locator('[data-recued-logs-filter="status"]');
+    await page.locator('[data-recued-logs-filter="origin"]').selectOption('user_self');
+    await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
+    await expect(page.locator(`[${LOGS_ACTION}="apply-filters"]`)).not.toHaveAttribute('aria-busy');
+    await page.locator(`[${LOGS_ACTION}="load-more"]`).click();
+    const opener = page.locator(`[${LOGS_ROW}="run-verify-older"] [${LOGS_ACTION}="open-detail"]`);
+    await expect(opener).toBeFocused();
+    // Keep a draft distinct from the submitted query and record a real scroll.
+    await status.selectOption('failed');
+    await opener.focus();
+    const scroll = await page.locator('[data-recued-webclient-content]').evaluate(node => {
+      node.scrollTop = node.scrollHeight;
+      return node.scrollTop;
+    });
+    expect(scroll).toBeGreaterThan(0);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-recued-logs-detail="run-verify-older"]')).toBeVisible();
+    await expect(status).toHaveCount(0);
+    if (navigation === 'browser Back') await page.goBack();
+    else await page.getByRole('link', { name: 'Back to history' }).click();
+    await expect(page).toHaveURL(/#logs$/);
+    await expect(status).toHaveValue('failed');
+    await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(2);
+    await expect(opener).toBeFocused();
+    await expect(page.locator(`[${LOGS_ACTION}="load-more"]`)).toHaveCount(0);
+    await expect.poll(() => page.locator('[data-recued-webclient-content]').evaluate(node => node.scrollTop)).toBe(scroll);
+    await refreshLogsHistory(page);
+    await expect(status).toHaveValue('failed');
+    await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(2);
+    await page.goForward();
+    await expect(page.locator('[data-recued-logs-detail="run-verify-older"]')).toBeVisible();
+    await page.getByRole('link', { name: 'Back to history' }).click();
+    await expect(status).toHaveValue('failed');
+    await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(2);
+    await expect(opener).toBeFocused();
+  });
+}
+
+for (const width of [390, 768, 1280]) {
+  for (const theme of ['light', 'dark']) {
+    test(`Run workspace is readable at ${width}px in ${theme}`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${HARNESS_URL}?settle_reads=1&journey=verification&logs_summary=1#logs/run-verify`);
+      await page.waitForFunction(() => window.__app?.ready === true);
+      await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+      const detail = page.locator('[data-recued-logs-detail="run-verify"]');
+      await expect(detail).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Approvals and decisions' })).toBeVisible();
+      await expect(detail.locator('.logs-run-context')).toContainText('Trigger source');
+      await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(0);
+      const technical = detail.locator('[data-recued-logs-technical]');
+      await expect(technical).not.toHaveAttribute('open');
+      await expect(page.getByRole('link', { name: 'Run link', exact: true })).not.toBeVisible();
+      await expect(detail.locator('[data-recued-logs-yield]')).not.toContainText('finished without an error');
+      const actionFont = await detail.locator('.logs-affected-action').evaluate(node => ({
+        action: getComputedStyle(node).fontFamily,
+        context: getComputedStyle(node.closest('[data-recued-logs-detail]')!).fontFamily,
+      }));
+      expect(actionFont.action).toBe(actionFont.context);
+      const disclosure = technical.locator('summary');
+      await disclosure.focus();
+      await page.keyboard.press('Enter');
+      await expect(technical).toHaveAttribute('open', '');
+      await refreshLogsHistory(page);
+      await expect(technical).toHaveAttribute('open', '');
+      await expect(disclosure).toBeFocused();
+      const geometry = await detail.evaluate(node => ({
+        width: node.getBoundingClientRect().width,
+        routeWidth: node.parentElement!.getBoundingClientRect().width,
+        textWidth: node.querySelector('.logs-affected-title')?.getBoundingClientRect().width ?? 0,
+        overflow: document.documentElement.scrollWidth > innerWidth,
+      }));
+      expect(geometry.width).toBeGreaterThan(geometry.routeWidth * 0.85);
+      expect(geometry.textWidth).toBeGreaterThan(width === 390 ? 200 : 260);
+      expect(geometry.overflow).toBe(false);
+      await disclosure.click();
+      await page.locator('[data-recued-webclient-content]').evaluate(node => { node.scrollTop = 0; });
+      await page.screenshot({ path: test.info().outputPath(`run-workspace-${width}-${theme}.png`) });
+    });
+  }
+}
+
+test('Run workspace explains a missing run and retains a way back', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?journey=verification#logs/no-such-run`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.getByRole('alert')).toContainText('Run not found.');
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeFocused();
+  await expect(page.locator(RUN_SUMMARY)).toHaveCount(0);
+  await page.getByRole('link', { name: 'Back to history' }).click();
+  await expect(page.locator(`[${LOGS_ROW}="run-verify"]`)).toBeVisible();
+});
+
+
+test('Run workspace returns to the originating recipe-scoped history', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?journey=verification&logs_filters=1#logs/recipe/calendar%2Fschedule-review`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const opener = page.locator(`[${LOGS_ROW}="run-verify"] [${LOGS_ACTION}="open-detail"]`);
+  await opener.click();
+  const back = page.getByRole('link', { name: 'Back to history' });
+  await expect(back).toHaveAttribute('href', '#logs/recipe/calendar%2Fschedule-review');
+  await back.click();
+  await expect(page).toHaveURL(/#logs\/recipe\/calendar%2Fschedule-review$/);
+  await expect(opener).toBeFocused();
+  await expect(page.getByRole('combobox', { name: 'Show only one Recipe' })).not.toHaveValue('');
+});
+
+
+for (const width of [390, 1280]) {
+  test(`Run workspace follows the native keyboard order at ${width}px`, async ({ page, browserName }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?settle_reads=1&journey=verification#logs/run-verify`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.locator('[data-recued-logs-outcome]')).toBeFocused();
+    const back = page.getByRole('link', { name: 'Back to history' });
+    await back.focus();
+    const tab = browserName === 'webkit' ? 'Alt+Tab' : 'Tab';
+    await page.keyboard.press(tab);
+    const verify = page.locator('[data-recued-logs-affected-items]').getByRole('link', { name: 'Check before running it again' });
+    await expect(verify).toBeFocused();
+    let reachedTechnical = false;
+    let reachedCopy = false;
+    for (let count = 0; count < 16; count += 1) {
+      await page.keyboard.press(tab);
+      const focused = await page.evaluate(() => ({
+        technical: document.activeElement?.hasAttribute('data-recued-logs-technical-toggle') === true,
+        copy: document.activeElement?.getAttribute('data-recued-logs-action') === 'copy-run-summary',
+      }));
+      reachedCopy ||= focused.copy;
+      if (focused.technical) { reachedTechnical = true; break; }
+    }
+    expect(reachedCopy).toBe(true);
+    expect(reachedTechnical).toBe(true);
+    const technical = page.locator('[data-recued-logs-technical]');
+    await page.keyboard.press('Enter');
+    await expect(technical).toHaveAttribute('open', '');
+    await page.keyboard.press(browserName === 'webkit' ? 'Alt+Shift+Tab' : 'Shift+Tab');
+    await expect(page.getByText('View run summary', { exact: true })).toBeFocused();
+  });
+}
+
+
+for (const width of [390, 768, 1280]) {
+  for (const theme of ['light', 'dark']) {
+    test(`Run management presents distinct outcomes and active groups at ${width}px in ${theme}`, async ({ page }) => {
+      await installManagementFixture(page);
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${HARNESS_URL}?settle_reads=1&journey=verification&logs_passes=active#logs`);
+      await page.waitForFunction(() => window.__app?.ready === true);
+      await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+      const navigation = page.getByRole('navigation', { name: 'Log views' });
+      await expect(navigation.getByRole('link', { name: 'History', exact: true })).toHaveAttribute('aria-current', 'page');
+      const more = page.locator(`[${LOGS_ACTION}="load-more"]`);
+      if (width === 390) {
+        expect((await page.getByRole('button', { name: 'Refresh history', exact: true }).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        expect((await more.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      }
+      await more.click(); await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(8);
+      await more.click(); await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(12);
+      const expected = { partial: 'Partial result', refused: 'All items failed', stopped: 'Stopped early', approval: 'Awaiting approval', peer: 'Waiting on a peer', unknown: 'Needs checking', failed: 'Failed', cancelled: 'Cancelled', killed: 'Stopped by owner' };
+      for (const [id, label] of Object.entries(expected)) {
+        await expect(page.locator(`[${LOGS_ROW}="history-${id}"] .logs-cell-status`)).toContainText(label);
+      }
+      await expect(page.locator(`[${LOGS_ROW}="history-legacy"]`)).toContainText('Item results were not recorded.');
+      await expect(page.locator(`[${LOGS_ROW}="history-zero"]`)).not.toContainText('Item results were not recorded.');
+      await expect(page.locator('.logs-history-count')).toHaveText('12 loaded runs · newest first');
+      expect(await page.evaluate(() => window.__app.rpcCallCount('execution.get'))).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      if (width === 1280) {
+        const columns = await page.locator('.logs-table').evaluate(table => {
+          const headings = Array.from(table.querySelectorAll('thead th'));
+          const cells = Array.from(table.querySelectorAll('tbody tr:first-child td'));
+          return cells.map((cell, index) => ({ display: getComputedStyle(cell).display,
+            left: cell.getBoundingClientRect().left, headingLeft: headings[index]!.getBoundingClientRect().left }));
+        });
+        expect(columns).toHaveLength(7);
+        for (const column of columns) {
+          expect(column.display).toBe('table-cell');
+          expect(Math.abs(column.left - column.headingLeft)).toBeLessThan(1);
+        }
+      }
+      await page.locator('[data-recued-webclient-content]').evaluate(node => { node.scrollTop = 0; });
+      await page.screenshot({ path: test.info().outputPath(`history-${width}-${theme}.png`) });
+      await navigation.getByRole('link', { name: 'Active', exact: true }).click();
+      await expect(navigation.getByRole('link', { name: 'Active', exact: true })).toHaveAttribute('aria-current', 'page');
+      await expect(page.locator('[data-recued-logs-work-group="in-progress"] [data-recued-logs-active-row]')).toHaveCount(2);
+      const queued = page.locator('[data-recued-logs-work-group="queued"]');
+      await expect(queued.locator('[data-recued-logs-active-row]')).toHaveCount(1);
+      await expect(queued.getByRole('button', { name: /Promote/ })).toBeVisible();
+      await expect(queued.getByRole('button', { name: /Cancel/ })).toBeVisible();
+      await expect(queued.getByRole('button', { name: /Kill/ })).toHaveCount(0);
+      const refreshStyle = await page.locator('[data-recued-logs-action="refresh-active"]').evaluate(node => ({
+        background: getComputedStyle(node).backgroundColor,
+        surface: getComputedStyle(node.closest('[data-recued-logs-active]')!).backgroundColor,
+      }));
+      expect(refreshStyle.background).toBe(refreshStyle.surface);
+      if (width === 390) {
+        const readable = await queued.locator('[data-recued-logs-active-row]').evaluate(row => ({
+          copy: row.firstElementChild!.getBoundingClientRect().width,
+          row: row.getBoundingClientRect().width,
+        }));
+        expect(readable.copy).toBeGreaterThan(readable.row * 0.8);
+      }
+      await expect(page.locator('[data-recued-logs-active-row="management-detached"]')).toContainText('No recent progress');
+      await expect(page.locator('[data-recued-logs-passes]')).toContainText('Revoking a pass changes future authorization.');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: test.info().outputPath(`active-${width}-${theme}.png`) });
+    });
+  }
+}
+
+for (const scope of ['#logs', '#logs/recipe/fixture%2Frun-management']) {
+  test(`Run management returns to the same draft and loaded history from Active via ${scope}`, async ({ page }) => {
+    await installManagementFixture(page);
+    await page.goto(`${HARNESS_URL}?journey=verification${scope}`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const origin = page.locator('[data-recued-logs-filter="origin"]');
+    const status = page.locator('[data-recued-logs-filter="status"]');
+    await origin.selectOption('user_self');
+    await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
+    await expect(page.locator(`[${LOGS_ACTION}="apply-filters"]`)).not.toHaveAttribute('aria-busy');
+    await page.locator(`[${LOGS_ACTION}="load-more"]`).click();
+    await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(8);
+    await status.selectOption('failed');
+    await expect(page.locator('[data-recued-logs-filter-draft]')).toBeVisible();
+    const nav = page.getByRole('navigation', { name: 'Log views' });
+    await nav.getByRole('link', { name: 'Active', exact: true }).click();
+    await expect(nav.getByRole('link', { name: 'History', exact: true })).toHaveAttribute('href', scope);
+    await nav.getByRole('link', { name: 'History', exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(scope.replaceAll('/', '\\/') + '$'));
+    await expect(origin).toHaveValue('user_self'); await expect(status).toHaveValue('failed');
+    await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(8);
+    await expect(page.locator('[data-recued-logs-filter-draft]')).toBeVisible();
+    const queries = await page.evaluate(() => window.__logsManagementQueries!);
+    expect(queries.at(-1)?.origin).toEqual(['user_self']);
+    expect(queries.at(-1)?.status).toBeUndefined();
+  });
+}
+
+test('Run management refresh preserves the applied query, pages and newer draft', async ({ page }) => {
+  await installManagementFixture(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${LOGS_ACTION}="load-more"]`).click();
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(8);
+  const status = page.locator('[data-recued-logs-filter="status"]');
+  await status.selectOption('failed');
+  const refresh = page.locator(`[${LOGS_ACTION}="refresh-history"]`).first();
+  const before = await page.evaluate(() => window.__app.rpcCallCount('execution.list'));
+  await page.evaluate(() => window.__app.holdRpcResponses?.('execution.list'));
+  await refresh.focus(); await page.keyboard.press('Enter');
+  await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execution.list'))).toBe(before + 1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.list'))).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('execution.list'))).toBe(before + 2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.list'))).toBe(1);
+  await expect(page.getByRole('button', { name: 'Refresh history', exact: true })).toBeFocused();
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(8);
+  await expect(status).toHaveValue('failed');
+  expect(await page.evaluate(() => window.__logsManagementQueries!.slice(-2).every(query => query.status === undefined))).toBe(true);
+});
+
+test('Run management coalesces an event behind an explicit filter submission', async ({ page }) => {
+  await installManagementFixture(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-logs-filter="status"]').selectOption('failed');
+  const before = await page.evaluate(() => window.__app.rpcCallCount('execution.list'));
+  await page.evaluate(() => window.__app.holdRpcResponses?.('execution.list'));
+  await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
+  await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
+    kind: 'session_lifecycle', session_id: 'fixture-session', state: 'closed', prev_state: 'active', cursor: 999,
+  } }));
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execution.list'))).toBe(before + 1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.list'))).toBe(1);
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(1);
+  await expect(page.locator(`[${LOGS_ROW}="history-failed"]`)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('execution.list'))).toBe(before + 2);
+  expect(await page.evaluate(() => window.__logsManagementQueries!.slice(-2).map(query => query.status))).toEqual([['failed'], ['failed']]);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.list'))).toBe(1);
+  await expect(page.locator('[data-recued-logs-route]')).toHaveAttribute('data-recued-logs-history-loading', 'false');
+  await expect(page.locator('[data-recued-logs-filter-draft]')).not.toBeVisible();
+});
+
+test('Run management retains loaded history and recovers a failed refresh', async ({ page }) => {
+  await installManagementFixture(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => { window.__logsManagementFailList = true; });
+  await page.getByRole('button', { name: 'Refresh history', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('History could not be refreshed.');
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(4);
+  await expect(page.getByText('Showing the last loaded runs.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry history', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(4);
+});
+
+
+test('Run management retains item outcomes when opening the full review', async ({ page }) => {
+  await installManagementFixture(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  for (const [id, label] of [['partial', 'Partial result'], ['refused', 'All items failed'], ['stopped', 'Stopped early']]) {
+    await page.locator(`[${LOGS_ROW}="history-${id}"] [${LOGS_ACTION}="open-detail"]`).click();
+    const outcome = page.getByRole('region', { name: 'Run outcome' });
+    await expect(outcome.getByRole('heading', { name: label, exact: true })).toBeVisible();
+    await expect(outcome).not.toContainText('and it worked');
+    await page.getByRole('link', { name: 'Back to history' }).click();
+    await expect(page.locator(`[${LOGS_ROW}="history-${id}"] .logs-cell-status`)).toContainText(label);
+  }
+});
+
+for (const queueId of [null, '']) {
+  test(`Run management keeps a queued call read-only without its queue identity (${queueId === null ? 'missing' : 'empty'})`, async ({ page }) => {
+    await installManagementFixture(page, { queueId });
+    await page.goto(`${HARNESS_URL}?journey=verification#logs/active`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const queued = page.locator('[data-recued-logs-work-group="queued"]');
+    await expect(queued.locator(`[${LOGS_ACTIVE_ROW}]`)).toHaveCount(1);
+    await expect(queued.getByRole('button')).toHaveCount(0);
+    await expect(page.locator(`[${LOGS_ACTIVE_ROW}="management-running"]`).getByRole('button', { name: /Kill/ })).toBeVisible();
+    for (const method of ['execution.kill', 'execution.cancel', 'execution.promote']) {
+      expect(await page.evaluate(name => window.__app.rpcCallCount(name), method)).toBe(0);
+    }
+  });
+}

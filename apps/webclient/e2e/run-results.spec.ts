@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import type { RunAnchorStatus, RunDetail, ServerExecuteResponse } from '@recued/contracts';
 import {
   DATA_DETAIL_HEADING, HARNESS_URL, SHARED_PROVENANCE, SHARED_REFERENCE_ID,
   installFullAppHooks,
@@ -650,20 +651,10 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
   await expect(outcome).toBeVisible();
   await expect(outcome).toContainText('Somebody needs to check what happened');
   await expect(outcome).toBeFocused();
-  const openRun = page.getByRole('button', {
-    name: 'Open run detail for Schedule customer review (run-verify)',
-    exact: true,
-  });
-  const openRunBox = await openRun.boundingBox();
-  expect(openRunBox?.width).toBeGreaterThanOrEqual(32);
-  expect(openRunBox?.height).toBeGreaterThanOrEqual(32);
-  const detailLinkHeights = await page
-    .locator('.logs-row-links a, .logs-detail-meta a')
-    .evaluateAll((links) =>
-      links.map((link) => link.getBoundingClientRect().height)
-    );
-  expect(detailLinkHeights.length).toBeGreaterThan(0);
-  expect(Math.min(...detailLinkHeights)).toBeGreaterThanOrEqual(24);
+  const back = page.getByRole('link', { name: 'Back to history' });
+  const backBox = await back.boundingBox();
+  expect(backBox?.height).toBeGreaterThanOrEqual(44);
+  await expect(page.locator('[data-recued-logs-row]')).toHaveCount(0);
 
   const affected = page.locator(`[${LOGS_AFFECTED_ITEMS}]`);
   const verify = affected.getByRole('link', {
@@ -781,4 +772,184 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
   expect((await runOutcome.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await runOutcome.focus();
   await expect(runOutcome).toBeFocused();
+});
+
+type RunHandoffSurface = 'recipes' | 'packs' | 'approvals';
+const HANDOFF_PROPOSAL = 'pap_11111111-1111-4111-8111-111111111111';
+const handoffSource = (surface: RunHandoffSurface) => surface === 'recipes' ? '#recipes/autorun-live-1'
+  : surface === 'packs' ? '#packs/installed-mail' : `#approvals/preapproval/${HANDOFF_PROPOSAL}`;
+const handoffBackLabel = (surface: RunHandoffSurface) => surface === 'recipes' ? 'Back to Recipe'
+  : surface === 'packs' ? 'Back to Pack' : 'Back to approval review';
+
+/** Page-local, reloadable recorded anchors. The normal transport and harness
+ * stay unchanged; navigation must never create a new execution or decision. */
+const installRunHandoffFixture = async (page: Page, status: RunAnchorStatus = 'succeeded') => {
+  await page.addInitScript(({ status }) => {
+    const now = 1_700_000_000_000;
+    const run = (runId: string): RunDetail => ({
+      audit: { run_id: runId, recipe_id: 'calendar/schedule-review', recipe_hash: 'handoff-hash',
+        started_at: now - 4_000, finished_at: now - 2_000, duration_ms: 2_000, status,
+        origin: { actor: 'user_self', label: 'user_self', channel: 'user' },
+        trigger_source: 'manual', instance_id: 'handoff-server', errors: [],
+        run_yield: { steps_run: 1, steps_skipped: 0, items_total: 1, items_failed: 0 } },
+      approvals: { checkpoints: [], outcome: 'allow' }, errors: [],
+      links: [{ entity_id: 'calendar:event-1', kind: 'execution.write', ts: now - 2_500 }],
+      gateway: { policy_result: 'allowed', per_call_trace: [] },
+    });
+    window.__connectionsFixture = async (method, raw) => {
+      const args = (raw ?? {}) as { recipe_id?: string; run_id?: string };
+      if (method === 'execute' && ['autorun-live-1', 'installed-mail-digest'].includes(args.recipe_id ?? '')) {
+        const result: ServerExecuteResponse = { run_id: 'run-handoff', recipe_id: args.recipe_id!, recipe_hash: 'handoff-hash',
+          success: true, output: { render: [], sidebar: [] }, steps: [], errors: [], duration_ms: 7 };
+        return { result };
+      }
+      if (method === 'execution.get') return args.run_id === 'run-handoff' || args.run_id === 'original-run'
+        ? { result: { run: run(args.run_id) } }
+        : { error: { code: 'not_found', message: 'This recorded run was not found.' } };
+      return undefined;
+    };
+  }, { status });
+};
+
+const assertHandoffDidNotDecide = async (page: Page) => {
+  for (const method of ['approval.resolve', 'preapproval.decide', 'preapproval.continue', 'local_undo.decide', 'chat.plan.approve', 'chat.send']) {
+    expect(await page.evaluate(name => window.__app.rpcCallCount(name), method)).toBe(0);
+  }
+};
+
+for (const surface of ['recipes', 'packs', 'approvals'] as const) {
+  for (const width of [390, 768, 1280]) {
+    for (const theme of ['light', 'dark'] as const) {
+      test(`Run handoff returns from item checks to ${surface} at ${width}px in ${theme}`, async ({ page }) => {
+        await installRunHandoffFixture(page, surface === 'approvals' ? 'in_doubt' : 'succeeded');
+        await page.setViewportSize({ width, height: 900 });
+        const query = surface === 'recipes' ? 'recipes=installed&recipe_default_run=1&recipe_result=copyable'
+          : surface === 'packs' ? 'packs=installed&recipe_result=copyable' : 'preapproval=continuation-uncertain';
+        await page.goto(`${HARNESS_URL}?journey=verification&${query}${handoffSource(surface)}`);
+        await page.waitForFunction(() => window.__app?.ready === true);
+        await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+        if (surface === 'recipes') {
+          await page.locator('[data-recued-recipes-action="run-defaults"]').click();
+        } else if (surface === 'packs') {
+          await page.locator('[data-recued-pack-app-operation="installed-mail-digest"]').click();
+          const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
+          await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+          await expect(dialog.getByRole('status')).toContainText('Run completed');
+          await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+        }
+        const entry = page.locator('[data-recued-run-review-link]').first();
+        await expect(entry).toHaveText('Review run');
+        const target = (await entry.getAttribute('href'))!;
+        const runId = surface === 'approvals' ? 'original-run' : 'run-handoff';
+        expect(target).toBe(`#logs/${runId}/return/${handoffSource(surface).slice(1)}`);
+        const executeCalls = await page.evaluate(() => window.__app.rpcCallCount('execute'));
+        await entry.focus(); await page.keyboard.press('Enter');
+        await expect(page.locator('[data-recued-logs-detail]')).toContainText(runId);
+        await expect(page.locator(`[${LOGS_OUTCOME}]`)).toBeFocused();
+        const back = page.getByRole('link', { name: handoffBackLabel(surface), exact: true });
+        await expect(back).toHaveAttribute('href', handoffSource(surface));
+        expect((await back.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        if (surface === 'approvals') {
+          await expect(page.locator(`[${LOGS_OUTCOME}]`)).toContainText('Somebody needs to check what happened');
+          await expect(page.getByRole('button', { name: /retry|continue/i })).toHaveCount(0);
+        }
+        await page.screenshot({ path: test.info().outputPath(`run-handoff-${surface}-${width}-${theme}.png`) });
+        await page.reload();
+        await expect(back).toHaveAttribute('href', handoffSource(surface));
+        await page.locator(`[${LOGS_AFFECTED_ITEMS}] a`).first().click();
+        await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toHaveText('Customer review');
+        await page.reload();
+        const returnToRun = page.getByRole('link', { name: 'Back to run outcome', exact: true });
+        await expect(returnToRun).toHaveAttribute('href', target);
+        await returnToRun.focus(); await page.keyboard.press('Enter');
+        await expect(back).toHaveAttribute('href', handoffSource(surface));
+        expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(0);
+        await assertHandoffDidNotDecide(page);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await back.focus(); await page.keyboard.press('Enter');
+        await expect.poll(() => new URL(page.url()).hash).toBe(handoffSource(surface));
+        const workspace = page.locator(surface === 'recipes' ? '[data-recued-recipes-route]'
+          : surface === 'packs' ? '[data-recued-packs-route]' : '[data-recued-preapproval-route]');
+        await expect.poll(() => workspace.evaluate(root => root.contains(document.activeElement))).toBe(true);
+        await assertHandoffDidNotDecide(page);
+        expect(executeCalls).toBeGreaterThanOrEqual(surface === 'approvals' ? 0 : 1);
+      });
+    }
+  }
+}
+
+test('Run handoff keeps a missing record addressable and retries only its read', async ({ page }) => {
+  await installRunHandoffFixture(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs/run-missing/return/packs/installed-mail`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.getByRole('link', { name: 'Back to Pack', exact: true })).toHaveAttribute('href', '#packs/installed-mail');
+  const before = await page.evaluate(() => window.__app.rpcCallCount('execution.get'));
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('execution.get'))).toBe(before + 1);
+  await expect(page.locator('[data-local-update-undo]')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(0);
+  await assertHandoffDidNotDecide(page);
+});
+
+test('Run handoff from Chat keeps the exact action and uses the shared review label', async ({ page }) => {
+  await installRunHandoffFixture(page);
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto(`${HARNESS_URL}?chat=session&local_mutation_receipt=live&journey=verification#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const card = page.locator('[data-recued-chat-route-plan-card][data-plan-id="plan_local_confirmed"]');
+  await expect(card).toBeVisible();
+  await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
+    kind: 'chat.tool_call_completed', session_id: 'chat_1', turn_id: 'execution_local', tool_name: 'calendar.update',
+    plan_id: 'plan_local_confirmed', tier: 1, status: 'ok', run_id: 'run-handoff', cursor: 100,
+    plan_execution: { status: 'completed', turn_id: 'execution_local', run_id: 'run-handoff' },
+  } }));
+  const link = card.getByRole('link', { name: 'Review this run in Logs', exact: true });
+  await expect(link).toHaveText('Review run');
+  await link.focus(); await page.keyboard.press('Enter');
+  await expect(page.locator('[data-recued-logs-detail]')).toContainText('run-handoff');
+  const back = page.getByRole('link', { name: 'Back to the originating Chat action', exact: true });
+  await expect(back).toHaveAttribute('href', '#chat/session/chat_1/plan/plan_local_confirmed/answer/message_local_confirmed');
+  await back.click(); await expect(card).toBeVisible();
+  await assertHandoffDidNotDecide(page);
+});
+
+test('Run handoff reuses recorded undo review without approving a reverse change', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?journey=verification&local_mutation_receipt=1#logs/run-verify/return/recipes/autorun-live-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const host = page.locator('[data-local-update-undo]').first();
+  await host.getByRole('button', { name: 'Review undo', exact: true }).click();
+  await expect(host.getByRole('heading', { name: 'Review reverse changes' })).toBeFocused();
+  await expect(host.locator('[data-local-update-undo-preview]')).toContainText('First row');
+  await expect(page.getByRole('link', { name: 'Back to Recipe', exact: true })).toHaveAttribute('href', '#recipes/autorun-live-1');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.review'))).toBe(1);
+  await assertHandoffDidNotDecide(page);
+});
+
+test('Run handoff names the recipe-scoped fallback when an approval has no run anchor', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?attention=pending#approvals`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const card = page.locator('[data-recued-approvals-focus="approval-attention-1"]');
+  const link = card.getByRole('link', { name: /Recipe run history for/ });
+  await expect(link).toHaveAttribute('href', '#logs/recipe/crm%2Fupdate-contact');
+  await expect(card.locator('[data-recued-run-review-link]')).toHaveCount(0);
+  await assertHandoffDidNotDecide(page);
+});
+
+test('Run handoff keeps a newer keyboard focus choice while its source loads', async ({ page }) => {
+  await installRunHandoffFixture(page);
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1&journey=verification#logs/run-handoff/return/recipes/autorun-live-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-recued-logs-detail]')).toContainText('run-handoff');
+  const before = await page.evaluate(() => window.__app.rpcCallCount('recipe.list'));
+  await page.evaluate(() => window.__app.holdRpcResponses?.('recipe.list'));
+  const back = page.getByRole('link', { name: 'Back to Recipe', exact: true });
+  await back.focus(); await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('recipe.list'))).toBeGreaterThan(before);
+  await page.keyboard.press('Tab');
+  const chosen = await page.locator(':focus').elementHandle();
+  expect(chosen).not.toBeNull();
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('recipe.list'))).toBeGreaterThan(0);
+  await expect(page.locator('[data-recued-recipes-detail-heading]')).toBeVisible();
+  expect(await chosen!.evaluate(node => node === document.activeElement)).toBe(true);
+  await assertHandoffDidNotDecide(page);
 });

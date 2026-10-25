@@ -150,7 +150,7 @@ for (const journey of ['first pair', 'reconnect']) {
         };
       });
       await form.locator('#webclient-pair-code-input-recovery-0').fill(`${Array(23).fill('abandon').join(' ')} art`);
-      const submit = form.getByRole('button', { name: journey === 'first pair' ? 'Pair this device' : 'Reconnect this browser', exact: true });
+      const submit = form.getByRole('button', { name: journey === 'first pair' ? 'Pair this browser' : 'Reconnect this browser', exact: true });
       await submit.focus(); await page.keyboard.press('Enter');
       await page.waitForFunction(() => window.__app.activeRoute() === 'chat');
       await expect(form).toHaveCount(0);
@@ -881,9 +881,12 @@ test("insecure HTTP resumes pairing at the chosen page's own secure origin", asy
     fullPage: true,
   });
 
-  await pairForm.getByRole('button', {
+  const changeServer = pairForm.getByRole('button', {
     name: 'Use a different server address',
-  }).click();
+  });
+  // A finger's height on a phone. ⛔ It was 36px.
+  expect((await changeServer.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await changeServer.click();
   await expect(serverUrl).not.toHaveAttribute('readonly', '');
   await expect(serverUrl).toBeFocused();
   await expect(
@@ -939,6 +942,17 @@ test('pairing inputs stay full-sized across desktop and narrow screens', async (
     mobileGeometry.viewportWidth,
   );
   expect(mobileGeometry.minimumInputHeight).toBeGreaterThanOrEqual(44);
+
+  // The three ways in reached 44px only because their labels wrap. One that
+  // fits on a line is still a finger's height.
+  const modeHeights = await form.getByRole('button', {
+    name: /^(I have a recovery key|Make a new one|Restore a backup)$/,
+  }).evaluateAll((buttons) => buttons.map((button) => {
+    button.textContent = 'Key';
+    return button.getBoundingClientRect().height;
+  }));
+  expect(modeHeights).toHaveLength(3);
+  expect(Math.min(...modeHeights)).toBeGreaterThanOrEqual(44);
 });
 
 test('recovery generation keeps every action full-sized', async ({ page }) => {
@@ -1005,7 +1019,7 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
     recoveryKey,
   );
   await page.setViewportSize({ width: 280, height: 653 });
-  await pairForm.getByRole('button', { name: 'Pair this device' }).click();
+  await pairForm.getByRole('button', { name: 'Pair this browser' }).click();
 
   await page.waitForFunction(() => window.__app.activeRoute() === 'chat');
   await expect(page.locator(`[${SHELL_HOST}]`)).toBeVisible();
@@ -1212,7 +1226,7 @@ test('a sibling pair form adopts another tab success at its own exact route', as
       recoveryKey,
     );
     await sourceForm.getByRole('button', {
-      name: 'Pair this device',
+      name: 'Pair this browser',
     }).click();
 
     await Promise.all([
@@ -3804,7 +3818,7 @@ test('a rejected recovery key guides correction without losing the exact return 
     'This shareable origin omits any path or sign-in details.',
   );
   await expect(recoveryStop).toContainText(
-    'The rejected recovery words and pairing code were cleared from this form.',
+    'The rejected recovery key and pairing code were cleared from this form.',
   );
   await expect(recoveryStop).toContainText(
     'Your page and the Chat message you had not sent are still here.',
@@ -4522,7 +4536,8 @@ test('repeated reconnect startup failure becomes guided triage without risking t
     'aria-describedby',
     'webclient-startup-failure-diagnostic-privacy',
   );
-  await expect(diagnostic).toHaveCSS('outline-width', '3px');
+  await expect(diagnostic).toHaveCSS('outline-width', '2px');
+  await expect(diagnostic).toHaveCSS('outline-style', 'solid');
   await expect(diagnostic).toContainText('Nothing is sent automatically');
   await expect(diagnostic).toContainText(
     'The server host and any port are visible below',

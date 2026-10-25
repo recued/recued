@@ -1,3 +1,4 @@
+import { createBackupDisclosure, revealBackupControl } from './backup-disclosure.js';
 /** Settings ▸ Backup & Recovery — the unified Backup & Recovery surface
  *  (R26.4 Backup & Migration Unification, M1 slice 4).
  *
@@ -58,6 +59,7 @@ import { formatClientDateTime } from '@recued/ui-shared';
 import { buildPassportRecoverySummary, renderPassportRecoverySummary, PASSPORT_RECOVERY_SUMMARY_STYLES, type PassportRecoverySummary } from './passport-recovery-summary.js';
 import { mountArchiveImportReceipt, type ArchiveImportReceiptController } from './archive-import-receipt.js';
 import type { RestoreReadinessOptions } from './post-restore-readiness.js';
+import { BackupFormValidationError } from './backup-form-validation.js';
 import type {
   ArchiveImportRebind,
   ArchiveJobStatus,
@@ -130,6 +132,10 @@ export const ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR =
   'data-recued-archive-passport-download';
 export const ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR =
   'data-recued-archive-backup-download';
+export const ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR =
+  'data-recued-archive-backup-download-progress';
+export const ARCHIVE_BACKUP_ANOTHER_BTN_ATTR =
+  'data-recued-archive-backup-another';
 // Shared
 export const ARCHIVE_BACKUP_CANCEL_BTN_ATTR =
   'data-recued-archive-backup-cancel';
@@ -217,7 +223,12 @@ export type ArchivePassportDownloadFn = (filename: string, json: string) => void
 export type ArchiveDownloadFn = (req: {
   /** The export file basename to fetch (confined server-side to `exports/`). */
   name: string;
+  /** Zero once the socket is ready, then cumulative received bytes. Progress
+   *  is advisory; completion is reported separately. */
+  onProgress?: (received: number) => void;
   onError: (message: string) => void;
+  /** All bytes passed the terminal size check and the browser save was
+   *  requested. The browser does not report whether the user saved the file. */
   onDone: () => void;
 }) => () => void;
 
@@ -386,7 +397,7 @@ export interface ArchiveBackupPanelMount {
 
 const COPY = {
   menu_body:
-    'Copy everything Recued holds for you into one locked file on your server. That is your things, your contacts, your memories, your connections and your settings. You can also put an old backup back. Backups are locked with your 24-word recovery key.',
+    'Save your data in one encrypted file, or restore a previous backup. Keep your 24-word recovery key separately; you need it to restore.',
   backup_cta: 'Back up all my data',
   restore_cta: 'Restore from a backup',
   passport_only_cta: 'Save just this server’s identity',
@@ -401,14 +412,20 @@ const COPY = {
   run_backup_cta: 'Start backup',
   export_running: 'Backing up your data…',
   export_done_prefix: 'Backup ready:',
-  export_remote_done_without_download: 'Remote delivery was verified. Review Remote backup history for its current status.',
+  export_remote_done_without_download: 'Remote delivery was verified. Review Saved copies for its current status.',
   export_done_download_by: 'download by',
+  export_download_expired: 'This server’s download copy expired:',
+  export_download_continuing: 'The download already in progress will continue.',
   export_expired:
     'That backup is gone. It ran out, or it was tidied away. Make a new one.',
   download_cta: 'Download to this device',
   download_pending: 'Downloading…',
-  download_done: 'Downloaded to this device.',
+  download_connecting: 'Connecting…',
+  download_confirming: 'Waiting for confirmation…',
+  download_expired: 'Download expired',
+  download_done: 'Backup received. Check your browser’s downloads to confirm it was saved.',
   download_failed: 'Download failed:',
+  another_backup_cta: 'Make another backup',
 
   // Restore
   restore_body:
@@ -482,6 +499,7 @@ const COPY = {
 
 export const ARCHIVE_BACKUP_PANEL_STYLES = `
 ${PASSPORT_RECOVERY_SUMMARY_STYLES}
+[${ARCHIVE_BACKUP_ANOTHER_BTN_ATTR}][hidden] { display: none !important; }
 [${ARCHIVE_BACKUP_PANEL_ATTR}] .archive-backup-block {
   display: flex;
   flex-direction: column;
@@ -666,12 +684,6 @@ const clampPct = (n: number): number => {
   return Math.max(0, Math.min(100, Math.round(n)));
 };
 
-/** Locale-free UTC date (YYYY-MM-DD) for the "download by" line. */
-const formatDate = (ms: number | null): string => {
-  if (ms === null || !Number.isFinite(ms)) return '';
-  return new Date(ms).toISOString().slice(0, 10);
-};
-
 /** Last path segment of a server-side archive path → the bare filename. */
 const basename = (path: string): string => {
   const segs = path.split('/').filter((s) => s.length > 0);
@@ -748,8 +760,12 @@ export const mountArchiveBackupPanel = (
   let exportRemoteDeliveryVerified = false;
   let exportExpiresAt: number | null = null;
   let pollCancel: (() => void) | null = null;
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  let paintExportDone: (() => void) | undefined;
   // M4 browser download (export-done view).
   let downloading = false;
+  let downloadReceived: number | null = null;
+  let downloadGeneration = 0;
   let downloadCancel: (() => void) | null = null;
   let downloadNote: { tone: 'ok' | 'bad'; text: string } | null = null;
 
@@ -797,6 +813,20 @@ export const mountArchiveBackupPanel = (
     }
   };
 
+  const cancelExportExpiry = (): void => {
+    if (expiryTimer !== undefined) { clearTimeout(expiryTimer); expiryTimer = undefined; }
+  };
+  const exportDownloadExpired = (): boolean => !!exportPath && exportExpiresAt !== null && Date.now() >= exportExpiresAt;
+  const scheduleExportExpiry = (): void => {
+    cancelExportExpiry();
+    if (disposed || view !== 'export-done' || !exportPath || exportExpiresAt === null || exportDownloadExpired()) return;
+    expiryTimer = setTimeout(() => {
+      expiryTimer = undefined;
+      if (disposed || view !== 'export-done') return;
+      paintExportDone?.(); scheduleExportExpiry();
+    }, Math.min(2_147_483_647, Math.max(0, exportExpiresAt - Date.now())));
+  };
+
   const notifyExportSettled = (): void => {
     try {
       opts.onExportSettled?.(exportJobId ?? undefined);
@@ -806,11 +836,12 @@ export const mountArchiveBackupPanel = (
   };
 
   const cancelDownload = (): void => {
-    if (downloadCancel) {
-      downloadCancel();
-      downloadCancel = null;
-    }
+    downloadGeneration++;
     downloading = false;
+    downloadReceived = null;
+    const cancel = downloadCancel;
+    downloadCancel = null;
+    cancel?.();
   };
 
   // M4b.2 — abort an in-flight restore upload (reaps the server scratch via the
@@ -832,30 +863,39 @@ export const mountArchiveBackupPanel = (
     const target = wrapper.querySelector?.(
       `[${attr}]`,
     ) as HTMLElement | null | undefined;
+    if (target) revealBackupControl(target);
     target?.focus?.();
   };
 
   // M4 — kick off a browser download of the completed export over `/ws/download`.
   // Re-entrancy-guarded (one in-flight); resolves to a `download_done` / failure
   // note that the export-done view renders.
-  const currentDownloadFocusAttr = (): string | undefined =>
-    controlHasFocus(ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)
-      ? ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR
-      : controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR)
-        ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR
-        : undefined;
+  const currentDownloadFocusAttr = (): string | undefined => [
+    ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR,
+  ].find(controlHasFocus);
 
   const startDownload = (): void => {
     const fn = opts.archiveDownload;
-    if (!fn || !exportPath || downloading) return;
+    if (disposed || view !== 'export-done' || !fn || !exportPath || downloading) return;
+    // A suspended tab may not have painted its expiry timer yet.
+    if (exportDownloadExpired()) { paintExportDone?.(); cancelExportExpiry(); return; }
     const returnFromDownload = controlHasFocus(ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR);
+    const generation = ++downloadGeneration;
+    const isCurrent = (): boolean => !disposed && view === 'export-done' && downloading && generation === downloadGeneration;
     downloading = true;
+    downloadReceived = null;
     downloadNote = null;
     render();
     if (returnFromDownload) focusControl(ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR);
-    downloadCancel = fn({
+    const cancel = fn({
       name: basename(exportPath),
+      onProgress: (received) => {
+        if (!isCurrent() || !Number.isSafeInteger(received) || received < (downloadReceived ?? 0) || received === downloadReceived) return;
+        downloadReceived = received;
+        paintExportDone?.();
+      },
       onError: (message) => {
+        if (!isCurrent()) return;
         downloadCancel = null;
         downloading = false;
         downloadNote = { tone: 'bad', text: [COPY.download_failed, message].join(' ') };
@@ -866,6 +906,7 @@ export const mountArchiveBackupPanel = (
         }
       },
       onDone: () => {
+        if (!isCurrent()) return;
         downloadCancel = null;
         downloading = false;
         downloadNote = { tone: 'ok', text: COPY.download_done };
@@ -876,6 +917,8 @@ export const mountArchiveBackupPanel = (
         }
       },
     });
+    if (isCurrent()) downloadCancel = cancel;
+    else cancel();
   };
 
   // M4b.2 — upload a picked backup file over `/ws/archive-upload`, then feed the
@@ -981,6 +1024,7 @@ export const mountArchiveBackupPanel = (
   /** Reset every transient flow field + wipe all mnemonics. */
   const resetFlowState = (): void => {
     clearResult();
+    cancelExportExpiry();
     cancelDownload();
     downloadNote = null;
     exportMnemonic = '';
@@ -1045,7 +1089,7 @@ export const mountArchiveBackupPanel = (
       exportPath = status.path ?? '';
       exportRemoteDeliveryVerified = status.remote_backup_id !== undefined;
       exportExpiresAt =
-        typeof status.expires_at === 'number' ? status.expires_at : null;
+        typeof status.expires_at === 'number' && Number.isFinite(new Date(status.expires_at).getTime()) ? status.expires_at : null;
       notifyExportSettled();
       const returnFromProgress = controlHasFocus(ARCHIVE_BACKUP_PROGRESS_ATTR);
       setView(
@@ -1093,6 +1137,9 @@ export const mountArchiveBackupPanel = (
     let remote: import('@recued/contracts').ArchiveRemoteTarget | undefined;
     try { remote = opts.remoteTarget?.(); }
     catch (error) {
+      if (error instanceof BackupFormValidationError) {
+        clearResult(); wrapper.querySelector(`[${ARCHIVE_BACKUP_RESULT_ATTR}]`)?.remove(); return;
+      }
       resultLine = messageOf(error); resultTone = 'bad';
       const existing = wrapper.querySelector(`[${ARCHIVE_BACKUP_RESULT_ATTR}]`);
       if (existing) { existing.textContent = resultLine; existing.setAttribute('data-tone', resultTone); }
@@ -1369,6 +1416,7 @@ export const mountArchiveBackupPanel = (
 
   // ── Render ─────────────────────────────────────────────────────
   const clearChildren = (): void => {
+    cancelExportExpiry(); paintExportDone = undefined;
     while (flowHost.firstChild) flowHost.removeChild(flowHost.firstChild);
   };
 
@@ -1534,7 +1582,8 @@ export const mountArchiveBackupPanel = (
     // this drives only the no-confirm `support_redacted` profile. Gated on the
     // caller so the archive flows still work when it isn't wired.
     if (opts.runPassportExport !== undefined) {
-      block.appendChild(makeBody(COPY.passport_sharing));
+      const identity = createBackupDisclosure(doc, 'identity', 'Identity and support export');
+      identity.body.appendChild(makeBody(COPY.passport_sharing));
       const passportActions = doc.createElement('div');
       passportActions.className = 'archive-backup-actions';
       passportActions.appendChild(
@@ -1547,7 +1596,8 @@ export const mountArchiveBackupPanel = (
           },
         ),
       );
-      block.appendChild(passportActions);
+      identity.body.appendChild(passportActions);
+      block.appendChild(identity.element);
     }
   };
 
@@ -1627,21 +1677,10 @@ export const mountArchiveBackupPanel = (
   };
 
   const renderExportDone = (block: HTMLElement): void => {
-    // "<filename> · download by <date> · <size>" (locked M1 export-ready copy).
-    const parts: string[] = [exportPath ? basename(exportPath) : ''];
-    if (exportExpiresAt !== null) {
-      parts.push([COPY.export_done_download_by, formatDate(exportExpiresAt)].join(' '));
-    }
-    parts.push(formatBytes(exportProgress.bytes));
-
     const done = doc.createElement('p');
     done.setAttribute(ARCHIVE_BACKUP_PATH_OUT_ATTR, '');
-    done.setAttribute('data-tone', 'ok');
     done.setAttribute('role', 'status');
     done.className = 'archive-backup-result';
-    done.textContent = exportRemoteDeliveryVerified && !exportPath
-      ? COPY.export_remote_done_without_download
-      : [COPY.export_done_prefix, parts.join(' · ')].join(' ');
     block.appendChild(done);
 
     // The archive also stays on the server — surface the full path so an
@@ -1669,19 +1708,37 @@ export const mountArchiveBackupPanel = (
     // Download to this device — only when the host wired the seam + a file
     // exists. Keep the RPC owner focusable while the explicit re-entrancy guard
     // blocks duplicate activation.
-    if (opts.archiveDownload && exportPath) {
-      const download = makeButton(
-        downloading ? COPY.download_pending : COPY.download_cta,
+    const download = opts.archiveDownload && exportPath
+      ? makeButton(
+        COPY.download_cta,
         ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR,
         'primary',
         () => startDownload(),
-      );
-      if (downloading) {
-        download.setAttribute('aria-disabled', 'true');
-        download.setAttribute('aria-busy', 'true');
-      }
-      actions.appendChild(download);
+      ) : undefined;
+    const progress = download ? doc.createElement('div') : undefined;
+    const progressText = doc.createElement('p');
+    progressText.className = 'archive-backup-body';
+    const bar = doc.createElement('div');
+    bar.className = 'archive-backup-progress';
+    const fill = doc.createElement('div');
+    fill.className = 'archive-backup-progress-fill';
+    bar.appendChild(fill);
+    if (progress) {
+      progress.setAttribute(ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR, '');
+      progress.setAttribute('role', 'progressbar');
+      progress.setAttribute('aria-label', 'Backup download');
+      progress.setAttribute('aria-valuemin', '0');
+      progress.setAttribute('aria-valuemax', '100');
+      progress.appendChild(progressText);
+      progress.appendChild(bar);
+      block.appendChild(progress);
     }
+    if (download) actions.appendChild(download);
+    const another = makeButton(COPY.another_backup_cta, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR, 'primary', () => {
+      if (disposed || view !== 'export-done' || downloading || !exportDownloadExpired()) return;
+      resetFlowState(); setView('export-entry', ARCHIVE_BACKUP_MNEMONIC_ATTR);
+    });
+    actions.appendChild(another);
     actions.appendChild(
       makeButton(COPY.back_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
         const returnFromBack = controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR);
@@ -1693,6 +1750,42 @@ export const mountArchiveBackupPanel = (
       }),
     );
     block.appendChild(actions);
+    // Paint expiry and received bytes in place, preserving focus and nodes.
+    // Avoid rewriting unchanged live-region text on every incoming chunk.
+    paintExportDone = () => {
+      const expired = exportDownloadExpired(), parts = [exportPath ? basename(exportPath) : ''];
+      if (exportExpiresAt !== null) parts.push(`${expired ? 'expired at' : COPY.export_done_download_by} ${formatClientDateTime(exportExpiresAt)}`);
+      parts.push(formatBytes(exportProgress.bytes));
+      done.setAttribute('data-tone', expired ? 'neutral' : 'ok');
+      const headline = exportRemoteDeliveryVerified && !exportPath ? COPY.export_remote_done_without_download
+        : `${expired ? COPY.export_download_expired : COPY.export_done_prefix} ${parts.join(' · ')}${expired && downloading ? ` ${COPY.export_download_continuing}` : ''}`;
+      if (done.textContent !== headline) done.textContent = headline;
+      if (download) {
+        const label = downloading ? downloadReceived === null ? COPY.download_connecting : COPY.download_pending : expired ? COPY.download_expired : COPY.download_cta;
+        if (download.textContent !== label) download.textContent = label;
+        download.setAttribute('aria-disabled', String(downloading || expired));
+        download.setAttribute('aria-busy', String(downloading));
+      }
+      if (progress) {
+        if (downloading) progress.removeAttribute('hidden'); else progress.setAttribute('hidden', '');
+        // The export size is a hint, not a completion signal. If it is unknown
+        // or contradicted by incoming bytes, show the received count alone.
+        const total = exportProgress.bytes;
+        const known = downloadReceived !== null && Number.isSafeInteger(total) && total > 0 && downloadReceived <= total;
+        const pct = known ? Math.floor(downloadReceived! / total * 100) : undefined;
+        const text = downloadReceived === null ? COPY.download_connecting
+          : known ? `${formatBytes(downloadReceived)} of ${formatBytes(total)} received · ${pct}%${downloadReceived === total ? ` · ${COPY.download_confirming}` : ''}`
+          : `${formatBytes(downloadReceived)} received`;
+        progressText.textContent = text;
+        progress.setAttribute('aria-valuetext', text);
+        if (pct === undefined) { progress.removeAttribute('aria-valuenow'); bar.setAttribute('hidden', ''); }
+        else { progress.setAttribute('aria-valuenow', String(pct)); bar.removeAttribute('hidden'); }
+        fill.setAttribute('style', `width:${pct ?? 0}%`);
+      }
+      if (expired) another.removeAttribute('hidden'); else another.setAttribute('hidden', '');
+      another.setAttribute('aria-disabled', String(downloading));
+    };
+    paintExportDone(); scheduleExportExpiry();
   };
 
   const renderRestoreEntry = (block: HTMLElement): void => {

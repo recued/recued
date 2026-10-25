@@ -675,8 +675,18 @@ export const ATTENTION_TOPBAR_STYLES = `
     grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-content: stretch;
   }
-  [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action {
-    min-height: 38px;
+  /* A finger's height on a phone: the bell, the close button, each row's
+     actions and twirl, and the footer links. ⛔ They were 36-38px, the
+     twirl 28px. */
+  [${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention,
+  [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-popover-close {
+    width: 44px;
+    height: 44px;
+  }
+  [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action,
+  [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-payload > summary,
+  [${ATTENTION_TOPBAR_HOST_ATTR}] .webclient-attention-footer a {
+    min-height: 44px;
   }
   [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-actions > :only-child,
   [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-actions > :first-child:nth-last-child(3),

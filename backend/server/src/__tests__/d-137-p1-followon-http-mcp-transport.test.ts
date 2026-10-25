@@ -147,6 +147,29 @@ describe('createServerHandlerSet — mcp role wiring', () => {
     handlerSet.close();
   });
 
+  it("holds the mcp role at 503 until the server's lifecycle is running", async () => {
+    let state: 'booting' | 'running' = 'booting';
+    const handlerSet = createServerHandlerSet({
+      lifecycleState: () => state,
+      mcpHttpDeps: {
+        verifier: (tok) => tok === 'admin-token',
+        dispatch: async (envelope) => ({ jsonrpc: '2.0', id: (envelope as { id: number }).id, result: {} }),
+      },
+    });
+    const call = async (): Promise<FakeRes> => {
+      const res = new FakeRes();
+      await handlerSet.handlers.mcp!(buildReq({ body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }),
+        headers: { authorization: 'Bearer admin-token' } }), res as unknown as ServerResponse);
+      return res;
+    };
+    try {
+      const starting = await call();
+      expect(starting.statusCode).toBe(503); expect(json(starting)).toMatchObject({ error: { code: 'not_ready' } });
+      state = 'running';
+      expect((await call()).statusCode).toBe(200);
+    } finally { handlerSet.close(); }
+  });
+
   it('returns 401 on the mcp role when bearer is missing (handler is wired)', async () => {
     const handlerSet = createServerHandlerSet({
       mcpHttpDeps: {

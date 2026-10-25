@@ -778,9 +778,35 @@ describe('restore-onboarding — browser boot wiring', () => {
   });
   }
 
-  it('selects the restored server through ensureProfile, not a server_url field write', async () => {
+  // ⛔ A restore paired without a device name, so every restored browser
+  // showed in Devices as "unknown device".
+  it('names this browser when it pairs for a restore', async () => {
+    const posted: unknown[] = [];
+    const ops = createBrowserRestoreOps({
+      localStore: createInMemoryWebclientLocalStore(),
+      tokenStore: {
+        async wrap() { throw new Error('not reached'); },
+        async unwrap() { throw new Error('not reached'); },
+      },
+      instanceId: 'restore-browser-1',
+      displayName: 'Firefox on Linux',
+      fetch: (async (_url: string, init?: { body?: string }) => {
+        posted.push(JSON.parse(init?.body ?? '{}'));
+        return new Response(JSON.stringify({ token: 'bearer' }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+
+    await ops.pairCode({ serverUrl: 'https://restore.example:8443', code: 'K7Q2-M9XA' });
+
+    expect(posted).toEqual([expect.objectContaining({
+      instanceId: 'restore-browser-1',
+      displayName: 'Firefox on Linux',
+    })]);
+  });
+
+  it('selects the restored server by its address in the one-write save, not a server_url field write', async () => {
     const localStore = createInMemoryWebclientLocalStore();
-    const ensureProfile = vi.spyOn(localStore, 'ensureProfile');
+    const commitPair = vi.spyOn(localStore, 'commitPair');
     const setField = vi.spyOn(localStore, 'set');
     const tokenStore: WebclientTokenStore = {
       async wrap({ token_id, bearer }) {
@@ -819,9 +845,7 @@ describe('restore-onboarding — browser boot wiring', () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(ensureProfile).toHaveBeenCalledWith(
-      'wss://restore.example:8443/ws',
-    );
+    expect(commitPair.mock.calls[0]?.[0]).toBe('wss://restore.example:8443/ws');
     expect(setField.mock.calls.some(([key]) => key === 'server_url')).toBe(false);
     expect(await localStore.inspect()).toMatchObject({
       server_url: 'wss://restore.example:8443/ws',

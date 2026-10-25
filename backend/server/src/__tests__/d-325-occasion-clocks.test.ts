@@ -58,7 +58,7 @@ const fixture = () => {
   };
   cleanups.push(async () => { await sender?.stop(); db.close(); });
   const save = (rules: AssetRule[] = []) => history.saveOccasion({ title: 'Ana birthday', month_day: '10-24', people: ['ana'], muted: false, rules, sphere: 'personal' }, now());
-  return { db, work, history, rows, points, reminders, boot, save, outcomes, errors, now,
+  return { db, work, dispatchers, history, rows, points, reminders, boot, save, outcomes, errors, now,
     at: (value: string) => { time = Date.parse(value); }, sends: () => sends,
     quiet: (value: boolean) => { quiet = value; }, seal: (value: boolean) => { sealed = value; }, exclude: () => { excluded = true; },
     declarations: (value: OccasionInput[]) => { declarations = value; } };
@@ -131,7 +131,10 @@ describe('D-325 actual annual occasion clocks', () => {
     const row = f.rows.byOccasion(occasion.id)[0]!; const first = f.work.readCommitment(row.commitment_id!)!;
     expect(first.statement).toBe('Buy flowers · Ana birthday');
     expect(first).toMatchObject({ derivation: 'rule_emitted', expiry_policy: 'strict_expire', lifecycle_state: 'pending' });
-    await b.block.submitAnswer({ ask_id: f.points.control(row.id).current_ask_id!, option: 'done', via: 'ui' }); await b.sender.tick();
+    // Its reminder offers no Done (§15.7, 2026-10-24): the owner marks it done in Recued.
+    const ask = f.points.control(row.id).current_ask_id!;
+    expect((await b.block.getAsk(ask))!.options.map(option => option.id)).toEqual(['later', 'not_needed', 'stop_requested']);
+    await f.dispatchers.ownerCommitmentFulfill({ id: first.id }); await b.sender.tick();
     expect(f.work.readCommitment(first.id)!.lifecycle_state).toBe('fulfilled'); expect(f.outcomes).toHaveBeenCalledTimes(1);
     await b.sender.tick(); expect(f.outcomes).toHaveBeenCalledTimes(1); expect(f.work.listCommitments()).toHaveLength(1);
     f.at('2027-10-17T12:00Z'); await b.sender.tick(); expect(f.work.listCommitments()).toHaveLength(2);

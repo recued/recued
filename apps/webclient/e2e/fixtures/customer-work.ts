@@ -1,4 +1,4 @@
-import type { CustomerJob, QuoteSignoffSummary, CustomerPaymentHistory, CustomerPaymentReceipt, CustomerJobPaymentStatement, CustomerAccountStatement } from '@recued/contracts';
+import type { CustomerJob, QuoteSignoffSummary, QuoteCompletionSummary, CustomerPaymentHistory, CustomerPaymentReceipt, CustomerJobPaymentStatement, CustomerAccountStatement } from '@recued/contracts';
 /** Installed before the real full-app bootstrap. Only deterministic local RPC
  * responses are replaced; production navigation, focus and components run. */
 export const installCustomerWorkFixture = () => {
@@ -49,6 +49,12 @@ export const installCustomerWorkFixture = () => {
     const history = (id: string): CustomerPaymentHistory => { const i = selected(id); return { signoff_id: id, invoice_id: i.invoice_id!, invoice_ref: i.invoice_ref, business_name: 'Studio', customer: i.customer, quote_label: i.quote_label, quote_reference: i.quote_reference, currency: i.currency, total: i.amount, captured_at: NOW, invoice: i.follow_up!.invoice, payments: [payment], consistency: 'matched', snapshot_hash: hash }; };
     const statement = (job: CustomerJob): CustomerJobPaymentStatement => ({ format: 'recued.customer-job-payment-statement', version: 2, captured_at: NOW, statement_hash: hash, job_id: job.job_id, business_name: 'Studio', customer: job.customer, quote_label: job.quote_label, quote_reference: job.quote_reference, currency: 'GBP', invoiced_total: '120.0000', amount_paid: '20.1234', outstanding: '99.8766', invoices: [{ signoff_id: job.offer.signoff_id, invoice_id: job.offer.invoice_id!, invoice_ref: job.offer.invoice_ref, revision: 0, issued_on: '2026-10-01', due_on: '2026-10-10', total: '120.0000', amount_paid: '20.1234', outstanding: '99.8766', payments: [payment] }] });
     const accounts = Array.from({ length: 8 }, (_, i) => ({ account_id: 'account-' + i, revision: 1, customer: i === 0 ? 'Morgan Studio' : 'Customer ' + i, job_ids: jobs.slice(0, 2).map(j => j.job_id), created_at: NOW, updated_at: NOW }));
+    const completions: QuoteCompletionSummary[] = Array.from({ length: Number(new URLSearchParams(location.search).get('completions') ?? 0) }, (_, i) => ({
+        completion_id: 'completion-' + (i + 1),signoff_id: 'offer-1',root_signoff_id: 'offer-1',customer: 'Morgan Studio',quote_label: 'Delivery ' + (i + 1),business_name: 'Studio',
+        agreed_scope: 'Three drawings.',delivery_summary: 'Delivered three drawings.',customer_preview: 'Saved delivery.',state: 'accepted',availability: 'current',
+        created_at: Date.now() - i * 1000,expires_at: Date.now() + 86400000,endpoint_id: 'completion-ep-' + i,
+        response: { decision: 'accepted',received_at: 1,recorded_at: 2 },owner_action: null,review: 'waiting',
+    }));
     fixture.__receptionFixture = async (method, raw) => {
         const args = (raw ?? {}) as Record<string, any>; // Test transport payload; each response below matches its production contract.
         if (!method.startsWith('reception.'))
@@ -103,8 +109,10 @@ export const installCustomerWorkFixture = () => {
                 result = { quotes: [], truncated: false };
             else if (method === 'reception.signoff.list')
                 result = { signoffs: jobs.flatMap(j => j.invoices).filter(i => !args.signoff_id || i.signoff_id === args.signoff_id), truncated: false };
-            else if (method === 'reception.signoff.completion.list')
-                result = { completions: [] };
+            else if (method === 'reception.signoff.completion.list') {
+                const start = Number(args.cursor ?? 0);
+                result = { completions: completions.slice(start,start+50),...(start+50 < completions.length ? { next_cursor: String(start+50) } : {}) };
+            }
             else if (method === 'reception.inbox.list')
                 result = { items: [] };
             else

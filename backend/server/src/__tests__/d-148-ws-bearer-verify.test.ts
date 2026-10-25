@@ -65,10 +65,22 @@ const RECIPE: RecipeDefinition = {
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+/** How a connection ended — the code it closed with. */
+const closeCodeOf = (ws: WebSocket): Promise<number> =>
+  new Promise((resolve) => { ws.once('close', (code: number) => resolve(code)); });
+
+/** ⛔ A refused bearer on the rpc socket is NOT a refused handshake any more.
+ *  A browser cannot read the HTTP status of one — a 401 reached it as close
+ *  1006, a "network drop" it retried forever — so the server completes the
+ *  upgrade and closes at once with 4401, the refusal a browser can read. */
+const expectRefused = async (conn: { closed: Promise<number> }): Promise<void> => {
+  expect(await conn.closed).toBe(4401);
+};
+
 const tryConnect = (
   port: number,
   token: string,
-): Promise<{ ws: WebSocket; opened: boolean }> =>
+): Promise<{ ws: WebSocket; opened: boolean; closed: Promise<number> }> =>
   new Promise((resolve) => {
     // URL-encode the token — browser WebSocket clients can't set
     // Authorization headers, so they pass the bearer via `?token=`. The
@@ -79,21 +91,22 @@ const tryConnect = (
     const ws = new WebSocket(
       `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`,
     );
+    const closed = closeCodeOf(ws);
     let settled = false;
     ws.on('open', () => {
       if (settled) return;
       settled = true;
-      resolve({ ws, opened: true });
+      resolve({ ws, opened: true, closed });
     });
     ws.on('error', () => {
       if (settled) return;
       settled = true;
-      resolve({ ws, opened: false });
+      resolve({ ws, opened: false, closed });
     });
     ws.on('unexpected-response', () => {
       if (settled) return;
       settled = true;
-      resolve({ ws, opened: false });
+      resolve({ ws, opened: false, closed });
     });
   });
 
@@ -103,17 +116,18 @@ const tryConnect = (
 const tryConnectViaSubprotocol = (
   port: number,
   token: string,
-): Promise<{ ws: WebSocket; opened: boolean; acceptedProtocol: string }> =>
+): Promise<{ ws: WebSocket; opened: boolean; acceptedProtocol: string; closed: Promise<number> }> =>
   new Promise((resolve) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, [
       WS_VERSION_SUBPROTOCOL,
       encodeBearerSubprotocol(token),
     ]);
+    const closed = closeCodeOf(ws);
     let settled = false;
     const done = (opened: boolean): void => {
       if (settled) return;
       settled = true;
-      resolve({ ws, opened, acceptedProtocol: ws.protocol ?? '' });
+      resolve({ ws, opened, acceptedProtocol: ws.protocol ?? '', closed });
     };
     ws.on('open', () => done(true));
     ws.on('error', () => done(false));
@@ -206,6 +220,7 @@ describe('D-148 § A.2.1 — parseStructuredBearer', () => {
 describe('D-148 § A.2.1 — WS upgrade with clientTokens.verify wired', () => {
   let server: RunningServer | undefined;
   let db: Database.Database;
+  let clientTokens: ReturnType<typeof createClientTokenStore>;
   let issuedTokenId: string;
   let issuedBearer: string;
 
@@ -215,7 +230,7 @@ describe('D-148 § A.2.1 — WS upgrade with clientTokens.verify wired', () => {
     recipeStore.register(RECIPE);
 
     db = new Database(':memory:');
-    const clientTokens = createClientTokenStore(db, { argon2_params: FAST_ARGON2 });
+    clientTokens = createClientTokenStore(db, { argon2_params: FAST_ARGON2 });
     const issued = await clientTokens.issue({
       client_kind: 'webclient',
       client_label: 'Test webclient',
@@ -240,8 +255,7 @@ describe('D-148 § A.2.1 — WS upgrade with clientTokens.verify wired', () => {
   });
 
   it('legacy raw-bearer connection is rejected when clientTokens is wired', async () => {
-    const { opened } = await tryConnect(server!.port, 'legacy-opaque-bearer');
-    expect(opened).toBe(false);
+    await expectRefused(await tryConnect(server!.port, 'legacy-opaque-bearer'));
   });
 
   it('structured bearer with a matching client_tokens row → upgrade accepted + client_token_id populated', async () => {
@@ -261,51 +275,48 @@ describe('D-148 § A.2.1 — WS upgrade with clientTokens.verify wired', () => {
 
   it('structured bearer with a canonical-length but wrong bearer (matching token_id) → upgrade rejected', async () => {
     const wrongBearer = canonicalBearer('Z'); // canonical length, wrong content
-    const { opened } = await tryConnect(
+    await expectRefused(await tryConnect(
       server!.port,
       `${issuedTokenId}.${wrongBearer}`,
-    );
-    expect(opened).toBe(false);
+    ));
   });
 
   it('structured bearer with an unknown canonical-length token_id → upgrade rejected (constant-time dummy verify path)', async () => {
     const unknownId = canonicalTokenId('U'); // canonical length, never issued
-    const { opened } = await tryConnect(
+    await expectRefused(await tryConnect(
       server!.port,
       `${unknownId}.${issuedBearer}`,
-    );
-    expect(opened).toBe(false);
+    ));
   });
 
   it('off-canonical-length structured shape is rejected without Argon2id verify', async () => {
-    const { opened } = await tryConnect(server!.port, 'a.b');
-    expect(opened).toBe(false);
+    await expectRefused(await tryConnect(server!.port, 'a.b'));
   });
 
   it('revokeConnectedInstance returns the verified client_token_id so handlePairRevoke can stamp the audit join column', async () => {
     // End-to-end thread: structured-bearer upgrade verifies →
-    // ws-server populates WsClient.client_token_id → register →
-    // revokeConnectedInstance snapshots it BEFORE socket teardown →
-    // returns it so `handlePairRevoke` can stamp
+    // ws-server populates WsClient.client_token_id + the paired identity
+    // the token carries → revokeConnectedInstance snapshots the token id
+    // BEFORE socket teardown → returns it so `handlePairRevoke` can stamp
     // `detail.client_token_id` on the `pair_revoke` audit row. This
     // test pins the end-to-end auto-population without any pair-
     // revoke-rpc plumbing on top.
+    const deviceToken = await clientTokens.issue({
+      client_kind: 'webclient',
+      client_label: 'Verified webclient',
+      metadata: { instance_id: 'ext-bearer-verified' },
+    });
     const { ws, opened } = await tryConnect(
       server!.port,
-      `${issuedTokenId}.${issuedBearer}`,
+      `${deviceToken.token_id}.${deviceToken.bearer}`,
     );
     expect(opened).toBe(true);
-    // Register so revokeConnectedInstance can target the instance_id.
-    ws.send(JSON.stringify({
-      type: 'register',
-      instance_id: 'ext-bearer-verified',
-      display_name: 'Verified webclient',
-    }));
     await wait(50);
     const result = server!.wsServer.revokeConnectedInstance('ext-bearer-verified');
     expect(result.revoked).toBe(true);
-    expect(result.client_token_id).toBe(issuedTokenId);
+    expect(result.client_token_id).toBe(deviceToken.token_id);
     await wait(20);
+    expect(ws.readyState).toBe(WebSocket.CLOSED);
   });
 
   // ── The bearer's carrier ──────────────────────────────────────────
@@ -384,11 +395,10 @@ describe('D-148 § A.2.1 — WS upgrade with clientTokens.verify wired', () => {
   it('a BAD bearer in the subprotocol is refused, exactly like a bad one on the URL', async () => {
     // The input that would do the thing if the check were gone: a well-formed
     // carrier around a bearer that is not issued.
-    const { opened } = await tryConnectViaSubprotocol(
+    await expectRefused(await tryConnectViaSubprotocol(
       server!.port,
       `${canonicalTokenId('Z')}.${canonicalBearer('Z')}`,
-    );
-    expect(opened).toBe(false);
+    ));
   });
 
   it('STILL accepts the legacy `?token=` form — un-upgraded clients must not break', async () => {
@@ -445,17 +455,16 @@ describe('D-148 § A.2.1 — WS upgrade without clientTokens dep (legacy composi
     ws.close();
   });
 
-  it('revokeConnectedInstance returns client_token_id undefined for legacy raw-bearer connections', async () => {
+  it('a legacy raw-bearer connection carries no paired identity, so revoke matches nothing and names no token', async () => {
+    // It could only take one through `register`, which is retired.
     const { ws, opened } = await tryConnect(server!.port, 'legacy-bearer-test');
     expect(opened).toBe(true);
-    ws.send(JSON.stringify({
-      type: 'register',
-      instance_id: 'ext-legacy-raw',
-      display_name: 'Legacy ext',
-    }));
+    ws.send(JSON.stringify({ type: 'register', instance_id: 'ext-legacy-raw' }));
     await wait(50);
     const result = server!.wsServer.revokeConnectedInstance('ext-legacy-raw');
-    expect(result.revoked).toBe(true);
+    expect(result.revoked).toBe(false);
     expect('client_token_id' in result).toBe(false);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
   });
 });

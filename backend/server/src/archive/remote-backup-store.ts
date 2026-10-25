@@ -14,7 +14,7 @@ const MAX_BYTES = 8 * 1024 * 1024;
 const HASH = /^[0-9a-f]{64}$/u;
 const STATES = new Set<ArchiveRemoteState>(['preparing', 'uploading', 'verifying', 'verified', 'unconfirmed', 'pruning', 'pruned']);
 const ISSUES = new Set<ArchiveRemoteIssue>(['interrupted', 'export_failed', 'destination_unavailable', 'transfer_unconfirmed', 'verification_failed']);
-export interface RemoteBackupRow extends ArchiveRemoteBackup {
+export interface RemoteBackupRow extends Omit<ArchiveRemoteBackup, 'multipart_cleanup_pending'> {
   destination_fingerprint: string;
   export_name?: string;
   export_expires_at?: number;
@@ -34,7 +34,7 @@ const destination = (v: unknown): v is ArchiveRemoteDestination => isObject(v)
   && !v.prefix.split('/').some(p => p === '.' || p === '..')
   && Object.keys(v).every(k => ['connection_name', 'destination_id', 'bucket', 'region', 'endpoint', 'prefix'].includes(k));
 const ROW_KEYS = new Set(['operation_id', 'job_id', 'destination', 'object_key', 'created_at', 'state', 'keep_last',
-  'bytes', 'sha256', 'verified_at', 'issue', 'retention_pending', 'destination_fingerprint', 'export_name', 'export_expires_at', 'multipart_id', 'etag', 'version_id']);
+  'bytes', 'sha256', 'verified_at', 'issue', 'retention_pending', 'destination_fingerprint', 'export_name', 'export_expires_at', 'multipart_id', 'multipart_cleanup_issue', 'etag', 'version_id']);
 
 export const remoteBackupLedgerPath = (dbPath: string): string => `${resolve(dbPath)}.remote-backups.json`;
 export const remoteBackupScratchPath = (dbPath: string): string => `${resolve(dbPath)}.remote-backup-staging`;
@@ -45,6 +45,10 @@ export const remoteBackupView = (row: RemoteBackupRow): ArchiveRemoteBackup => (
   ...(row.bytes === undefined ? {} : { bytes: row.bytes }), ...(row.sha256 === undefined ? {} : { sha256: row.sha256 }),
   ...(row.verified_at === undefined ? {} : { verified_at: row.verified_at }), ...(row.issue === undefined ? {} : { issue: row.issue }),
   ...(row.retention_pending === undefined ? {} : { retention_pending: row.retention_pending }),
+  ...(row.multipart_id !== undefined && (row.state === 'unconfirmed' || row.state === 'verifying') ? {
+    multipart_cleanup_pending: true,
+    ...(row.multipart_cleanup_issue === 'permission_denied' ? { multipart_cleanup_issue: row.multipart_cleanup_issue } : {}),
+  } : {}),
 });
 
 export const createRemoteBackupStore = (dbPath: string, options: { now?: () => number; maxEntries?: number } = {}) => {
@@ -76,6 +80,7 @@ export const createRemoteBackupStore = (dbPath: string, options: { now?: () => n
         || (['verified', 'pruning', 'pruned'].includes(entry.state as string) && (entry.bytes === undefined || entry.sha256 === undefined || entry.verified_at === undefined))
         || (entry.issue !== undefined && !ISSUES.has(entry.issue as ArchiveRemoteIssue))
         || (entry.retention_pending !== undefined && typeof entry.retention_pending !== 'boolean')
+        || (entry.multipart_cleanup_issue !== undefined && (entry.multipart_cleanup_issue !== 'permission_denied' || entry.multipart_id === undefined))
         || (entry.export_name !== undefined && (typeof entry.export_name !== 'string' || !isGeneratedExportName(entry.export_name)))
         || (entry.export_expires_at !== undefined && !integer(entry.export_expires_at))
         || ['multipart_id', 'etag', 'version_id'].some(k => entry[k] !== undefined && !text(entry[k]))

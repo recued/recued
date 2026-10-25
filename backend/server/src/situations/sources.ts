@@ -1,7 +1,8 @@
 import { setImmediate } from 'node:timers/promises';
 import {
   assetDateAt, calendarDayMs, dueSpan, eventSpanIn, evaluateAssetRuleClock, getMailFactBuiltinType, nextAnnualDate, occasionNextDate, isDateOnlyDue, contactExcludedFromProactive, isContactAnnualDate,
-  shiftAssetDate, type Asset, type ContactRecord, type MailFactThing, type SituationFact, type SituationPlace, type SituationQuery, type SituationRef, type Sphere, type WorkEntity,
+  shiftAssetDate, type Asset, type ContactRecord, type MailFactThing, type Occasion, type SituationFact, type SituationPlace, type SituationQuery, type SituationRef, type Sphere,
+  type WorkEntity,
 } from '@recued/contracts';
 import { ASSET_TABLE, BOOKING_TABLE, COMMITMENT_TABLE, NOTE_TABLE, TASK_TABLE, type WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
@@ -17,7 +18,9 @@ import { createTripDetailsStore, tripFromSource } from '../storage/trip-details-
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { declaredOccasionId } from './declared-occasions.js';
-import { assetRuleTimings, isTravelDocument } from './asset-rule-timing.js';
+import { assetRuleTimings, isTravelDocument, isVisa } from './asset-rule-timing.js';
+import { situationAssetDetails } from './asset-details.js';
+import { placeCountry } from './country-place.js';
 import { ruleStatement } from './rule-titles.js';
 
 const PAGE = 500;
@@ -55,7 +58,8 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
   const occurrences = createAssetOccurrenceStore(deps.db);
   const clocks = createAssetClockStore(deps.db);
   const trips = createTripDetailsStore(deps.db);
-  const history = createProactiveHistoryStore(deps.db, createProactiveProposalStore(deps.db));
+  const proposals = createProactiveProposalStore(deps.db);
+  const history = createProactiveHistoryStore(deps.db, proposals);
   const place = (value: string | undefined): SituationPlace | undefined => value?.trim()
     ? deps.place?.(value) ?? { key: `label:${value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en')}`, name: value.trim() } : undefined;
   const scope = (item: SituationFact, source_key: string, own?: Sphere): SituationFact => {
@@ -97,6 +101,8 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
   const workFacts = (rows: WorkEntity[], query: SituationQuery): SituationFact[] => {
     // Only commitments carry questions, so the other work sources skip the read.
     const questions = new Set(rows.some(row => row._kind === 'commitment') ? occurrences.questionCommitments() : []);
+    // Read once for the rows, when an occasion's commitment first needs them.
+    let suppressions: ReturnType<typeof proposals.suppressions> | undefined;
     return rows.flatMap(row => {
       const ref = { collection: row._kind, id: row.id };
       let item: SituationFact;
@@ -114,7 +120,7 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
           const occasion = history.occasion(occurrence.asset_id); const date = calendarDayMs(occurrence.cycle);
           if (!occasion || date === null || occasion.source_active === false || occasion.people.some(id => {
             const contact = deps.contacts?.getByContactIdResolved(id) ?? deps.contacts?.get(id); return contact && contactExcludedFromProactive(contact);
-          }) || history.suppressed({ ...occasion, when: span(date) })) return [];
+          }) || history.suppressed({ ...occasion, when: span(date) }, suppressions ??= proposals.suppressions())) return [];
         }
         if (questions.has(row.id) && ['today', 'digest', 'push'].includes(query.surface ?? 'tool')) return [];
         item = fact(ref, row.statement, 'commitment', row.updated_at);
@@ -213,47 +219,97 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
     },
     find: ({ refs }) => refs.filter(ref => ref.collection === 'reminder').map(ref => ref.id),
   } });
-  sources.push(source('occasion', async (query, signal, context) => {
+  const occasions = source('occasion', async (query, signal, context, only) => {
     const result: SituationFact[] = [];
     const start = typeof query.time === 'number' ? query.time : query.time.from;
     const today = assetDateAt(start, deps.timeZone());
-    for (let cursor = ''; ;) {
-      const page = history.walkOccasions(cursor, PAGE); if (!page.length) break;
-      for (const occasion of page) {
-        if (occasion.muted || occasion.source_active === false || occasion.people.some(id => {
-          const contact = deps.contacts?.getByContactIdResolved(id) ?? deps.contacts?.get(id); return contact && contactExcludedFromProactive(contact);
-        })) continue;
-        const on = occasionNextDate(occasion, today); if (!on) continue;
-        const when = span(calendarDayMs(on)!);
-        if (history.suppressed({ ...occasion, when })) continue;
-        // A persisted source-derived date never bypasses the original source's
-        // own verb/data grants when the private occasion store is granted.
-        if (occasion.source) {
-          const access = situationSourceAccess(occasion.source.collection);
-          if (!access || !context?.grants.isVerbOpGranted(access.verb_op) || !context.grants.isCollectionReadGranted(access.collection)) continue;
-        }
-        const ref = { collection: 'occasion', id: occasion.id };
-        for (const rule of occasion.rules.filter(rule => rule.enabled && !rule.muted)) {
-          const clock = evaluateAssetRuleClock({ status: 'active', dates: { next_on: on }, readings: {}, observations: {} }, rule, { now: now(), timeZone: deps.timeZone() });
-          const row = occurrences.byOccasion(occasion.id).find(row => row.rule_id === rule.id && row.cycle === on && Boolean(row.commitment_id) === (rule.reaction.occurrence === 'action'));
-          const canReadCommitment = context?.grants.isVerbOpGranted('core.work-entity.read') && context.grants.isCollectionReadGranted('commitment');
-          const commitment = row?.commitment_id && canReadCommitment ? deps.work.readCommitment(row.commitment_id) : null;
-          if (commitment && commitment.lifecycle_state !== 'pending') continue;
-          const item = fact({ ...ref, field: `rules.${rule.id}` }, rule.reaction.occurrence === 'action' ? ruleStatement(rule, occasion.title) : occasion.title,
-            'occasion', occasion.updated_at);
-          item.subjects = [ref]; item.people = occasion.people; item.place = occasion.where; item.consequence = rule.consequence;
-          item.evidence = [{ ...ref, field: `rules.${rule.id}` }, ...(occasion.source ? [occasion.source] : [])];
-          if (clock.due_on) { item.when = span(calendarDayMs(clock.due_on)!); item.when_day = clock.due_on; }
-          if (clock.act_by) item.act_by = span(calendarDayMs(clock.act_by)!).from;
-          if (commitment && context?.grants.isVerbOpGranted('core.work-entity.read') && context.grants.isCollectionReadGranted('commitment')) item.represents = { collection: 'commitment', id: commitment.id };
-          else if (rule.id === 'date' && occasion.source) item.represents = occasion.source;
-          result.push(scope(item, `occasion:${occasion.id}`, occasion.sphere));
-        }
+    // Once for the pass, not once for each occasion.
+    const suppressions = proposals.suppressions();
+    const add = (occasion: Occasion): void => {
+      if (occasion.muted || occasion.source_active === false || occasion.people.some(id => {
+        const contact = deps.contacts?.getByContactIdResolved(id) ?? deps.contacts?.get(id); return contact && contactExcludedFromProactive(contact);
+      })) return;
+      const on = occasionNextDate(occasion, today); if (!on) return;
+      const when = span(calendarDayMs(on)!);
+      if (history.suppressed({ ...occasion, when }, suppressions)) return;
+      // A persisted source-derived date never bypasses the original source's
+      // own verb/data grants when the private occasion store is granted.
+      if (occasion.source) {
+        const access = situationSourceAccess(occasion.source.collection);
+        if (!access || !context?.grants.isVerbOpGranted(access.verb_op) || !context.grants.isCollectionReadGranted(access.collection)) return;
       }
+      const ref = { collection: 'occasion', id: occasion.id };
+      for (const rule of occasion.rules.filter(rule => rule.enabled && !rule.muted)) {
+        const clock = evaluateAssetRuleClock({ status: 'active', dates: { next_on: on }, readings: {}, observations: {} }, rule, { now: now(), timeZone: deps.timeZone() });
+        const row = occurrences.byOccasion(occasion.id).find(row => row.rule_id === rule.id && row.cycle === on && Boolean(row.commitment_id) === (rule.reaction.occurrence === 'action'));
+        const canReadCommitment = context?.grants.isVerbOpGranted('core.work-entity.read') && context.grants.isCollectionReadGranted('commitment');
+        const commitment = row?.commitment_id && canReadCommitment ? deps.work.readCommitment(row.commitment_id) : null;
+        if (commitment && commitment.lifecycle_state !== 'pending') continue;
+        const item = fact({ ...ref, field: `rules.${rule.id}` }, rule.reaction.occurrence === 'action' ? ruleStatement(rule, occasion.title) : occasion.title,
+          'occasion', occasion.updated_at);
+        item.subjects = [ref]; item.people = occasion.people; item.place = occasion.where; item.consequence = rule.consequence;
+        // A trip the owner repeats has its country as its place. Egress aliases a place,
+        // so the country is also given as the trip's destination, which it leaves readable.
+        const country = placeCountry(occasion.where);
+        if (country) item.trip = { subject: ref, travellers: [], destination_country: country };
+        item.evidence = [{ ...ref, field: `rules.${rule.id}` }, ...(occasion.source ? [occasion.source] : [])];
+        if (clock.due_on) { item.when = span(calendarDayMs(clock.due_on)!); item.when_day = clock.due_on; }
+        if (clock.act_by) item.act_by = span(calendarDayMs(clock.act_by)!).from;
+        if (commitment && context?.grants.isVerbOpGranted('core.work-entity.read') && context.grants.isCollectionReadGranted('commitment')) item.represents = { collection: 'commitment', id: commitment.id };
+        else if (rule.id === 'date' && occasion.source) item.represents = occasion.source;
+        result.push(scope(item, `occasion:${occasion.id}`, occasion.sphere));
+      }
+    };
+    if (only) {
+      for (const id of only) { const occasion = history.occasion(id); if (occasion) add(occasion); }
+      await check(result.length, signal);
+    } else for (let cursor = ''; ;) {
+      const page = history.walkOccasions(cursor, PAGE); if (!page.length) break;
+      for (const occasion of page) add(occasion);
       cursor = page.at(-1)!.id; await check(result.length, signal);
     }
     return result;
-  }));
+  });
+  const everyOccasion = function* (): Generator<Occasion> {
+    for (let cursor = ''; ;) {
+      const page = history.walkOccasions(cursor, PAGE); if (!page.length) return;
+      yield* page; cursor = page.at(-1)!.id;
+    }
+  };
+  // §6.3 — what a window holds turns on each occasion's next date and its rules'
+  // lead times, so every surface but a chat message reads them all. A message keeps
+  // only what it names (`query.ts`): the occasions it names by a person, a title word
+  // or a place, the trips a travel check relates, and what a kept fact points at.
+  // Read whole, 300 birthdays took 76 of a prefetch's 88 ms on a fast machine.
+  occasions.index = {
+    seed: (query, people) => {
+      if (query.surface !== 'prefetch') return 'all';
+      const text = situationText(query); const said = Boolean(query.text?.trim());
+      const ids = new Set((query.subjects ?? []).filter(ref => ref.collection === 'occasion').map(ref => ref.id));
+      for (const occasion of everyOccasion()) {
+        if (occasion.people.some(id => people.has(id))
+          || said && [occasion.title, ...occasion.rules.map(rule => ruleStatement(rule, occasion.title))].some(title => text.title(title))
+          || occasion.where && (query.place?.key === occasion.where.key || said && text.place(occasion.where.name))) ids.add(occasion.id);
+      }
+      return ids;
+    },
+    // A trip the owner repeats is a trip for a travel check whatever the window.
+    relations: () => [...everyOccasion()].filter(occasion => placeCountry(occasion.where)).map(occasion => occasion.id),
+    find: ({ refs, subjects }) => [...refs, ...subjects].filter(ref => ref.collection === 'occasion').map(ref => ref.id),
+    // A clock stands for the commitment its occurrence opened, or for the record its date came from.
+    representedBy: refs => {
+      const ids = new Set(refs.flatMap(ref => {
+        const row = ref.collection === 'commitment' ? occurrences.byCommitment(ref.id) : null;
+        return row?.subject_kind === 'occasion' ? [row.asset_id] : [];
+      }));
+      const records = new Set(refs.filter(ref => ref.collection !== 'commitment').map(ref => JSON.stringify([ref.collection, ref.id])));
+      if (records.size) for (const occasion of everyOccasion()) {
+        if (occasion.source && records.has(JSON.stringify([occasion.source.collection, occasion.source.id]))) ids.add(occasion.id);
+      }
+      return ids;
+    },
+  };
+  sources.push(occasions);
   const linked = () => Boolean(deps.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='asset_identity_links'").get());
   const identities = (id: string): string[] => linked() ? (deps.db.prepare('SELECT left_id,right_id FROM asset_identity_links WHERE left_id=? OR right_id=?')
     .all(id, id) as { left_id: string; right_id: string }[]).map(row => row.left_id === id ? row.right_id : row.left_id) : [];
@@ -268,10 +324,15 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       const subject = { collection: 'asset', id: asset.id };
       const base = fact(subject, asset.name, 'asset', asset.updated_at);
       base.subjects = [subject]; base.people = asset.holder_contact ? [asset.holder_contact] : [];
+      // Every item this asset produces carries its own fields, whatever its class.
+      base.details = situationAssetDetails(asset);
       if (isTravelDocument(asset)) base.travel_document = {
         ...(asset.holder_contact ? { holder: asset.holder_contact } : {}), issued_on: asset.dates.issued_on, expires_on: asset.dates.expires_on,
         ...(typeof asset.settings.nationality === 'string' && /^[A-Z]{2}$/u.test(asset.settings.nationality) ? { nationality: asset.settings.nationality } : {}),
       };
+      if (isVisa(asset)) base.visa = { name: asset.name,
+        ...(typeof asset.settings.valid_for === 'string' && /^[A-Z]{2}$/u.test(asset.settings.valid_for) ? { valid_for: asset.settings.valid_for } : {}),
+        ...(typeof asset.dates.expires_on === 'string' ? { expires_on: asset.dates.expires_on } : {}) };
       base.related = [...(asset.belongs_to ? [{ collection: 'asset', id: asset.belongs_to }] : []),
         ...deps.work.listAssetChildren(asset.id).map(child => ({ collection: 'asset', id: child.id })),
         ...identities(asset.id).map(id => ({ collection: 'asset', id }))];
@@ -339,7 +400,8 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       if (query.changed_since !== undefined) for (const row of changed.all(query.changed_since) as { id: string }[]) ids.add(row.id);
       return ids;
     },
-    relations: (_context, classes) => clocks.relations(classes),
+    // A trip check lists its travellers' visas, so they are read whatever the window.
+    relations: (_context, classes) => clocks.relations([...classes, ...clocks.classes().filter(class_id => isVisa({ class_id }))]),
     find: ({ refs, subjects, related }) => {
       const ids = new Set([...refs, ...subjects].filter(ref => ref.collection === 'asset').map(ref => ref.id));
       // An asset relates to its parent, its children and its linked identities.

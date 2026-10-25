@@ -52,6 +52,9 @@ export interface StartRetentionPrunersOptions {
   readonly checkpointStore: CheckpointStore | undefined;
   readonly auditLog: AuditLogStore | undefined;
   readonly gatedActionStore?: GatedActionStore | undefined;
+  /** D-329 — an expired raw-op hold settles the AI app's action, and the chat's held write. */
+  readonly mcpActionStore?: Pick<import('../mcp-action-store.js').McpActionStore, 'finish'> | undefined;
+  readonly chatRunSettledSink?: ((settled: import('../preflight-resumer.js').PreflightRunSettled) => void) | undefined;
   readonly executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
   readonly notificationBlock:
     | Pick<

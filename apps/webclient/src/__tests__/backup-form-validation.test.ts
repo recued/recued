@@ -1,8 +1,39 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createBackupFormValidation, isBackupUtcTime, isBackupWholeNumber } from '../settings/backup-form-validation.js';
+import { createBackupFormValidation, isBackupUtcTime, isBackupWatchdogUrl, isBackupWholeNumber } from '../settings/backup-form-validation.js';
 import { pickerTestDom } from './helpers/file-download-picker-dom.js';
+import { createWebhookBoundedHttpsUrlParser } from '../../../../backend/server/src/webhook-bounded-https-url-parser.js';
+
+const monitorPrefix = 'https://monitor.example/';
+const maxAsciiUrl = monitorPrefix + 'x'.repeat(2048 - monitorPrefix.length);
+const maxUtf8Url = monitorPrefix + 'é'.repeat(Math.floor((2048 - monitorPrefix.length) / 2)) + 'x'.repeat((2048 - monitorPrefix.length) % 2);
+const serverMonitorUrl = createWebhookBoundedHttpsUrlParser({ kind: 'bounded_https_url.v1', max_bytes: 2048, allowed_ports: [443] });
 
 describe('backup form validation', () => {
+  it.each([
+    ['ordinary URL', monitorPrefix + 'ping', true],
+    ['explicit port 443', 'https://monitor.example:443/ping', true],
+    ['Unicode path', monitorPrefix + 'é', true],
+    ['ASCII byte limit', maxAsciiUrl, true],
+    ['UTF-8 byte limit', maxUtf8Url, true],
+    ['surrounding whitespace', ' https://monitor.example/ping ', true],
+    ['legacy empty query delimiter', monitorPrefix + 'ping?', true],
+    ['legacy empty fragment delimiter', monitorPrefix + 'ping#', true],
+    ['empty URL', '', false],
+    ['HTTP', 'http://monitor.example/ping', false],
+    ['relative URL', '/ping', false],
+    ['malformed URL', 'https://', false],
+    ['username', 'https://private@monitor.example/ping', false],
+    ['password', 'https://user:private@monitor.example/ping', false],
+    ['unsupported port', 'https://monitor.example:8443/ping', false],
+    ['query', monitorPrefix + 'ping?private=value', false],
+    ['fragment', monitorPrefix + 'ping#private', false],
+    ['ASCII over byte limit', maxAsciiUrl + 'x', false],
+    ['UTF-8 over byte limit', maxUtf8Url + 'é', false],
+  ] as const)('matches the server monitor URL rules for %s', (_name, value, allowed) => {
+    expect(isBackupWatchdogUrl(value)).toBe(allowed);
+    expect(serverMonitorUrl.parse(value) !== null).toBe(allowed);
+  });
+
   it('waits for Save, preserves supporting descriptions, and updates errors without taking focus', () => {
     const { root, document } = pickerTestDom();
     const control = document.createElement('input'); control.value = '';

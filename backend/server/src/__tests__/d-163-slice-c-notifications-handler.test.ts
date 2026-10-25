@@ -21,6 +21,7 @@ import {
   CHANNEL_ROLES,
   MESSENGER_VENDOR_SLUGS,
   RpcError,
+  type ConnectionRow,
   type NotificationChannelCapability,
   type NotificationChannelName,
   type NotificationChannelToggleView,
@@ -41,6 +42,7 @@ import {
   type ChannelReadinessProbe,
   type ChannelToggleView,
   type NotificationBlock,
+  type NotificationBlockDeps,
   type NotificationSettings,
   type PendingAsk,
   type RemoteChannelName,
@@ -55,6 +57,7 @@ import {
   makeNotificationsHandlers,
   type NotificationRpcDeps,
 } from '../notifications-handler.js';
+import { reachesPhone, resolveOwnerReminderDestinations } from '../situations/reminder-destinations.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Cross-package type ratchet — drift catches at compile time
@@ -98,6 +101,7 @@ describe('D-163 Slice C — cross-package type ratchet', () => {
  *  `setChannel`. */
 const buildBlock = (
   readiness: Partial<Record<RemoteChannelName, boolean>> = {},
+  resolveReminderDestinations?: NotificationBlockDeps['resolveReminderDestinations'],
 ): NotificationBlock => {
   const readinessProbe: ChannelReadinessProbe = (channel) =>
     readiness[channel] ?? false;
@@ -115,6 +119,7 @@ const buildBlock = (
     settingsStore,
     channels,
     readinessProbe,
+    ...(resolveReminderDestinations ? { resolveReminderDestinations } : {}),
   });
 };
 
@@ -157,6 +162,44 @@ describe('handleNotificationsDescribe', () => {
     await block.setNotificationVerificationPhrase('purple otter');
     const after = await handleNotificationsDescribe(buildDeps(block));
     expect(after.verification_phrase).toBe('purple otter');
+  });
+
+  it('D-325 §15.7 amendment — says whether a reminder reaches the phone and why a channel that is on carries none, by the production rule', async () => {
+    // Connections as the app enrols them: a Telegram connection names no principal (only
+    // Teams resolves one, D-238), and an email connection names its mailbox.
+    const row = (name: string, config: Record<string, unknown>): ConnectionRow => ({ pk: `notification:${name}`, name, kind: 'notification',
+      subtype: name, display_name: name, enrolled_at: 10, updated_at: 10, config_json: JSON.stringify(config), auth_ciphertext: 'never-read-here' });
+    // `available_channels` stands in for the adapters the server composed; the rest is the real rule.
+    const boot = (connections: ConnectionRow[]) => {
+      const block = buildBlock({ telegram: true, email: true }, async settings => resolveOwnerReminderDestinations({
+        settings, connections, available_channels: ['ui', 'telegram', 'email'] }));
+      return { block, deps: buildDeps(block) };
+    };
+    // 2026-10-24 — a reminder is a notification, never an approval: the owner's own
+    // Telegram chat reaches the phone with no principal named.
+    const own = boot([row('telegram', { ingress_mode: 'poll', chat_id: '123456789' })]);
+    // Only the app and the Bridge by default: nothing reaches a phone, and nothing is on to explain.
+    await expect(handleNotificationsDescribe(own.deps)).resolves.toMatchObject({ reaches_phone: false, reminder_issues: [] });
+    // A switch's confirmation carries the answer after it, so Settings needs no second read.
+    await expect(handleNotificationsSetChannel(own.deps, { channel: 'telegram', patch: { notification: true } }))
+      .resolves.toMatchObject({ ok: true, reaches_phone: true, reminder_issues: [] });
+    // ⛔ Telegram on and set to a group is not a phone reached: it carries no reminder, and says why.
+    const group = boot([row('telegram', { ingress_mode: 'poll', chat_id: '-100200300' }),
+      row('email', { sender_mail_instance: 'home', default_recipient: 'owner@example.com' })]);
+    await expect(handleNotificationsSetChannel(group.deps, { channel: 'telegram', patch: { notification: true } }))
+      .resolves.toMatchObject({ ok: true, reaches_phone: false, reminder_issues: [{ channel: 'telegram', reason: 'configuration_invalid' }] });
+    await expect(handleNotificationsSetChannel(group.deps, { channel: 'email', patch: { notification: true } }))
+      .resolves.toMatchObject({ ok: true, reaches_phone: true, reminder_issues: [{ channel: 'telegram', reason: 'configuration_invalid' }] });
+    const described = await handleNotificationsDescribe(group.deps);
+    expect(described.reaches_phone).toBe(reachesPhone((await group.block.getReminderDestinations()).destinations));
+    expect(JSON.stringify(described)).not.toContain('never-read-here');
+    // A lookup that fails leaves both unsaid, and the channel list and the switch still come.
+    const failing = { ...group.block, getReminderDestinations: async () => { throw new Error('Fixture destinations failure'); } } as NotificationBlock;
+    const without = await handleNotificationsDescribe(buildDeps(failing));
+    expect(['reaches_phone' in without, 'reminder_issues' in without]).toEqual([false, false]); expect(without.rows.length).toBeGreaterThan(0);
+    const switched = await handleNotificationsSetChannel(buildDeps(failing), { channel: 'email', patch: { notification: false } });
+    expect(switched.ok && ['reaches_phone' in switched, 'reminder_issues' in switched]).toEqual([false, false]);
+    expect([reachesPhone(undefined), reachesPhone([{ channel: 'ui' }, { channel: 'bridge' }]), reachesPhone([{ channel: 'email' }])]).toEqual([false, false, true]);
   });
 
   it('ui row is fixed-on with capability inline and ready true', async () => {

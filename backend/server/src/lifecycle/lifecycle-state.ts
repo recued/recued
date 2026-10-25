@@ -222,7 +222,9 @@ export const createLifecycleStateMachine = (
       }
       const prev = state;
       state = next;
-      for (const h of handlers) {
+      // A copy, as Node's EventEmitter notifies: an observer that unsubscribes
+      // itself splices this list, which made the loop skip the observer after it.
+      for (const h of [...handlers]) {
         try {
           h(prev, next);
         } catch {

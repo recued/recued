@@ -9,6 +9,7 @@
  * that lock too long (`reportLongWriteLockHolds`).
  */
 
+import { qualificationSqlMetrics } from './qualification-sql-metrics.js';
 import {
   chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
   unlinkSync, writeFileSync,
@@ -502,6 +503,7 @@ const constructDatabase = (
   holdWarning?: WriteLockHoldWarning,
 ): Database.Database => {
   const nativeBinding = resolveNativeBinding();
+  const metrics = qualificationSqlMetrics();
   // ⚠ Cast: `@types/better-sqlite3` types `nativeBinding` as `string`, but the
   // multiple-ciphers driver also accepts a PRE-LOADED ADDON OBJECT
   // (`lib/database.js` — `else { addon = nativeBinding }`), which is the only
@@ -509,6 +511,7 @@ const constructDatabase = (
   // contract is the one that matters here.
   const database = new CipherDatabase(filename, {
     ...options,
+    ...(metrics ? { verbose: (sql: unknown) => { options?.verbose?.(sql); if (typeof sql === 'string') metrics(sql); } } : {}),
     ...(nativeBinding ? { nativeBinding: nativeBinding as unknown as string } : {}),
   }) as unknown as Database.Database;
   applyRealmPragmas(database);

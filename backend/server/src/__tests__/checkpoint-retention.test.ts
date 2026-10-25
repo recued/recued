@@ -31,6 +31,7 @@ import {
   type GatedActionRecord,
   type GatedActionStore,
 } from '../gated-action-store.js';
+import { createMcpActionStore, type McpActionRecord, type McpActionStore } from '../mcp-action-store.js';
 
 const NOW = Date.parse('2026-06-10T18:00:00.000Z');
 const DAY_MS = 86_400_000;
@@ -109,6 +110,8 @@ const harness = (opts: {
   staleAfterDays?: number | null;
   onExpired?: (entry: AuditEntry) => Promise<void> | void;
   gatedActionStore?: GatedActionStore;
+  mcpActionStore?: McpActionStore;
+  onRawOpExpired?: (checkpoint: Checkpoint) => Promise<void> | void;
   unresolvedAsks?: Array<{
     ask_id: string;
     status: 'open' | 'answered' | 'handled';
@@ -148,6 +151,8 @@ const harness = (opts: {
         opts.staleAfterDays === undefined ? WINDOW_DAYS : opts.staleAfterDays,
     }),
     ...(opts.onExpired ? { onExpired: opts.onExpired } : {}),
+    ...(opts.mcpActionStore ? { mcpActionStore: opts.mcpActionStore } : {}),
+    ...(opts.onRawOpExpired ? { onRawOpExpired: opts.onRawOpExpired } : {}),
   });
   return {
     retention,
@@ -661,6 +666,51 @@ describe('checkpoint-retention — anchorless raw-op holds', () => {
       status: 'cancelled',
       result: { code: 'RECIPE_APPROVAL_TIMEOUT', op_id: 'seller.mail.send' },
     });
+  });
+});
+
+describe('checkpoint-retention — D-329, an expired raw-op hold settles everywhere', () => {
+  const stores = () => ({
+    actions: createGatedActionStore(createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-raw-expired', now: () => NOW }),
+    mcp: createMcpActionStore(createInMemoryCollection<McpActionRecord>()),
+  });
+
+  it('settles the AI app\'s action as cancelled, never in doubt, and tells the chat once the checkpoint is gone', async () => {
+    const { actions, mcp } = stores();
+    const seen: Array<{ run_id: string; checkpointLeft: boolean }> = [];
+    let h: Harness;
+    h = harness({
+      gatedActionStore: actions,
+      mcpActionStore: mcp,
+      unresolvedAsks: [],
+      onRawOpExpired: async (cp) => {
+        seen.push({ run_id: cp.run_id, checkpointLeft: (await h.checkpointStore.get(cp.checkpoint_id)) !== null });
+      },
+    });
+    const held = await mcp.createHeld({ run_id: 'run-raw', principal_id: 'token-1', tool_name: 'seller.mail.send', kind: 'raw_op' });
+    await seed(h, [rawCheckpoint({ created_at: NOW - 40 * DAY_MS })], []);
+
+    expect(await h.retention.run()).toMatchObject({ expired: 1, failed: 0 });
+
+    expect(await mcp.getOwned(held.action_ref, 'token-1')).toMatchObject({
+      status: 'cancelled', result: { code: 'RECIPE_APPROVAL_TIMEOUT', expired: true },
+    });
+    expect(seen).toEqual([{ run_id: 'run-raw', checkpointLeft: false }]);
+  });
+
+  it('tells nothing while an answer is still being handled', async () => {
+    const { actions, mcp } = stores();
+    const onRawOpExpired = vi.fn();
+    const h = harness({
+      gatedActionStore: actions, mcpActionStore: mcp, onRawOpExpired,
+      unresolvedAsks: [{ ask_id: 'ask-raw', status: 'answered', handler_kind: 'gateway.preflight',
+        handler_payload: { checkpoint_id: 'cp-raw' } }],
+      ask: { status: 'answered', handler_payload: { checkpoint_id: 'cp-raw' } },
+    });
+    await seed(h, [rawCheckpoint({ created_at: NOW - 40 * DAY_MS })], []);
+    expect(await h.retention.run()).toMatchObject({ expired: 0, deferred: 1 });
+    expect(onRawOpExpired).not.toHaveBeenCalled();
   });
 });
 

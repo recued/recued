@@ -44,10 +44,10 @@ import {
   encodeCiphertext,
   decodeCiphertext,
   randomBytes,
-  deriveKEKFromPassword,
   deriveKEKFromServerKey,
   SALT_LEN,
 } from '@recued/crypto';
+import { deriveKeyfileKEK } from './password-kdf.js';
 import { writeFileAtomicSync } from '../durable-fs.js';
 import {
   describeMachineSecretCapability,
@@ -329,7 +329,7 @@ const decodeInner = async (
       throw new Error('createFileServerKeyStore: encrypted file missing kdf fields');
     }
     const salt = base64ToBytes(doc.kdf_salt_b64);
-    const kek = await deriveKEKFromPassword(passphrase, salt, doc.kdf_params);
+    const kek = await deriveKeyfileKEK(passphrase, salt, doc.kdf_params);
     let plaintext: Uint8Array;
     try {
       plaintext = await aeadDecrypt(kek, decodeCiphertext(doc.payload));
@@ -372,7 +372,7 @@ const encodeInner = async (
   }
   if (passphrase) {
     const salt = randomBytes(SALT_LEN);
-    const kek = await deriveKEKFromPassword(passphrase, salt, params);
+    const kek = await deriveKeyfileKEK(passphrase, salt, params);
     const ct = await aeadEncrypt(kek, new TextEncoder().encode(innerJson));
     return {
       version: FILE_VERSION,

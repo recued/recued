@@ -20,21 +20,11 @@ const RECIPE: RecipeDefinition = {
 /** Open a WS connection, register, and return a small rpc helper.
  *  Audit log is appended inside handleExecute regardless of caller, so
  *  rpc('execute', ...) exercises the same write path the HTTP route used to. */
-const connectAndRegister = (port: number, instanceId: string): Promise<WebSocket> =>
+const connectClient = (port: number): Promise<WebSocket> =>
   new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=test-realm`);
     ws.on('error', reject);
-    ws.on('open', () => {
-      ws.send(JSON.stringify({ type: 'register', instance_id: instanceId }));
-      const onMsg = (data: any) => {
-        const m = JSON.parse(data.toString());
-        if (m.type === 'registered') {
-          ws.off('message', onMsg);
-          resolve(ws);
-        }
-      };
-      ws.on('message', onMsg);
-    });
+    ws.on('open', () => resolve(ws));
   });
 
 const rpcExecute = (ws: WebSocket, requestId: string, args: Record<string, unknown>): Promise<any> =>
@@ -78,7 +68,7 @@ describe('audit log', () => {
       },
     });
     server.wsServer.maxInstances = 0;
-    ws = await connectAndRegister(server.port, 'ext-audit');
+    ws = await connectClient(server.port);
   });
 
   afterAll(async () => {

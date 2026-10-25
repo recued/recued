@@ -59,6 +59,7 @@ import {
   parseTimelineEntityId,
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
+import { activeWorkGroups, historyOutcome, validRunYield } from './run-management.js';
 import { programDisplayName } from '../settings/pack-programs-controls.js';
 import {
   LOGS_RUN_SUMMARY_ATTR,
@@ -88,6 +89,7 @@ import {
 } from '../shell/hierarchical-navigation.js';
 import {
   customerWorkReturnHash,
+  runReviewWorkspaceHref,
   serializeDataEntityVerificationAddress,
   serializeChatPlanAddress,
   serializeLogsRunAddress,
@@ -97,8 +99,17 @@ import {
   type DataEntityVerificationTab,
   type DataVerificationRelationship,
   type LogsRunAddress,
+  type RunReviewWorkspace,
   type SourceRecordDataTab,
 } from '../shell/route.js';
+import {
+  focusListTarget,
+  readListContinuity,
+  readListScroll,
+  restoreListScroll,
+  updateListContinuity,
+  type ListContinuitySnapshot,
+} from '../shell/list-preview-continuity.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 
@@ -229,6 +240,27 @@ const defaultRunsFilters = (): RunsFilters => ({
   status: 'all', origin: 'all', recipe_id: '', time_range: 'all',
 });
 
+interface RunHistoryState {
+  readonly draft: RunsFilters;
+  readonly applied: RunsFilters;
+  readonly recipeScope: string;
+}
+
+// The caller belongs to one shell/server connection. A new connection cannot
+// inherit another server's history filters or return target. The snapshots
+// themselves live only in the current document, through the shared continuity
+// seam; no run payloads or private filter text enter URLs or durable storage.
+const historyNamespaces = new WeakMap<object, string>();
+let historyNamespaceSequence = 0;
+const historyNamespace = (owner: object): string => {
+  let key = historyNamespaces.get(owner);
+  if (key === undefined) {
+    key = `logs-history:${++historyNamespaceSequence}`;
+    historyNamespaces.set(owner, key);
+  }
+  return key;
+};
+
 export interface BootstrapLogsRouteOptions {
   root: HTMLElement;
   document?: Document;
@@ -271,6 +303,7 @@ export interface BootstrapLogsRouteOptions {
    * `initialRunId`; selecting another run intentionally drops this context. */
   chatReturn?: ChatPlanAddress;
   receptionReturn?: string;
+  workspaceReturn?: RunReviewWorkspace;
   /** R24 follow-on — pre-select the Recipe filter from a `#logs/recipe/<recipe_id>`
    *  deep link (the recipe detail's "View runs in Logs" link), so the History
    *  view opens already scoped to that recipe's runs. Seeds `filters.recipe_id`;
@@ -377,6 +410,7 @@ export interface RunsRoute {
   setFilters(filters: Partial<RunsFilters>): Promise<void>;
   loadMore(): Promise<void>;
   openRun(run_id: string): Promise<void>;
+  closeRun(): void;
   /** D-181 slice 5b — owner live-control over the long-op governor. */
   killRun(run_id: string): Promise<void>;
   cancelCall(queued_call_id: string): Promise<void>;
@@ -411,35 +445,60 @@ const LOGS_ROUTE_STYLES = `
   font-size: 20px;
   font-weight: 650;
 }
-[${LOGS_ROUTE_CHAT_RETURN_ATTR}] {
-  min-height: 44px;
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 12px 24px;
+  margin-bottom: 18px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-heading,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-source {
+  min-width: 0;
+  max-width: 100%;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-heading .logs-title {
+  font-size: 24px;
+  line-height: 1.3;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-source {
+  margin-left: auto;
+}
+:is([${LOGS_ROUTE_CHAT_RETURN_ATTR}], [data-logs-workspace-return], [data-logs-reception-return]) {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  margin: 0 0 14px;
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-subtle);
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
 }
-[${LOGS_ROUTE_CHAT_RETURN_ATTR}] a {
+:is([${LOGS_ROUTE_CHAT_RETURN_ATTR}], [data-logs-workspace-return], [data-logs-reception-return]) > span {
+  min-width: 0;
+  max-width: 30ch;
+  overflow-wrap: anywhere;
+}
+:is([${LOGS_ROUTE_CHAT_RETURN_ATTR}], [data-logs-workspace-return], [data-logs-reception-return]) a {
+  box-sizing: border-box;
   min-height: 44px;
-  flex: 0 0 auto;
+  max-width: 100%;
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
-  padding: 4px 8px;
-  border-radius: 6px;
+  justify-content: center;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface);
   color: var(--accent);
   font-weight: 680;
   text-decoration: none;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
-[${LOGS_ROUTE_CHAT_RETURN_ATTR}] a:hover,
-[${LOGS_ROUTE_CHAT_RETURN_ATTR}] a:focus-visible {
+:is([${LOGS_ROUTE_CHAT_RETURN_ATTR}], [data-logs-workspace-return], [data-logs-reception-return]) a:hover,
+:is([${LOGS_ROUTE_CHAT_RETURN_ATTR}], [data-logs-workspace-return], [data-logs-reception-return]) a:focus-visible {
   background: var(--accent-weak);
 }
 [${LOGS_ROUTE_HOST_ATTR}] a,
@@ -469,9 +528,130 @@ const LOGS_ROUTE_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-intro,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-section-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 4px 0 14px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-view-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px;
+  margin-bottom: 18px;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 8px);
+  background: var(--surface);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-view-nav a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 8px 16px;
+  border-radius: var(--wc-radius, 6px);
+  color: var(--muted);
+  font-weight: 650;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-view-nav a[aria-current="page"] {
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-view-nav a:hover { background: var(--surface-subtle); }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-view-nav a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-head h2 { margin: 0; font-size: 16px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-count { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-filter-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 8px);
+  background: var(--surface);
+  padding: 14px;
+  margin-bottom: 14px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-filter-panel .logs-filters { margin-bottom: 0; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-filter-draft { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-cell-outcome-note {
+  display: block;
+  margin-top: 5px;
+  max-width: 26ch;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-active-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 18px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-active-summary > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-active-summary dt { color: var(--muted); font-size: 12px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-active-summary dd { margin: 5px 0 0; font-size: 20px; font-weight: 650; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-work-group { margin-top: 18px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-work-group h3 { margin: 0 0 10px; font-size: 14px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-work-state {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--accent);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-active-controls .logs-button {
+  min-height: 44px;
+}
+@media (max-width: 860px) {
+  [${LOGS_ROUTE_HOST_ATTR}] [${LOGS_ROUTE_ACTIVE_ROW_ATTR}],
+  [${LOGS_ROUTE_HOST_ATTR}] [${LOGS_ROUTE_PASS_ROW_ATTR}] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] [${LOGS_ROUTE_ACTIVE_ROW_ATTR}] .logs-active-controls,
+  [${LOGS_ROUTE_HOST_ATTR}] [${LOGS_ROUTE_PASS_ROW_ATTR}] .logs-active-controls { justify-content: flex-start; }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-active-head .logs-button,
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-history-head .logs-button,
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-panel > .logs-button { min-height: 44px; }
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-active-intent {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 560px) {
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-active-summary { gap: 6px; }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-active-summary > div { padding: 9px; }
+}
+@media (max-width: 860px) {
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-filter-panel .logs-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-filter-panel .logs-filter-actions { grid-column: 1 / -1; }
+}
+@media (max-width: 360px) {
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-filter-panel .logs-filters { grid-template-columns: minmax(0, 1fr); }
+}
 [${LOGS_ROUTE_HOST_ATTR}] .logs-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
@@ -616,7 +796,7 @@ const LOGS_ROUTE_STYLES = `
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cell-status,
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cell-policy {
-  display: flex;
+  display: table-cell;
   flex-wrap: wrap;
   gap: 6px 8px;
   align-items: center;
@@ -693,9 +873,9 @@ const LOGS_ROUTE_STYLES = `
 [${LOGS_ROUTE_DETAIL_ATTR}] {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--wc-radius-lg, 8px);
   background: var(--surface);
-  padding: 12px;
+  padding: clamp(12px, 2vw, 24px);
 }
 [${LOGS_ROUTE_DETAIL_ATTR}] h2,
 [${LOGS_ROUTE_DETAIL_ATTR}] h3 {
@@ -703,10 +883,198 @@ const LOGS_ROUTE_STYLES = `
   font-size: 15px;
   overflow-wrap: anywhere;
 }
-[${LOGS_ROUTE_DETAIL_ATTR}] h3 {
-  margin-top: 14px;
-  font-size: 13px;
+[${LOGS_ROUTE_DETAIL_ATTR}] h2 {
+  font-size: 22px;
+  line-height: 1.3;
 }
+[${LOGS_ROUTE_DETAIL_ATTR}] h3 {
+  margin-top: 18px;
+  font-size: 15px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-bottom: 2px;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 650;
+  font-size: 12px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-back:focus-visible,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-technical > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-context {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 18px 0 24px;
+  padding: 14px 16px;
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface-subtle);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-context > div { min-width: 0; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-context dt {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-context dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-id {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  margin: 4px 0 12px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-grid,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-primary,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-evidence {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-evidence-section {
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-evidence-section > h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-evidence-section > .logs-detail-row {
+  margin: 10px 0 0;
+  line-height: 1.5;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-evidence-section > .logs-detail-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-review-primary > [${LOGS_ROUTE_AFFECTED_ITEMS_ATTR}] {
+  margin: 0;
+  padding: 16px;
+}
+[${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px 16px;
+  margin: 20px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+[${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary > button {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 44px;
+}
+[${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary > details {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+[${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary summary {
+  min-height: 44px;
+  padding-block: 12px;
+}
+[${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary > p {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+@media (min-width: 960px) {
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-review-grid-with-items {
+    grid-template-columns: minmax(0, 1.8fr) minmax(260px, 1fr);
+    align-items: start;
+    gap: 20px;
+  }
+}
+@media (max-width: 700px) {
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-run-context {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 16px;
+    padding: 12px;
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-review-source {
+    width: 100%;
+    margin-left: 0;
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-review-source > aside {
+    justify-content: space-between;
+  }
+}
+@media (max-width: 420px) {
+  [${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary > details {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  [${LOGS_ROUTE_DETAIL_ATTR}] > .logs-run-summary > p {
+    grid-row: 3;
+  }
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-technical {
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-technical > summary {
+  min-height: 44px;
+  padding: 12px 0;
+  box-sizing: border-box;
+  cursor: pointer;
+  font-weight: 650;
+  font-size: 14px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] a.logs-affected-action,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-row-links a {
+  font-family: inherit;
+  font-size: 13px;
+  text-decoration: none;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-confirmed-change button {
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-confirmed-change button:hover {
+  background: var(--surface-subtle);
+  border-color: var(--border-strong);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-confirmed-change button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-confirmed-change button:disabled {
+  opacity: .65;
+  cursor: not-allowed;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-technical-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 [${LOGS_ROUTE_OUTCOME_ATTR}] {
   margin: 10px 0 12px;
   padding: 11px 12px;
@@ -1625,13 +1993,25 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
 export const projectRunOutcomeSummary = (
   detail: RunDetail,
 ): RunOutcomeSummary => {
-  const core = runOutcomeCore(detail);
+  let core = runOutcomeCore(detail);
+  const recorded = historyOutcome(detail.audit);
+  if (detail.audit.status === 'succeeded') {
+    if (recorded.kind === 'refused') {
+      core = { ...core, title: recorded.label,
+        detail: 'The run finished without an error, but none of the counted items succeeded.' };
+    } else if (recorded.kind === 'partial') {
+      core = { ...core, title: recorded.label, detail: 'The run finished with some item failures.' };
+    } else if (recorded.kind === 'stopped') {
+      core = { ...core, title: recorded.label, tone: 'neutral',
+        detail: 'A recipe stop condition ended the run before later steps.' };
+    }
+  }
   const recordWarnings = (detail.audit.degraded ?? []).map((code) => ({
     code,
     message: DEGRADATION_MESSAGES[code],
   }));
   const hasRecordWarning = recordWarnings.length > 0;
-  const yieldNotice = projectRunYieldNotice(detail.audit.run_yield);
+  const yieldNotice = projectRunYieldNotice(detail.audit.run_yield, detail.audit.status);
   // An all-refused run is the one case where a positive status is not merely
   // incomplete but actively misleading, so it escalates tone by exactly the
   // mechanism a record warning uses. A partial failure is REPORTED and does not
@@ -1693,11 +2073,12 @@ export const projectRunOutcomeSummary = (
  */
 export const projectRunYieldNotice = (
   runYield: RunYield | undefined,
+  status: RunAnchorStatus = 'succeeded',
 ): RunYieldNotice | undefined => {
-  if (runYield === undefined) return undefined;
-  const refusal = projectRefusalNotice(runYield);
+  if (!validRunYield(runYield)) return undefined;
+  const refusal = projectRefusalNotice(runYield, status);
   if (refusal !== undefined) return refusal;
-  if (typeof runYield.stopped_at === 'string' && runYield.stopped_at !== '') {
+  if (status === 'succeeded' && typeof runYield.stopped_at === 'string' && runYield.stopped_at !== '') {
     return {
       kind: 'stopped',
       message: `This run ended early at step "${runYield.stopped_at}": its stop condition `
@@ -1707,7 +2088,7 @@ export const projectRunYieldNotice = (
   return undefined;
 };
 
-const projectRefusalNotice = (runYield: RunYield): RunYieldNotice | undefined => {
+const projectRefusalNotice = (runYield: RunYield, status: RunAnchorStatus): RunYieldNotice | undefined => {
   const total = runYield.items_total;
   const failed = runYield.items_failed;
   if (!Number.isFinite(total) || !Number.isFinite(failed)) return undefined;
@@ -1719,17 +2100,18 @@ const projectRefusalNotice = (runYield: RunYield): RunYieldNotice | undefined =>
   if (runYieldIsTotalRefusal(runYield)) {
     return {
       kind: 'all-refused',
-      message: total === 1
-        ? 'The one thing this run touched failed. It finished without an error, '
-          + 'but nothing it set out to do actually happened.'
-        : `All ${total} things this run touched failed. It finished without an `
-          + 'error, but nothing it set out to do actually happened.',
+      message: (total === 1
+        ? 'The one thing this run touched failed.'
+        : `All ${total} things this run touched failed.`)
+        + (status === 'succeeded'
+          ? ' It finished without an error, but none of those items succeeded.' : ''),
     };
   }
   return {
     kind: 'partial-failure',
-    message: `${failed} of ${total} failed. The rest went through, which `
-      + 'is why the run still finished without an error.',
+    message: `${failed} of ${total} failed.`
+      + (status === 'succeeded'
+        ? ' The rest went through, which is why the run still finished without an error.' : ''),
   };
 };
 
@@ -1772,10 +2154,12 @@ const runHref = (
   run_id: string,
   returnToChat?: ChatPlanAddress,
   returnToReception?: string,
+  returnToWorkspace?: RunReviewWorkspace,
 ): string => serializeLogsRunAddress({
   runId: run_id,
   ...(returnToChat !== undefined ? { returnToChat } : {}),
   ...(returnToReception !== undefined ? { returnToReception } : {}),
+  ...(returnToWorkspace !== undefined ? { returnToWorkspace } : {}),
 });
 
 const recipeHref = (recipe_id: string): string =>
@@ -2049,11 +2433,13 @@ export const projectRunAffectedItems = (
   run: Pick<RunFeedRow, 'run_id' | 'status'>,
   returnToChat?: ChatPlanAddress,
   returnToReception?: string,
+  returnToWorkspace?: RunReviewWorkspace,
 ): ReadonlyArray<RunAffectedItem> => {
   const returnToRun: LogsRunAddress = {
     runId: run.run_id,
     ...(returnToChat !== undefined ? { returnToChat } : {}),
     ...(returnToReception !== undefined ? { returnToReception } : {}),
+    ...(returnToWorkspace !== undefined ? { returnToWorkspace } : {}),
   };
   const projected = new Map<string, RunAffectedItem & { readonly rank: number }>();
   for (const link of links) {
@@ -2108,8 +2494,6 @@ const renderProvenanceLink = (
 const renderRunLinks = (
   row: Pick<RunFeedRow, 'run_id' | 'recipe_id' | 'status' | 'policy_result' | 'links'>
     & { ask_id?: string },
-  returnToChat?: ChatPlanAddress,
-  returnToReception?: string,
 ): string => {
   // R17 — the approval link is run-SCOPED when the run carries a pending ask id:
   // `#approvals/<ask_id>` focuses + highlights that one card instead of dropping
@@ -2168,12 +2552,6 @@ const renderRunLinks = (
         attributes: { [LOGS_ROUTE_LINK_ATTR]: 'recipe' },
       })}
       ${approvalLink}
-      ${renderReferenceLink({
-        label: 'Audit detail',
-        referenceId: row.run_id,
-        href: runHref(row.run_id, returnToChat, returnToReception),
-        attributes: { [LOGS_ROUTE_LINK_ATTR]: 'audit' },
-      })}
       ${provenance}
     </div>
   `;
@@ -2245,7 +2623,10 @@ const renderFilters = (
 // failure-reason chip (a long-op kill/stall category WINS over a cli-tool
 // reason — see `projectRunFeedRow`, so the two are never both present).
 const renderHistoryStatusCell = (row: RunFeedRow): string => `
-  ${renderStatus(row.status)}
+  ${(() => {
+    const outcome = historyOutcome(row);
+    return `<span data-recued-logs-history-outcome="${outcome.kind}"><span ${LOGS_ROUTE_STATUS_ATTR}="${e(row.status)}" data-tone="${outcome.tone}">${e(outcome.label)}</span>${outcome.note === undefined ? '' : `<span class="logs-cell-outcome-note">${e(outcome.note)}</span>`}</span>`;
+  })()}
   ${row.error_category !== undefined ? renderErrorCategory(row.error_category) : ''}
   ${row.error_category === undefined && row.cli_failure_reason !== undefined ? renderCliFailureChip(row.cli_failure_reason) : ''}
 `;
@@ -2272,7 +2653,7 @@ const renderHistoryRow = (
       <td data-label="Origin">${renderOrigin(row.origin)}</td>
       <td data-label="Started">${e(formatDateTime(row.started_at))}</td>
       <td data-label="Duration">${e(formatDuration(row.duration_ms))}</td>
-      <td data-label="Status" class="logs-cell-status">${renderHistoryStatusCell(row)}</td>
+      <td data-label="Outcome" class="logs-cell-status">${renderHistoryStatusCell(row)}</td>
       <td data-label="Policy" class="logs-cell-policy">${row.policy_result !== 'allowed' ? renderPolicy(row.policy_result) : ''}</td>
       <td class="logs-cell-open">
         <button type="button" class="logs-button logs-row-open"
@@ -2294,9 +2675,8 @@ const renderFeed = (
   selectedRunId: string | null,
   openingRunId: string | null,
 ): string => {
-  if (error !== undefined) {
-    return `<p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p>`;
-  }
+  const errorHtml = error === undefined ? '' : `<p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p><button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-history">Retry history</button>`;
+  if (error !== undefined && runs.length === 0) return errorHtml;
   if (loading && runs.length === 0) {
     return `<p ${LOGS_ROUTE_EMPTY_ATTR}>Loading runs...</p>`;
   }
@@ -2307,6 +2687,8 @@ const renderFeed = (
   // Policy · ▸). Mobile (≤860px): the same rows collapse to label-prefixed
   // cards via CSS (`td::before { content: attr(data-label) }`).
   return `
+    ${errorHtml}
+    ${error === undefined ? '' : '<p class="logs-section-note">Showing the last loaded runs.</p>'}
     <table class="logs-table">
       <caption class="logs-sr-only">Run history</caption>
       <thead>
@@ -2315,7 +2697,7 @@ const renderFeed = (
           <th scope="col">Origin</th>
           <th scope="col">Started</th>
           <th scope="col">Duration</th>
-          <th scope="col">Status</th>
+          <th scope="col">Outcome</th>
           <th scope="col">Policy</th>
           <th scope="col"><span class="logs-sr-only">Open</span></th>
         </tr>
@@ -2329,7 +2711,7 @@ const renderFeed = (
       </tbody>
     </table>
     ${nextCursor !== null
-      ? `<button type="button" class="logs-button" ${LOGS_ROUTE_LOAD_MORE_ATTR} ${LOGS_ROUTE_ACTION_ATTR}="load-more" aria-disabled="${loadingMore}">${loadingMore ? 'Loading...' : 'Load more'}</button>`
+      ? `<button type="button" class="logs-button" ${LOGS_ROUTE_LOAD_MORE_ATTR} ${LOGS_ROUTE_ACTION_ATTR}="load-more" aria-disabled="${loadingMore || loading}">${loadingMore ? 'Loading...' : 'Load more'}</button>`
       : ''}
   `;
 };
@@ -2369,7 +2751,8 @@ const renderActiveControls = (
       : ` aria-disabled="true"${pendingAction === action
         ? ' aria-busy="true"'
         : ''}`;
-  if (entry.entry_kind === 'queued-call' && entry.queued_call_id !== undefined) {
+  if (entry.entry_kind === 'queued-call') {
+    if (entry.queued_call_id === undefined || entry.queued_call_id.length === 0) return '';
     const id = e(entry.queued_call_id);
     const subject = e(activeEntryTitle(entry));
     return `
@@ -2379,9 +2762,8 @@ const renderActiveControls = (
       </div>
     `;
   }
-  // `run` + `detached-job` entries are killed by run_id. A queued-call without
-  // a threaded run_id (rare, queue feed before the descriptor lands) gets no
-  // control — `cancel`/`promote` need the queued_call_id which it also lacks.
+  // Only run and detached-job entries can be killed by run_id. A queued call
+  // without its call identity stays read-only; its parent run is not a fallback.
   if (entry.run_id !== undefined && entry.run_id.length > 0) {
     const label = pendingAction === 'kill-run' ? 'Killing…' : 'Kill';
     return `
@@ -2408,19 +2790,20 @@ const renderActiveEntry = (
   const elapsed = Number.isFinite(now) && now >= sinceTs
     ? `<span>${e(formatDuration(now - sinceTs))}</span>`
     : '';
-  const laneMeta = entry.lane !== undefined ? `<span>lane ${e(entry.lane)}</span>` : '';
+  const laneMeta = entry.lane !== undefined ? `<span>Lane: ${e(entry.lane)}</span>` : '';
   const id = activeEntryId(entry);
   return `
     <li ${LOGS_ROUTE_ACTIVE_ROW_ATTR}="${e(id)}" data-stalled="${stalled}" data-entry-kind="${e(entry.entry_kind)}">
       <div>
         <p class="logs-active-title">${e(activeEntryTitle(entry))}</p>
         <div class="logs-active-meta">
-          <span>${e(ACTIVE_STATE_LABELS[entry.state])}</span>
+          <span class="logs-work-state">${e(ACTIVE_STATE_LABELS[entry.state])}</span>
           ${laneMeta}
           <span>${e(entry.origin)}</span>
           ${elapsed}
-          ${stalled ? '<span>stalled</span>' : ''}
+          ${stalled ? '<span>No recent progress (stalled)</span>' : ''}
         </div>
+        ${entry.intent === undefined ? '' : `<p class="logs-active-intent">${e(entry.intent)}</p>`}
       </div>
       ${renderActiveControls(entry, pendingControls.get(id))}
     </li>
@@ -2440,7 +2823,7 @@ const renderActivePeek = (
   now: number,
 ): string => {
   const consoleHref = e(serializeShellRoute('logs', 'active'));
-  const manageLink = `<a class="logs-inline-link" ${LOGS_ROUTE_LINK_ATTR}="manage-active" href="${consoleHref}">manage ▸</a>`;
+  const manageLink = `<a class="logs-inline-link" ${LOGS_ROUTE_LINK_ATTR}="manage-active" href="${consoleHref}">Manage active work</a>`;
   const shell = (body: string): string =>
     `<section ${LOGS_ROUTE_PEEK_ATTR}>${body}</section>`;
   const errorLine = error !== undefined
@@ -2455,7 +2838,7 @@ const renderActivePeek = (
   }
   const head = `
     <div class="logs-peek-head">
-      <span class="logs-peek-count">${e(String(entries.length))} running</span>
+      <span class="logs-peek-count">${e(String(entries.length))} active ${entries.length === 1 ? 'entry' : 'entries'}</span>
       ${manageLink}
     </div>
   `;
@@ -2501,13 +2884,22 @@ const renderActive = (
       ? `<p ${LOGS_ROUTE_EMPTY_ATTR}>Loading active executions...</p>`
       : entries.length === 0
         ? `<p ${LOGS_ROUTE_EMPTY_ATTR}>No active executions.</p>`
-        : `<ul class="logs-active-feed" role="list">${entries.map((entry) => renderActiveEntry(entry, now, pendingControls)).join('')}</ul>`;
+        : (() => {
+            const groups = activeWorkGroups(entries);
+            const group = (key: string, title: string, rows: ReadonlyArray<ActiveExecutionEntry>): string =>
+              rows.length === 0 ? '' : `<section class="logs-work-group" data-recued-logs-work-group="${key}" aria-label="${title}"><h3>${title} (${rows.length})</h3><ul class="logs-active-feed" role="list">${rows.map(entry => renderActiveEntry(entry, now, pendingControls)).join('')}</ul></section>`;
+            return `<dl class="logs-active-summary" aria-label="Loaded active work"><div><dt>In progress</dt><dd>${groups.inProgress.length}</dd></div><div><dt>Queued</dt><dd>${groups.queued.length}</dd></div><div><dt>Stalled</dt><dd>${groups.stalled}</dd></div></dl>`
+              + group('in-progress', 'In progress', groups.inProgress)
+              + group('queued', 'Waiting for a slot', groups.queued);
+          })();
   return `
     <section ${LOGS_ROUTE_ACTIVE_ATTR}>
       <div class="logs-active-head">
-        <h2>Active</h2>
-        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active" aria-label="${refreshLabel} active runs"${refreshAttrs}>${refreshLabel}</button>
+        <h2>Active work</h2>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active" aria-label="${refreshLabel} active runs"${refreshAttrs}>${refreshLabel}</button>
       </div>
+      <p class="logs-section-note">Current work and queued calls on this server.</p>
+      ${error !== undefined && entries.length > 0 ? '<p class="logs-section-note">Showing the last loaded snapshot.</p>' : ''}
       ${renderLanes(lanes)}
       ${notice !== undefined ? `<p ${LOGS_ROUTE_DEGRADED_ATTR}>${e(notice)}</p>` : ''}
       ${errorLine}${body}
@@ -2626,8 +3018,10 @@ const renderPasses = (
     <section ${LOGS_ROUTE_PASSES_ATTR}>
       <div class="logs-active-head">
         <h2>Active passes</h2>
-        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes" aria-label="${refreshLabel} active passes"${refreshAttrs}>${refreshLabel}</button>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes" aria-label="${refreshLabel} active passes"${refreshAttrs}>${refreshLabel}</button>
       </div>
+      <p class="logs-section-note">Temporary session permissions. Revoking a pass changes future authorization.</p>
+      ${error !== undefined && grants.length > 0 ? '<p class="logs-section-note">Showing the last loaded snapshot.</p>' : ''}
       ${notice !== undefined ? `<p ${LOGS_ROUTE_DEGRADED_ATTR}>${e(notice)}</p>` : ''}
       ${errorLine}${body}
     </section>
@@ -2788,6 +3182,7 @@ const renderAffectedItems = (
   detail: RunDetail,
   returnToChat?: ChatPlanAddress,
   returnToReception?: string,
+  returnToWorkspace?: RunReviewWorkspace,
 ): string => {
   const items = projectRunAffectedItems(
     detail.links,
@@ -2797,6 +3192,7 @@ const renderAffectedItems = (
     },
     returnToChat,
     returnToReception,
+    returnToWorkspace,
   );
   if (items.length === 0 && !runNeedsAffectedItemVerification(detail.audit.status)) {
     return '';
@@ -2848,6 +3244,25 @@ const renderChatReturn = (
       <a href="${e(serializeChatPlanAddress(address))}" aria-label="Back to the originating Chat action">Back to this Chat action</a>
     </aside>`;
 
+const renderWorkspaceReturn = (address: RunReviewWorkspace | undefined): string => {
+  if (address === undefined) return '';
+  const href = runReviewWorkspaceHref(address);
+  if (href === undefined) return '';
+  const source = address.surface === 'recipes' ? 'Recipes' : address.surface === 'packs' ? 'Packs' : 'Approvals';
+  const label = address.surface === 'recipes' ? 'Back to Recipe'
+    : address.surface === 'packs' ? 'Back to Pack' : 'Back to approval review';
+  return `<aside data-logs-workspace-return="${address.surface}" role="note"><span>You came here from ${source}.</span><a href="${e(href)}">${label}</a></aside>`;
+};
+
+const renderLogNavigation = (view: 'logs' | 'active', historyHash: string): string => `
+  <header class="logs-header"><h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Logs</h1></header>
+  <p class="logs-intro">Review recorded runs or manage work happening now.</p>
+  <nav class="logs-view-nav" aria-label="Log views">
+    <a href="${e(historyHash)}" ${LOGS_ROUTE_LINK_ATTR}="view-history"${view === 'logs' ? ' aria-current="page"' : ''}>History</a>
+    <a href="${e(serializeShellRoute('logs', 'active'))}" ${LOGS_ROUTE_LINK_ATTR}="view-active"${view === 'active' ? ' aria-current="page"' : ''}>Active</a>
+  </nav>
+`;
+
 const renderDetail = (
   detail: RunDetail | null,
   selectedRunId: string | null,
@@ -2857,66 +3272,85 @@ const renderDetail = (
   returnToChat?: ChatPlanAddress,
   returnToReception?: string,
   summaryHtml = '',
+  recipeName?: string,
+  technicalOpen = false,
+  returnToWorkspace?: RunReviewWorkspace,
 ): string => {
   if (error !== undefined) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
+    return `<section ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
       ? ''
-      : `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}">Retry</button>`}</aside>`;
+      : `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}">Retry</button>`}</section>`;
   }
-  if (loading) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Loading ${e(selectedRunId ?? 'run')}...</p>${retrying && selectedRunId !== null
+  if (loading || detail === null) {
+    return `<section ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail" aria-busy="true"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR} role="status">Loading ${e(selectedRunId ?? 'run')}...</p>${retrying && selectedRunId !== null
       ? `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}" aria-disabled="true" aria-busy="true">Retrying…</button>`
-      : ''}</aside>`;
-  }
-  if (detail === null) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Select a run to see its activity, approvals, errors, and permission decisions.</p></aside>`;
+      : ''}</section>`;
   }
 
   const audit = detail.audit;
-  // R17 — the run's pending-approval ask id (the detail is the only place the
-  // approval link now lives — the History table is read-only). Prefer the
-  // approvals summary's id, fall back to the audit row's.
   const askId = detail.approvals.ask_id ?? audit.ask_id;
+  const itemReview = `
+    ${renderAffectedItems(detail, returnToChat, returnToReception, returnToWorkspace)}
+    ${Array.from(new Map(detail.gateway.per_call_trace.flatMap(trace =>
+      trace.local_receipt ? [[trace.local_receipt.receipt_id, trace.local_receipt] as const] : [],
+    )).values()).map(receipt => `<div class="logs-confirmed-change" data-local-mutation-receipt="${e(receipt.receipt_id)}"><h3>${receipt.kind === 'records' ? 'Records' : 'Calendar'} change confirmed</h3></div>`).join('')}
+  `.trim();
   return `
-    <aside ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}" aria-label="Run detail">
-      <h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(audit.run_id)}" tabindex="-1">${e(audit.recipe_id)}</h2>
+    <section ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}" aria-label="Run detail">
+      <h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(audit.run_id)}" tabindex="-1">${e(recipeName?.trim() || audit.recipe_id)}</h2>
+      <p class="logs-run-id">${recipeName !== undefined && recipeName !== audit.recipe_id ? `${e(audit.recipe_id)} · ` : ''}Run ${e(audit.run_id)}</p>
       ${renderOutcome(detail)}
-      ${summaryHtml}
-      ${renderAffectedItems(detail, returnToChat, returnToReception)}
-      <div class="logs-detail-meta">
-        <span>run ${e(audit.run_id)}</span>
-        <span>hash ${e(audit.recipe_hash)}</span>
-        ${renderOrigin(audit.origin)}
-        <span>${e(formatDateTime(audit.started_at))}</span>
-        <span>${e(formatDuration(audit.duration_ms))}</span>
-        ${renderStatus(audit.status)}
-        ${audit.error_category !== undefined ? renderErrorCategory(audit.error_category) : ''}
+      <dl class="logs-run-context">
+        <div><dt>Initiated by</dt><dd>${renderOrigin(audit.origin)}</dd></div>
+        <div><dt>Started</dt><dd>${e(formatDateTime(audit.started_at))}</dd></div>
+        <div><dt>Duration</dt><dd>${e(formatDuration(audit.duration_ms))}</dd></div>
+        <div><dt>Trigger source</dt><dd>${e(audit.trigger_source ?? 'Not recorded')}</dd></div>
+      </dl>
+      <div class="logs-review-grid${itemReview.length > 0 ? ' logs-review-grid-with-items' : ''}">
+        ${itemReview.length > 0 ? `<div class="logs-review-primary">${itemReview}</div>` : ''}
+        <aside class="logs-review-evidence" aria-label="Run evidence">
+          <section class="logs-evidence-section" aria-labelledby="logs-decisions-title">
+            <h3 id="logs-decisions-title">Approvals and decisions</h3>
+            <p class="logs-detail-row">Permission decision: ${renderPolicy(detail.gateway.policy_result)}</p>
+            ${renderApprovals(detail)}
+            ${renderRunLinks({
+              run_id: audit.run_id,
+              recipe_id: audit.recipe_id,
+              status: audit.status,
+              policy_result: detail.gateway.policy_result,
+              links: detail.links,
+              ...(askId !== undefined ? { ask_id: askId } : {}),
+            })}
+          </section>
+          <section class="logs-evidence-section" aria-labelledby="logs-errors-title">
+            <h3 id="logs-errors-title">Errors</h3>
+            ${renderErrors(detailErrors(detail))}
+          </section>
+        </aside>
       </div>
-      ${audit.trigger_source !== null ? `<p class="logs-detail-row">Trigger source: ${e(audit.trigger_source)}</p>` : ''}
-      ${audit.instance_id !== null ? `<p class="logs-detail-row">Instance: ${e(audit.instance_id)}</p>` : ''}
-      ${audit.output_string !== undefined
-        ? `<p ${LOGS_ROUTE_REDACTED_IO_ATTR}>Redacted output is recorded for this run.</p>`
-        : `<p ${LOGS_ROUTE_REDACTED_IO_ATTR}>No redacted output summary recorded.</p>`}
-
-      <h3>Approvals</h3>
-      ${renderApprovals(detail)}
-
-      <h3>Errors</h3>
-      ${renderErrors(detailErrors(detail))}
-
-      <h3>Gateway</h3>
-      ${renderGateway(detail)}
-
-      <h3>Links</h3>
-      ${renderRunLinks({
-        run_id: audit.run_id,
-        recipe_id: audit.recipe_id,
-        status: audit.status,
-        policy_result: detail.gateway.policy_result,
-        links: detail.links,
-        ...(askId !== undefined ? { ask_id: askId } : {}),
-      }, returnToChat, returnToReception)}
-    </aside>
+      ${summaryHtml}
+      <details class="logs-technical" data-recued-logs-technical="${e(audit.run_id)}"${technicalOpen ? ' open' : ''}>
+        <summary data-recued-logs-technical-toggle>Technical evidence</summary>
+        <p class="logs-technical-note">Recorded gateway calls, permission checks and local change receipts.</p>
+        <div class="logs-detail-meta">
+          <span>run ${e(audit.run_id)}</span>
+          <span>hash ${e(audit.recipe_hash)}</span>
+          ${renderStatus(audit.status)}
+          ${audit.error_category !== undefined ? renderErrorCategory(audit.error_category) : ''}
+        </div>
+        ${audit.instance_id !== null ? `<p class="logs-detail-row">Instance: ${e(audit.instance_id)}</p>` : ''}
+        ${audit.output_string !== undefined
+          ? `<p ${LOGS_ROUTE_REDACTED_IO_ATTR}>Redacted output is recorded for this run.</p>`
+          : `<p ${LOGS_ROUTE_REDACTED_IO_ATTR}>No redacted output summary recorded.</p>`}
+        <div class="logs-row-links">${renderReferenceLink({
+          label: 'Run link', referenceId: audit.run_id,
+          href: runHref(audit.run_id, returnToChat, returnToReception, returnToWorkspace),
+          attributes: { [LOGS_ROUTE_LINK_ATTR]: 'audit' },
+        })}</div>
+        <h3>Gateway</h3>
+        ${renderGateway(detail)}
+      </details>
+    </section>
   `;
 };
 
@@ -2983,12 +3417,32 @@ export const bootstrapLogsRoute = (
   // 'logs' = the default History table + capped Active peek-strip.
   const view: 'logs' | 'active' = opts.initialView ?? 'logs';
 
-  let filters: RunsFilters = {
-    ...defaultRunsFilters(),
-    // R24 follow-on — a `#logs/recipe/<id>` deep link opens pre-scoped to that
-    // recipe (buildQuery sends it; resolveRecipeSelection shows it in the picker).
-    recipe_id: opts.initialRecipeId ?? '',
-  };
+  const continuityNamespace = historyNamespace(opts.listCaller ?? opts.root);
+  const listContinuityKey = (scope: string): string =>
+    `${continuityNamespace}:list:${scope}`;
+  const runContinuityKey = (runId: string): string =>
+    `${continuityNamespace}:run:${runId}`;
+  const rememberedHistory = readListContinuity<RunHistoryState>(
+    doc,
+    view === 'active'
+      ? `${continuityNamespace}:last-history`
+      : opts.initialRunId === undefined
+        ? listContinuityKey(opts.initialRecipeId ?? '')
+        : runContinuityKey(opts.initialRunId),
+  );
+  let listRecipeScope = rememberedHistory?.filter?.recipeScope
+    ?? opts.initialRecipeId ?? '';
+  let filters: RunsFilters = rememberedHistory?.filter === undefined
+    ? { ...defaultRunsFilters(), recipe_id: opts.initialRecipeId ?? '' }
+    : { ...rememberedHistory.filter.draft };
+  let appliedFilters: RunsFilters = rememberedHistory?.filter === undefined
+    ? { ...filters } : { ...rememberedHistory.filter.applied };
+  let loadedPages = 0;
+  const pagesToRestore = rememberedHistory?.page ?? 1;
+  let historyLoaded = false;
+  let pendingHistoryRestore = opts.initialRunId === undefined
+    ? rememberedHistory : null;
+  let returnHistory = rememberedHistory;
   let runs: ReadonlyArray<RunFeedRow> = [];
   let nextCursor: ExecutionListCursor | null = null;
   let selectedRunId: string | null = opts.initialRunId ?? null;
@@ -3005,27 +3459,23 @@ export const bootstrapLogsRoute = (
     chatReturnRunId === null ? undefined : opts.chatReturn;
   const receptionReturnRunId = opts.receptionReturn === undefined ? null : selectedRunId;
   let receptionReturn = opts.receptionReturn === undefined ? undefined : customerWorkReturnHash(opts.receptionReturn);
-  const logsListAddress = () => {
-    if (view === 'active') {
-      return hierarchicalAddress(
-        'logs',
-        hierarchicalLevel('view:active', 'active'),
-      );
-    }
-    const recipeId = opts.initialRecipeId?.trim();
-    return recipeId === undefined || recipeId.length === 0
-      ? hierarchicalAddress('logs')
-      : hierarchicalAddress(
-          'logs',
-          hierarchicalLevel(`recipe:${recipeId}`, 'recipe', recipeId),
-        );
+  let workspaceReturn = selectedRunId !== null && opts.workspaceReturn !== undefined
+    && runReviewWorkspaceHref(opts.workspaceReturn) !== undefined ? opts.workspaceReturn : undefined;
+  const workspaceReturnRunId = workspaceReturn === undefined ? null : selectedRunId;
+  const historyListAddress = () => {
+    const recipeId = listRecipeScope.trim();
+    return recipeId.length === 0 ? hierarchicalAddress('logs')
+      : hierarchicalAddress('logs', hierarchicalLevel(`recipe:${recipeId}`, 'recipe', recipeId));
   };
+  const logsListAddress = () => view === 'active'
+    ? hierarchicalAddress('logs', hierarchicalLevel('view:active', 'active'))
+    : historyListAddress();
   const logsRunAddress = (
     runId: string,
     returnToChat?: ChatPlanAddress,
   ) => hierarchicalAddressFromHash(
     'logs',
-    runHref(runId, returnToChat, receptionReturn),
+    runHref(runId, returnToChat, receptionReturn, workspaceReturn),
     hierarchicalLevel(`run:${runId}`, runId),
   );
   const logsHistory = createHierarchicalHistory({
@@ -3035,6 +3485,19 @@ export const bootstrapLogsRoute = (
     history: () => doc.defaultView?.history,
     onCommit: (address) => opts.onHashSync?.(address.hash),
   });
+  const nativeReturnState = (runId: string) => ({
+    recuedLogsReturn: {
+      namespace: continuityNamespace, runId, listHash: logsListAddress().hash,
+    },
+  });
+  let ownsNativeListEntry = false;
+  try {
+    const state = doc.defaultView?.history?.state?.recuedLogsReturn as
+      { namespace?: unknown; runId?: unknown; listHash?: unknown } | undefined;
+    ownsNativeListEntry = rememberedHistory !== null && selectedRunId !== null
+      && state?.namespace === continuityNamespace && state.runId === selectedRunId
+      && state.listHash === logsListAddress().hash;
+  } catch { /* Embedded hosts can restrict History state. */ }
   let loadingFeed = false;
   let loadingMore = false;
   // Distinguish an explicit filter submission from initial/broadcast loads so
@@ -3042,6 +3505,8 @@ export const bootstrapLogsRoute = (
   // feed read still shares one visible, single-flight boundary.
   let applyingFilters = false;
   let clearingFilters = false;
+  let refreshingHistory = false;
+  let queuedHistoryRefresh = false;
   let pendingLoadMoreFocus = false;
   let pendingLoadedRunFocusId: string | null = null;
   let loadingDetail = false;
@@ -3052,6 +3517,16 @@ export const bootstrapLogsRoute = (
   let pendingDetailFocusRunId: string | null = null;
   let errors: RunsLoadErrors = {};
   let disposed = false;
+  const localUndoControls = new Map<string, HTMLElement>();
+  const pendingUndoIds = new Set<string>();
+  const localUndo = opts.localUndo === undefined ? undefined : {
+    ...opts.localUndo,
+    decide: async (args: Parameters<LocalUpdateUndoCallers['decide']>[0]) => {
+      pendingUndoIds.add(args.undo_id);
+      try { return await opts.localUndo!.decide(args); }
+      finally { pendingUndoIds.delete(args.undo_id); }
+    },
+  };
   let runSummaryCopyState: RunSummaryCopyState = 'idle';
   let runSummaryCopySeq = 0;
   let cancelRunSummaryCopy: (() => void) | null = null;
@@ -3110,6 +3585,15 @@ export const bootstrapLogsRoute = (
   // Mount once the shell first exists, then re-attach after every full
   // re-paint — the picker keeps its own state, so `rewire` restores an
   // open dropdown / in-progress query / focus.
+  const hasFilterDraft = (): boolean =>
+    filters.status !== appliedFilters.status || filters.origin !== appliedFilters.origin
+    || filters.recipe_id.trim() !== appliedFilters.recipe_id.trim()
+    || filters.time_range !== appliedFilters.time_range;
+  const paintFilterDraft = (): void => {
+    const notice = routeRoot.querySelector?.<HTMLElement>('[data-recued-logs-filter-draft]');
+    if (notice) notice.hidden = !hasFilterDraft();
+  };
+
   const mountRecipePicker = (): void => {
     if (recipePicker === null) {
       recipePicker = RefPicker.wireRefPicker(routeRoot, {
@@ -3121,6 +3605,7 @@ export const bootstrapLogsRoute = (
         // button applies it (no auto-refetch on pick).
         onChange: (selection) => {
           filters = { ...filters, recipe_id: selection?.id ?? '' };
+          paintFilterDraft();
         },
       });
     } else {
@@ -3128,7 +3613,28 @@ export const bootstrapLogsRoute = (
     }
   };
 
+  const rememberHistory = (focusedId?: string): void => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    const rowId = focusedId
+      ?? active?.getAttribute?.(LOGS_ROUTE_RUN_ID_ATTR) ?? undefined;
+    const snapshot: ListContinuitySnapshot<RunHistoryState> = {
+      filter: {
+        draft: { ...filters }, applied: { ...appliedFilters },
+        recipeScope: listRecipeScope,
+      },
+      page: Math.max(1, loadedPages),
+      ...(rowId === undefined ? {} : { focusedId: rowId }),
+      scroll: readListScroll(opts.root),
+    };
+    returnHistory = updateListContinuity(doc, listContinuityKey(listRecipeScope), snapshot);
+    updateListContinuity(doc, `${continuityNamespace}:last-history`, snapshot);
+    if (focusedId !== undefined) {
+      updateListContinuity(doc, runContinuityKey(focusedId), snapshot);
+    }
+  };
+
   const render = (): void => {
+    routeRoot.setAttribute('data-recued-logs-history-loading', String(loadingFeed || loadingMore));
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const summaryRunId = selectedRun !== null && !loadingDetail
       && errors.detail === undefined && selectedRun.audit.run_id === selectedRunId
@@ -3154,9 +3660,30 @@ export const bootstrapLogsRoute = (
       pendingInitialRunFocus = false;
       pendingDetailFocusRunId = null;
     }
+    const oldTechnical = routeRoot.querySelector?.<HTMLDetailsElement>(
+      '[data-recued-logs-technical]',
+    );
+    const technicalOpen = selectedRunId !== null
+      && oldTechnical?.getAttribute('data-recued-logs-technical') === selectedRunId
+      && oldTechnical.open;
+    const focusedTechnical = activeElement?.hasAttribute?.(
+      'data-recued-logs-technical-toggle',
+    ) === true;
+    const focusedUndo = activeElement != null
+      && Array.from(localUndoControls.values()).some(control => control.contains(activeElement))
+      ? activeElement : null;
+    const focusedOutcome = activeElement?.hasAttribute?.(LOGS_ROUTE_OUTCOME_ATTR) === true;
+    const focusedBack = activeElement?.getAttribute?.(LOGS_ROUTE_ACTION_ATTR)
+      === 'back-to-history';
     const focusedDetailRunId = activeElement?.getAttribute?.(
       LOGS_ROUTE_DETAIL_HEADING_ATTR,
     ) ?? null;
+    const focusedView = activeElement?.getAttribute?.(LOGS_ROUTE_LINK_ATTR);
+    const restoreViewFocus = (): void => {
+      if (focusedView !== 'view-history' && focusedView !== 'view-active') return;
+      focusListTarget(routeRoot.querySelector?.<HTMLElement>(`[${LOGS_ROUTE_LINK_ATTR}="${focusedView}"]`));
+    };
+    const focusedHistoryRefresh = activeElement?.getAttribute?.(LOGS_ROUTE_ACTION_ATTR) === 'refresh-history';
     const focusedApply = activeElement?.getAttribute?.(
       LOGS_ROUTE_ACTION_ATTR,
     ) === 'apply-filters';
@@ -3234,10 +3761,7 @@ export const bootstrapLogsRoute = (
       // Console — the cross-session operator surface: the uncapped Active list
       // (+ lanes + controls) and the Active passes. No feed, no Recipe picker.
       routeRoot.innerHTML = `
-        <header class="logs-header">
-          <a class="logs-inline-link" href="${e(serializeShellRoute('logs'))}" ${LOGS_ROUTE_LINK_ATTR}="back-to-logs">← Logs</a>
-          <h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Active runs</h1>
-        </header>
+        ${renderLogNavigation(view, historyListAddress().hash)}
         ${hasActiveSection
           ? renderActive(
               activeEntries,
@@ -3260,6 +3784,7 @@ export const bootstrapLogsRoute = (
             )
           : ''}
       `;
+      restoreViewFocus();
       if (
         focusedActiveControl !== null
         || focusedGrantControlId !== null
@@ -3319,63 +3844,99 @@ export const bootstrapLogsRoute = (
       }
       return;
     }
-    // Default — the History table, with a capped Active peek-strip above it.
-    routeRoot.innerHTML = `
-      <header class="logs-header">
-        <h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Logs</h1>
+    routeRoot.innerHTML = selectedRunId !== null ? `
+      <header class="logs-review-header">
+        <div class="logs-review-heading">
+          <a class="logs-back" href="${e(logsListAddress().hash)}" ${LOGS_ROUTE_ACTION_ATTR}="back-to-history">← Back to history</a>
+          <h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Run review</h1>
+        </div>
+        <div class="logs-review-source">
+          ${renderChatReturn(chatReturn)}
+          ${renderWorkspaceReturn(workspaceReturn)}
+          ${receptionReturn === undefined ? '' : `<aside data-logs-reception-return role="note"><a href="${e(receptionReturn)}">Back to customer ${receptionReturn.startsWith('#reception/jobs/') ? 'job' : receptionReturn.startsWith('#reception/signoffs/') ? 'sign-off' : 'accounts'}</a></aside>`}
+        </div>
       </header>
-      ${renderChatReturn(chatReturn)}
-      ${receptionReturn === undefined ? '' : `<aside data-logs-reception-return role="note"><a href="${e(receptionReturn)}">Back to customer ${receptionReturn.startsWith('#reception/jobs/') ? 'job' : receptionReturn.startsWith('#reception/signoffs/') ? 'sign-off' : 'accounts'}</a></aside>`}
+      ${renderDetail(
+        selectedRun, selectedRunId, loadingDetail, retryingDetail, errors.detail,
+        chatReturn, receptionReturn,
+        selectedRun !== null && summaryRunId !== null
+          ? renderLogsRunSummary(selectedRun, runSummaryCopyState, summaryOpen) : '',
+        selectedRun === null ? undefined
+          : recipeNameOptions.find(option => option.id === selectedRun?.audit.recipe_id)?.label
+            ?? runs.find(run => run.run_id === selectedRunId
+              && run.recipe_id === selectedRun?.audit.recipe_id)?.name,
+        technicalOpen,
+        workspaceReturn,
+      )}
+    ` : `
+      ${renderLogNavigation(view, historyListAddress().hash)}
       ${hasActiveSection
         ? renderActivePeek(activeEntries, loadingActive, errors.active, nowMs)
         : ''}
+      <section class="logs-filter-panel" aria-label="Filter run history">
       ${renderFilters(
         filters,
         RefPicker.renderRefPicker(
           RefPicker.initialRefPickerState(resolveRecipeSelection()),
           RECIPE_PICKER_CONFIG,
         ),
-        loadingFeed || loadingMore,
-        applyingFilters,
-        clearingFilters,
+        loadingFeed || loadingMore, applyingFilters, clearingFilters,
       )}
+      <p class="logs-filter-draft">Status filters use the recorded run state. Outcomes also show item results.</p>
+      <p class="logs-filter-draft" data-recued-logs-filter-draft${hasFilterDraft() ? '' : ' hidden'}>Filter edits are not applied. Choose Apply to update history.</p>
+      </section>
+      <div class="logs-history-head"><div><h2>Run history</h2><p class="logs-history-count">${loadingFeed && runs.length === 0 ? 'Loading recorded runs…' : `${runs.length} loaded ${runs.length === 1 ? 'run' : 'runs'} · newest first${nextCursor === null ? '' : ' · more available'}`}</p></div><button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-history" aria-label="${refreshingHistory ? 'Refreshing' : 'Refresh'} history"${loadingFeed || loadingMore ? ' aria-disabled="true"' : ''}${refreshingHistory ? ' aria-busy="true"' : ''}>${refreshingHistory ? 'Refreshing…' : 'Refresh'}</button></div>
       <div class="logs-layout">
         <section class="logs-panel">
           ${renderFeed(
-            runs,
-            loadingFeed,
-            loadingMore,
-            nextCursor,
-            errors.feed,
-            selectedRunId,
-            loadingDetail ? selectedRunId : null,
+            runs, loadingFeed, loadingMore, nextCursor, errors.feed,
+            returnHistory?.focusedId ?? null, null,
           )}
         </section>
-        ${renderDetail(
-          selectedRun,
-          selectedRunId,
-          loadingDetail,
-          retryingDetail,
-          errors.detail,
-          chatReturn,
-          receptionReturn,
-          selectedRun !== null && summaryRunId !== null
-            ? renderLogsRunSummary(selectedRun, runSummaryCopyState, summaryOpen)
-            : '',
-        )}
       </div>
     `;
     // (Re-)attach the Recipe combobox to the freshly-painted shell.
-    if (opts.localUndo && selectedRun) {
+    if (localUndo && selectedRun) {
       for (const trace of selectedRun.gateway.per_call_trace) {
         const receipt = trace.local_receipt;
         if (!receipt) continue;
         const slot = Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-local-mutation-receipt]'))
           .find(node => node.getAttribute('data-local-mutation-receipt') === receipt.receipt_id);
-        slot?.appendChild(localUpdateUndoControl(doc, opts.localUndo, receipt.receipt_id));
+        if (slot !== undefined) {
+          let control = localUndoControls.get(receipt.receipt_id);
+          if (control === undefined) {
+            control = localUpdateUndoControl(doc, localUndo, receipt.receipt_id);
+            localUndoControls.set(receipt.receipt_id, control);
+          }
+          slot.appendChild(control);
+        }
       }
     }
-    mountRecipePicker();
+    if (selectedRunId === null) mountRecipePicker();
+    restoreViewFocus();
+    if (focusedHistoryRefresh) focusListTarget(routeRoot.querySelector?.<HTMLElement>(`[${LOGS_ROUTE_ACTION_ATTR}="refresh-history"]`));
+    if (focusedUndo?.isConnected) focusListTarget(focusedUndo);
+    if (focusedOutcome) {
+      focusListTarget(routeRoot.querySelector?.<HTMLElement>(`[${LOGS_ROUTE_OUTCOME_ATTR}]`));
+    }
+    if (focusedBack) {
+      focusListTarget(routeRoot.querySelector<HTMLElement>(`[${LOGS_ROUTE_ACTION_ATTR}="back-to-history"]`));
+    }
+    if (focusedTechnical) {
+      focusListTarget(routeRoot.querySelector<HTMLElement>('[data-recued-logs-technical-toggle]'));
+    }
+    if (selectedRunId === null && !loadingFeed && !loadingMore
+      && (historyLoaded || errors.feed !== undefined) && pendingHistoryRestore !== null) {
+      const snapshot = pendingHistoryRestore;
+      pendingHistoryRestore = null;
+      const opener = Array.from(routeRoot.querySelectorAll?.<HTMLElement>(
+        `button[${LOGS_ROUTE_ACTION_ATTR}="open-detail"]`,
+      ) ?? []).find(node => node.getAttribute(LOGS_ROUTE_RUN_ID_ATTR) === snapshot.focusedId);
+      const target = opener ?? routeRoot.querySelector?.<HTMLElement>(`[${LOGS_ROUTE_HEADING_ATTR}]`);
+      target?.setAttribute('tabindex', opener === undefined ? '-1' : '0');
+      focusListTarget(target);
+      restoreListScroll(opts.root, snapshot.scroll);
+    }
     const replacementSummaryField = summaryViewport === null ? null
       : routeRoot.querySelector<HTMLTextAreaElement>(`[${LOGS_RUN_SUMMARY_ATTR}] textarea`);
     if (replacementSummaryField !== null && summaryViewport !== null) {
@@ -3491,7 +4052,7 @@ export const bootstrapLogsRoute = (
     if (
       detailFocusRunId !== null
       && selectedRunId === detailFocusRunId
-      && !loadingDetail
+      && (!loadingDetail || !retryingDetail)
     ) {
       const heading = routeRoot.querySelector?.(
         `[${LOGS_ROUTE_DETAIL_HEADING_ATTR}]`,
@@ -3507,7 +4068,7 @@ export const bootstrapLogsRoute = (
         heading?.getAttribute(LOGS_ROUTE_DETAIL_HEADING_ATTR)
           === detailFocusRunId
       ) {
-        if (pendingDetailFocusRunId === detailFocusRunId) {
+        if (!loadingDetail && pendingDetailFocusRunId === detailFocusRunId) {
           pendingDetailFocusRunId = null;
         }
         target?.focus?.({ preventScroll: true });
@@ -3570,13 +4131,15 @@ export const bootstrapLogsRoute = (
     if (
       !pendingInitialRunFocus
       || selectedRunId !== initialFocusRunId
-      || selectedRun === null
+      || loadingDetail
     ) return;
     const queryable = routeRoot as unknown as {
       querySelector?: (selectors: string) => HTMLElement | null;
     };
     const outcome =
-      queryable.querySelector?.(`[${LOGS_ROUTE_OUTCOME_ATTR}]`) ?? null;
+      queryable.querySelector?.(errors.detail === undefined
+        ? `[${LOGS_ROUTE_OUTCOME_ATTR}]`
+        : `[${LOGS_ROUTE_ACTION_ATTR}="retry-detail"]`) ?? null;
     if (outcome === null) return;
     pendingInitialRunFocus = false;
     outcome.focus?.({ preventScroll: true });
@@ -3596,6 +4159,7 @@ export const bootstrapLogsRoute = (
           ...(named ? { sublabel: r.recipe_id } : {}),
         };
       });
+      if (!disposed) render();
     } catch {
       // Soft enhancement — leave the picker empty on failure.
     }
@@ -3603,22 +4167,30 @@ export const bootstrapLogsRoute = (
 
   const loadFeed = async (
     mode: 'replace' | 'append',
-    owner: 'background' | 'filters' | 'clear-filters' = 'background',
+    owner: 'background' | 'filters' | 'clear-filters' | 'history-refresh' = 'background',
+    restorePages = Math.max(1, loadedPages),
   ): Promise<void> => {
-    if (mode === 'append' && loadingMore) return;
+    if (disposed || (mode === 'append' && loadingMore)) return;
     if (opts.listCaller === undefined) {
       applyingFilters = false;
       clearingFilters = false;
+      refreshingHistory = false;
       errors = { ...errors, feed: 'execution.list caller is not wired in this host.' };
       render();
       return;
     }
     const seq = ++feedSeq;
+    const submittingFilters = owner === 'filters' || owner === 'clear-filters';
+    const queryFilters = { ...(submittingFilters ? filters : appliedFilters) };
+    const requestedPages = submittingFilters ? 1 : restorePages;
+    const queryTime = opts.now?.() ?? Date.now();
+    const previousCursor = nextCursor;
     applyingFilters = mode === 'replace' && owner === 'filters';
     clearingFilters = mode === 'replace' && owner === 'clear-filters';
+    refreshingHistory = mode === 'replace' && owner === 'history-refresh';
     if (mode === 'replace') {
       loadingFeed = true;
-      nextCursor = null;
+      if (submittingFilters) nextCursor = null;
     } else {
       loadingMore = true;
       pendingLoadedRunFocusId = null;
@@ -3626,28 +4198,37 @@ export const bootstrapLogsRoute = (
     errors = { ...errors, feed: undefined };
     render();
     try {
-      const response = await opts.listCaller(
-        buildQuery(
-          filters,
-          mode === 'append' ? nextCursor : null,
-          opts.now?.() ?? Date.now(),
-        ),
-      );
+      let response = await opts.listCaller(buildQuery(
+        queryFilters, mode === 'append' ? nextCursor : null, queryTime,
+      ));
       if (disposed || seq !== feedSeq) return;
+      let pageCount = 1;
+      let restoredRuns: ReadonlyArray<RunFeedRow> = response.runs;
+      while (mode === 'replace' && pageCount < requestedPages && response.next_cursor !== undefined) {
+        response = await opts.listCaller(buildQuery(queryFilters, response.next_cursor, queryTime));
+        if (disposed || seq !== feedSeq) return;
+        restoredRuns = dedupeRuns([...restoredRuns, ...response.runs]);
+        pageCount += 1;
+      }
       if (mode === 'append') {
         const priorRunIds = new Set(runs.map((run) => run.run_id));
         pendingLoadedRunFocusId = response.runs.find(
           (run) => !priorRunIds.has(run.run_id),
         )?.run_id ?? null;
         runs = dedupeRuns([...runs, ...response.runs]);
+        loadedPages += 1;
       } else {
-        runs = response.runs;
+        runs = restoredRuns;
+        loadedPages = pageCount;
       }
+      appliedFilters = queryFilters;
+      historyLoaded = true;
       nextCursor = response.next_cursor ?? null;
       const { feed: _feed, ...rest } = errors;
       errors = rest;
     } catch (err) {
       if (disposed || seq !== feedSeq) return;
+      if (mode === 'replace' && submittingFilters) nextCursor = previousCursor;
       errors = { ...errors, feed: messageForError(err) };
     } finally {
       if (!disposed && seq === feedSeq) {
@@ -3655,12 +4236,17 @@ export const bootstrapLogsRoute = (
         loadingMore = false;
         applyingFilters = false;
         clearingFilters = false;
+        refreshingHistory = false;
         render();
+        if (queuedHistoryRefresh) {
+          queuedHistoryRefresh = false;
+          if (errors.feed === undefined) queueMicrotask(() => { if (!disposed) void loadFeed('replace'); });
+        }
       }
     }
   };
 
-  // Keep the URL addressable on in-page master-detail selection. Entering a
+  // Keep the URL addressable on in-page run-workspace selection. Entering a
   // run pushes a native Back target; sibling run changes replace it. The
   // shared controller remains exception-safe and never remounts the shell.
   const syncSelectedHash = (
@@ -3668,7 +4254,16 @@ export const bootstrapLogsRoute = (
     intent: HierarchicalHistoryIntent = 'auto',
   ): void => {
     if (disposed || view !== 'logs') return;
-    logsHistory.navigate(logsRunAddress(run_id, chatReturn), { intent });
+    let markNativeEntry = ownsNativeListEntry;
+    try {
+      markNativeEntry ||= intent === 'push'
+        && typeof doc.defaultView?.history?.pushState === 'function'
+        && typeof doc.defaultView?.history?.back === 'function';
+    } catch { /* The shared writer handles a restricted History seam. */ }
+    const commit = logsHistory.navigate(logsRunAddress(run_id, chatReturn), {
+      intent, ...(markNativeEntry ? { state: nativeReturnState(run_id) } : {}),
+    });
+    if (commit.committed && commit.mode === 'push') ownsNativeListEntry = markNativeEntry;
   };
 
   const openRun = async (
@@ -3681,6 +4276,8 @@ export const bootstrapLogsRoute = (
       || (loadingDetail && selectedRunId === run_id)
     ) return;
     const openingFromList = selectedRunId === null;
+    if (openingFromList) rememberHistory(run_id);
+    localUndoControls.clear();
     resetRunSummaryCopy();
     pendingDetailFocusRunId = focusDetail ? run_id : null;
     if (run_id !== initialFocusRunId) pendingInitialRunFocus = false;
@@ -3688,6 +4285,7 @@ export const bootstrapLogsRoute = (
       chatReturn = undefined;
     }
     if (receptionReturn !== undefined && run_id !== receptionReturnRunId) receptionReturn = undefined;
+    if (workspaceReturn !== undefined && run_id !== workspaceReturnRunId) workspaceReturn = undefined;
     selectedRunId = run_id;
     syncSelectedHash(run_id, openingFromList ? 'push' : 'auto');
     if (opts.getCaller === undefined) {
@@ -3701,9 +4299,14 @@ export const bootstrapLogsRoute = (
     retryingDetail = retrying;
     errors = { ...errors, detail: undefined };
     render();
+    if (!retrying) restoreListScroll(opts.root, { top: 0, left: 0 });
     try {
       const response = await opts.getCaller({ run_id });
       if (disposed || seq !== detailSeq) return;
+      if (response.run == null) throw new Error('Run not found. It may no longer be available.');
+      if (response.run.audit.run_id !== run_id) {
+        throw new Error('The server returned a different run. Retry to load this run.');
+      }
       selectedRun = response.run;
       const { detail: _detail, ...rest } = errors;
       errors = rest;
@@ -3716,6 +4319,45 @@ export const bootstrapLogsRoute = (
         retryingDetail = false;
         render();
       }
+    }
+  };
+
+  const closeRun = (): void => {
+    if (disposed || selectedRunId === null) return;
+    if (pendingUndoIds.size > 0) {
+      const confirm = doc.defaultView?.confirm;
+      if (typeof confirm === 'function'
+        && !confirm('An undo action is still in progress. Leave Logs anyway?')) return;
+      // The owner has already answered the leave guard. Finish locally so a
+      // native hash transition does not ask the same question a second time.
+    } else if (ownsNativeListEntry) {
+      try {
+        const history = doc.defaultView?.history;
+        if (typeof history?.back === 'function') {
+          history.back();
+          return;
+        }
+      } catch { /* Fall back to in-page navigation in restricted hosts. */ }
+    }
+    detailSeq += 1;
+    localUndoControls.clear();
+    resetRunSummaryCopy();
+    pendingInitialRunFocus = false;
+    pendingDetailFocusRunId = null;
+    pendingHistoryRestore = returnHistory ?? {};
+    selectedRunId = null;
+    selectedRun = null;
+    loadingDetail = false;
+    retryingDetail = false;
+    chatReturn = undefined;
+    receptionReturn = undefined;
+    workspaceReturn = undefined;
+    errors = { ...errors, detail: undefined };
+    logsHistory.navigate(logsListAddress(), { intent: 'replace' });
+    if (!historyLoaded && !loadingFeed) {
+      void loadFeed('replace', 'background', pagesToRestore);
+    } else {
+      render();
     }
   };
 
@@ -3936,6 +4578,18 @@ export const bootstrapLogsRoute = (
     const target = targetWithAction(ev);
     if (target === null) return;
     const action = target.getAttribute(LOGS_ROUTE_ACTION_ATTR);
+    if (action === 'back-to-history') {
+      const mouse = ev as MouseEvent;
+      if (mouse.metaKey || mouse.ctrlKey || mouse.shiftKey || mouse.altKey
+        || (mouse.button !== undefined && mouse.button !== 0)) return;
+      ev.preventDefault();
+      closeRun();
+      return;
+    }
+    if (action === 'refresh-history') {
+      if (!loadingFeed && !loadingMore) void loadFeed('replace', 'history-refresh');
+      return;
+    }
     if (action === 'copy-run-summary') {
       void copyRunSummary();
       return;
@@ -3950,6 +4604,7 @@ export const bootstrapLogsRoute = (
       pendingInitialRunFocus = false;
       pendingDetailFocusRunId = null;
       filters = defaultRunsFilters();
+      listRecipeScope = '';
       recipePicker?.setValue(null);
       // Drop a recipe-only list address without remounting the route. An
       // exact run and its return context stay open while its history resets.
@@ -3960,7 +4615,7 @@ export const bootstrapLogsRoute = (
       return;
     }
     if (action === 'load-more') {
-      if (nextCursor !== null && !loadingMore) {
+      if (nextCursor !== null && !loadingFeed && !loadingMore) {
         pendingLoadMoreFocus = true;
         void loadFeed('append');
       }
@@ -4016,6 +4671,7 @@ export const bootstrapLogsRoute = (
     } else if (kind === 'time_range') {
       filters = { ...filters, time_range: target.value as RunsTimeRange };
     }
+    paintFilterDraft();
   };
 
   routeRoot.addEventListener('click', onClick);
@@ -4028,10 +4684,12 @@ export const bootstrapLogsRoute = (
     if (view === 'logs') {
       unsubscribers.push(
         opts.subscribe('session_lifecycle', () => {
-          void loadFeed('replace');
+          if (loadingFeed || loadingMore) queuedHistoryRefresh = true;
+          else void loadFeed('replace');
         }),
         opts.subscribe('notification.ask_closed', () => {
-          void loadFeed('replace');
+          if (loadingFeed || loadingMore) queuedHistoryRefresh = true;
+          else void loadFeed('replace');
         }),
       );
     }
@@ -4084,7 +4742,7 @@ export const bootstrapLogsRoute = (
         // reads. Start the exact detail immediately instead of making it wait
         // for the list; that also prevents a late list completion from opening
         // the stale run after this route has already been disposed.
-        loadFeed('replace'),
+        loadFeed('replace', 'background', pagesToRestore),
         selectedRunId !== null
           ? openRun(selectedRunId)
           : Promise.resolve(),
@@ -4096,7 +4754,7 @@ export const bootstrapLogsRoute = (
   });
 
   const hasLogsInFlightWork = (): boolean =>
-    pendingControls.size > 0 || busyGrantIds.size > 0;
+    pendingControls.size > 0 || busyGrantIds.size > 0 || pendingUndoIds.size > 0;
 
   return {
     getRuns: () => runs,
@@ -4125,25 +4783,30 @@ export const bootstrapLogsRoute = (
       if (next.recipe_id !== undefined) {
         recipePicker?.setValue(resolveRecipeSelection());
       }
-      await loadFeed('replace');
+      await loadFeed('replace', 'filters');
     },
     loadMore: async () => {
-      if (nextCursor === null || loadingMore) return;
+      if (nextCursor === null || loadingFeed || loadingMore) return;
       await loadFeed('append');
     },
     openRun,
+    closeRun,
     killRun,
     cancelCall,
     promoteCall,
     revokeGrant,
     hasInFlightWork: hasLogsInFlightWork,
     inFlightWorkPrompt: () =>
-      hasLogsInFlightWork()
-        ? 'A run action is still in progress. Leave Logs anyway?'
-        : null,
+      pendingUndoIds.size > 0
+        ? 'An undo action is still in progress. Leave Logs anyway?'
+        : hasLogsInFlightWork()
+          ? 'A run action is still in progress. Leave Logs anyway?'
+          : null,
     dispose: () => {
       if (disposed) return;
+      if (view === 'logs' && selectedRunId === null) rememberHistory();
       disposed = true;
+      localUndoControls.clear();
       resetRunSummaryCopy();
       if (activeRefreshTimer !== null) {
         clearTimeout(activeRefreshTimer);

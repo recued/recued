@@ -7,7 +7,7 @@ export const withAuthenticationSwitchSchema = (schema: ConnectionSchema): Connec
   description: 'Choose Recued direct OAuth or a broker account, review permissions, then verify API access before applying. Your connection name and bindings stay in place.',
   fields: [...schema.fields.map(field => field.key === 'auth.type' ? { ...field, hidden: false, label: 'New authentication',
       help: 'Choose how Recued connects to this service.',
-      options: ['oauth2_refresh', 'managed_oauth'], optionLabels: { oauth2_refresh: 'Recued direct OAuth — your OAuth app', managed_oauth: 'Managed OAuth — broker account' } }
+      options: ['oauth2_refresh', 'managed_oauth'], optionLabels: { oauth2_refresh: 'Recued direct OAuth — your OAuth app', managed_oauth: 'OAuth broker (Nango) — a Nango account' } }
     : field.key.startsWith('auth.') ? field : { ...field, readonly: true }),
     { key: 'switch.verification_url', label: 'Read-only access check URL', type: 'text',
       help: 'Use a resource this account can read within the saved API. For Google Sheets, paste a spreadsheet link. The response body is discarded.' }],
@@ -19,12 +19,13 @@ export const withManagedOAuthSchema = (schema: ConnectionSchema, authType?: stri
   if (!selector?.options?.some((type) => type === 'oauth2_refresh' || type === 'bearer' || type === 'managed_oauth')) return schema;
   const authSelector = { ...selector, hidden: false,
     options: [...new Set([...selector.options, 'managed_oauth'])],
-    optionLabels: { managed_oauth: 'OAuth broker (optional)', oauth2_refresh: 'Recued direct OAuth', bearer: 'Bearer token', ...selector.optionLabels } };
+    optionLabels: { managed_oauth: 'OAuth broker (Nango)', oauth2_refresh: 'Recued direct OAuth', bearer: 'Bearer token', ...selector.optionLabels } };
   if (authType !== 'managed_oauth') {
     if (selector.options.includes('managed_oauth')) return schema;
     return { ...schema, fields: schema.fields.map((field) => field.key === 'auth.type' ? authSelector : field) };
   }
-  return { ...schema, label: 'Managed OAuth connection', description: 'Authorize through your saved OAuth broker. The broker holds vendor credentials and sees requests and responses.',
+  return { ...schema, label: schema.label + ' through Nango',
+    description: 'Signed in through your Nango broker. Nango keeps the vendor credentials and sees this connection’s requests and responses.',
     onboarding: undefined, probe: undefined,
     fields: [
       ...schema.fields.filter((field) => !field.key.startsWith('auth.')).map((field) =>

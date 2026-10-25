@@ -312,6 +312,12 @@ interface StdioDriveResult {
 let activeChild: ChildProcessWithoutNullStreams | undefined;
 let tempDir: string | undefined;
 
+// How long the real stdio profile may take before it counts as hung. ⚠ 30 s → 90 s
+// (2026-10-23): the drive takes 8-13 s alone, but under two loaded sweeps the child spent
+// 10.7 s and 11.5 s loading its modules through tsx before it opened the database, and
+// passed 30 s (one first served MCP at 22.5 s).
+const DRIVE_DEADLINE_MS = 90_000;
+
 const stopProcessGroup = (
   child: ChildProcessWithoutNullStreams | undefined,
   signal: NodeJS.Signals,
@@ -435,10 +441,10 @@ const driveRealStdioProfile = (dbPath: string): Promise<StdioDriveResult> =>
       timedOut = true;
       child.stdin.end();
       stopProcessGroup(child, 'SIGTERM');
-    }, 30_000);
+    }, DRIVE_DEADLINE_MS);
     const forceStop = setTimeout(() => {
       stopProcessGroup(child, 'SIGKILL');
-    }, 33_000);
+    }, DRIVE_DEADLINE_MS + 3_000);
     forceStop.unref();
 
     child.stdout.setEncoding('utf8');
@@ -575,5 +581,5 @@ describe('MCP async actions — live SQLite + real stdio profile', () => {
     } finally {
       verifyDb.close();
     }
-  }, 45_000);
+  }, DRIVE_DEADLINE_MS + 30_000);
 });

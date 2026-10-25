@@ -107,6 +107,11 @@ export const createQuoteCompletionService = (deps: {
         + 'This review records the owner action. Payment and invoice balances are recorded separately.' };
   };
   return {
+    resumeDraft(id: string) {
+      const row = load(id); requireCurrent(row);
+      if (row.state !== 'draft') throw new QuoteSignoffError('quote_completion_not_draft', 'Only a saved draft can resume its preview.');
+      return { completion: summary(row), expiry_days: planOf(row).expiry_days };
+    },
     prepare(input: QuoteCompletionPrepareInput): QuoteCompletionSummary {
       if (!idValid(input.signoff_id)) throw invalid('Choose a released customer agreement.');
       if (typeof input.delivery_summary !== 'string' || !input.delivery_summary.trim()

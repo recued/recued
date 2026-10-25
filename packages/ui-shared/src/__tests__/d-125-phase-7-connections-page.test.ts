@@ -1961,6 +1961,19 @@ describe('D-125 P7.2 — view → values flatten', () => {
     expect(values['auth.token']).toBeUndefined();
   });
 
+  it('reopens S3 storage with its bucket, region and endpoint fields while keeping saved credentials private', () => {
+    const patch = buildConnectionEditDialogPatch({ name: 'backup-safe', kind: 'api', display_name: 'Backup storage', vendor: 's3',
+      bucket: 'backup-bucket', region: 'us-east-1', endpoint: 'https://storage.example.test', auth_type: 'basic' });
+    expect(patch.vendor).toBe('s3');
+    expect(patch.values['config.bucket']).toBe('backup-bucket'); expect(patch.values['config.region']).toBe('us-east-1');
+    expect(patch.values['config.endpoint']).toBe('https://storage.example.test');
+    expect(patch.values['auth.username']).toBeUndefined(); expect(patch.values['auth.password']).toBeUndefined();
+    const html = renderConnectionsPage(baseState({ dialog: { ...initialConnectionsDialogState(), ...patch } }));
+    expect(html).toContain('data-vendor="s3"');
+    for (const field of ['config.bucket', 'config.region', 'config.endpoint']) expect(html).toContain(`data-field-key="${field}"`);
+    expect(html).toContain('value="backup-bucket"');
+  });
+
   it('uses non-secret auth metadata to reopen the correct rotation fields', () => {
     const patch = buildConnectionEditDialogPatch({
       name: 'basic-api',

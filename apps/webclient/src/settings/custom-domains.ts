@@ -206,9 +206,19 @@ export const CUSTOM_DOMAINS_PANEL_STYLES = `
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: flex-end;
 }
-.custom-domains-input {
+.custom-domains-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   flex: 1 1 240px;
+  min-width: 0;
+}
+.custom-domains-field-label { font-size: 12px; color: var(--muted); }
+.custom-domains-input {
+  box-sizing: border-box;
+  width: 100%;
   min-width: 0;
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -314,6 +324,8 @@ export const CUSTOM_DOMAINS_PANEL_STYLES = `
 const normalize = (value: string): string =>
   value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/\.+$/, '');
 
+let nextCustomDomainValidationId = 0;
+
 export const mountCustomDomainsPanel = (
   opts: MountCustomDomainsPanelOptions,
 ): CustomDomainsPanelMount => {
@@ -337,6 +349,10 @@ export const mountCustomDomainsPanel = (
   let savedHostname = '';
   let checkGeneration = 0;
   let resultsVersion = 0;
+  // Only a locally detected empty hostname owns field validation. DNS and
+  // enrollment failures remain form alerts, even if their text is identical.
+  let emptyHostnameError = false;
+  const validationMessageId = `custom-domain-validation-${++nextCustomDomainValidationId}`;
 
   const root = doc.createElement('div');
   root.setAttribute(CUSTOM_DOMAINS_PANEL_ATTR, '');
@@ -382,8 +398,10 @@ export const mountCustomDomainsPanel = (
 
   const runCheck = async (): Promise<void> => {
     if (destroyed || state.checking || state.enrolling) return;
+    emptyHostnameError = false;
     const hostname = normalize(state.hostname);
     if (hostname.length === 0) {
+      emptyHostnameError = true;
       setState({ error: 'Type the name you want to use.', preflight: null, decision: null });
       return;
     }
@@ -415,6 +433,7 @@ export const mountCustomDomainsPanel = (
     // DNS need not be ready yet: enrollment is allowed before the user finishes
     // their records. It does need an accepted check for this exact draft.
     if (state.preflight === null || normalize(state.preflight.hostname) !== hostname) return;
+    emptyHostnameError = false;
     setState({ enrolling: true, error: null });
     try {
       await opts.runEnrol({ hostname, cert_source: 'recued_acme_custom' });
@@ -669,12 +688,41 @@ export const mountCustomDomainsPanel = (
   );
 
   const form = el('div', 'custom-domains-form');
+  const field = el('label', 'custom-domains-field');
+  field.appendChild(el('span', 'custom-domains-field-label', 'Domain name'));
   const input = doc.createElement('input');
   input.type = 'text';
+  input.setAttribute('spellcheck', 'false');
+  input.setAttribute('autocapitalize', 'none');
+  input.setAttribute('autocorrect', 'off');
   input.className = 'custom-domains-input';
   input.placeholder = 'recued.your-domain.com';
   input.value = state.hostname;
   input.setAttribute(CUSTOM_DOMAINS_INPUT_ATTR, '');
+  let validationAssociation: { previousInvalid: string | null } | null = null;
+  const setValidationMessage = (message: HTMLElement | null): void => {
+    const descriptions = (input.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+    if (message !== null) {
+      const currentInvalid = input.getAttribute('aria-invalid');
+      if (validationAssociation === null || currentInvalid !== 'true') {
+        validationAssociation = { previousInvalid: currentInvalid };
+      }
+      message.setAttribute('id', validationMessageId);
+      input.setAttribute('aria-invalid', 'true');
+      input.setAttribute('aria-describedby', [...new Set([...descriptions, validationMessageId])].join(' '));
+    } else if (validationAssociation !== null) {
+      // Retire only this panel's description and restore the prior invalid
+      // value unless another owner changed it while the message was active.
+      const remaining = descriptions.filter(id => id !== validationMessageId);
+      if (remaining.length > 0) input.setAttribute('aria-describedby', remaining.join(' '));
+      else input.removeAttribute('aria-describedby');
+      if (input.getAttribute('aria-invalid') === 'true') {
+        if (validationAssociation.previousInvalid === null) input.removeAttribute('aria-invalid');
+        else input.setAttribute('aria-invalid', validationAssociation.previousInvalid);
+      }
+      validationAssociation = null;
+    }
+  };
   let composingHostname = false;
   input.addEventListener('compositionstart', () => { composingHostname = true; });
   input.addEventListener('compositionend', () => { composingHostname = false; });
@@ -690,14 +738,17 @@ export const mountCustomDomainsPanel = (
   input.addEventListener('input', () => {
     if (destroyed) return;
     if (state.enrolling) { input.value = state.hostname; return; }
+    const correctingLocalError = emptyHostnameError;
+    emptyHostnameError = false;
     const changed = normalize(input.value) !== normalize(state.hostname);
     state = { ...state, hostname: input.value };
-    if (changed) {
+    if (changed || correctingLocalError) {
       ++checkGeneration;
       setState({ checking: false, preflight: null, decision: null, error: null, enrolled: null });
     }
   });
-  form.appendChild(input);
+  field.appendChild(input);
+  form.appendChild(field);
   const checkButton = makeButton('Check DNS', CUSTOM_DOMAINS_CHECK_BTN_ATTR, () => { void runCheck(); }, false, false);
   form.appendChild(checkButton);
   root.appendChild(form);
@@ -717,12 +768,15 @@ export const mountCustomDomainsPanel = (
   const renderResults = (): void => {
     results.textContent = '';
     addButton = null;
+    let validationMessage: HTMLElement | null = null;
     if (state.error !== null) {
       const error = el('div', 'custom-domains-error', state.error);
       error.setAttribute(CUSTOM_DOMAINS_ERROR_ATTR, '');
       error.setAttribute('role', 'alert');
       results.appendChild(error);
+      if (emptyHostnameError) validationMessage = error;
     }
+    setValidationMessage(validationMessage);
 
     if (state.enrolled !== null) {
       const acknowledgment = el(
@@ -848,6 +902,8 @@ export const mountCustomDomainsPanel = (
     hasInFlightWork: () => !destroyed && state.enrolling,
     destroy() {
       destroyed = true;
+      emptyHostnameError = false;
+      setValidationMessage(null);
       ++checkGeneration;
       ++resultsVersion;
       root.remove();

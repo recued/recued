@@ -79,6 +79,7 @@ import type {
   ExecuteChatAiCall,
 } from './chat-orchestrator.js';
 import { RECALL_WITHHELD_MESSAGE, type RecallResolver } from './chat-recall-index.js';
+import { CHAT_INDEX_FRAMING_MARK, chatIndexWords } from './chat-index-context.js';
 import { projectToolDispatchCandidates } from './chat-pii-source.js';
 import type { CandidateContributor } from './chat-pii-candidate-contributor.js';
 import type { RecallJoinRef } from './chat-recall-search-tool.js';
@@ -738,13 +739,11 @@ export const aliasEntityPayloadForEgress = (
   //
   // ⚠ The join the tail was meant to restore does NOT need it here: the
   // `user_message` and this block both carry the SAME `pii.Person1` token, so
-  // the coreference is already intact. The recall path keeps decoration — there
-  // the recalled value is aliased against text the user really did send raw,
-  // which is the case D-167 was written for.
+  // the coreference is already intact. Tool and recall results still take a
+  // tail, derived LAST from the owner's words as sent, so it cannot carry a word
+  // the message hides (`decorateResultsFromOwnerWordsAsSent`, 2026-10-24).
   //
-  // `disclosedTexts` stays on the signature: the recall path needs it, and a
-  // future caller that CAN honour the raw-text premise should not have to
-  // re-thread it.
+  // `disclosedTexts` stays on the signature for its callers; it is not read.
   void disclosedTexts;
   return aliased as readonly Record<string, unknown>[];
 };
@@ -768,8 +767,8 @@ export const aliasEntityPayloadForEgress = (
 export const renderEntityPartsForEgress = (
   parts: readonly EntityPromptPart[],
   plan: PiiEgressPlan | undefined,
-  /** D-224 — threaded to overlap-reveal the prefetch block. MUST be the RAW
-   *  owner-authored text, captured before any alias pass rewrites the packet. */
+  /** Not read: the prefetch block takes no overlap tail (see
+   *  `aliasEntityPayloadForEgress`). */
   disclosedTexts: readonly string[] = [],
 ): readonly string[] => {
   if (plan?.active !== true || plan.resolver === piiEgress.noopFieldPrivacyResolver) {
@@ -783,16 +782,12 @@ export const renderEntityPartsForEgress = (
 };
 
 /** D-167 (recall path) — the resolved per-call recall context: the per-turn recall
- *  RESOLVER (whole-warehouse name/org automaton + text-driven identifier resolver) +
- *  the raw USER-disclosed texts this turn (for overlap-reveal). Resolved ONCE per
- *  `aliasChatAiInput` call, only when a `recall_context` field is present. */
+ *  RESOLVER (whole-warehouse name/org automaton + text-driven identifier resolver).
+ *  Resolved ONCE per `aliasChatAiInput` call, only when the packet carries recall
+ *  context or tool results. It adds no overlap tail: those are derived last, from
+ *  the owner's words as sent (`decorateResultsFromOwnerWordsAsSent`). */
 interface RecallScanContext {
   readonly resolver: RecallResolver;
-  /** Raw USER-authored strings this turn (`user_message` + user-role `chat_tail`)
-   *  — the gateway tokenizes them for the overlap suffix. ASSISTANT text is
-   *  excluded: it is aliased on egress (the model generated it from aliases), so
-   *  treating it as "disclosed" would over-reveal a fragment the user never typed. */
-  readonly disclosedTexts: readonly string[];
 }
 
 /** True iff the packet carries a non-empty typed `recall_context` field — the
@@ -841,7 +836,6 @@ const aliasReharvestCandidatesInPlace = (
   packet: Record<string, unknown>,
   plan: PiiEgressPlan,
   candidates: readonly piiEgress.CandidateValueSeed[],
-  disclosedTexts: readonly string[],
 ): boolean => {
   if (candidates.length === 0) return false;
   const dynamic: Array<readonly [string, unknown]> = [];
@@ -854,7 +848,11 @@ const aliasReharvestCandidatesInPlace = (
     plan.ledger,
     values,
     candidates,
-    disclosedTexts,
+    // ⛔ No overlap tail. This pass covers EVERY dynamic field, the owner's own
+    // message included, so a tail here put the owner's raw words back beside the
+    // alias that replaced them. Tails are derived last, from the words as sent
+    // (`decorateResultsFromOwnerWordsAsSent`).
+    [],
   );
   const changed = JSON.stringify(aliased) !== original;
   if (!changed) return false;
@@ -887,9 +885,10 @@ const aliasReharvestCandidatesInPlace = (
   return true;
 };
 
-/** Collect the raw USER-authored disclosure texts from the packet — the current
- *  `user_message` + each user-role `chat_tail` entry. Assistant entries are
- *  excluded (see `RecallScanContext.disclosedTexts`). */
+/** Collect the USER-authored texts from the packet — the current `user_message`
+ *  + each user-role `chat_tail` entry, as they stand in it. Assistant entries are
+ *  excluded: the model generated them from aliases, so treating them as the
+ *  owner's words would reveal a fragment the owner never typed. */
 const disclosedTextsFromPacket = (packet: unknown): string[] => {
   if (packet === null || typeof packet !== 'object') return [];
   const record = packet as Record<string, unknown>;
@@ -919,7 +918,6 @@ const disclosedTextsFromPacket = (packet: unknown): string[] => {
 const resolveRecallScanContext = (
   packet: unknown,
   plan: PiiEgressPlan,
-  disclosedTexts: readonly string[] = disclosedTextsFromPacket(packet),
 ): RecallScanContext | undefined => {
   if (typeof plan.recall?.getIndex !== 'function') return undefined;
   // ⛔⛔ NOT `hasRecallContext` ALONE — that scoped the WHOLE-WAREHOUSE resolver to
@@ -935,7 +933,7 @@ const resolveRecallScanContext = (
   if (!hasRecallContext(packet) && !hasPriorToolCalls(packet)) return undefined;
   const resolver = plan.recall.getIndex();
   if (resolver === undefined) return undefined;
-  return { resolver, disclosedTexts };
+  return { resolver };
 };
 
 /** The `prior_tool_calls[]` entry subfields the uniform content pass substring-scans
@@ -1207,7 +1205,8 @@ const aliasRecallFieldInPlace = (
     plan.ledger,
     original,
     recallIndex,
-    recall.disclosedTexts,
+    // No overlap tail here — see `decorateResultsFromOwnerWordsAsSent`.
+    [],
   );
   if (JSON.stringify(aliased) !== originalJson) {
     container[key] = aliased;
@@ -1215,6 +1214,96 @@ const aliasRecallFieldInPlace = (
     return true;
   }
   return false;
+};
+
+/** The owner's messages in this packet as the model will read them
+ *  (`piiEgress.ownerTextAsSent`): what is still readable as typed, and which alias
+ *  stands for what. */
+const ownerWordsAsSent = (
+  record: Record<string, unknown>,
+  plan: PiiEgressPlan,
+): piiEgress.OwnerTextAsSent[] =>
+  disclosedTextsFromPacket(record).map((text) => piiEgress.ownerTextAsSent(plan.ledger, text));
+
+/** Each word of each aliased value → the alias standing for it, a name, company or
+ *  place before an address: a word of "Orla Pennwick" is also a word of
+ *  `orla.pennwick@…`, and the person, not her address, is what a lone word names. */
+const aliasByWord = (
+  aliases: readonly { readonly token: string; readonly real: string }[],
+  split: (text: string) => readonly string[],
+): Map<string, string> => {
+  const byWord = new Map<string, string>();
+  for (const addresses of [false, true]) {
+    for (const { token, real } of aliases) {
+      if (real.includes('@') !== addresses) continue;
+      for (const word of split(real)) if (!byWord.has(word)) byWord.set(word, token);
+    }
+  }
+  return byWord;
+};
+
+/** The pre-seed index line in the owner's words AS SENT. The line is
+ *  `<terms>: <stores>` entries joined by `; `, its terms taken from the RAW
+ *  message, so a term the egress has since hidden in the message would show the
+ *  model what the message no longer does. Each term stays when it is still a word
+ *  of the owner's messages as sent; else it becomes the alias whose real value
+ *  holds it, as the message reads (`sarah`, `chen` → `pii.Person1`, so the line
+ *  still says where to look for her); else it is dropped. Entries left naming the
+ *  same terms merge, and a line left empty is removed — no line is always a
+ *  correct fallback (`buildChatIndexContext`). Undefined = no line. */
+export const indexContextAsSent = (
+  line: string,
+  owner: readonly piiEgress.OwnerTextAsSent[],
+): string | undefined => {
+  const readable = new Set(owner.flatMap((text) => chatIndexWords(text.readable)));
+  const aliasOf = aliasByWord(owner.flatMap((text) => text.aliases), chatIndexWords);
+  const framingAt = line.indexOf(CHAT_INDEX_FRAMING_MARK);
+  const body = framingAt < 0 ? line : line.slice(0, framingAt);
+  const entries: Array<{ terms: string; stores: string }> = [];
+  for (const entry of body.split('; ')) {
+    const colon = entry.indexOf(': ');
+    // An entry that does not parse cannot be checked, so it is not sent.
+    if (colon <= 0) continue;
+    const terms = [...new Set(entry.slice(0, colon).split(' ').flatMap((term) => {
+      if (readable.has(term)) return [term];
+      const alias = aliasOf.get(term);
+      return alias === undefined ? [] : [alias];
+    }))].join(' ');
+    if (terms.length === 0) continue;
+    const stores = entry.slice(colon + 2);
+    const same = entries.find((e) => e.terms === terms);
+    if (same === undefined) {
+      entries.push({ terms, stores });
+      continue;
+    }
+    // A store list carrying more than names (`RECUED_CHAT_INDEX_ZEROS`) is kept
+    // as the first entry has it.
+    if (same.stores.includes('(') || stores.includes('(')) continue;
+    const merged = same.stores.split(', ');
+    for (const store of stores.split(', ')) if (!merged.includes(store)) merged.push(store);
+    same.stores = merged.join(', ');
+  }
+  if (entries.length === 0) return undefined;
+  return `${entries.map((e) => `${e.terms}: ${e.stores}`).join('; ')}${framingAt < 0 ? '' : line.slice(framingAt)}`;
+};
+
+const indexContextAsSentInPlace = (record: Record<string, unknown>, plan: PiiEgressPlan): boolean => {
+  const line = record['index_context'];
+  if (typeof line !== 'string' || line.length === 0) return false;
+  const next = indexContextAsSent(line, ownerWordsAsSent(record, plan));
+  if (next === line) return false;
+  if (next === undefined) delete record['index_context'];
+  else record['index_context'] = next;
+  return true;
+};
+
+/** Whether a packet's SCANNED text holds an email address or `http(s)` URL the
+ *  content pass aliases with no ledger anchor (2026-10-24, D-167 amendment). The
+ *  catalog (`available_tools`) is never scanned, so its links do not count. */
+const carriesShapeToAlias = (packet: unknown): boolean => {
+  if (packet === null || typeof packet !== 'object' || Array.isArray(packet)) return false;
+  const { available_tools: _catalog, ...scanned } = packet as Record<string, unknown>;
+  return piiEgress.hasShapeToAlias(JSON.stringify(scanned));
 };
 
 /** D-167 N.10 (uniform boundary) — substring-scan the NON-recall data fields the
@@ -1303,11 +1392,15 @@ const uniformContentScanDataFields = (
     }
   }
   // The pre-seed INDEX rides the same boundary. It is built from the owner's own
-  // prompt terms, so every token in it is one the ledger may already alias from
-  // `user_message` — and an index naming the raw name beside an aliased message
+  // prompt terms, so an index naming the raw name beside an aliased message
   // would BOTH leak the value and break the model's ability to join the two.
   // Named here per this scan's enumeration rule, not left to a walker.
-  if (aliasLedgerFieldInPlace(record, 'index_context', plan)) changed = true;
+  // ⛔⛔ NOT THE LEDGER SCAN IT HAD. That matches WHOLE values and the index lists
+  // the message WORD BY WORD, so `sarah: contact.search; chen: contact.search`
+  // and an address's `bench9q2` / `northwind-bench-corp` matched nothing and went
+  // out raw beside a message reading `pii.Person1` — every packet of bench 175
+  // (2026-10-23), since the index shipped (`9ed9329c4`). See `indexContextAsSent`.
+  if (indexContextAsSentInPlace(record, plan)) changed = true;
   // D-259 intent is host-derived from a recipe declaration, but user-authored
   // recipe names can still contain personal values. Keep this newly enumerated
   // model field on the same one-way alias boundary as every dynamic context.
@@ -1367,6 +1460,186 @@ const aliasRecallContextField = (
     if (aliasRecallFieldInPlace(entry, 'result', plan, recall)) changed = true;
     if (aliasLedgerFieldInPlace(entry, 'args', plan)) changed = true;
     if (aliasLedgerFieldInPlace(entry, 'detail', plan)) changed = true;
+  }
+  return changed;
+};
+
+/** Alias the rendered prefetch blocks against the whole contact warehouse, as a
+ *  tool result is: names, orgs and streets by the automaton, emails and phones by
+ *  lookup. No index wired: unchanged. A seed source that THREW: the blocks are
+ *  dropped — a speculative read with no shield is not sent
+ *  (`renderEntityPartsForEgress`). */
+const aliasPrefetchAgainstWarehouse = (
+  packet: Record<string, unknown>,
+  plan: PiiEgressPlan,
+): void => {
+  const resolver = plan.recall?.getIndex();
+  if (resolver === undefined) return;
+  if (resolver.isDegraded()) {
+    delete packet['prefetch_context'];
+    return;
+  }
+  aliasRecallFieldInPlace(packet, 'prefetch_context', plan, { resolver });
+};
+
+/** What an earlier assistant turn becomes when the warehouse cannot be read. */
+const CHAT_TAIL_WITHHELD_MESSAGE =
+  "withheld: this earlier reply could not be checked for the owner's private details (a "
+  + 'warehouse read failed), so it was NOT sent to you. Ask the owner if you need what it said.';
+
+/** Alias each earlier ASSISTANT turn in `chat_tail` against the whole contact
+ *  warehouse, as a tool result is. Such a turn is held as the owner read it —
+ *  restored, real values — and one the prompt cache answered never crossed this
+ *  egress at all, so the session ledger may know nothing in it.
+ *
+ *  ⛔ MEASURED (bench 399, 2026-10-24): "What is Juno Farrell's email address?",
+ *  answered from the warehouse with no model call, then "draft a short thank-you
+ *  note to her". The second turn named nobody, nothing seeded the ledger, the
+ *  egress took its empty-ledger path, and `chat_tail` carried the contact's
+ *  address raw — an address the owner never typed. The same holds for every
+ *  earlier reply after a restart empties the ledger.
+ *
+ *  The owner's own turns are not passed here: they take the ledger-anchored
+ *  content pass, as `user_message` does (D-167 N.10.2 ②). No index wired:
+ *  unchanged. A seed source that THREW: the turn is withheld. */
+const aliasAssistantTurnsAgainstWarehouse = (
+  packet: Record<string, unknown>,
+  plan: PiiEgressPlan,
+): boolean => {
+  const tail = packet['chat_tail'];
+  if (!Array.isArray(tail)) return false;
+  const turns = tail.filter((message): message is Record<string, unknown> =>
+    message !== null
+    && typeof message === 'object'
+    && !Array.isArray(message)
+    && (message as Record<string, unknown>)['role'] === 'assistant'
+    && typeof (message as Record<string, unknown>)['content'] === 'string'
+    && ((message as Record<string, unknown>)['content'] as string).length > 0);
+  if (turns.length === 0) return false;
+  const resolver = plan.recall?.getIndex();
+  if (resolver === undefined) return false;
+  let changed = false;
+  for (const turn of turns) {
+    if (resolver.isDegraded()) {
+      turn['content'] = CHAT_TAIL_WITHHELD_MESSAGE;
+      changed = true;
+      continue;
+    }
+    if (aliasRecallFieldInPlace(turn, 'content', plan, { resolver })) changed = true;
+  }
+  return changed;
+};
+
+/** The tool records a tail may decorate: each `result` the model reads back.
+ *  Never `args` / `detail` — a record of what the model SENT must echo the form
+ *  it was shown (bench 343, `applyDataScans`). */
+const OVERLAP_DECORATED_LANES = ['recall_context', 'prior_tool_calls', 'tool_results_since'] as const;
+
+/** D-224, amended 2026-10-24 — overlap-reveal LAST, from the owner's words AS SENT.
+ *
+ *  A tail re-binds an alias to the fragment of it the owner typed
+ *  (`pii.Person1.sarah` when the owner wrote "Sarah" and the alias is "Sarah
+ *  Smith"), and D-224 called it free because "the user typed it". ⛔⛔ That holds
+ *  only while the typed words are still READABLE in the packet, and the content
+ *  pass hides a name the ledger knows in the owner's own message too. Derived from
+ *  the RAW message, the tails carried exactly what the message hid: `user_message`
+ *  read `pii.Person1 at pii.Org1` while the results read `pii.Person1.sarah.chen`,
+ *  `pii.Org1.northwind.traders` and `pii.Person1.sarah.chen.northwind@d1.invalid`
+ *  (bench 175, 2026-10-23: the name's tail in 76 of 136 packets; none in July's
+ *  run). That address was also a second spelling of one the prefetch block showed
+ *  bare.
+ *
+ *  ⇒ Only a word the model can still read in the owner's messages, as they stand
+ *  after every pass, rides a tail. A partial reference sent as typed ("Sarah"
+ *  beside "Sarah Smith") is still readable, so D-167's case keeps its tail, and so
+ *  does D-224's ("Northwind Traders" in the clear beside a bare address). Runs
+ *  after the owner's places are released, so a place sent as typed counts.
+ *  Mutates the owned packet in place; returns whether anything changed. */
+const decorateResultsFromOwnerWordsAsSent = (
+  target: unknown,
+  plan: PiiEgressPlan,
+): boolean => {
+  if (target === null || typeof target !== 'object' || Array.isArray(target)) return false;
+  const record = target as Record<string, unknown>;
+  const readable = ownerWordsAsSent(record, plan).map((text) => text.readable);
+  let changed = false;
+  for (const lane of OVERLAP_DECORATED_LANES) {
+    const entries = record[lane];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const call = entry as Record<string, unknown>;
+      if (!('result' in call)) continue;
+      const decorated = piiEgress.decorateOverlapForEgress(plan.ledger, call['result'], readable);
+      if (JSON.stringify(decorated) === JSON.stringify(call['result'])) continue;
+      call['result'] = decorated;
+      changed = true;
+    }
+  }
+  return changed;
+};
+
+/** Lowercase letter/digit runs: how a store's word check splits a query. */
+const wordsOf = (text: string): string[] =>
+  (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+
+/** A word a tool QUOTES in its own text, as a search hint quotes the words it
+ *  could not find. */
+const QUOTED_WORD = /"([\p{L}\p{N}]+)"/gu;
+
+/** A tool's own words about the query it was given are the RESTORED query's words:
+ *  the tool loop is PII-unaware, so a model that searched mail by `pii.Org1` was
+ *  told `No email holds "Quellmoor"` — a word of the company the alias hid
+ *  (`collectionSearchSpellingHint`; bench 398, 2026-10-24). Its closest-spelling
+ *  sentence (`"<word>" is in N emails`) has the same shape.
+ *
+ *  ⇒ In each tool and recall RESULT, a quoted word that belongs to a value this
+ *  packet shows aliased becomes that value's alias (`No email holds "pii.Org1"`,
+ *  which keeps the hint's warning), unless it is a word the owner's messages still
+ *  show. QUOTED ONLY: a hint quotes what it echoes, and an unquoted word in a
+ *  result is the record's own text, which the whole-value passes already judged.
+ *  Mutates the owned packet in place; returns whether anything changed. */
+const quotedWordsAsSent = (target: unknown, plan: PiiEgressPlan): boolean => {
+  if (target === null || typeof target !== 'object' || Array.isArray(target)) return false;
+  const record = target as Record<string, unknown>;
+  const calls = OVERLAP_DECORATED_LANES.flatMap((lane) => {
+    const entries = record[lane];
+    return Array.isArray(entries)
+      ? entries.filter((entry): entry is Record<string, unknown> =>
+        entry !== null && typeof entry === 'object' && !Array.isArray(entry) && 'result' in entry)
+      : [];
+  });
+  if (calls.length === 0) return false;
+  const owner = ownerWordsAsSent(record, plan);
+  const shown = piiEgress.ownerTextAsSent(plan.ledger, JSON.stringify([
+    ...owner.map((text) => text.aliases.map((a) => a.token).join(' ')),
+    ...calls.map((call) => [call['args'] ?? null, call['result']]),
+  ]));
+  const aliasOf = aliasByWord(shown.aliases, wordsOf);
+  if (aliasOf.size === 0) return false;
+  const readable = new Set(owner.flatMap((text) => wordsOf(text.readable)));
+  const rewrite = (node: unknown): unknown => {
+    if (typeof node === 'string') {
+      return node.replace(QUOTED_WORD, (quoted, word: string) => {
+        const lower = word.toLowerCase();
+        const alias = readable.has(lower) ? undefined : aliasOf.get(lower);
+        return alias === undefined ? quoted : `"${alias}"`;
+      });
+    }
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node !== null && typeof node === 'object') {
+      // Values only, as decoration: a key is a field name, never a quote.
+      return Object.fromEntries(Object.entries(node as Record<string, unknown>)
+        .map(([key, value]) => [key, rewrite(value)]));
+    }
+    return node;
+  };
+  let changed = false;
+  for (const call of calls) {
+    const next = rewrite(call['result']);
+    if (JSON.stringify(next) === JSON.stringify(call['result'])) continue;
+    call['result'] = next;
+    changed = true;
   }
   return changed;
 };
@@ -1460,11 +1733,6 @@ const aliasChatAiInputData = async (
     }
     return withSystem(input);
   }
-  // Preserve the actual owner-authored disclosure before any exact-path or
-  // candidate alias pass rewrites it. Overlap suffixes are a local
-  // coreference aid; deriving them from an already-aliased packet silently
-  // loses what the owner really typed.
-  const rawDisclosedTexts = disclosedTextsFromPacket(packet);
   // D-167 Slice 3 — collision-proof the WHOLE packet against any user-typed
   // `pii.*` literal (e.g. a note anonymizing a friend as "pii.Person1") BEFORE
   // the alias pass: reserve a free slot (self-map) or escape a colliding one so
@@ -1530,14 +1798,27 @@ const aliasChatAiInputData = async (
   // plan (wrapper returns `real`, never reaching here) can't ship them raw.
   let prefetchInjected = false;
   if (protectedEntityParts && protectedEntityParts.length > 0) {
-    const blocks = renderEntityPartsForEgress(
-      protectedEntityParts, plan, rawDisclosedTexts,
-    );
+    const blocks = renderEntityPartsForEgress(protectedEntityParts, plan);
     if (blocks.length > 0) {
       (packet as Record<string, unknown>).prefetch_context = blocks;
       prefetchInjected = true;
+      // ⛔⛔ A SITUATION BLOCK IS SCANNED AGAINST EVERY CONTACT, BEFORE THE OWNER'S
+      // WORDS ARE. An item's value is composed text (`Ilsa Varga · birthday`),
+      // tagged `content`, so its own pass aliases only a name the ledger ALREADY
+      // holds — and its part renders before the contact part that teaches the
+      // ledger the name. The first packet of bench 391 (2026-10-23) sent it raw
+      // beside a message reading `pii.Person2`; the second aliased it. A contact
+      // the owner never named would have gone raw in every packet. Before the
+      // owner's words, so a name the block teaches is hidden there as well.
+      if (protectedEntityParts.some((part) => part.entity === 'situation_item')) {
+        aliasPrefetchAgainstWarehouse(packet as Record<string, unknown>, plan);
+      }
     }
   }
+  // Earlier assistant turns too, and for the same reason: they hold real values
+  // the ledger may never have seen, and a name they teach must be hidden in the
+  // owner's words as well (`aliasAssistantTurnsAgainstWarehouse`).
+  const tailScanned = aliasAssistantTurnsAgainstWarehouse(packet as Record<string, unknown>, plan);
   // Resolve the main packet's structural tags once, before any candidate pass
   // replaces raw tool-feedback values. The same resolved paths drive final
   // direct protection and the flat assistant-source projection.
@@ -1602,7 +1883,6 @@ const aliasChatAiInputData = async (
         packet as Record<string, unknown>,
         plan,
         contribution.candidates,
-        rawDisclosedTexts,
       );
     } catch (error) {
       // ⛔ An integrity failure is NOT a coverage miss. This catch exists for
@@ -1620,16 +1900,17 @@ const aliasChatAiInputData = async (
   // D-167 (recall path) — resolve the recall context ONCE: undefined unless the
   // packet carries a typed `recall_context` field AND a contact recall index is
   // available. When set, `aliasRecallContextField` aliases those results against
-  // the contact index (seed ⊇ scan) + overlap-reveals them, so a contact recalled
-  // from a PRIOR session is aliased even though the session ledger has never seen
-  // it (the cross-session leak). Resolved AFTER the pre-scan reassigns `packet`.
+  // the contact index (seed ⊇ scan), so a contact recalled from a PRIOR session is
+  // aliased even though the session ledger has never seen it (the cross-session
+  // leak); their overlap tails come last (`decorateResultsFromOwnerWordsAsSent`).
+  // Resolved AFTER the pre-scan reassigns `packet`.
   // The index builds lazily (only because there IS a `recall_context` field), so a
   // non-recall turn pays nothing and keeps the byte-identity fast path below.
-  const recallCtx = resolveRecallScanContext(
-    packet,
-    plan,
-    rawDisclosedTexts,
-  );
+  const recallCtx = resolveRecallScanContext(packet, plan);
+  // 2026-10-24 (D-167 amendment) — an email address or `http(s)` URL is aliased
+  // with no ledger anchor, so a packet whose scanned text holds one cannot take
+  // the empty-ledger fast path below: it would reach the model as written.
+  const shapesToAlias = carriesShapeToAlias(packet);
   // D-167 — the data-field aliasing for one packet (the owned parsed packet, or its
   // aliased clone): recall FIRST (the typed `recall_context` field, aliased against
   // the contact index — this SEEDS the ledger), THEN the uniform ledger scan over
@@ -1694,17 +1975,18 @@ const aliasChatAiInputData = async (
           //   the session ledger had never seen EGRESSED RAW. Whole-warehouse
           //   seeding is exactly why this call was widened to `prior_tool_calls`
           //   — dropping it trades a livelock for a leak, which is worse.
-          //   Passing an EMPTY disclosed set keeps the resolver and makes
-          //   `decorateOverlapReveal` a no-op (it reveals nothing when nothing
-          //   was disclosed), so args are aliased identically to every other
-          //   field and carry no coreference tail.
-          const recordCtx = { ...recallCtx, disclosedTexts: [] };
-          if (aliasRecallFieldInPlace(entry, 'args', plan, recordCtx)) changed = true;
-          if (aliasRecallFieldInPlace(entry, 'detail', plan, recordCtx)) changed = true;
+          //   No alias pass adds a tail, and the one that does decorates a
+          //   RESULT only (`decorateResultsFromOwnerWordsAsSent`), so args are
+          //   aliased identically to every other field and carry no tail.
+          if (aliasRecallFieldInPlace(entry, 'args', plan, recallCtx)) changed = true;
+          if (aliasRecallFieldInPlace(entry, 'detail', plan, recallCtx)) changed = true;
         }
       }
     }
-    if (plan.ledger.byKindRealValue.size > 0 && uniformContentScanDataFields(target, plan)) {
+    if (
+      (plan.ledger.byKindRealValue.size > 0 || shapesToAlias)
+      && uniformContentScanDataFields(target, plan)
+    ) {
       changed = true;
     }
     return changed;
@@ -1731,7 +2013,7 @@ const aliasChatAiInputData = async (
   // legitimate `__proto__`/`constructor` arg key). An escape forces re-serialize
   // via `preScanEscaped` instead.
   const scanContent =
-    directlyProtected || plan.ledger.byKindRealValue.size > 0;
+    directlyProtected || plan.ledger.byKindRealValue.size > 0 || shapesToAlias;
   // After every pass that seeds the ledger, before the one that scans the prose.
   // A message the reharvest's hold changed is not held again: that pass added
   // to the ledger only candidates its hold had counted.
@@ -1777,6 +2059,10 @@ const aliasChatAiInputData = async (
     // empty user_message + chat_tail can leave `fields` empty even with prefetch
     // seeding), so it too forces the re-serialize.
     ownerPlaces.release(packet);
+    // After the release, so a place the owner's message sends as typed is readable.
+    const requoted = quotedWordsAsSent(packet, plan);
+    const decorated = recallCtx !== undefined
+      && decorateResultsFromOwnerWordsAsSent(packet, plan);
     return withSystem(
       removed
         || scanned
@@ -1785,6 +2071,9 @@ const aliasChatAiInputData = async (
         || prefetchInjected
         || directlyProtected
         || reharvestChanged
+        || tailScanned
+        || requoted
+        || decorated
         ? { ...input, 'llm.prompt': JSON.stringify(packet) }
         : input,
     );
@@ -1805,6 +2094,9 @@ const aliasChatAiInputData = async (
   // CLONE against the now-seeded ledger: recall gather (typed `recall_context`,
   // seeds further) then the uniform ledger scan. See `applyDataScans`.
   applyDataScans(aliased);
+  // The owner's messages are final here, places released (above).
+  quotedWordsAsSent(aliased, plan);
+  if (recallCtx !== undefined) decorateResultsFromOwnerWordsAsSent(aliased, plan);
   // Strip every `__entity` marker AFTER aliasing, BEFORE re-serializing the
   // model-bound prompt (E.1 hard egress invariant). `aliased` is a fresh deep
   // clone we own, so the in-place strip is safe; the path always re-serializes
@@ -1950,6 +2242,85 @@ const routeEntityRefSearchArgs = (
   }
 };
 
+/** A tool argument that takes an email ADDRESS, by its name: `to`, `cc`, `bcc`,
+ *  `send_to`, `reply_to`, or a name ending in `email` / `emails`
+ *  (`recipient_email`). By NAME because recipes declare a recipient as a plain
+ *  string (`send-thank-you-email`'s `recipient_email` is `type: string`), so there
+ *  is no schema format to read. A name field (`recipient_name`) is not one. */
+const ADDRESS_ARG_NAME = /^(?:to|cc|bcc|send_to|reply_to|(?:[a-z0-9]+_)*emails?)$/;
+
+/** A bare person alias — `pii.Person2`, any case, `cap_` form included. */
+const BARE_PERSON_ALIAS = /^(?:cap\d*_)?pii\.person(\d+)$/i;
+
+/** The address aliases this request showed for person `n`: their first address
+ *  `pii.PersonN@dK.invalid` and any later one `pii.PersonN.mJ@dK.invalid` (D-326),
+ *  rebuilt from the request authority's own rows, so only an address the packet
+ *  carried can come back. */
+const shownAddressesOfPerson = (
+  authority: piiEgress.RequestRestoreAuthority,
+  n: string,
+): string[] => {
+  const later = new RegExp(`^pii\\.Person${n}\\.m\\d+$`);
+  const addresses: string[] = [];
+  for (const entry of authority.ledger.byKindBaseAlias.values()) {
+    if (entry.kind !== 'email_local') continue;
+    if (entry.alias_value !== `pii.Person${n}` && !later.test(entry.alias_value)) continue;
+    const at = entry.real_value.lastIndexOf('@');
+    if (at <= 0) continue;
+    const domain = authority.ledger.byKindRealValue.get(`domain::${entry.real_value.slice(at + 1)}`);
+    if (domain === undefined) continue;
+    addresses.push(`${entry.alias_value}@${domain.alias_value}`);
+  }
+  return addresses;
+};
+
+/** ⛔ A PERSON ALIAS IN AN ADDRESS ARGUMENT IS ROUTED TO THAT PERSON'S ONE SHOWN
+ *  ADDRESS, before restore. Bench 70 (2026-10-24, qwen3.7-plus): asked to email
+ *  one of two contacts it saw as `pii.Person1 (contact, ref: pii.Person1@d1.invalid)`
+ *  and the same for `pii.Person2`, the model sent `to: "pii.Person2"` in 2 of 10
+ *  runs. Restored, that is `to: Quinn Rivera`: the owner was asked to approve a
+ *  send to a name, and it failed after they approved.
+ *
+ *  Only when the request showed exactly ONE address for that person. Two
+ *  (`pii.Person1@…` and `pii.Person1.m2@…`) is a choice the model has to make, and
+ *  none means it never saw one; either way the value is left as sent. Only a
+ *  person alias this request can restore (as B3 checks), and never in an
+ *  entity-ref search tool, whose fields are B3's. The owner still approves the
+ *  send, now shown with the address. */
+const routePersonAliasToAddress = (
+  authority: piiEgress.RequestRestoreAuthority,
+  body: unknown,
+): void => {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return;
+  const toolCalls = (body as Record<string, unknown>).tool_calls;
+  if (!Array.isArray(toolCalls)) return;
+  const route = (value: string): string | undefined => {
+    const person = BARE_PERSON_ALIAS.exec(value.trim());
+    if (person === null) return undefined;
+    const restored = piiEgress.restoreForDisplayWithAuthority(authority, value);
+    if (restored === value || piiEgress.hasPotentialPiiAliasLiteral(restored)) return undefined;
+    const shown = shownAddressesOfPerson(authority, person[1]!);
+    return shown.length === 1 ? shown[0] : undefined;
+  };
+  for (const tc of toolCalls) {
+    if (tc === null || typeof tc !== 'object' || Array.isArray(tc)) continue;
+    const call = tc as Record<string, unknown>;
+    if (typeof call['tool'] !== 'string' || ENTITY_REF_SEARCH_TOOLS.has(call['tool'])) continue;
+    const args = call['args'];
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) continue;
+    const a = args as Record<string, unknown>;
+    for (const [name, value] of Object.entries(a)) {
+      if (!ADDRESS_ARG_NAME.test(name)) continue;
+      if (typeof value === 'string') {
+        const routed = route(value);
+        if (routed !== undefined) a[name] = routed;
+      } else if (Array.isArray(value)) {
+        a[name] = value.map((item) => (typeof item === 'string' ? route(item) ?? item : item));
+      }
+    }
+  }
+};
+
 /** D-167 N.10 — key-restore the model's `tool_calls[].args` maps ONLY. The uniform
  *  egress aliases result-map KEYS, so the model can copy an aliased key into a tool
  *  call's args; restore those KEYS so dispatch + the approval preview see the
@@ -2002,6 +2373,7 @@ const restoreChatAiResult = (
 ): ChatAiCallResult => {
   if (authority.ledger.byKindBaseAlias.size === 0) return result;
   routeEntityRefSearchArgs(authority, result.body);
+  routePersonAliasToAddress(authority, result.body);
   const body = piiEgress.restoreArgsForApprovalWithAuthority(
     authority,
     result.body,
@@ -2083,6 +2455,16 @@ export const wrapExecuteAiCallForPii = (
     // and must survive a request that never commits.
     if (plan.seedSlotOrdering !== undefined) await plan.seedSlotOrdering();
     const stagedLedger = piiEgress.stageLedgerForRequest(plan.ledger);
+    // D-326 — an address is aliased together with the contact it belongs to, asked
+    // at the moment the address is first aliased (its domain's moment), so the owner
+    // becomes known exactly when its address does: a mail sender before the contact
+    // search, a name only in a snippet, an address that does not spell the name.
+    // ⚠ Asked lazily, so a request that aliases no address builds no index; and on
+    // this staged clone only, never the session ledger (`Ledger.ownerOfEmail`).
+    // ⛔ NOT a pre-pass over the packet: learning an owner BEFORE the scan decision
+    // would alias the owner's own words in a request that otherwise sends them as
+    // written (D-315 §4.3, `d-315-ai-pass-privacy.test.ts`).
+    stagedLedger.ownerOfEmail = (email) => plan.recall?.getIndex()?.ownerOfEmail?.(email);
     const stagedPlan: PiiEgressPlan = {
       ...plan,
       ledger: stagedLedger,

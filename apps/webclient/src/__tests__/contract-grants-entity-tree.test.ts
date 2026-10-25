@@ -1,6 +1,12 @@
 /** The entity axis — `KernelOpEntry.entity` + `TIER1_TOOL_ENTITY` — and the panel
- *  grouping it exists for: ONE section per entity, spanning both registries, so an
- *  owner answers "what can reach my files?" by reading one heading.
+ *  grouping it exists for: ONE section per entity, so an owner answers "what can
+ *  reach my files?" by reading one heading.
+ *
+ *  ⚠ D-327 follow-on (owner ruling 2026-10-24): the AI tools (Tier-1) now head a
+ *  group of their own, above every entity group, and each names the switches it
+ *  needs. The entity groups hold Recued's operations. What an owner reads under
+ *  "Files" still includes every file control: the tools that read files say so in
+ *  their "Also needs" line, and the file switches say which tools need them.
  *
  *  ⛔ THE CONTIGUITY TEST IS THE ONE THAT EARNS ITS PLACE. `renderKindGroup` groups by
  *  RUN-LENGTH, so it silently renders a heading twice if same-group entries are not
@@ -17,10 +23,11 @@ import {
   OP_ENTITY_LABEL,
   OP_ENTITY_SET,
   TIER1_TOOL_ENTITY,
+  TIER1_TOOL_GUIDE,
   TIER1_TOOL_NAMES,
 } from '@recued/contracts';
 
-import { _testing } from '../contracts/contract-grants-panel.js';
+import { _testing, CONTRACT_GRANTS_AI_TOOLS_GROUP } from '../contracts/contract-grants-panel.js';
 
 const universe = () => _testing.buildUniverse(undefined, undefined, undefined);
 const opEntries = () => universe().filter((e) => e.kind === 'op');
@@ -72,13 +79,28 @@ describe('the panel renders one group per entity', () => {
     expect(seen.size).toBeGreaterThan(1);
   });
 
-  it('a kernel op and a chat primitive over the same data share ONE group', () => {
+  it('the AI tools head their own group, before every entity group', () => {
+    const ops = opEntries();
+    const tools = ops.filter((e) => e.group === CONTRACT_GRANTS_AI_TOOLS_GROUP);
+    expect(tools.map((e) => e.label).sort()).toEqual([...TIER1_TOOL_NAMES].sort());
+    // First, and all together: the run-length grouping prints them as one group.
+    expect(ops.slice(0, tools.length).every((e) => e.group === CONTRACT_GRANTS_AI_TOOLS_GROUP)).toBe(true);
+  });
+
+  it('Recued’s operations stay under what they reach', () => {
     const byLabel = new Map(opEntries().map((e) => [e.label, e.group]));
-    // The exact pair this whole axis exists for.
     expect(byLabel.get('core.storage.file.read')).toBe(OP_ENTITY_LABEL.file);
-    expect(byLabel.get('file.search')).toBe(OP_ENTITY_LABEL.file);
     expect(byLabel.get('core.mail.send')).toBe(OP_ENTITY_LABEL.mail);
-    expect(byLabel.get('mail.search')).toBe(OP_ENTITY_LABEL.mail);
+    expect(byLabel.get('core.work-entity.task.create')).toBe(OP_ENTITY_LABEL.work);
+  });
+
+  it('every switch an AI tool needs is on the page, so the tool can point at it', () => {
+    // ⛔ The reason the old split was a defect: one control over files sat where an
+    // owner did not look. A need that is not in the universe would be the same gap.
+    const keys = new Set(universe().map((e) => e.entry_key));
+    const missing = TIER1_TOOL_NAMES.flatMap((tool) =>
+      TIER1_TOOL_GUIDE[tool].needs.filter((n) => !keys.has(n.entry)).map((n) => `${tool} → ${n.entry}`));
+    expect(missing).toEqual([]);
   });
 
   it('the "always-on tools" heading is gone — those rows are ordinary grants', () => {

@@ -1313,7 +1313,7 @@ export const DISCOVER_PANEL_STYLES = `
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-search::placeholder { color: var(--fg-subtle); }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-search:focus-visible {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; border-color: var(--accent); box-shadow: var(--wc-ring);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-sort {
   box-sizing: border-box; min-width: 0; max-width: 100%; font: inherit;
@@ -1363,7 +1363,7 @@ export const DISCOVER_PANEL_STYLES = `
   color: var(--fg); font: inherit; font-size: 13px;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-search:focus-visible {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; border-color: var(--accent); box-shadow: var(--wc-ring);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-status {
   min-width: 0; max-width: 100%; font-size: 12px; color: var(--fg-subtle);
@@ -1401,7 +1401,7 @@ export const DISCOVER_PANEL_STYLES = `
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-retry:hover { border-color: var(--accent); }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-retry:focus-visible {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; border-color: var(--accent); box-shadow: var(--wc-ring);
 }
 /* Pinned — rows this server has that the marketplace catalogue doesn't. Sits
    above the paged grid, outside the pager, with its own heading so the group
@@ -1430,7 +1430,7 @@ export const DISCOVER_PANEL_STYLES = `
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-card--clickable { cursor: pointer; transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease; }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-card--clickable:hover { border-color: var(--accent); box-shadow: 0 8px 22px rgba(24,24,27,.07); transform: translateY(-2px); }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-card--clickable:focus-visible {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; border-color: var(--accent); box-shadow: var(--wc-ring);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-card-head {
   display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%;

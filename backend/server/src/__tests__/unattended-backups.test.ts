@@ -194,7 +194,7 @@ describe('unattended encrypted backups', () => {
 
   it('refuses foreign words, vault lock, changed destinations, and altered sealed capabilities', async () => {
     const h = await setup();
-    await expect(h.service.save(h.settings, generateRecoveryKey().mnemonic)).rejects.toThrow('Recovery words');
+    await expect(h.service.save(h.settings, generateRecoveryKey().mnemonic)).rejects.toThrow('This recovery key does not open');
     expect(h.service.status().configured).toBe(false); await h.service.save(h.settings, h.mnemonic);
     h.keys.lock(); h.due(); await h.service.tick(); expect(h.service.status().last_run?.issue).toBe('vault_unavailable'); expect(h.s3.calls).toHaveLength(0);
     await h.keys.unlockWithServerKey({ serverKey: h.serverKey }); h.changed(); h.due(); await h.service.tick();

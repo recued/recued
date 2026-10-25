@@ -279,6 +279,50 @@ describe('retargetServerUrl', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('⛔ saves an address typed as https:// in the form the live client dials', async () => {
+    // The CLI prints `https://host`. Saved as typed it passed the identity
+    // check and then never connected: the server takes upgrades only under /ws.
+    const store = await realTokenStore();
+    const keypair = realKeypair();
+    const probed: string[] = [];
+    const answer = signingServer(keypair);
+    const fetchSpy = (async (url: string | URL | Request, init?: RequestInit) => {
+      probed.push(String(url));
+      return answer(url, init);
+    }) as typeof globalThis.fetch;
+    let savedUrl: string | null = null;
+    const outcome = await retargetServerUrl(profileFor(keypair, null), 'https://alice.recued.net:4433', {
+      tokenStore: store,
+      retarget: async (_id, url) => { savedUrl = url; return url; },
+      fetch: fetchSpy,
+    });
+    expect(outcome).toEqual({ kind: 'saved', server_url: 'wss://alice.recued.net:4433/ws' });
+    expect(savedUrl).toBe('wss://alice.recued.net:4433/ws');
+    expect(probed).toEqual(['https://alice.recued.net:4433/auth/identity-probe']);
+  });
+
+  it('⛔ will not put an older token back over a sign-in that changed meanwhile', async () => {
+    // A rotation or re-pair in another tab after this edit read the profile:
+    // saving would write the older token, re-sealed, over the newer one.
+    const store = await realTokenStore();
+    const keypair = realKeypair();
+    const expected: Array<string | null> = [];
+    const outcome = await retargetServerUrl(profileFor(keypair, null), NEW_URL, {
+      tokenStore: store,
+      retarget: async (_id, _url, _token, expectedTokenId) => {
+        expected.push(expectedTokenId);
+        return null;
+      },
+      listProfiles: async () => [{
+        ...profileFor(keypair, null),
+        webclient_token: { token_id: 'tok-rotated', ciphertext_b64: 'c', iv_b64: 'i', issued_at: 2 },
+      }],
+      fetch: signingServer(keypair),
+    });
+    expect(expected).toEqual([null]);
+    expect(outcome).toEqual({ kind: 'sign_in_changed' });
+  });
+
   it('surfaces a store refusal (duplicate address / stale id) without claiming success', async () => {
     const store = await realTokenStore();
     const keypair = realKeypair();

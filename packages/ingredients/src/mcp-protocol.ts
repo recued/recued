@@ -9,13 +9,28 @@
 export const MCP_MODERN_PROTOCOL_VERSION = '2026-07-28' as const;
 export const MCP_LEGACY_PROTOCOL_VERSION = '2024-11-05' as const;
 
+/** The handshake-era revisions Recued's OWN server implements, newest first:
+ * the ones its `initialize` may settle on. Checked 2026-10-24 against each
+ * revision's changelog for this server (tools only, a static bearer, no
+ * OAuth): 2025-06-18 and 2025-11-25 ask nothing of it beyond what it already
+ * does (the version header and its 400, a bare 202 for a notification, 403
+ * for a bad Origin, tool schemas that read the same as JSON Schema 2020-12).
+ * 2025-03-26 is absent: it requires RECEIVING JSON-RPC batches, which this
+ * server refuses, and 2025-06-18 removed them again. A client that stops at
+ * 2025-03-26 also speaks 2024-11-05, so it loses nothing. */
+export const MCP_SERVER_LEGACY_PROTOCOL_VERSIONS = [
+  '2025-11-25',
+  '2025-06-18',
+  MCP_LEGACY_PROTOCOL_VERSION,
+] as const;
+
 /** What Recued's OWN MCP server advertises — in `server/discover`'s
  * `supportedVersions` and in every `UnsupportedProtocolVersionError.supported`.
  * This is a compatibility CLAIM: a date belongs here only once Recued's server
  * implements that revision's wire behavior, and only with protocol tests. */
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = [
   MCP_MODERN_PROTOCOL_VERSION,
-  MCP_LEGACY_PROTOCOL_VERSION,
+  ...MCP_SERVER_LEGACY_PROTOCOL_VERSIONS,
 ] as const;
 
 /** What Recued's CLIENT will ACCEPT when a peer server names its own revision
@@ -213,6 +228,27 @@ export const selectMcpLegacyInitializeVersion = (
   }
   const declared = (result as Record<string, unknown>).protocolVersion;
   return MCP_ACCEPTED_LEGACY_PROTOCOL_VERSIONS.find((version) => version === declared);
+};
+
+/** The revision Recued's OWN server settles a legacy `initialize` on, from the
+ * client's request. The client's own revision when the server implements it,
+ * as the lifecycle requires. Otherwise the newest it implements that is OLDER
+ * than the client's: a client speaks the revisions up to its own and may not
+ * know a newer one, so the lifecycle's suggested "latest supported" would
+ * answer a 2025-03-26 client with a revision it cannot read. A proposal older
+ * than all of them, or none, gets the oldest. */
+export const selectMcpServerInitializeVersion = (
+  params: unknown,
+): (typeof MCP_SERVER_LEGACY_PROTOCOL_VERSIONS)[number] => {
+  const proposed = params !== null && typeof params === 'object' && !Array.isArray(params)
+    ? (params as Record<string, unknown>).protocolVersion
+    : undefined;
+  if (typeof proposed !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(proposed)) {
+    return MCP_LEGACY_PROTOCOL_VERSION;
+  }
+  // Revisions are ISO dates, so string order is release order.
+  return MCP_SERVER_LEGACY_PROTOCOL_VERSIONS.find((version) => version <= proposed)
+    ?? MCP_LEGACY_PROTOCOL_VERSION;
 };
 
 /** Name the `resultType` in a result Recued cannot consume, else undefined.

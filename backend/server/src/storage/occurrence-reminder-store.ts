@@ -59,6 +59,10 @@ export interface OccurrenceReminderStore {
   clearCurrent(occurrence_id: string, ask_id: string): void;
   later(occurrence_id: string, until: number): void;
   clearLater(occurrence_id: string, expected: number): void;
+  /** D-325 §15.7 (2026-10-24) — Today's Done on a renewal: the owner has seen its latest
+   *  reminder. `acknowledged` holds until a later one is sent, so Today shows it again then. */
+  acknowledge(occurrence_id: string, at: number): void;
+  acknowledged(occurrence_id: string): boolean;
   pointForAsk(ask_id: string): OccurrenceReminderPoint | null;
   consumeQuestion(occurrence_id: string, at: number): void;
   answer(input: Omit<OccurrenceReminderAnswer, 'applied_at'>): OccurrenceReminderAnswer;
@@ -105,6 +109,9 @@ export const createOccurrenceReminderStore = (db: Database.Database): Occurrence
   CREATE TABLE IF NOT EXISTS occurrence_reminder_answers (
     ask_id TEXT PRIMARY KEY, occurrence_id TEXT NOT NULL, outcome TEXT NOT NULL,
     answered_at INTEGER NOT NULL, applied_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS occurrence_reminder_acknowledgements (
+    occurrence_id TEXT PRIMARY KEY, notified_on TEXT NOT NULL, at INTEGER NOT NULL
   );`);
   if (!(db.prepare('PRAGMA table_info(occurrence_reminder_answers)').all() as { name: string }[]).some(row => row.name === 'owner_action'))
     db.exec('ALTER TABLE occurrence_reminder_answers ADD COLUMN owner_action INTEGER');
@@ -124,8 +131,17 @@ export const createOccurrenceReminderStore = (db: Database.Database): Occurrence
     db.prepare('SELECT group_id,ask_id FROM occurrence_reminder_points WHERE occurrence_id=? AND point_key=?')
       .get(id, key) as { group_id: string; ask_id: string | null } | undefined ?? null;
 
+  // The reminder an acknowledgement covers is the latest sent ('' before any is).
+  const notifiedOn = (id: string): string => control(id).last_notified_on ?? '';
+
   return {
     control, plan, point,
+    acknowledge: (id, at) => {
+      db.prepare(`INSERT INTO occurrence_reminder_acknowledgements(occurrence_id,notified_on,at) VALUES(?,?,?)
+        ON CONFLICT(occurrence_id) DO UPDATE SET notified_on=excluded.notified_on, at=excluded.at`).run(id, notifiedOn(id), at);
+    },
+    acknowledged: id => (db.prepare('SELECT notified_on FROM occurrence_reminder_acknowledgements WHERE occurrence_id=?')
+      .get(id) as { notified_on: string } | undefined)?.notified_on === notifiedOn(id),
     controls: () => db.prepare('SELECT * FROM occurrence_reminder_controls WHERE current_ask_id IS NOT NULL ORDER BY occurrence_id')
       .all() as OccurrenceReminderControl[],
     occurrenceForAsk: ask_id => (db.prepare('SELECT occurrence_id FROM occurrence_reminder_points WHERE ask_id=?')
@@ -265,7 +281,8 @@ export const createOccurrenceReminderStore = (db: Database.Database): Occurrence
     dropLog: db.transaction((id: string): number => {
       const groups = (db.prepare('SELECT DISTINCT group_id FROM occurrence_reminder_points WHERE occurrence_id=?').all(id) as { group_id: string }[]).map(row => row.group_id);
       let dropped = 0;
-      for (const table of ['occurrence_reminder_controls', 'occurrence_reminder_points', 'occurrence_reminder_pending', 'occurrence_reminder_replacements', 'occurrence_reminder_answers']) {
+      for (const table of ['occurrence_reminder_controls', 'occurrence_reminder_points', 'occurrence_reminder_pending', 'occurrence_reminder_replacements', 'occurrence_reminder_answers',
+        'occurrence_reminder_acknowledgements']) {
         dropped += db.prepare(`DELETE FROM ${table} WHERE occurrence_id=?`).run(id).changes;
       }
       const orphan = db.prepare('DELETE FROM occurrence_reminder_plans WHERE group_id=@group AND NOT EXISTS (SELECT 1 FROM occurrence_reminder_points WHERE group_id=@group)');

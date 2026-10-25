@@ -940,7 +940,7 @@ describe('D-174 contracts route — list → detail shell', () => {
       route.dispose();
     });
 
-    it('a wildcard ordinary contract only shows authorable door toggles', async () => {
+    it('a wildcard ordinary contract only shows the door toggles that do something', async () => {
       const contractsListCaller = vi.fn(async () => ({
         contracts: [agentContract()],
       }));
@@ -957,7 +957,9 @@ describe('D-174 contracts route — list → detail shell', () => {
       );
       // reception/webhook are not hand-authorable; rendering their checkboxes
       // here handed a human a control over door classes they were never shown.
-      expect(toggles).toEqual(['mcp', 'mcp_chat', 'llm_gateway']);
+      // MCP chat is authorable but has no transport yet, so its box changed
+      // nothing and is not shown either.
+      expect(toggles).toEqual(['mcp', 'llm_gateway']);
       route.dispose();
     });
 
@@ -1252,8 +1254,31 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(mcpEndpointFromServerUrl('wss://alice.example/ws')).toBe(
       'https://alice.example/mcp',
     );
-    expect(buildMcpClientSnippets('ws://127.0.0.1:3001/ws')[2]?.body).toContain(
-      'url = "http://127.0.0.1:3001/mcp"',
+    expect(
+      buildMcpClientSnippets('ws://127.0.0.1:3001/ws').find((snippet) => snippet.id === 'codex')?.body,
+    ).toContain('url = "http://127.0.0.1:3001/mcp"');
+  });
+
+  it('gives each client the shape it can actually connect with', () => {
+    const snippets = new Map(
+      buildMcpClientSnippets('wss://alice.example/ws').map((snippet) => [snippet.id, snippet.body]),
+    );
+    expect([...snippets.keys()]).toEqual(['claude', 'claude-code', 'cursor', 'cline', 'codex', 'custom']);
+    // Claude Desktop's config file starts local servers only: Recued's stdio
+    // mode, by full path, with the door's key in the environment. No address.
+    const claude = JSON.parse(snippets.get('claude')!).mcpServers.recued;
+    expect(Object.keys(claude)).toEqual(['command', 'args', 'env']);
+    expect(claude.args).toEqual(['--mcp']);
+    expect(Object.keys(claude.env)).toEqual(['RECUED_MCP_TOKEN']);
+    expect(snippets.get('claude')).not.toContain('https://');
+    // Cline defaults to SSE without a `type`.
+    expect(JSON.parse(snippets.get('cline')!).mcpServers.recued).toMatchObject({
+      type: 'streamableHttp',
+      url: 'https://alice.example/mcp',
+    });
+    expect(JSON.parse(snippets.get('cursor')!).mcpServers.recued.type).toBeUndefined();
+    expect(snippets.get('claude-code')).toMatch(
+      /^claude mcp add --transport http recued https:\/\/alice\.example\/mcp --header "Authorization: Bearer /,
     );
   });
 
@@ -1323,6 +1348,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(permissionsMintContractCaller).toHaveBeenCalledTimes(1);
     expect(permissionsMintContractCaller.mock.calls[0]![0]).toEqual({
       display_name: 'Codex bot',
+      key_authority: 'contract',
       scope: {},
       door_types: ['mcp'],
       max_uses: 25,
@@ -1365,6 +1391,7 @@ describe('D-174 contracts route — list → detail shell', () => {
 
     expect(permissionsMintContractCaller.mock.calls[0]![0]).toEqual({
       display_name: 'Monthly bot',
+      key_authority: 'contract',
       scope: {},
       max_uses: 100,
       use_period: 'month',
@@ -1399,6 +1426,7 @@ describe('D-174 contracts route — list → detail shell', () => {
 
     expect(permissionsMintContractCaller.mock.calls[0]![0]).toEqual({
       display_name: 'No cap',
+      key_authority: 'contract',
       scope: {},
     });
     route.dispose();
@@ -1470,6 +1498,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     await tick();
     expect(permissionsMintContractCaller.mock.calls[0]![0]).toEqual({
       display_name: 'Bare',
+      key_authority: 'contract',
       scope: {},
     });
     route.dispose();
@@ -1590,17 +1619,19 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(route.getActiveTab()).toBe('connect');
     expect(collectByAttr(root, CONTRACTS_ROUTE_CONNECT_HOST_ATTR)).toHaveLength(1);
     const snippets = collectByAttr(root, CONTRACTS_ROUTE_SNIPPET_ATTR);
-    expect(snippets).toHaveLength(4);
+    expect(snippets).toHaveLength(6);
     expect(snippets.map((snippet) => snippet.children[0]?.tagName)).toEqual([
       'H3',
       'H3',
       'H3',
       'H3',
+      'H3',
+      'H3',
     ]);
-    // No inbound-token callers in this harness → the credential panel degrades
-    // to a note (it mounts for real in the d-166 forwarding coverage).
+    // No key callers in this harness → the key panel degrades to a note (it
+    // mounts for real in the D-327 coverage).
     expect(collectByAttr(root, CONTRACTS_ROUTE_UNAVAILABLE_ATTR)).toHaveLength(1);
-    expect(route.permissionsPanel()).toBeNull();
+    expect(route.contractKeyPanel()).toBeNull();
     route.dispose();
   });
 
@@ -4265,10 +4296,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(input.value).toContain('"execution_status": "failed"');
     expect(input.value).toContain('"execution_reason": "execution_error"');
     expect(input.value).toContain(
-      '"run_correlation": "the result says so"',
+      '"run_correlation": "confirmed by the action execution receipt"',
     );
     expect(input.value).toContain(
-      '"data_relationship": "item touched by the step that changes things"',
+      '"data_relationship": "item involved in the side-effecting step"',
     );
     expect(input.value).toContain('Do not retry the action');
     expect(input.value).toContain('<reviewed_arguments>');
@@ -5092,7 +5123,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     );
     const prompt = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
     expect(prompt).toContain(
-      '"run_correlation": "not the result says so"',
+      '"run_correlation": "not confirmed by the action execution receipt"',
     );
     expect(prompt).toContain(
       'keep that uncertainty explicit instead of inferring a match',
@@ -6337,6 +6368,34 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await route.openSession('chat_1');
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(edited ? 'My next thought' : '');
     route.dispose();
+  });
+
+  it.each(['chat.sessions.list', 'chat.session.get'])('keeps a returned draft unsent while %s is loading', async methodToHold => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const baseConn = stepConn({ calls, sessions: [sessionSummary()] });
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const conn = (async (method: string, args: unknown) => {
+      if (method === methodToHold) await pending;
+      return baseConn(method as never, args as never);
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn, initialSessionId: 'chat_1' });
+    try {
+      await tick(8);
+      fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'Read the corrected saved fact');
+      const send = collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!;
+      expect(send.disabled).toBe(true); expect(send.getAttribute('title')).toContain('finish loading');
+      await route.sendMessage('Read the corrected saved fact');
+      expect(calls.filter(call => ['chat.session.create', 'chat.send'].includes(call.method))).toEqual([]);
+      release(); await route.whenLoaded();
+      expect(route.getThread().session?.id).toBe('chat_1');
+      expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('Read the corrected saved fact');
+      await route.sendMessage('Read the corrected saved fact');
+      expect(calls.find(call => call.method === 'chat.send')?.payload).toMatchObject({ session_id: 'chat_1' });
+      expect(calls.some(call => call.method === 'chat.session.create')).toBe(false);
+    } finally { release(); route.dispose(); }
   });
 
   it('keeps the visible draft through failed and superseded conversation loads', async () => {

@@ -53,6 +53,8 @@ export type PostHousekeepingTailAppContext = Pick<
   | 'executionCaseSourcePruner' | 'sharedStoreRef' | 'chatInboundTokenStoreRef'
   // D-240 slice 4 — the credential store the retention pass owns.
   | 'receptionManageCredentialStoreRef'
+  // D-329 — an expired held write settles onto its chat card.
+  | 'chatRunSettledSink'
 >;
 
 export type PostHousekeepingTailCollectionContext = Pick<
@@ -87,6 +89,8 @@ export interface StartPostHousekeepingTailOptions {
     | undefined;
   /** Operation receipt authority for anchorless raw-op checkpoint retention. */
   readonly gatedActionStore?: GatedActionStore | undefined;
+  /** D-329 — the AI app's view of a raw-op hold, settled when the hold expires. */
+  readonly mcpActionStore?: Pick<import('../mcp-action-store.js').McpActionStore, 'finish'> | undefined;
   /** D-178 slice 4b — on-boot update reconcile (commit / auto-revert +
    *  ledger→audit replay). Invoked AFTER `installShutdown` runs markBooted,
    *  so a staged release that reached a serving state commits. Best-effort
@@ -131,6 +135,11 @@ export const startPostHousekeepingTail = (
     auditLog: storage.auditLog,
     ...(options.gatedActionStore !== undefined
       ? { gatedActionStore: options.gatedActionStore }
+      : {}),
+    // D-329 — an expired raw-op hold settles the AI app's action and the chat's held write.
+    ...(options.mcpActionStore !== undefined ? { mcpActionStore: options.mcpActionStore } : {}),
+    ...(options.app.chatRunSettledSink !== undefined
+      ? { chatRunSettledSink: options.app.chatRunSettledSink }
       : {}),
     executionCaseLifecycle: options.app.executionCaseLifecycle,
     // D-219 — bound the capture-only argument buffer. Absent (db-less /

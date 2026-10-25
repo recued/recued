@@ -15,17 +15,20 @@ import { createProactiveHistoryStore } from '../storage/proactive-history-store.
 import { createSphereStore, type SphereStore } from '../storage/sphere-store.js';
 import type { SituationStore } from '../storage/situation-store.js';
 import type { MailFactStore } from '../storage/mail-fact-store.js';
-import type { AnnotationStore } from '../storage/annotation-store.js';
+import { LINK_TABLE, type AnnotationStore } from '../storage/annotation-store.js';
 import type { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createAssetClassStore, assetClassPatch } from './asset-classes.js';
+import { assetTypeNeedsHolder } from './asset-types.js';
 import { createAssetIntake } from './asset-intake.js';
 import { createMailProof, MAIL_PROOF_TAG, proofTarget } from './mail-proof.js';
 import type { AssetOccurrenceService } from './asset-occurrence-service.js';
 import { assetOccurrenceClock } from './asset-interval-cycle.js';
+import { assetRenewal } from './asset-rule-timing.js';
 import { summarizeYoursAsset } from './asset-summary.js';
 import type { AssetReminderService } from './asset-reminder-service.js';
 import type { EpisodeRuntime } from './episode-runtime.js';
 import { createHouseholdDeliveryStore, telegramHouseholdRoute } from '../storage/household-delivery-store.js';
+import { reachesPhone } from './reminder-destinations.js';
 import { createContactStore, type ContactStore } from '../storage/contact-store.js';
 import { kindLearningPool, kindRankingFloor, kindWords, learningDigest, learningPool } from './learning.js';
 import { publishProposalEvents } from './proposal-events.js';
@@ -33,6 +36,7 @@ import { recordDigestResponse } from './measures.js';
 import { completionQuestionKey, lastDoneQuestionKey } from './owner-completion.js';
 import type { ProactiveLearning } from './learning-runtime.js';
 import { ruleNotice } from './rule-titles.js';
+import { assetContextWriters, createAssetFactContextReader } from './asset-fact-context.js';
 
 /** "Never this kind" names what stops, in the owner's words; a mail fact kind as the learner names it. */
 const DISMISSED_KINDS: Record<string, string> = { travel_validity: 'travel document checks', episode: 'last-time suggestions',
@@ -47,6 +51,8 @@ const observationRecipe = (recipe: import('@recued/contracts').RecipeDefinition)
   });
   return visit(recipe.steps);
 };
+/** How many shared assets Settings names before "and N more". */
+export const HOUSEHOLD_ASSETS_SHOWN = 6;
 const record = (raw: unknown): Record<string, unknown> => raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
 const text = (raw: unknown, field: string): string => {
   if (typeof raw !== 'string' || !raw.trim() || raw.length > 2000) throw new Error(`${field} is required`); return raw;
@@ -157,7 +163,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     const chosen = class_id ?? input.class_id ?? undefined;
     const preset = chosen ? classes.get(chosen) : null;
     if (chosen && !preset) throw new Error('Class not found');
-    if (chosen && (['passport', 'id_card', 'visa', 'driving_licence'].includes(chosen) || preset?.fields.settings.holder_required === true) && !input.holder_contact) throw new Error('Choose the contact who holds this document');
+    if (preset && assetTypeNeedsHolder(preset) && !input.holder_contact) throw new Error('Choose the contact who holds this document');
     const patch = preset ? { ...assetClassPatch(preset), ...input,
       dates: { ...preset.fields.dates, ...input.dates }, readings: { ...preset.fields.readings, ...input.readings },
       observations: { ...preset.fields.observations, ...input.observations }, settings: { ...preset.fields.settings, ...input.settings,
@@ -338,6 +344,26 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     await deps.occurrences.recordLastDone({ asset_id: row.asset_id, rule_id: row.rule_id, on,
       confirmed: true, evidence_ref: `owner-last-done:${id}` });
     const proposal = proposals.byKey(lastDoneQuestionKey(id)); if (proposal?.state === 'proposed') proposals.outcome(proposal.id, 'accepted', now(), { collection: 'asset', id: row.asset_id });
+  };
+  /** §15.7 (2026-10-24) — Today's Done on a renewal: the owner has seen its latest reminder.
+   * Nothing closes, and Today shows it again once the next reminder is sent. */
+  const acknowledge = (id: string): void => {
+    const row = rows.get(id); if (!row) throw new Error('Occurrence not found');
+    const target = proofTarget(row, key => deps.work.readAsset(key)); const renewal = target ? assetRenewal(target.asset, target.rule) : null;
+    const commitment = row.commitment_id ? deps.work.readCommitment(row.commitment_id) : null;
+    if (!renewal || renewal.current !== row.cycle || commitment?.lifecycle_state !== 'pending') throw new Error('Only an open renewal is acknowledged; mark any other task done');
+    points.acknowledge(id, now());
+  };
+  /** §15.7 (2026-10-24) — Due's Done on a renewal: its new date, which closes the task. */
+  const renewed = async (id: string, on: string): Promise<void> => {
+    const row = rows.get(id); if (!row) throw new Error('Occurrence not found');
+    const evidence_ref = `owner-renewal:${id}`;
+    const target = proofTarget(row, key => deps.work.readAsset(key)); const renewal = target ? assetRenewal(target.asset, target.rule) : null;
+    // A retry after a lost reply finds its own date already saved.
+    if (renewal && renewal.current === on && target?.asset.field_sources[`dates.${renewal.field}`]?.ref === evidence_ref) return;
+    if (!renewal || renewal.current !== row.cycle) throw new Error('This task is not waiting for a new date');
+    if (!isAssetDate(on) || on <= renewal.current) throw new Error(`Enter a date after ${renewal.current}`);
+    await deps.occurrences.recordRenewal({ asset_id: row.asset_id, rule_id: row.rule_id, on, confirmed: true, evidence_ref });
   };
   const sameThing = async (id: string, other_id: string, merge: boolean, owner: ExecutionSource): Promise<void> => {
     if (id === other_id) throw new Error('Choose two different assets');
@@ -520,7 +546,10 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     if (proposal.kind === 'occasion') {
       const input = record(payload.occasion) as unknown as import('@recued/contracts').OccasionInput;
       const episodeIds = Array.isArray(payload.episode_ids) ? payload.episode_ids as string[] : [];
-      if (proposal.origin === 'learner' && !deps.learning?.memoryEvidenceAllowed(episodeIds)) throw new Error('This episode evidence is no longer available');
+      // A trip suggestion cites the trips themselves; any other cites its episodes.
+      const tripRefs = Array.isArray(payload.trip_refs) ? payload.trip_refs : undefined;
+      if (proposal.origin === 'learner' && tripRefs && !deps.learning?.tripEvidenceAllowed(tripRefs)) throw new Error('These trips are no longer on file');
+      if (proposal.origin === 'learner' && !tripRefs && !deps.learning?.memoryEvidenceAllowed(episodeIds)) throw new Error('This episode evidence is no longer available');
       return deps.db.transaction(() => {
         const occasion = history.saveOccasion({ ...input, id: input.id ?? `occasion-${proposal.id}` }, now());
         for (const id of episodeIds) { const episode = history.episode(id); if (episode) history.saveEpisode({ ...episode, occasion_id: occasion.id, storage_reason: 'recurrence' }, now()); }
@@ -584,6 +613,18 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         if (input.patch.status && ['sold', 'lost', 'retired'].includes(input.patch.status) && input.patch.status !== previous.status && !input.confirm_retirement) throw new Error('Review the parts, contracts and open occurrences before retiring this asset');
         await update(input.id, input.patch, owner); return { id: input.id, message: 'Asset updated.' };
       }
+      case 'asset.record_attribute_reading': {
+        await deps.dispatchers.assetRecordAttributeReading(input, owner);
+        return { id: input.id, message: 'Reading recorded. The original text is unchanged.' };
+      }
+      case 'asset.add_evidence': {
+        if (!deps.annotations) throw new Error('File links are unavailable');
+        await deps.dispatchers.assetAddEvidence(input, owner, () => {
+          if (!deps.db.prepare(`SELECT 1 FROM ${LINK_TABLE} WHERE id=? AND from_collection='asset' AND from_id=? AND to_collection='file' AND to_id=? AND role='attachment'`)
+            .get(input.attachment_id, input.id, input.evidence.id)) throw new Error('This file is no longer attached. Refresh and choose supporting evidence again.');
+        });
+        return { id: input.id, message: 'Evidence added. The observation and its writer keep their existing authority.' };
+      }
       case 'asset.delete': if (!input.confirmed) throw new Error('Confirm removing the asset and its open clocks');
         await deps.dispatchers.assetDelete({ id: input.id }); return { message: 'Asset removed.' };
       case 'asset.automatic_updates': {
@@ -594,7 +635,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       }
       case 'asset.link': await update(input.id, { belongs_to: input.parent_id }, owner); return { message: 'Parent updated.' };
       case 'asset.same_thing': await sameThing(input.id, input.other_id, input.merge, owner); return { message: input.merge ? 'References now point to the kept asset. Both source records remain in history.' : 'The two source records are linked.' };
-      case 'class.save': classes.saveOwner(input.preset); return { id: input.preset.id, message: 'Class saved. Existing assets keep their edited rows.' };
+      case 'class.save': classes.saveOwner(input.preset, input.create === true); return { id: input.preset.id, message: 'Class saved. Existing assets keep their edited rows.' };
       case 'class.delete': classes.deleteOwner(input.id); return { message: 'Class removed. Existing assets keep their rules.' };
       case 'class.apply': await applyClass(input.asset_id, input.class_id, owner); return { message: 'Class applied; pinned rules and known facts kept.' };
       case 'proposal.create': { const proposal = proposals.ensure({ ...input.proposal, origin: 'owner' }, now()); return { id: proposal.id, message: 'Proposal saved for review.' }; }
@@ -639,6 +680,9 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       case 'occurrence.last_done': await lastDone(input.id, input.on); return { message: input.on ? 'Actual date recorded; next cycle updated.' : 'Left unknown. This question will not repeat.' };
       case 'occurrence.later': if (!deps.reminders) throw new Error('Reminder delivery is unavailable');
         await deps.reminders.setLater(input.id, input.until); return { message: 'Next reminder moved. The deadline and schedule stay the same.' };
+      case 'occurrence.renewed': await renewed(input.id, input.on); return { message: 'New date saved. This task is done, and the next reminders follow the new date.' };
+      case 'occurrence.acknowledge': acknowledge(input.id);
+        return { message: 'Noted. It stays open until its new date is entered under Yours → Due, and Today shows it again at its next reminder.' };
       case 'rule.save': await saveRule(input.asset_id, input.rule, owner, input.confirm_floor_mute); return { message: 'Rule saved.' };
       case 'rule.delete': {
         const current = asset(input.asset_id); const rule = current.rules.find(rule => rule.id === input.rule_id);
@@ -700,15 +744,19 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         deps.episodeRuntime.setClassBar(input.class_id, input.minimum_rate); await deps.episodeRuntime.tick(); return { message: 'Your measured recall rate is saved. Surfacing still needs your separate opt-in.' };
       case 'history.forget': if (!input.confirmed) throw new Error('Confirm forgetting retained memory evidence');
         deps.episodeRuntime?.forget(); return { message: 'Retained memory evidence and dark scores forgotten. Your own records remain.' };
+      // D-325 §15.7 (2026-10-24) — the household only receives; an older webclient's
+      // member ids are not read.
       case 'household.telegram': {
         if (input.connection_name === null) { household.setTelegram(null); return { message: 'Household Telegram reminders stopped.' }; }
         const row = deps.connections?.().find(row => row.kind === 'notification' && row.name === input.connection_name && row.enrolled_at === input.connection_enrolled_at);
         if (!row) throw new Error('Choose the currently enrolled Telegram group');
-        household.setTelegram(row, input.members ?? [], now()); return { message: 'Only household items will reach this group. Only its selected members can answer.' };
+        household.setTelegram(row, now());
+        return { message: 'Shared assets’ reminders will be posted in this group, to read. You mark them done in Recued.' };
       }
       case 'household.home_assistant': {
         if (!deps.homeAssistant) throw new Error('Home Assistant household delivery is unavailable');
-        await deps.homeAssistant.configure(input); return { message: input.connection_name === null ? 'Home Assistant projection stopped.' : 'Home Assistant list saved. Only household tasks reach it.' };
+        await deps.homeAssistant.configure(input); return { message: input.connection_name === null ? 'Home Assistant projection stopped.'
+          : 'Home Assistant list saved. Shared assets’ open tasks will show there; you mark them done in Recued.' };
       }
       case 'trip.save': trips.save(input.trip); return { message: 'Trip details saved. Each traveller’s own passport is checked.' };
       case 'binding.save': {
@@ -719,6 +767,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         if (!recipe || definitionDigest(recipe) !== definitionDigest(JSON.parse(row.recipe_json))) throw new Error('The effective recipe differs from its installed version. Review that version first');
         if (!observationRecipe(recipe)) throw new Error('This installed recipe has no asset observation write');
         const recipe_hash = definitionDigest(recipe); const actor_ref = `recipe:${input.recipe_id}`;
+        if (input.expected_recipe_hash !== undefined && input.expected_recipe_hash !== recipe_hash) throw new Error('This recipe changed while you were reviewing it. Refresh and review its current version before enrolling it.');
         const source_ref = `recipe:${row.publisher_id}/${input.recipe_id}#${recipe_hash}`;
         const id = `binding-${createHash('sha256').update(JSON.stringify([current.id, actor_ref, source_ref])).digest('hex')}`;
         deps.db.transaction(() => {
@@ -1053,9 +1102,14 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       if (!input.include_closed && commitment && commitment.lifecycle_state !== 'pending') return [];
       const label = commitment ? { title: commitment.statement, due_on: commitment.promised_for_at === undefined ? null : new Date(commitment.promised_for_at).toISOString().slice(0, 10) } : notice(row);
       if (!label) return [];
+      // §15.7 (2026-10-24) — the one stored read a proof's target makes also says whether
+      // this is a renewal still waiting for its new date: its asset holds the task's own
+      // date. Once another is saved, the task's reconcile closes it.
+      const target = commitment?.lifecycle_state === 'pending' ? proofTarget(row, id => deps.work.readAsset(id)) : null;
+      const renewal = target ? assetRenewal(target.asset, target.rule) : null;
       const control = points.control(row.id); return [{ id: row.id, asset_id: row.asset_id, ...(row.subject_kind ? { subject_kind: row.subject_kind } : {}), rule_id: row.rule_id,
         ...label, question: row.question, commitment, current_ask_id: control.current_ask_id, later_until: control.later_until,
-        ...(commitment?.lifecycle_state === 'pending' && proofTarget(row, id => deps.work.readAsset(id)) ? { closes_by_proof: true as const } : {}) }];
+        ...(target ? { closes_by_proof: true as const } : {}), ...(renewal?.current === row.cycle ? { renewal } : {}) }];
     }).sort((a, b) => (a.due_on ?? '9999').localeCompare(b.due_on ?? '9999'));
     const destinations = await notifier?.getReminderDestinations();
     const children = input.asset_id ? deps.work.listAssetChildren(input.asset_id) : [];
@@ -1066,7 +1120,9 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       if (row.retirement === 'part') queue.push(...deps.work.listAssetChildren(row.id));
     }
     const retiring = new Set([...(input.asset_id ? [input.asset_id] : []), ...descendants.filter(row => row.retirement === 'part').map(row => row.id)]);
-    const affectedOpen = rows.all().filter(row => retiring.has(row.asset_id) && row.commitment_id && deps.work.readCommitment(row.commitment_id)?.lifecycle_state === 'pending').length;
+    // Only asset details need retirement impact. Keep the read after destinations
+    // load so counts include receipt changes made during that await.
+    const affectedOpen = retiring.size ? rows.all().filter(row => retiring.has(row.asset_id) && row.commitment_id && deps.work.readCommitment(row.commitment_id)?.lifecycle_state === 'pending').length : 0;
     const parent = input.asset_id && assets[0]?.belongs_to ? deps.work.readAssetEffective(assets[0].belongs_to) : null;
     const linked = input.asset_id ? (deps.db.prepare('SELECT left_id,right_id FROM asset_identity_links WHERE left_id=? OR right_id=?').all(input.asset_id, input.asset_id) as { left_id: string; right_id: string }[])
       .flatMap(row => { const linked = deps.work.readAssetEffective(row.left_id === input.asset_id ? row.right_id : row.left_id); return linked ? [linked] : []; }) : [];
@@ -1117,13 +1173,32 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         return { ...binding, available: ['active', 'lent'].includes(current.status) && (!binding.recipe_hash || !!row && definitionDigest(JSON.parse(row.recipe_json)) === binding.recipe_hash) };
       }));
     };
+    const preferences = (): YoursSnapshot['settings'] => {
+      const values = deps.situations.readSettings?.({
+        'digest.frequency': 'weekly' as YoursSnapshot['settings']['digest'],
+        'last_time.choice': 'unasked' as YoursSnapshot['settings']['last_time'],
+        'metrics.opt_in': false,
+      }) ?? {
+        'digest.frequency': deps.situations.readSetting('digest.frequency', 'weekly'),
+        'last_time.choice': deps.situations.readSetting('last_time.choice', 'unasked'),
+        'metrics.opt_in': deps.situations.readSetting('metrics.opt_in', false),
+      };
+      return { digest: values['digest.frequency'], last_time: values['last_time.choice'], measures: values['metrics.opt_in'] };
+    };
+    // Settings names what reaches the household. A list it cannot read leaves the
+    // card without names rather than failing the whole read.
+    let sharedAssets: ReturnType<NonNullable<WorkEntityStore['listHouseholdAssets']>> | undefined;
+    try { sharedAssets = deps.work.listHouseholdAssets?.(HOUSEHOLD_ASSETS_SHOWN); } catch { sharedAssets = undefined; }
     return { assets, ...(input.asset_id && assets[0]?.holder_contact ? { holder: holderOf(assets[0].holder_contact) } : {}),
       related_assets: [...new Map([...(parent ? [parent] : []), ...descendants, ...linked].map(asset => [asset.id, asset])).values()], total_assets,
       ...(input.asset_filter ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}), classes: classes.list(), proposals: shown,
       ...(input.asset_sphere ? { asset_sphere: input.asset_sphere } : {}),
       ...(asset_summaries ? { asset_summaries } : {}), total_proposals: proposals.count(), matching_proposals: proposals.count(input.proposal_kind), occurrences,
-      household: { telegram: household.telegram(), ...(deps.homeAssistant ? { home_assistant: deps.homeAssistant.read() } : {}), telegram_connections: (deps.connections?.() ?? []).flatMap(row => {
-        const route = telegramHouseholdRoute(row); return route ? [{ name: row.name, enrolled_at: row.enrolled_at, recipient: route.recipient, owner_sender: route.expected_sender }] : [];
+      household: { telegram: household.telegram(), ...(deps.homeAssistant ? { home_assistant: deps.homeAssistant.read() } : {}),
+        ...(sharedAssets ? { shared_assets: sharedAssets } : {}),
+        telegram_connections: (deps.connections?.() ?? []).flatMap(row => {
+        const route = telegramHouseholdRoute(row); return route ? [{ name: row.name, enrolled_at: row.enrolled_at, recipient: route.recipient,
+          ...(row.display_name ? { display_name: row.display_name } : {}) }] : [];
       }) },
       ...(deps.mailboxes ? { proof_addresses: proofAddresses(deps.mailboxes(), source => proposals.sourceEnabled(source)) } : {}),
       occasions,
@@ -1144,10 +1219,9 @@ export const createYoursService = (deps: YoursServiceDeps) => {
           ? [{ id: row.recipe_id, name: recipe.metadata.name, publisher: row.publisher_id, hash: definitionDigest(recipe) }] : []; }) ?? [],
       observation_bindings: observationBindings(),
       observation_handoffs: input.asset_id && assets.length ? deps.work.assetObservationHandoffs(input.asset_id) : [],
-      phone_ready: destinations?.destinations.some(destination => destination.channel !== 'ui' && destination.channel !== 'bridge') ?? false,
+      phone_ready: reachesPhone(destinations?.destinations),
       ...(scheduled ? { delivery: scheduled.status() } : {}),
-      settings: { digest: deps.situations.readSetting('digest.frequency', 'weekly'), last_time: deps.situations.readSetting('last_time.choice', 'unasked'),
-        measures: deps.situations.readSetting('metrics.opt_in', false) },
+      settings: preferences(),
       sphere_placements: placements,
       ...(input.asset_id ? { retirement_impact: { parts: descendants.filter(row => row.retirement === 'part').length,
         contracts: descendants.filter(row => row.retirement === 'cancel_or_transfer').length, open_occurrences: affectedOpen } } : {}),
@@ -1157,6 +1231,12 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     proposals, classes, spheres, history, intake, command: (input: YoursCommand, owner: ExecutionSource) => runOne('yours-command', async () => {
       const result = await command(input, owner); deps.learning?.refreshPending(); publishProposalEvents(proposals, deps.situations, spheres); return result;
     }), snapshot,
+    context(input: import('@recued/contracts').AssetFactContextRequest) {
+      requireOpen();
+      return createAssetFactContextReader({ work: deps.work, now, snapshot: read => deps.db.transaction(read)(), referenceSphere: ref => spheres.resolve(ref).sphere,
+        writers: assetContextWriters(deps.db, actor => recipes?.get(actor.replace(/^recipe:/u, ''))?.metadata.name ?? actor),
+      })(input, { owner: true, all_spheres: true, grants: { isVerbOpGranted: () => true, isCollectionReadGranted: () => true, isTopicReadGranted: () => true } });
+    },
     placement(ref: SituationRef) {
       requireOpen();
       if (!ref || !['asset', 'task', 'note', 'commitment', 'project', 'booking', 'contact', 'calendar', 'mail', 'mail_fact', 'occasion', 'episode', 'reminder'].includes(ref.collection)
@@ -1171,6 +1251,11 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     bindScheduled(service: import('./scheduled-situations.js').ScheduledSituations) { scheduled = service; },
     bindSubscribers(value: NonNullable<typeof subscribers>) { subscribers = value; },
     bindRecipes(value: import('../recipe-store.js').RecipeStore) { recipes = value; },
+    /** §15.7 amendment — the to-do lists a Home Assistant connection offers, for Settings. */
+    async householdLists(input: { connection_name: string; connection_enrolled_at: number }) {
+      if (!deps.homeAssistant) throw new Error('Home Assistant household delivery is unavailable');
+      return deps.homeAssistant.lists(input);
+    },
     isHouseholdConnection(name: string): boolean { const row = deps.connections?.().find(row => row.name === name); return !!row && household.isHousehold(row); },
     async today(input: { now: number; before: number }) { requireOpen(); refreshQuestions(); refreshClassUpdates(); refreshTrips(); await refreshEvidence(); mailProof.scan(); if (!scheduled) throw new Error('Today situations unavailable'); return scheduled.today(input); },
     async overview(): Promise<Omit<import('@recued/contracts').ProactiveToday, 'situations' | 'occurrences'>> {
@@ -1179,7 +1264,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       const newest = proposals.list({ state: 'proposed', limit: 1 })[0];
       const destinations = await notifier?.getReminderDestinations();
       return { proposal_count: proposals.count(), newest_proposal: newest ? { id: newest.id, title: newest.title } : null,
-        phone_ready: destinations?.destinations.some(destination => destination.channel !== 'ui' && destination.channel !== 'bridge') ?? false,
+        phone_ready: reachesPhone(destinations?.destinations),
         unmatched_replies: (await notifier?.listUnmatchedAskReplies() ?? []).map(({ id, text, reason, created_at }) => ({ id, text, reason, created_at })) };
     },
     bind(block: NotificationBlock) { notifier = block; },

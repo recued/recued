@@ -14,8 +14,13 @@ import {
 import type { PairTabConvergence } from './pair-tab-convergence.js';
 import { cleanConsumedPairEntryUrl } from './secure-access-resume.js';
 import { WebclientReauthRequiredError } from '../realtime/ws-client.js';
-import type { WebclientLocalStore } from '../storage/local-store.js';
+import {
+  retireActiveProfile,
+  type WebclientLocalStore,
+  type WebclientProfileStore,
+} from '../storage/local-store.js';
 import type { WebclientTokenStore } from '../storage/token-store.js';
+import { safeServerSwitchLandingHash } from '../shell/server-switch-continuity.js';
 import {
   pairFormServerUrlFromStored,
   removeBootSplashWrapper,
@@ -214,8 +219,9 @@ const STYLES = `
   background: transparent;
   color: var(--fg-muted);
 }
+/* ⛔ A 38% accent ring measured 1.76:1 on white. */
 .cold-start-credential-repair button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .cold-start-credential-repair-status {
@@ -693,6 +699,59 @@ export const mountColdStartCredentialRepairHost = (
   };
 };
 
+/** The repair's two wipes, scoped to the server that is damaged.
+ *
+ *  Repair fires when the ACTIVE server's stored generation is partial or
+ *  unreadable. Whole-store wipes are right for a browser paired to one server
+ *  and destructive for one paired to several: clearing the store takes the
+ *  whole roster, and the AES-GCM key is ONE per origin (`TOKEN_KEY_ID`)
+ *  wrapping every profile's bearer, so wiping it would leave the other
+ *  servers undecryptable. Both stay whole-store ONLY when the repair would
+ *  empty the roster anyway (every install that predates profiles); otherwise
+ *  the key stays and the damaged record is swapped for a pending one.
+ *
+ *  ⛔ Not removed outright: the pointer then fell to another saved server and
+ *  the repair's handoff mounted THAT one, so "Clear incomplete setup and
+ *  reconnect" ended on a different server with the damaged one gone (found
+ *  2026-10-23). With a pending record in its place the handoff lands on the
+ *  pair form, its address filled in from the damaged record. */
+export const profileScopedRepairWipers = (options: {
+  readonly profileStore: WebclientProfileStore;
+  /** Clears every stored key — the whole roster. */
+  readonly clearStore: () => Promise<void>;
+  /** Removes the origin's one AES-GCM token key. */
+  readonly wipeCryptoKeys: () => Promise<void>;
+}): {
+  readonly cryptoKeysWiper: () => Promise<void>;
+  readonly credentialStoreWiper: () => Promise<void>;
+} => {
+  // True when the repair has at most the one profile to remove — the point
+  // at which a whole-store wipe and a profile-scoped one are the same act.
+  // Neither wipe changes the count, so both read the same answer.
+  const repairWouldEmptyRoster = async (): Promise<boolean> => {
+    try {
+      return (await options.profileStore.listProfiles()).length <= 1;
+    } catch {
+      // A roster read that fails is itself a broken store; fall back to the
+      // historic whole-store wipe rather than leaving a half-repaired browser
+      // that cannot pair.
+      return true;
+    }
+  };
+  return {
+    cryptoKeysWiper: async () => {
+      if (await repairWouldEmptyRoster()) await options.wipeCryptoKeys();
+    },
+    credentialStoreWiper: async () => {
+      if (await repairWouldEmptyRoster()) {
+        await options.clearStore();
+        return;
+      }
+      await retireActiveProfile(options.profileStore);
+    },
+  };
+};
+
 export interface StartColdStartCredentialRepairOptions {
   readonly root: HTMLElement;
   readonly localStore: WebclientLocalStore;
@@ -753,6 +812,13 @@ export interface StartColdStartCredentialRepairOptions {
   readonly removeSplash?: (doc?: Document) => void;
   readonly onRepairError?: (error: unknown) => void;
   readonly onHandoffError?: (error: unknown) => void;
+  /** The saved server this repair is for: the record active when the damage
+   *  was found. When another tab switches the browser to a different one,
+   *  the repair follows it — it never takes that server's sign-in as this
+   *  one's "finished saving", and never clears anything under it. */
+  readonly targetProfileId?: string | null;
+  /** Reload seam for following that switch. Defaults to the page reload. */
+  readonly reloadPage?: () => void;
 }
 
 const restoreReturnHash = (
@@ -851,6 +917,40 @@ export const startColdStartCredentialRepair = (
       rejectedPair === null
       || !sameStoredPairVersion(rejectedPair.version, currentPair.version)
     );
+  /** True when the browser now uses a DIFFERENT saved server than the one
+   *  this repair is for — another tab switched it (Back, Account). ⛔ Read
+   *  as "access finished saving in another tab" before, which named the
+   *  wrong server; and with that server not complete, the repair's clear
+   *  ran under it. Another tab repairing THIS server may give it a fresh
+   *  record (the clear replaces it), so the address counts too. */
+  const switchedAway = async (
+    currentPair: CompleteStoredPair | null,
+  ): Promise<boolean> => {
+    if (options.targetProfileId === undefined || options.targetProfileId === null) {
+      return false;
+    }
+    if (options.profileStore === undefined) return false;
+    if (currentPair !== null && priorServerUrl !== null
+        && currentPair.serverUrl === priorServerUrl) return false;
+    return await options.profileStore.activeProfileId() !== options.targetProfileId;
+  };
+  /** Follow another tab's switch the way a clean tab does: land somewhere
+   *  safe (this server's record ids mean nothing on the other), then reload
+   *  into the server the browser now uses. */
+  const followSwitch = (): void => {
+    if (handoffStarted) return;
+    handoffStarted = true;
+    closeConvergence();
+    host.dispose();
+    setSplashMessage(
+      'Another tab switched this browser to a different server — opening it…',
+      options.document,
+    );
+    restoreReturnHash(safeServerSwitchLandingHash(options.returnHash || '#chat'), options);
+    (options.reloadPage ?? (() => {
+      (globalThis as { location?: { reload?: () => void } }).location?.reload?.();
+    }))();
+  };
   const handoff = async (
     adoptedPair: CompleteStoredPair | null,
   ): Promise<void> => {
@@ -980,9 +1080,15 @@ export const startColdStartCredentialRepair = (
       // rescued by a sibling completion without another user action.
       let newerPair: CompleteStoredPair | null = null;
       let credentialsRemoved = false;
+      let followsSwitch = false;
       try {
         await withPairFinalizeLock(pairLockProvider, async () => {
           const currentPair = await readCompleteStoredPair(options.localStore);
+          if (await switchedAway(currentPair)) {
+            // Nothing here is this repair's to clear any more.
+            followsSwitch = true;
+            return;
+          }
           if (isAdoptablePair(currentPair)) {
             newerPair = currentPair;
             return;
@@ -1008,6 +1114,10 @@ export const startColdStartCredentialRepair = (
         }
       }
 
+      if (followsSwitch as boolean) {
+        followSwitch();
+        return;
+      }
       // Assignment happens inside the lock callback, which TypeScript's
       // control-flow analysis cannot observe after `await`.
       const adoptedPair = newerPair as CompleteStoredPair | null;
@@ -1025,11 +1135,15 @@ export const startColdStartCredentialRepair = (
     }
     reconcileInFlight = true;
     try {
-      const currentPair = await withPairFinalizeLock(
+      const { currentPair, elsewhere } = await withPairFinalizeLock(
         pairLockProvider,
-        () => readCompleteStoredPair(options.localStore),
+        async () => {
+          const pair = await readCompleteStoredPair(options.localStore);
+          return { currentPair: pair, elsewhere: pair !== null && await switchedAway(pair) };
+        },
       );
-      if (isAdoptablePair(currentPair)) await handoff(currentPair);
+      if (elsewhere) followSwitch();
+      else if (isAdoptablePair(currentPair)) await handoff(currentPair);
     } catch {
       // A transient read leaves the explicit repair choice usable. The next
       // broadcast, focus, or poll retries reconciliation.

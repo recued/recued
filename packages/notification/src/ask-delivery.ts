@@ -9,6 +9,7 @@ import type {
   AskDeliveryOutcome, AskDeliveryReceipt, AskDeliveryStore, UnmatchedAskReply,
   AskDeliveryDestination, AskReplyOrigin,
 } from './ask-delivery-store.js';
+import { receivesOnly } from './ask-delivery-store.js';
 
 /** A day of refusals, with the backoff below: the owner keeps the in-app copy. */
 const MAX_REFUSED_ATTEMPTS = 30;
@@ -32,8 +33,8 @@ export interface AskDeliveryControllerDeps {
   authorizeOrigin?: (destination: AskDeliveryDestination, origin: AskReplyOrigin, reply: InboundReply) => boolean | Promise<boolean>;
   /** D-325 P31 — an item that is no longer the household's (its asset was made
    * private after the reminder was planned). Household copies treat it as closed:
-   * not sent again, withdrawn where shown, not answerable from there. The owner's
-   * copies keep it. */
+   * not sent again, and withdrawn where a copy sent with buttons still shows it.
+   * The owner's copies keep it. (No household copy is answerable at all.) */
   householdWithheld?: (ask: NewPendingAsk) => boolean | Promise<boolean>;
 }
 
@@ -249,12 +250,9 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
       || input.destinations.some(destination => !destination.id || !channels.has(destination.channel)
         || (destination.channel !== 'ui' && (!destination.connection_name || !destination.recipient
           || !Number.isFinite(destination.connection_enrolled_at)))
-        || (destination.audience === 'household' && (destination.channel !== 'telegram' || !destination.expected_sender
-          || !Array.isArray(destination.allowed_senders) || destination.allowed_senders.length < 1 || destination.allowed_senders.length > 32
-          || !destination.allowed_senders.includes(destination.expected_sender)
-          || destination.allowed_senders.some(sender => typeof sender !== 'string' || !sender.trim() || sender.length > 200)
-          || new Set(destination.allowed_senders).size !== destination.allowed_senders.length))
-        || (destination.audience !== 'household' && destination.allowed_senders !== undefined))
+        // A household copy only receives, so it names no answerer; one copied from a
+        // group stored before may still carry the old answer fields, which nothing reads.
+        || (destination.audience === 'household' && destination.channel !== 'telegram'))
       || (input.not_before !== undefined && !Number.isFinite(input.not_before))
       || new TextEncoder().encode(JSON.stringify(input)).length > 256 * 1024) {
       throw new Error('Invalid reminder delivery envelope');
@@ -320,14 +318,18 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
     return serial.run(ask.delivery_group_id, async () => {
       const group = await deps.store.get(ask.delivery_group_id!);
       if (!group) return false;
+      // D-325 §15.7 (2026-10-24) — a reminder is a notification, never an approval.
+      // ⛔ A copy that only receives (`receivesOnly`) answers nothing: the household's,
+      // even from a group stored with the member list it once had, and one in a
+      // conversation others may be in. On the owner's own destination the connection's
+      // principal answers when it names one; with none, the owner's own private
+      // conversation is the owner's (P43).
       const destination = group.destinations.find(item => item.channel === reply.via
         && item.connection_name === origin.connection_name
         && item.connection_enrolled_at === origin.connection_enrolled_at
-        && item.recipient === origin.recipient && !!item.expected_sender
-        && (item.audience === 'household' ? item.allowed_senders?.includes(origin.sender) === true : item.expected_sender === origin.sender));
+        && item.recipient === origin.recipient && !receivesOnly(item)
+        && (item.expected_sender === undefined || item.expected_sender === origin.sender));
       if (!destination || !group.attempts.some(attempt => attempt.destination_id === destination.id)) return false;
-      const item = group.asks.find(entry => entry.ask_id === ask.ask_id);
-      if (destination.audience === 'household' && item && await deps.householdWithheld?.(item)) return false;
       if (deps.authorizeOrigin && !await deps.authorizeOrigin(destination, origin, reply)) return false;
       // A press is also a receipt for a copy whose acknowledgement was lost.
       // Keep it separately; never overwrite the known repeat's message id.

@@ -9,9 +9,10 @@
  *  `tts.auto_speak`, Open WebUI and LibreChat all synthesise the text response
  *  as a separate step.
  *
- *  ⚠ The browser's own `speechSynthesis` rather than a provider: free, local,
- *  offline, no slot to configure and no audio leaving the device — which is
- *  the pitch. A server-side voice is a later decision, not a precondition.
+ *  ⚠ The browser's own `speechSynthesis` rather than a provider: free, no slot
+ *  to configure, and on this device — but only in an on-device VOICE, which a
+ *  browser's default is not always (`pickOnDeviceVoice`, D-262 § E2.2). A
+ *  server-side voice is a later decision, not a precondition.
  *
  *  ⛔ SUPPORT IS DETECTABLE; PERMISSION IS NOT. Browsers may refuse to speak
  *  without a recent user gesture, and a reply arrives seconds after the press
@@ -33,13 +34,27 @@ export interface VoiceSpeaker {
 
 export type VoiceSpeakerFactory = VoiceSpeaker | null;
 
+/** What the speaker reads from one of the browser's voices. The DOM's
+ *  `SpeechSynthesisVoice` satisfies it; a test supplies plain objects. */
+export interface SpeechVoiceLike {
+  readonly lang: string;
+  /** The browser's own word on whether this voice runs on this device. */
+  readonly localService: boolean;
+  readonly default: boolean;
+}
+
 /** The globals this module touches, named so a test can supply them. */
 export interface VoiceSpeechGlobals {
   speechSynthesis?: {
     speak(utterance: unknown): void;
     cancel(): void;
+    /** Absent ⇒ no voice can be confirmed on-device, so nothing is spoken. */
+    getVoices?(): readonly SpeechVoiceLike[];
   };
   SpeechSynthesisUtterance?: new (text: string) => unknown;
+  /** The page's language (`navigator.language`), tried FIRST when the browser
+   *  default is not an on-device voice. */
+  language?: string;
 }
 
 /** Longest stretch spoken from one reply.
@@ -96,17 +111,82 @@ export const speechTextFromReply = (
   return (wordEnd > 0 ? clipped.slice(0, wordEnd) : clipped).trimEnd();
 };
 
+/** The voice a reply is spoken in: the browser's default when it runs on this
+ *  device, else an on-device voice in the page's language or the default's,
+ *  else none.
+ *
+ *  ⛔ ON-DEVICE OR SILENT (D-262 § E2.2). The setting tells the owner nothing is
+ *  sent anywhere to speak a reply, and a browser's default voice can be an
+ *  online one — Chrome lists "Google" voices and Edge "Online (Natural)" ones,
+ *  synthesised on a server from the reply TEXT with real names already
+ *  restored. `localService` is the browser's own word on which is which, and
+ *  the only word there is. With no on-device voice to use, the reply is not
+ *  spoken rather than sent.
+ *
+ *  ⚠ An empty list means "not loaded yet" as often as "none" (Chrome fills it
+ *  in after the first `getVoices()`), and silence is the honest answer to both:
+ *  nothing ever claims a reply WAS spoken.
+ *
+ *  ⚠ THE PAGE'S LANGUAGE COMES FIRST, because an online default says nothing
+ *  about the owner. Measured in Chrome on macOS with its usual components
+ *  (2026-10-23): ~100 ms after the first ask the list was 19 online voices with
+ *  "Google Deutsch (de-DE)" marked default on an en-US page; ~3 s later the
+ *  Mac's 180 voices joined and "Samantha (en-US)" took the default. Where an
+ *  online default meets on-device voices, trying its language first reads
+ *  English in an on-device German voice ("Anna", simulated on that real list). */
+export const pickOnDeviceVoice = <V extends SpeechVoiceLike>(
+  voices: readonly V[],
+  language?: string,
+): V | undefined => {
+  const browserDefault = voices.find((voice) => voice.default);
+  if (browserDefault?.localService === true) return browserDefault;
+  const onDevice = voices.filter((voice) => voice.localService);
+  for (const wanted of [language, browserDefault?.lang]) {
+    if (wanted === undefined || wanted.trim() === '') continue;
+    const tag = normaliseLang(wanted);
+    const match = onDevice.find((voice) => normaliseLang(voice.lang) === tag)
+      ?? onDevice.find((voice) => primaryLang(voice.lang) === primaryLang(tag));
+    if (match !== undefined) return match;
+  }
+  return undefined;
+};
+
+/** `en_US`, `en-us` and `en-US` are one language; some engines report the first. */
+const normaliseLang = (lang: string): string => lang.trim().replace(/_/g, '-').toLowerCase();
+const primaryLang = (lang: string): string => normaliseLang(lang).split('-')[0] ?? '';
+
+/** The page's language, or none where reading `navigator` throws, as a
+ *  locked-down page can make it do. The chat route builds the speaker as it
+ *  mounts, so a throw here stopped the app from starting. */
+const pageLanguage = (): string | undefined => {
+  try {
+    return typeof navigator !== 'undefined' && typeof navigator.language === 'string'
+      ? navigator.language
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /** Build the speaker, or `null` when this browser cannot synthesise speech. */
 export const browserVoiceSpeaker = (
   globals?: VoiceSpeechGlobals,
 ): VoiceSpeakerFactory => {
+  const language = globals === undefined ? pageLanguage() : undefined;
   const g: VoiceSpeechGlobals = globals ?? {
     ...(typeof speechSynthesis !== 'undefined' ? { speechSynthesis } : {}),
     ...(typeof SpeechSynthesisUtterance !== 'undefined' ? { SpeechSynthesisUtterance } : {}),
+    ...(language !== undefined ? { language } : {}),
   };
   const synth = g.speechSynthesis;
   const Utterance = g.SpeechSynthesisUtterance;
   if (!synth || !Utterance) return null;
+  const voices = (): readonly SpeechVoiceLike[] => {
+    try { return synth.getVoices?.() ?? []; } catch { return []; }
+  };
+  // Ask once now: Chrome loads its voice list on the first request and answers
+  // that one empty, so asking at mount has the list ready when a reply arrives.
+  voices();
 
   return {
     speak(text) {
@@ -116,7 +196,16 @@ export const browserVoiceSpeaker = (
       // the first is still speaking would play both back to back — and by the
       // third the audio is minutes behind the conversation on screen.
       try { synth.cancel(); } catch { /* nothing was speaking */ }
-      try { synth.speak(new Utterance(spoken)); } catch {
+      const voice = pickOnDeviceVoice(voices(), g.language);
+      if (voice === undefined) return;
+      try {
+        const utterance = new Utterance(spoken) as { voice?: unknown; lang?: string };
+        // `lang` as well: an engine that picks by language, not by `voice`,
+        // still speaks the one the chosen voice is in.
+        utterance.voice = voice;
+        utterance.lang = voice.lang;
+        synth.speak(utterance);
+      } catch {
         // Throttled, blocked, or no voice installed. Nothing is claimed about
         // whether it was heard, so there is nothing to report.
       }

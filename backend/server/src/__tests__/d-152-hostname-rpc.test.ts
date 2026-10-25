@@ -27,6 +27,7 @@ import {
   type HostnameRpcDeps,
 } from '../hostname-handler.js';
 import { createHostnameRegistryStore } from '../storage/hostname-registry.js';
+import { createClientTokenStore } from '../pairing/client-tokens.js';
 
 const NOW = 1_700_000_000_000;
 const CALLER = { instance_id: 'client-1' };
@@ -165,19 +166,6 @@ const waitForMessage = (
     ws.on('message', onMessage);
   });
 
-const registerWs = async (ws: WebSocket): Promise<void> => {
-  const registered = waitForMessage(
-    ws,
-    (msg) => msg.type === 'registered' && msg.instance_id === CALLER.instance_id,
-  );
-  ws.send(JSON.stringify({
-    type: 'register',
-    instance_id: CALLER.instance_id,
-    display_name: 'D-152 test client',
-  }));
-  await registered;
-};
-
 const callRpc = async (
   ws: WebSocket,
   method: string,
@@ -209,7 +197,12 @@ interface RpcHarness {
 }
 
 const createRpcHarness = (config: ServerConfig): RpcHarness => {
-  const handlerSet = createServerHandlerSet(config);
+  // The caller is a paired device: its identity comes from the token it
+  // connects with, as for a real one.
+  const tokenDb = new Database(':memory:');
+  openDbs.push(tokenDb);
+  const clientTokens = createClientTokenStore(tokenDb, { argon2_params: { t: 1, m: 8, p: 1 } });
+  const handlerSet = createServerHandlerSet({ ...config, clientTokens });
   const httpServer = createHttpServer();
   const wsUpgrade = handlerSet.upgradeHandlers.ws;
   if (!wsUpgrade) {
@@ -223,7 +216,12 @@ const createRpcHarness = (config: ServerConfig): RpcHarness => {
 
   return {
     async connect() {
-      const ws = await connectWs(httpServer, 'test-realm');
+      const issued = await clientTokens.issue({
+        client_kind: 'webclient',
+        client_label: 'D-152 test client',
+        metadata: { instance_id: CALLER.instance_id },
+      });
+      const ws = await connectWs(httpServer, `${issued.token_id}.${issued.bearer}`);
       openSockets.add(ws);
       ws.once('close', () => openSockets.delete(ws));
       return ws;
@@ -460,7 +458,6 @@ describe('D-152 collection.hostname.* WS wiring', () => {
     });
     openHarnesses.push(harness);
     const ws = await harness.connect();
-    await registerWs(ws);
 
     expect(await callRpc(ws, 'collection.hostname.add', {
       hostname: 'token.example',
@@ -525,7 +522,6 @@ describe('D-152 collection.hostname.* WS wiring', () => {
     const harness = createRpcHarness({ hostnameDeps: deps });
     openHarnesses.push(harness);
     const ws = await harness.connect();
-    await registerWs(ws);
 
     expect(await callRpc(ws, 'collection.hostname.addressUses', {})).toMatchObject({
       ok: true,
@@ -580,7 +576,6 @@ describe('D-152 collection.hostname.* WS wiring', () => {
     const harness = createRpcHarness({});
     openHarnesses.push(harness);
     const ws = await harness.connect();
-    await registerWs(ws);
 
     expect(await callRpc(ws, 'collection.hostname.list', {})).toMatchObject({
       ok: false,

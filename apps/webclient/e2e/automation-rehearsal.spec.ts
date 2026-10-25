@@ -9,6 +9,74 @@ const runAndReview = async (page: Page) => {
   await expect(page.getByRole('heading', { name: 'Review exact configuration', exact: true })).toBeVisible();
 };
 for (const width of [280, 1280]) {
+  test(`distinguishes saved proof from working and unadded scenario edits at ${width}px`, async ({ page }) => {
+    await open(page, width);
+    const working = page.locator('[data-rehearsal-working-state]');
+    const tested = page.locator('[data-rehearsal-test-state]');
+    const reviewed = page.locator('[data-rehearsal-review-state]');
+    await expect(working).toHaveText('Saved version 1');
+    await expect(tested).toHaveText('Not tested');
+    await runAndReview(page);
+    await expect(tested).toHaveText('1 passed · version 1');
+    await expect(reviewed).toHaveText('Ready to activate');
+
+    await page.getByLabel('Rehearsal title').fill('Changed after review');
+    await expect(working).toHaveText('Unsaved changes');
+    await expect(tested).toHaveText('Save before testing');
+    await expect(reviewed).toHaveText('Save and test changes');
+    await expect(page.getByRole('region', { name: 'Activation review', exact: true, includeHidden: true })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Activate reviewed configuration', includeHidden: true })).toBeDisabled();
+    expect((await fixture(page)).applied).toBe(0);
+
+    await page.getByRole('button', { name: 'Save scenario version', exact: true }).click();
+    await expect(working).toHaveText('Saved version 2');
+    await expect(tested).toHaveText('Not tested');
+    await page.getByRole('button', { name: 'Test saved configuration', exact: true }).click();
+    await expect(tested).toHaveText('1 passed · version 2');
+    await page.getByText('Add scenario', { exact: true }).click();
+    await page.getByLabel('Scenario name', { exact: true }).fill('Not added yet');
+    await expect(page.locator('[data-rehearsal-builder-status]')).toBeVisible();
+    await expect(working).toHaveText('Saved version 2');
+    await expect(tested).toHaveText('1 passed · version 2');
+    expect((await fixture(page)).view.draft.document.cases).toHaveLength(1);
+  });
+  test(`expires displayed proof and review without moving field focus at ${width}px`, async ({ page }) => {
+    await open(page, width); await runAndReview(page);
+    const title = page.getByLabel('Rehearsal title'); await title.focus();
+    await page.evaluate(() => { const instant = Date.now() + 16 * 60_000; Date.now = () => instant; });
+    await expect(page.locator('[data-rehearsal-test-state]')).toHaveText('Test expired');
+    await expect(page.locator('[data-rehearsal-review-state]')).toHaveText('Review expired');
+    await expect(page.getByRole('button', { name: 'Review configuration activation' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Activate reviewed configuration' })).toBeDisabled();
+    await expect(title).toBeFocused(); expect((await fixture(page)).applied).toBe(0);
+  });
+  test(`cancels private cleanup without deleting scenarios or invalidating review at ${width}px`, async ({ page }) => {
+    await open(page, width); await runAndReview(page);
+    const before = (await fixture(page)).view.draft;
+    await page.getByRole('button', { name: 'Delete saved rehearsal and history', exact: true }).click();
+    await page.getByRole('button', { name: 'Cancel deletion', exact: true }).click();
+    await expect(page.getByRole('status')).toHaveText('Deletion canceled. Saved rehearsal is unchanged.');
+    await expect(page.getByRole('button', { name: 'Confirm delete rehearsal' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Activate reviewed configuration' })).toBeEnabled();
+    const state = await fixture(page);
+    expect(state.view.draft).toEqual(before); expect(state.applied).toBe(0);
+    expect(state.calls.filter((item: { method: string }) => item.method === 'automation.rehearsal.delete')).toHaveLength(0);
+  });
+  test(`keeps dispatched cleanup recoverable after a lost reply at ${width}px`, async ({ page }) => {
+    await open(page, width, 'lost-delete');
+    await page.getByRole('button', { name: 'Delete saved rehearsal and history', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm delete rehearsal', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('Delete reply lost');
+    await expect(page.getByRole('button', { name: 'Cancel deletion', exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-rehearsal-working-state]')).toHaveText('Cleanup reply pending');
+    await expect(page.locator('[data-rehearsal-review-state]')).toHaveText('Cleanup reply pending');
+    const committed = (await fixture(page)).view.revision;
+    await page.getByRole('button', { name: 'Confirm delete rehearsal', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('Deleted saved rehearsal');
+    const state = await fixture(page), calls = state.calls.filter((item: { method: string }) => item.method === 'automation.rehearsal.delete');
+    expect(calls).toHaveLength(2); expect(calls[0].args).toEqual(calls[1].args);
+    expect(state.view.revision).toBe(committed); expect(state.view.draft).toBeNull(); expect(state.applied).toBe(0);
+  });
   test(`authors event scenarios before explicit reviewed activation at ${width}px`, async ({ page }) => {
     await open(page, width, '', ''); await page.getByLabel('Automation enabled after activation').check();
     await page.getByText('Add scenario', { exact: true }).click(); await page.getByLabel('Scenario name', { exact: true }).fill('Ready task event');

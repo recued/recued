@@ -388,6 +388,20 @@ const cliFailureReasonOf = (entry: AuditEntry): CliFailureReason | undefined => 
   return undefined;
 };
 
+// A history tally carries only the recorded counters and stop marker. Keep
+// arbitrary legacy properties (including payloads) out of the list response.
+const feedYield = (value: AuditEntry['run_yield']): AuditEntry['run_yield'] => {
+  if (value == null || ![value.steps_run, value.steps_skipped, value.items_total, value.items_failed]
+    .every(count => Number.isSafeInteger(count) && count >= 0)
+    || value.items_failed > value.items_total) return undefined;
+  return {
+    steps_run: value.steps_run, steps_skipped: value.steps_skipped,
+    items_total: value.items_total, items_failed: value.items_failed,
+    ...(value.stopped_at === null || typeof value.stopped_at === 'string'
+      ? { stopped_at: value.stopped_at } : {}),
+  };
+};
+
 const projectRunFeedRow = (
   entry: AuditEntry,
   links: readonly AuditExportLinkRow[],
@@ -400,6 +414,7 @@ const projectRunFeedRow = (
   const cliFailureReason = entry.error_category === undefined
     ? cliFailureReasonOf(entry)
     : undefined;
+  const yieldSummary = feedYield(entry.run_yield);
   return {
     run_id: entry.run_id,
     recipe_id: entry.recipe_id,
@@ -411,6 +426,7 @@ const projectRunFeedRow = (
     status: entry.commit_status,
     policy_result: policyResultFromCommits(entry, commits),
     links: projectLinks(links),
+    ...(yieldSummary !== undefined ? { run_yield: yieldSummary } : {}),
     // D-181 §12 — long-op display category, persisted verbatim on the anchor.
     ...(entry.error_category !== undefined ? { error_category: entry.error_category } : {}),
     // D-182 — cli failure reason for the feed chip (disjoint from error_category).

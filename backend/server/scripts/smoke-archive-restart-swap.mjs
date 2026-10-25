@@ -132,7 +132,6 @@ async function main() {
       pending.set(id, { resolve: (v) => { clearTimeout(to); resolve(v); }, reject: (e) => { clearTimeout(to); reject(e); } });
       ws.send(JSON.stringify({ type: 'rpc', request_id: id, method, args }));
     });
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'smoke-1', display_name: 'smoke' }));
     log('ws connected + authenticated');
 
     const exp = await rpc('server.archive.export', { include_blobs: false, include_passport: false, recoveryKey: mnemonic });

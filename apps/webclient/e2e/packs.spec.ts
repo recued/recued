@@ -9,6 +9,44 @@ const LIST_PREVIEW_OPEN = 'data-recued-list-preview-open';
 
 installFullAppHooks();
 
+for (const width of [390, 1280]) {
+  test(`Packs retains an edited Use result and Manage selection through release history at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(
+      `${HARNESS_URL}?packs=installed&recipe_result=editable-grid#packs/installed-mail`,
+    );
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const app = page.locator('[data-recued-pack-app="installed-mail"]');
+    const amount = app.locator('[data-recued-recipes-result-grid-cell="0:amount"]');
+    await amount.fill('125.00');
+    const executions = await page.evaluate(() => window.__app.rpcCallCount('execute'));
+
+    await page.locator(
+      '[data-recued-packs-detail-tab-group="primary"][data-recued-packs-detail-tab="detail"]',
+    ).click();
+    const permissions = page.locator(
+      '[data-recued-packs-detail-tab-group="manage"][data-recued-packs-detail-tab="permissions"]',
+    );
+    await permissions.click();
+    await page.getByRole('button', { name: 'Release history', exact: true }).click();
+    await expect(page.getByRole('region', {
+      name: 'Release history for Installed Mail',
+    })).toBeVisible();
+    await page.getByRole('button', { name: 'Close release history', exact: true }).click();
+    await expect(permissions).toHaveAttribute('aria-selected', 'true');
+
+    await page.locator(
+      '[data-recued-packs-detail-tab-group="primary"][data-recued-packs-detail-tab="use"]',
+    ).click();
+    await expect(amount).toHaveValue('125.00');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(executions);
+    await page.locator(
+      '[data-recued-packs-detail-tab-group="primary"][data-recued-packs-detail-tab="detail"]',
+    ).click();
+    await expect(permissions).toHaveAttribute('aria-selected', 'true');
+  });
+}
+
 /** Delete opens a reviewed removal (e72489a86): the impact loads into the
  *  strip and its status takes focus, and Confirm stays disabled until the owner
  *  acknowledges that impact. Acknowledges by keyboard and returns Confirm,
@@ -20,9 +58,12 @@ const acknowledgeRemoval = async (page: Page, slug: string) => {
   await acknowledge.focus();
   await page.keyboard.press('Space');
   await expect(acknowledge).toBeChecked();
-  await page.keyboard.press('Tab');
   const confirm = page.locator(`[data-recued-packs-row-delete-confirm="${slug}"]`);
   await expect(confirm).toHaveText('Confirm reviewed removal');
+  await expect(confirm).toBeEnabled();
+  // Establish ownership before checking keyboard activation and its repaint.
+  // WebKit's native Tab policy can skip buttons on macOS.
+  await confirm.focus();
   await expect(confirm).toBeFocused();
   return confirm;
 };
@@ -980,7 +1021,9 @@ test('Packs keeps long uninstall failures readable and retry-owned', async ({ pa
   const route = page.locator('[data-recued-packs-route]');
   const surface = route.locator('[data-recued-packs-surface]');
   const panel = surface.locator('[data-recued-packs-panel]');
-  await panel.locator('[data-recued-packs-row-delete="installed-mail"]').click();
+  const remove = panel.locator('[data-recued-packs-row-delete="installed-mail"]');
+  await remove.focus();
+  await page.keyboard.press('Enter');
   const confirm = await acknowledgeRemoval(page, 'installed-mail');
   await page.keyboard.press('Enter');
 
@@ -1037,11 +1080,12 @@ test('Packs keeps long uninstall failures readable and retry-owned', async ({ pa
   }
 
   // The retry is a fresh review, acknowledged again, then one more request.
-  await page.keyboard.press('Tab');
-  await expect(footer.getByRole('button', {
+  const reviewAgain = footer.getByRole('button', {
     name: 'Review current installation',
     exact: true,
-  })).toBeFocused();
+  });
+  await reviewAgain.focus();
+  await expect(reviewAgain).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(status).toBeFocused();
   await expect(footer.locator('[data-pack-removal-ack]')).not.toBeChecked();

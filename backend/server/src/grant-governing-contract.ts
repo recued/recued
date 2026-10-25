@@ -182,3 +182,26 @@ export const resolveGrantGoverningContractId = (
   }
   return undefined;
 };
+
+/** D-198 §10 — the contract an AI writes under, by PROVENANCE alone: the AUTHOR of
+ *  what it writes. A source's explicit `contract_id` (a door, a customer instance, a
+ *  self-restricted owner source), else the OWNER contract for the owner's own chat
+ *  and messenger, which carry none and are owner-governed by derivation (the same
+ *  `OWNER_AI_CHANNELS` the resolver above uses). Undefined for every other source.
+ *
+ *  It names an author and grants nothing, so it is NOT liveness-gated: the grant
+ *  check that admits the write already fails closed for a dead contract. Two
+ *  sources name no author:
+ *    - an explicit `contract_id` equal to the owner sentinel — the resolver's
+ *      escalation fence, so no source can claim the owner chat's entries by
+ *      spelling the sentinel;
+ *    - an anonymous source, whose door contract is the OWNER's standing dispatch
+ *      authority, not the visitor's identity (`renderProvenanceAttribution`). */
+export const authoringContractId = (source: ExecutionSource): string | undefined => {
+  if (source.actor === 'anonymous') return undefined;
+  const explicit = executionSourceContractId(source);
+  if (explicit !== undefined) return explicit === OWNER_CONTRACT_ID ? undefined : explicit;
+  return source.actor === 'user_self' && OWNER_AI_CHANNELS.has(source.channel)
+    ? OWNER_CONTRACT_ID
+    : undefined;
+};

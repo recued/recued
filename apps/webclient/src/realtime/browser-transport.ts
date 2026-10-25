@@ -73,9 +73,11 @@
  *  exponential backoff handles them. Post-upgrade close codes ARE
  *  inspectable, so a `4001` (server-not-enrolled) or `4401`
  *  (bearer-rejected) close maps to `WebclientReauthRequiredError`
- *  via the `WEBCLIENT_AUTH_CLOSE_CODES` set below. A future server
- *  patch that synthesises a `register_error` typed reply before close
- *  could improve fidelity, but the close-code path is enough.
+ *  via the `WEBCLIENT_AUTH_CLOSE_CODES` set below. Since 2026-10-23 the
+ *  server completes the upgrade and closes with 4401 when it REJECTS the
+ *  bearer (revoked, replaced, unknown — `closeRejectedBearer` in
+ *  ws-server), so a pre-upgrade failure here is a transient one: a
+ *  network drop, or a server that could not check the bearer.
  *
  *  DD#3 — `open()` resolves only once the WS reaches the `open` event
  *  (not on `connecting`). The internal `state` listener fires

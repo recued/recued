@@ -1101,15 +1101,29 @@ export interface ExecutionCaseCard {
  *  answers and sometimes wrote the alias as well, and the owner read the
  *  restored "Linked place: Lisbon. I cannot see which place the record names".
  *  It now writes the alias, which the owner reads as the place, and claims
- *  neither way. Prompt-tuning log 2026-10-21d. */
+ *  neither way. Prompt-tuning log 2026-10-21d.
+ *
+ *  ⛔ A PERSON IS NAMED BY THEIR ALIAS TOO (2026-10-24). Once the overlap tails
+ *  stopped spelling out names the owner's message hid, "find X and Y and tell
+ *  me who to loop in" named both people in 2 of 6 answers (5 of 5 with the
+ *  names leaking): the model wrote "I found both contacts" rather than an
+ *  alias in prose, which nothing here said the owner would read as the name.
+ *  With this sentence, 6 of 6. Prompt-tuning log 2026-10-24c.
+ *
+ *  ⚠ NOT ONLY THE OWNER'S DATA (2026-10-24). An email address or an `http(s)` URL
+ *  written in the conversation is aliased whether or not it is on file (a URL
+ *  whole, as `pii.UrlN`), so the notice names links and no longer says every
+ *  alias comes from the owner's data. Prompt-tuning log 2026-10-24k. */
 export const PII_ALIAS_NOTICE =
-  'Some values here are privacy aliases — shaped like `pii.PersonN` or'
+  'Some values here are privacy aliases — shaped like `pii.PersonN`, `pii.UrlN` or'
   + ' `mN@dN.invalid`, where N is a number. They stand in for real people,'
-  + ' emails, phones, orgs and places from the'
-  + " owner's own data, which you are not shown.\n"
+  + ' emails, links, phones, orgs and places, from the'
+  + " owner's own data or written in this conversation, which you are not shown.\n"
   + 'Use an alias EXACTLY as written. Passing one into a tool argument works —'
   + ' it becomes the real value after it leaves you, and the owner sees the real'
-  + ' value in the result. An alias is not missing data and is not a redaction.\n'
+  + ' value in the result. An alias is not missing data and is not a redaction.'
+  + ' In your reply, write the alias wherever you would name that person, company,'
+  + ' address or link: the owner reads the real value there.\n'
   + 'A trailing fragment (`pii.PersonN.firstname`) is a piece the owner already'
   + ' typed, included so you can tell which entity it is. It is a label, not the'
   + ' value.\n'

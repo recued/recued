@@ -1,4 +1,4 @@
-import { OWNER_CONTRACT_ID, parseSituationQueryInput, type ExecutionSource, type SituationQueryInput, type SituationResult } from '@recued/contracts';
+import { OWNER_CONTRACT_ID, parseAssetFactContextRequest, parseSituationQueryInput, type AssetFactContext, type AssetFactContextRequest, type ExecutionSource, type SituationQueryInput, type SituationResult } from '@recued/contracts';
 import { resolveGrantGoverningContractId } from '../grant-governing-contract.js';
 import { createGatedReadGrantResolver, type ReadGrantChecker } from '../read-grant-checker.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
@@ -22,6 +22,7 @@ export const createSituationAccess = (deps: {
   isVaultUnlocked: () => boolean;
   measure?: (name: string, value: number, labels: Record<string, string>) => void;
   memoryAllowed?: SituationReadContext['memoryAllowed'];
+  factContext?(input: AssetFactContextRequest, context: SituationReadContext): AssetFactContext | Promise<AssetFactContext>;
 }) => {
   const now = deps.now ?? Date.now;
   const definitions = createContractDefinitionStore(deps.contracts, { now });
@@ -29,7 +30,7 @@ export const createSituationAccess = (deps: {
   const authority = (source: ExecutionSource | undefined, operation: string): string => {
     const current = context(source, operation);
     return JSON.stringify([current.owner, current.all_spheres, current.spheres,
-      ['asset', 'task', 'note', 'commitment', 'booking', 'project', 'contact', 'calendar', 'reminder', 'mail_fact', 'memory', 'file', 'episode', 'occasion', 'history_trace']
+      ['asset', 'task', 'note', 'commitment', 'booking', 'project', 'contact', 'calendar', 'reminder', 'mail', 'mail_fact', 'memory', 'file', 'episode', 'occasion', 'history_trace']
         .map(collection => { const access = situationSourceAccess(collection)!; return [collection,
           current.grants.isVerbOpGranted(access.verb_op), current.grants.isCollectionReadGranted(access.collection)]; })]);
   };
@@ -82,6 +83,14 @@ export const createSituationAccess = (deps: {
     async read(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal): Promise<SituationResult> {
       const access = context(source);
       const before = authority(source, SITUATION_READ_OP);
+      if (raw && typeof raw === 'object' && !Array.isArray(raw) && 'context' in raw) {
+        if (Object.keys(raw).some(key => key !== 'context')) throw new Error('Use context by itself to inspect a fact or rule, or time and filters for a situation query.');
+        if (!deps.factContext) throw new Error('Fact context is unavailable on this server');
+        const request = parseAssetFactContextRequest(raw.context);
+        const packet = await deps.factContext(request, { ...access, ...(signal ? { signal } : {}) });
+        if (signal?.aborted || before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the context read. Refresh before relying on it.');
+        return { clusters: [], omitted: 0, ambiguous: [], fact_context: packet };
+      }
       const input: SituationQueryInput = parseSituationQueryInput(raw);
       const result = await deps.query({ ...input, surface: 'tool' }, { ...access, ...(signal ? { signal } : {}) });
       if (before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the situation read. Ask the owner to refresh before relying on it.');

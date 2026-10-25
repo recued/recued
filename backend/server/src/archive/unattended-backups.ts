@@ -193,7 +193,7 @@ export const createUnattendedBackups = (options: {
           if (recoveryKey !== undefined || !sealed) {
             key = options.getEncryptionKey();
             if (!key) throw new RpcError('locked', 'Unlock the server vault before configuring unattended backups.', 409);
-            if (!options.runtime.prepareUnattendedExport || typeof recoveryKey !== 'string') throw new RpcError('invalid_args', 'Enter your recovery words once to enable unattended backups.', 400);
+            if (!options.runtime.prepareUnattendedExport || typeof recoveryKey !== 'string') throw new RpcError('invalid_args', 'Enter your recovery key once to enable unattended backups.', 400);
             capability = await options.runtime.prepareUnattendedExport(recoveryKey);
             sealed = { ciphertext: '', salt_hex: capability.salt_hex, realm_fingerprint: capability.realm_fingerprint };
             sealed.ciphertext = encodeCiphertext(await encrypt(key, capability.key, aad(sealed)));

@@ -324,13 +324,14 @@ describe('D-167 P5 — chat-PII resolver-index full chain (real installed catalo
       },
     });
 
-    // Index miss → no tag → no alias. Nothing else in the turn is PII-tagged, so
-    // the content pass has no ledger anchors either — the result is verbatim.
+    // Index miss → no tag. The NAME, which only a tag aliases, rides through raw:
+    // that is the miss. The address is aliased by its shape all the same, with no
+    // tag (2026-10-24, D-167 amendment), and restores on display.
     const prior = priorProperties(result.reinvokeEgress);
-    expect(prior?.email).toBe('alice@acme.com');
     expect(prior?.fullName).toBe('Alice Ada');
+    expect(prior?.email).toBe('m1@d1.invalid');
     expect(result.finalContent).toBe('raw alice@acme.com');
-    expect(result.redactionSummary).toBeUndefined(); // zero counts → omitted
+    expect(result.redactionSummary?.counts).toEqual({ content_text_replacements: 1 });
   });
 
   it('only the tagged fields alias — an uninstalled (empty) catalog leaves the result raw', async () => {
@@ -345,10 +346,12 @@ describe('D-167 P5 — chat-PII resolver-index full chain (real installed catalo
     });
 
     // Same tool_name, but with no schema installed the index is empty, so the
-    // matching name resolves to no tags — the no-op invariant holds end-to-end.
+    // matching name resolves to no tags — the NAME rides through raw. The address
+    // is aliased by its shape with no tag (2026-10-24, D-167 amendment).
     const prior = priorProperties(result.reinvokeEgress);
-    expect(prior?.email).toBe('alice@acme.com');
+    expect(prior?.fullName).toBe('Alice Ada');
+    expect(prior?.email).toBe('m1@d1.invalid');
     expect(result.finalContent).toBe('none alice@acme.com');
-    expect(result.redactionSummary).toBeUndefined();
+    expect(result.redactionSummary?.counts).toEqual({ content_text_replacements: 1 });
   });
 });

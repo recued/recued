@@ -934,6 +934,8 @@ export interface ApprovalCardLinks {
   recipeHref?: string;
   connectionHref?: string;
   runHref?: string;
+  /** Distinguish exact-run review from a host's recipe-wide history fallback. */
+  runLabel?: string;
 }
 
 export interface ApprovalCardHandlers {
@@ -1052,7 +1054,7 @@ export const renderApprovalCard = (
   };
   appendLink('recipe', 'Recipe', options.links?.recipeHref);
   appendLink('connection', 'Connection', options.links?.connectionHref);
-  appendLink('run', 'Run audit', options.links?.runHref);
+  appendLink('run', options.links?.runLabel ?? 'Run audit', options.links?.runHref);
   if (links.children.length > 0) card.appendChild(links);
 
   const errorEl = doc.createElement('div');

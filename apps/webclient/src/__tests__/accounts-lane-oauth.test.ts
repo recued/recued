@@ -714,7 +714,8 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
     expect(h.host.innerHTML).toContain('Connected — syncing');
     expect(scheduled).toHaveLength(1);
     complete = true; scheduled.shift()!(); await tick();
-    expect(h.host.innerHTML).toContain('Initial sync complete');
+    expect(h.host.innerHTML).toContain('data-state="healthy">Connected</span>');
+    expect(h.host.innerHTML).not.toContain('Connected — syncing');
     expect(scheduled).toHaveLength(0);
     mount.dispose();
   });

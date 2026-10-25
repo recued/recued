@@ -324,7 +324,7 @@ export const LIST_PREVIEW_STYLES = `
   cursor: pointer;
 }
 [${LIST_PREVIEW_ATTR}] :is(button):focus-visible {
-  outline: none; box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; box-shadow: var(--wc-ring);
 }
 @media (max-width: 560px) {
   [${LIST_PREVIEW_ATTR}] {

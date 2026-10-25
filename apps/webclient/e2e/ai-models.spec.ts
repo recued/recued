@@ -511,17 +511,18 @@ test('Settings AI Models controls form full-size keyboard navigation', async ({ 
   const navHeights = await page.locator(`[${SETTINGS_NAV_ITEM}]`).evaluateAll(
     (nodes) => nodes.map((node) => node.getBoundingClientRect().height),
   );
-  expect(Math.min(...navHeights)).toBeGreaterThanOrEqual(36);
+  // The Settings tabs are a finger's height on a phone. ⛔ They were 36px.
+  expect(Math.min(...navHeights)).toBeGreaterThanOrEqual(44);
   const tabHeights = await tabs.evaluateAll((nodes) =>
     nodes.map((node) => node.getBoundingClientRect().height)
   );
-  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(44);
   const modelChoices = page.locator('[data-recued-ai-models-model-pref]');
   await expect(modelChoices).toHaveCount(3);
   const choiceHeights = await modelChoices.evaluateAll((nodes) =>
     nodes.map((node) => node.getBoundingClientRect().height)
   );
-  expect(Math.min(...choiceHeights)).toBeGreaterThanOrEqual(36);
+  expect(Math.min(...choiceHeights)).toBeGreaterThanOrEqual(44);
 
   await preference.focus();
   await page.keyboard.press('ArrowRight');
@@ -558,7 +559,9 @@ test('Settings AI Models provider controls expose their owning source', async ({
     'Embeddings slot provider name',
     'New free-pool entry name',
   ]) {
-    await expect(page.getByRole('textbox', { name, exact: true })).toHaveCount(1);
+    const field = page.getByRole('textbox', { name, exact: true });
+    await expect(field).toHaveCount(1);
+    expect((await field.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   }
   // A protocol is a choice; a provider's name is the owner's word for it.
   for (const name of [
@@ -567,7 +570,9 @@ test('Settings AI Models provider controls expose their owning source', async ({
     'Embeddings slot protocol',
     'New free-pool entry protocol',
   ]) {
-    await expect(page.getByRole('combobox', { name, exact: true })).toHaveCount(1);
+    const field = page.getByRole('combobox', { name, exact: true });
+    await expect(field).toHaveCount(1);
+    expect((await field.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   }
   for (const name of [
     'Save Slot 1: fast',
@@ -581,7 +586,9 @@ test('Settings AI Models provider controls expose their owning source', async ({
     'Remove free-pool entry groq',
     'Add free-pool API entry',
   ]) {
-    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+    const action = page.getByRole('button', { name, exact: true });
+    await expect(action).toHaveCount(1);
+    expect((await action.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   }
   for (const name of [
     'Slot 1: fast chat tool catalog',

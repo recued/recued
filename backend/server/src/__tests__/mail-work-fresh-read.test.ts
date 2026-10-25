@@ -24,6 +24,7 @@ import { parseMailWorkReadRequest } from '../mail-work-fresh-read.js';
 import { MAIL_WORK_PLAN_INVESTIGATION as MAIL_WORK_INVESTIGATION_GUIDANCE, MAIL_WORK_PLAN_OUTPUT_SHAPE as MAIL_WORK_OUTPUT_SHAPE,
   MAIL_WORK_PLAN_REFINEMENT as MAIL_WORK_REFINEMENT_GUIDANCE } from '../mail-work-chat-plan-guidance.js';
 import { mailWorkOwnerRequest } from '../mail-work-evidence.js';
+import { mailReceivedAtIso } from '../mail-evidence.js';
 import { mailWorkChatPrompt } from '../../../../apps/webclient/src/mail/mail-work-investigation.js';
 import { MAIL_WORK_PLANNING_CHOICE } from '../mail-work-turn-contract.js';
 
@@ -391,7 +392,9 @@ it('retains owner constraints and exact mail after the recent tail ages out and 
       source_url: '#data/mail/record/work/arrival', scope_role: 'context_candidate' }));
     expect(evidence.owner_updates).toContain('Refine privately, round 0.');
     expect(observations(packet)).toContainEqual(expect.objectContaining({ tool_name: 'mail.read', result: expect.objectContaining({
-      source_url: '#data/mail/record/work/arrival', received_at_iso: new Date(NOW + 1).toISOString(),
+      // On the turn's clock, which is the host's here: the fixture names no zone.
+      source_url: '#data/mail/record/work/arrival',
+      received_at_iso: mailReceivedAtIso(NOW + 1, Intl.DateTimeFormat().resolvedOptions().timeZone),
       body: expect.stringContaining('23 October is WITHDRAWN'),
     }) }));
     expect(JSON.stringify(packet)).not.toContain(SENDER);

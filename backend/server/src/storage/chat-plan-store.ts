@@ -59,6 +59,10 @@ interface ChatPlanRow {
   execution_turn_id: string | null;
   execution_blob_encrypted: string | null;
   execution_updated_at: number | null;
+  /** D-329 — the run of the hold whose ask this proposal answers (`ChatPlanProposal.hold`). */
+  hold_run_id: string | null;
+  /** D-329 — when that hold expired unanswered (`hold.lapsed_at`). */
+  hold_lapsed_at: number | null;
 }
 
 const chatMutationIdentity = (row: ChatPlanRow): unknown => ({
@@ -202,6 +206,14 @@ const planShellFromRow = (
     created_at: row.created_at,
     ...(row.resolved_at !== null ? { resolved_at: row.resolved_at } : {}),
     ...(row.consumed_at !== null ? { consumed_at: row.consumed_at } : {}),
+    ...(typeof row.hold_run_id === 'string' && row.hold_run_id.length > 0
+      ? {
+          hold: {
+            run_id: row.hold_run_id,
+            ...(typeof row.hold_lapsed_at === 'number' ? { lapsed_at: row.hold_lapsed_at } : {}),
+          },
+        }
+      : {}),
   };
 };
 
@@ -404,8 +416,46 @@ export const createSqliteChatPlanStore = (
        AND status = 'approved'
        AND consumed_at IS NULL
        AND COALESCE(resolved_at, created_at) >= @cutoff
+       -- D-329: a held proposal runs from its hold when approved. A re-issue
+       -- spending the same approval would run it twice.
+       AND hold_run_id IS NULL
      ORDER BY COALESCE(resolved_at, created_at) DESC, rowid DESC
      LIMIT 1
+  `);
+  const findHoldRunRow = db.prepare<{ run_id: string }>(`
+    SELECT * FROM chat_plans
+     WHERE hold_run_id = @run_id
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1
+  `);
+  const findPendingHeldRow = db.prepare<{
+    session_id: string;
+    tool: string;
+    args_hash: string;
+  }>(`
+    SELECT * FROM chat_plans
+     WHERE session_id = @session_id
+       AND tool = @tool
+       AND args_hash = @args_hash
+       AND status = 'proposed'
+       AND hold_run_id IS NOT NULL
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1
+  `);
+  const lapseHoldRun = db.prepare(`
+    UPDATE chat_plans
+       SET status = 'cancelled',
+           resolved_at = @lapsed_at,
+           hold_lapsed_at = @lapsed_at
+     WHERE plan_id = @plan_id AND hold_run_id = @run_id AND status = 'proposed'
+  `);
+  const answerMessageRow = db.prepare<{ plan_id: string }>(
+    'SELECT message_id FROM chat_plans WHERE plan_id = @plan_id',
+  );
+  const unlinkHoldRun = db.prepare(`
+    UPDATE chat_plans
+       SET hold_run_id = NULL
+     WHERE plan_id = @plan_id AND hold_run_id = @run_id
   `);
   const insertPlan = db.prepare(`
     INSERT INTO chat_plans (
@@ -413,12 +463,12 @@ export const createSqliteChatPlanStore = (
       tool, tier, classification,
       args_encrypted, resource_review_encrypted, args_hash, target_instance, status, created_at,
       resolved_at, consumed_at, execution_status, execution_turn_id,
-      execution_blob_encrypted, execution_updated_at
+      execution_blob_encrypted, execution_updated_at, hold_run_id
     ) VALUES (
       @plan_id, @session_id, @turn_id, @retry_of_plan_id, NULL,
       @tool, @tier, @classification,
       @args_encrypted, @resource_review_encrypted, @args_hash, @target_instance, @status, @created_at,
-      @resolved_at, @consumed_at, NULL, NULL, NULL, NULL
+      @resolved_at, @consumed_at, NULL, NULL, NULL, NULL, @hold_run_id
     )
     ON CONFLICT(plan_id) DO NOTHING
   `);
@@ -587,7 +637,48 @@ export const createSqliteChatPlanStore = (
       target_instance: plan.target_instance ?? null,
       resolved_at: plan.resolved_at ?? null,
       consumed_at: plan.consumed_at ?? null,
+      hold_run_id: plan.hold?.run_id ?? null,
     });
+  };
+
+  const unlinkHold = async (
+    plan_id: string,
+    run_id: string,
+  ): Promise<ChatPlanProposal | undefined> => {
+    unlinkHoldRun.run({ plan_id, run_id });
+    const row = rowFor(plan_id);
+    return row === undefined ? undefined : decodePlan(row, getKey);
+  };
+
+  const findByHoldRun = async (
+    run_id: string,
+  ): Promise<ChatPlanProposal | undefined> => {
+    const row = findHoldRunRow.get({ run_id }) as ChatPlanRow | undefined;
+    // The shell, not the decoded plan: settling a hold must not depend on the
+    // reviewed args decrypting (a locked vault still gets its outcome).
+    if (row === undefined) return undefined;
+    return await decodePlan(row, getKey).catch(() => undefined) ?? planShellFromRow(row, null);
+  };
+
+  const lapseHold = async (
+    plan_id: string,
+    run_id: string,
+    lapsed_at: number,
+  ): Promise<ChatPlanProposal | undefined> => {
+    lapseHoldRun.run({ plan_id, run_id, lapsed_at });
+    const row = rowFor(plan_id);
+    // The shell when the payload cannot be read: nothing runs from a lapsed plan.
+    if (row === undefined) return undefined;
+    return await decodePlan(row, getKey).catch(() => undefined) ?? planShellFromRow(row, null);
+  };
+
+  const findPendingHeld = async (
+    session_id: string,
+    tool: string,
+    args_hash: string,
+  ): Promise<ChatPlanProposal | undefined> => {
+    const row = findPendingHeldRow.get({ session_id, tool, args_hash }) as ChatPlanRow | undefined;
+    return row === undefined ? undefined : decodePlan(row, getKey);
   };
 
   const resolve = async (
@@ -821,5 +912,13 @@ export const createSqliteChatPlanStore = (
     listForSession,
     linkTurnToMessage,
     recordExecution,
+    unlinkHold,
+    findByHoldRun,
+    lapseHold,
+    findPendingHeld,
+    answerMessageId: async (plan_id: string): Promise<string | undefined> => {
+      const row = answerMessageRow.get({ plan_id }) as { message_id: string | null } | undefined;
+      return row?.message_id ?? undefined;
+    },
   };
 };

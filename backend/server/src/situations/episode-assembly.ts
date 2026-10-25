@@ -1,6 +1,7 @@
 import type { EpisodeInput, SituationRef, SituationWindow } from '@recued/contracts';
 import { episodeCandidateId } from '../storage/proactive-history-store.js';
 import type { ProactiveTrace } from '../storage/proactive-trace-store.js';
+import { countryPlace } from './country-place.js';
 
 export interface EpisodePlan {
   ref: SituationRef;
@@ -11,9 +12,32 @@ export interface EpisodePlan {
   subjects: SituationRef[];
   sphere?: ProactiveTrace['sphere'];
   routine?: boolean;
+  /** A trip's destination, two letters, as its record or the owner gave it. */
+  country?: string;
 }
 const key = (ref: SituationRef) => JSON.stringify([ref.collection, ref.id]);
+const words = (value: string): string => value.normalize('NFKC').toLocaleLowerCase('en').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+/** Shorter than this, a name is a word that happens anywhere ("cafe", "home"). */
+const NAME_MIN = 5;
+/** A place named the same way in two sources rarely spells out the same: a check-in
+ * names "Hotel Okura", its booking "Hotel Okura Tokyo, 2-10-4 Toranomon". One name
+ * held whole, word for word, in the other's place or the plan's title is a relation. */
+const named = (plan: EpisodePlan, trace: ProactiveTrace): boolean => {
+  const traced = trace.where ? words(trace.where.name) : ''; if (traced.length < NAME_MIN) return false;
+  return [plan.where?.name, plan.title].some(value => {
+    const planned = value ? words(value) : ''; if (planned.length < NAME_MIN) return false;
+    return ` ${planned} `.includes(` ${traced} `) || ` ${traced} `.includes(` ${planned} `);
+  });
+};
+/** A trip's destination named in the trace's place: "arrived at Narita Airport, Japan". */
+const inDestination = (plan: EpisodePlan, trace: ProactiveTrace): boolean => {
+  if (!plan.country || !trace.where) return false;
+  const country = words(countryPlace(plan.country).name);
+  return country.length >= 4 && ` ${words(trace.where.name)} `.includes(` ${country} `);
+};
+/** Time alone never relates them; the caller has already required that they overlap. */
 const related = (plan: EpisodePlan, trace: ProactiveTrace): boolean => Boolean(plan.where && trace.where && plan.where.key === trace.where.key
+  || named(plan, trace) || inDestination(plan, trace)
   || plan.people.some(person => trace.people.includes(person)) || plan.subjects.some(subject => trace.subjects.some(other => key(subject) === key(other))));
 
 /** Pure evidence assembly. A cancelled/routine plan is excluded by the

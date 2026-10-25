@@ -849,7 +849,8 @@ describe('D-269 REV 18 — the two rows are named for their ASYMMETRY', () => {
   it('⛔ not "server" vs "browser" — one defines the window, the other reports it', async () => {
     // To a solo self-hoster the server is not a place, it is their own machine,
     // so "server vs browser" reads as two peers to choose between.
-    const { host } = await mountQuiet(quietSnapshot(['notification']));
+    // ⚠ With the clocks apart: where you are is said only when it reads differently.
+    const { host } = await mountQuiet(quietSnapshot(['notification']), 'Europe/Paris');
     const rows = byAttr(host, QUIET_HOURS_ROW_ATTR).map(allText).join(' ');
     expect(rows).toContain('Recued’s clock');
     expect(rows).toContain('Where you are now');
@@ -874,6 +875,24 @@ describe('D-269 REV 18 — the two rows are named for their ASYMMETRY', () => {
   });
 });
 
+
+describe('D-269 follow-up — the window is said in a sentence, with its dates', () => {
+  it('says it once when the clocks agree, and where you are only when it reads differently', async () => {
+    // 22:00 → 08:00 in Hong Kong, at 04:00 there on 16 June: it is running.
+    const same = await mountQuiet(quietSnapshot(['notification']));
+    const rows = byAttr(same.host, QUIET_HOURS_ROW_ATTR).map(allText);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain('It is on now, from');
+    expect(rows[0]).toContain(', on Recued’s clock (Asia/Hong_Kong).');
+    // Dates on both ends, never a bare time a reader takes for today.
+    expect(rows[0]).toMatch(/Jun 15.*until.*Jun 16/u);
+    const apart = await mountQuiet(quietSnapshot(['notification']), 'Europe/Paris');
+    const both = byAttr(apart.host, QUIET_HOURS_ROW_ATTR).map(allText);
+    expect(both).toHaveLength(2);
+    expect(both[1]).toContain('Where you are now, that is');
+    expect(both[1]).toContain('(Europe/Paris).');
+  });
+});
 
 describe('notification timing reads without waiting for channels', () => {
   const deferred = <T>() => {

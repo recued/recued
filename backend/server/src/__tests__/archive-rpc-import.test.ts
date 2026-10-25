@@ -93,6 +93,13 @@ const stagedFiles = (dir: string): string[] =>
       !f.endsWith('-shm'),
   );
 
+/** A cheap Argon2id cost for the rebind bearer. The parameters travel with the stored hash
+ *  and `verify` reads them back, so a bearer minted at this cost proves the same plumbing;
+ *  the production cost is exercised by `d-148-cert-stack-composer` and pinned by
+ *  `d-148-phase-1-keys`. At that cost, in pure JS, this file's rebind case spent ~4 s
+ *  hashing (2026-10-23). */
+const FAST_ARGON2 = { t: 1, m: 8, p: 1 };
+
 const newHarness = (
   opts: { serverVersion?: string; getKeys?: () => KeyManager | undefined } = {},
 ): Harness => {
@@ -114,6 +121,7 @@ const newHarness = (
     configPath: null,
     serverVersion: opts.serverVersion ?? SERVER_VERSION,
     now: () => FIXED_NOW,
+    argon2_params: FAST_ARGON2,
     ...(opts.getKeys ? { getKeys: opts.getKeys } : {}),
     requestRestart: (cb) => {
       restarts += 1;
@@ -401,10 +409,11 @@ describe('archive online runtime', () => {
     const live = new Database(h.dbPath);
     try {
       // The RETURNED cleartext bearer must actually authenticate against the
-      // restored db (prod Argon params) — proves the full runImport→response
-      // plumbing handed back a USABLE bearer, not just a real token_id with a
-      // bogus bearer the client would stash and then fail to reconnect with.
-      const verified = await createClientTokenStore(live).verify(
+      // restored db — proves the full runImport→response plumbing handed back a
+      // USABLE bearer, not just a real token_id with a bogus bearer the client
+      // would stash and then fail to reconnect with. (`verify` uses the params
+      // stored with the hash; the store's own params only shape its constant-time dummy.)
+      const verified = await createClientTokenStore(live, { argon2_params: FAST_ARGON2 }).verify(
         res.rebind!.token_id,
         res.rebind!.bearer,
       );

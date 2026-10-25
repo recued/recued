@@ -79,11 +79,9 @@ export interface PairHandlerDeps {
    *  revokes the device's bearer credential(s) alongside the durable
    *  paired-instances row + the live ws close — without this, `pair.revoke`
    *  only marks the instance revoked and kicks the socket, but the bearer
-   *  stays valid in `client_tokens`. An uncooperative / stolen revoked
-   *  device that kept its bearer could then reconnect and `register` a FRESH
-   *  (non-revoked) instance_id, regaining access (the register gate only
-   *  checks `isRevoked` for the caller-supplied id, not the bearer's
-   *  identity). Revoking the bearer here closes that bypass at the source.
+   *  stays valid in `client_tokens`, and an uncooperative / stolen revoked
+   *  device that kept it could simply reconnect. Revoking the bearer here
+   *  closes that at the source.
    *  Composer-side absence is a no-op (db-less harnesses). */
   clientTokens?: Pick<ClientTokenStore, 'revoke' | 'list'>;
   /** Clock seam (tests). Defaults to `Date.now`. Pins the audit row
@@ -98,8 +96,7 @@ export interface PairHandlerDeps {
    *  live fan-out is absent). Emit failures are swallowed (observability-only
    *  — never abort the rpc), mirroring the contract-handler's `deps.broadcast`
    *  discipline. (The `op: 'added'` companion is emitted from the two
-   *  roster-add paths: the `/auth/pair` HTTP handler in `server.ts` and the
-   *  ws-server `intent: 'replace'` register path.) */
+   *  roster-add path, the `/auth/pair` HTTP handler in `server.ts`.) */
   broadcast?: (event: PairListChangedEvent) => void;
 }
 
@@ -110,7 +107,7 @@ export interface PairHandlerDeps {
  *  reason to fail the rpc the user just made. */
 const emitPairListChanged = (
   broadcast: PairHandlerDeps['broadcast'],
-  op: 'added' | 'revoked',
+  op: PairListChangedEvent['op'],
 ): void => {
   if (!broadcast) return;
   try {
@@ -155,9 +152,54 @@ export const handlePairList = async (
       revoked_at: row.revoked_at,
       connected: liveRow !== undefined && row.revoked_at === null,
       ...(liveRow ? { connected_at: liveRow.connected_at } : {}),
+      ...(row.last_seen_at !== null ? { last_seen_at: row.last_seen_at } : {}),
     };
   });
   return { devices };
+};
+
+/** Longest name the owner can give a device. */
+export const PAIR_DISPLAY_NAME_MAX = 64;
+
+/** Rename a device — the owner's label for it, in place of the
+ *  browser-and-system one it paired with. ⛔ There was no rename: two
+ *  browsers of one kind read alike in Devices ("Chrome on macOS"), and
+ *  which one to revoke was a guess. Same account gate as revoke. */
+export const handlePairRename = async (
+  deps: Pick<PairHandlerDeps, 'paired' | 'broadcast'>,
+  userId: string,
+  args: { instance_id: string; display_name: string },
+): Promise<{ ok: true; display_name: string }> => {
+  if (typeof args?.instance_id !== 'string' || args.instance_id.length === 0) {
+    throw new RpcError('bad_request', 'instance_id is required', 400);
+  }
+  const name = typeof args.display_name === 'string'
+    ? args.display_name.replace(/[\u0000-\u001F\u007F]+/g, ' ').trim()
+    : '';
+  if (name.length === 0 || name.length > PAIR_DISPLAY_NAME_MAX) {
+    throw new RpcError(
+      'bad_request',
+      `display_name must be 1 to ${PAIR_DISPLAY_NAME_MAX} characters`,
+      400,
+    );
+  }
+  if (!userId) {
+    throw new RpcError('unauthorized', 'must be signed in to rename a device', 401);
+  }
+  const row = deps.paired.get(args.instance_id);
+  if (!row || row.revoked_at !== null) {
+    throw new RpcError('not_found', `instance_id ${args.instance_id} is not paired with this server`, 404);
+  }
+  if (row.user_id !== userId) {
+    throw new RpcError('forbidden', 'device belongs to a different user', 403);
+  }
+  const renamed = deps.paired.rename(args.instance_id, name);
+  if (renamed === null) {
+    throw new RpcError('not_found', `instance_id ${args.instance_id} is not paired with this server`, 404);
+  }
+  // Every Devices list re-reads, so the new name shows everywhere.
+  emitPairListChanged(deps.broadcast, 'renamed');
+  return { ok: true, display_name: renamed.display_name };
 };
 
 /** Revoke a device. Marks it revoked in the durable store and closes
@@ -201,9 +243,9 @@ export const handlePairRevoke = async (
     return { ok: true };
   }
   deps.paired.revoke(args.instance_id);
-  // Close any live ws for this instance. Fires `instance_revoked`
-  // close code + message; on reconnect the ext hits the register path
-  // which checks isRevoked and rejects.
+  // Close EVERY live connection of this instance (each tab, each data
+  // socket). Fires the `instance_revoked` close code + message; a
+  // reconnect then fails, since its bearer is revoked below.
   //
   // D-148 § A.2.1 — capture the durable `client_tokens.token_id` the
   // closed socket was authenticated under so we can stamp
@@ -220,10 +262,9 @@ export const handlePairRevoke = async (
   const wsResult = deps.wsServer.revokeConnectedInstance(args.instance_id);
 
   // Revoke the device's BEARER credential(s) so a revoked device cannot
-  // reconnect with its still-valid token and `register` a fresh, non-revoked
-  // instance_id to regain access (the register gate only checks `isRevoked`
-  // for the caller-supplied id, not the bearer's identity). Two paths:
-  //   1. the live socket's `client_token_id` (when caught online), and
+  // reconnect with its still-valid token. Two paths:
+  //   1. every token its live connections were authenticated under (when
+  //      caught online — one per tab, all closed above), and
   //   2. any OFFLINE token bound to this instance via `metadata.instance_id`
   //      (a disconnected revoked device that kept its stored bearer).
   // `revoke` is idempotent (no-op on already-revoked/unknown); `list` is
@@ -233,8 +274,10 @@ export const handlePairRevoke = async (
   // close (the device is already gone), so swallow.
   if (deps.clientTokens) {
     try {
-      if (wsResult.client_token_id) {
-        deps.clientTokens.revoke(wsResult.client_token_id, 'pair_revoked');
+      const liveTokenIds = wsResult.client_token_ids
+        ?? (wsResult.client_token_id ? [wsResult.client_token_id] : []);
+      for (const token_id of liveTokenIds) {
+        deps.clientTokens.revoke(token_id, 'pair_revoked');
       }
       for (const token of deps.clientTokens.list({ include_revoked: false })) {
         if (token.metadata?.['instance_id'] === args.instance_id) {
@@ -312,7 +355,7 @@ export const handlePairRevoke = async (
 // Handler slice — composeHandlers factory
 // ────────────────────────────────────────────────────────────────
 
-export type PairMethods = 'pair.list' | 'pair.revoke';
+export type PairMethods = 'pair.list' | 'pair.revoke' | 'pair.rename';
 
 /** `getHandle` is lazy because the WsServerHandle is defined AFTER the
  *  handler registry in ws-server.ts (the handle closes over state that
@@ -334,7 +377,7 @@ export const makePairHandlers = (
 ): HandlerSlice<ServerRpcRegistry, PairMethods, WsClient> | undefined => {
   if (!paired) return undefined;
   return {
-    methods: ['pair.list', 'pair.revoke'],
+    methods: ['pair.list', 'pair.revoke', 'pair.rename'],
     handlers: {
       'pair.list': async (_args, client) =>
         handlePairList(
@@ -357,6 +400,12 @@ export const makePairHandlers = (
           resolveGatedClientOwnerId(client),
           args,
           { instance_id: resolveGatedClientInstanceId(client) },
+        ),
+      'pair.rename': async (args, client) =>
+        handlePairRename(
+          { paired, ...(broadcast ? { broadcast } : {}) },
+          resolveGatedClientOwnerId(client),
+          args,
         ),
     },
   };

@@ -161,6 +161,32 @@ describe('D-247 D13 — the coverage ledger', () => {
     expect(JSON.parse(rows[0]!.detail!)).toMatchObject({
       granting_recipe: GRANT_KEY,
       recipe_id: RECIPE_ID,
+      // D-327 — the owner's chat has no contract of its own; its runs are the owner's.
+      contract_id: 'user_self',
+    });
+  });
+
+  it('D-327 — a door\'s covered run is recorded under the DOOR\'s agreement', async () => {
+    // The door's recipe grant is its snapshot's allowed tools (`grantingRecipeEntry`),
+    // so the owner arm stays off and only the door can cover the step.
+    const h = harness(false);
+    const DOOR: ExecutionSource = {
+      channel: 'mcp', actor: 'contracted_user', agent_id: 'agent-1', tool_call_id: 'call-1',
+      mcp_token_id: 'tok-1', contract_id: 'door_a',
+    };
+    await handleExecute(h.deps, {
+      recipe_id: RECIPE_ID, trigger_source: 'mcp', execution_source: DOOR,
+      contract_snapshot: {
+        contract_id: 'door_a', contract_version: '1',
+        allowed_tools: [`${PUBLISHER}/${RECIPE_ID}`, SLUG],
+        approval_required: [], scope_restrictions: [], resolved_at: 1,
+      },
+    });
+    const rows = h.activities.filter((a) => a.action === 'recipe_coverage_admission');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.detail!)).toMatchObject({
+      granting_recipe: `${PUBLISHER}/${RECIPE_ID}`,
+      contract_id: 'door_a',
     });
   });
 

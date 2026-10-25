@@ -381,7 +381,8 @@ describe('D-167 P2 — N.10.2 content pass aliases user_message/chat_tail vs a s
     const plan = makePlan(piiEgress.noopFieldPrivacyResolver);
     const prompt = JSON.stringify({
       user_message: 'hi',
-      chat_tail: [{ role: 'user', content: 'hello alice@acme.com' }],
+      // A name: an address would be aliased by its shape (2026-10-24).
+      chat_tail: [{ role: 'user', content: 'hello Alice Chen' }],
     });
     const { rawPrompt } = await egress(plan, prompt);
     // Empty ledger → no content scan → the early path returns the input untouched.
@@ -828,6 +829,8 @@ describe('D-224 — the model is told what an alias IS', () => {
     expect(PII_ALIAS_NOTICE).toContain('orgs and places');
     expect(PII_ALIAS_NOTICE).toContain('never say whether it is that place');
     expect(PII_ALIAS_NOTICE).toMatch(/write its alias: they read the real place name/u);
+    // A person is named by their alias too (prompt-tuning log 2026-10-24c).
+    expect(PII_ALIAS_NOTICE).toMatch(/write the alias wherever you would name that person/u);
     expect(PII_ALIAS_NOTICE).not.toMatch(/cannot see/u);
     // ⛔⛔ AND IT MUST CONTAIN NO CONCRETE ALIAS. A literal `m1@d1.invalid` here
     // grants restore authority over that slot — a model that merely GUESSED it

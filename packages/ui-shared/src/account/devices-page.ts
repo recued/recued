@@ -54,12 +54,12 @@ export interface DevicesPageRow {
   /** Stable id — `instance_id` in server land + the value the row's
    *  Revoke button stamps onto `data-instance-id` for the rpc. */
   instance_id: string;
-  /** Display label — auto-derived UA string ("Chrome on macOS", …),
-   *  frozen at pair-time. Rendered escape-safe; combined with the kind
-   *  label. No rename (owner — labels are UA strings; no pair.rename). */
+  /** Display label — the owner's name for the device, or the browser and
+   *  system it paired with ("Chrome on macOS", …) until renamed. Rendered
+   *  escape-safe; combined with the kind label. */
   display_name: string;
   /** Client surface — drives the parenthesized kind label after the
-   *  display name (e.g. "Phone (Webclient)"). Closed list. */
+   *  display name (e.g. "Phone (Browser)"). Closed list. */
   kind: PairListEntryKind;
   /** Currently-connected WS client (live heartbeat). Drives the
    *  "Online now" vs "Offline" Status cell + the row class. */
@@ -67,6 +67,11 @@ export interface DevicesPageRow {
   /** Pairing date — epoch ms (first successful register, `added_at`).
    *  Rendered in the "Paired" column. */
   paired_at: number;
+  /** When the device last connected or left — epoch ms. Absent until the
+   *  server has seen it since it began keeping this. ⛔ Without it a dead
+   *  entry (a browser that cleared its storage never comes back) looked
+   *  like any quiet one. */
+  last_seen_at?: number;
   /** True for the row representing the currently-rendering client.
    *  Pinned to the top of the table; gets no Revoke button (self-
    *  revoke blocked). */
@@ -81,6 +86,9 @@ export interface DevicesPageState {
     pending: boolean;
     lastSuccessfulAt?: number;
   };
+  /** The list has never loaded — its first read failed. Render no table: an
+   *  empty one says "No paired devices yet.", which is not what is known. */
+  listUnavailable?: boolean;
   /** When set, the row with the matching `instance_id` renders the
    *  inline two-stage confirm panel below it. The host transitions
    *  this slice on Revoke / Cancel clicks. Only one row at a time. */
@@ -98,12 +106,26 @@ export interface DevicesPageState {
   /** Reference time for the "Paired Nd ago" relative formatter.
    *  Defaults to `Date.now()` when omitted. */
   nowMs?: number;
+  /** The host can rename devices (`pair.rename`): each row offers Rename. */
+  renameAvailable?: boolean;
+  /** The row whose name is being edited, its draft, whether the save is in
+   *  flight, and the refusal to show. One row at a time. */
+  renamingInstanceId?: string;
+  renameDraft?: string;
+  renameSaving?: boolean;
+  renameError?: string;
+  /** Where this device takes its own access away, on a host that offers it.
+   *  The roster never offers Revoke on the current device's own row. */
+  selfRemovalHint?: string;
 }
 
+/** Longest device name the server keeps (`pair.rename`). */
+export const DEVICE_NAME_MAX_CHARS = 64;
+
 const KIND_LABEL: Record<PairListEntryKind, string> = {
-  webclient: 'Webclient',
-  bridge: 'Bridge',
-  cli: 'CLI',
+  webclient: 'Browser',
+  bridge: 'Browser Bridge',
+  cli: 'Command line',
 };
 
 const COLUMN_COUNT = 4;
@@ -140,19 +162,38 @@ const formatRelative = (epochMs: number, nowMs: number): string => {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 };
 
-const renderStatusCell = (row: DevicesPageRow): string =>
-  row.connected ? 'Online now' : 'Offline';
+const renderStatusCell = (row: DevicesPageRow, nowMs: number): string => {
+  if (row.connected) return 'Online now';
+  if (row.last_seen_at === undefined) return 'Offline';
+  const ago = formatRelative(row.last_seen_at, nowMs);
+  return e(`Last used ${ago.charAt(0).toLowerCase()}${ago.slice(1)}`);
+};
 
 const renderPairedCell = (row: DevicesPageRow, nowMs: number): string =>
   e(formatRelative(row.paired_at, nowMs));
 
-const renderActionsCell = (row: DevicesPageRow): string => {
-  // Self-revoke blocked — render no action button on the current row
+const renderActionsCell = (row: DevicesPageRow, state: DevicesPageState): string => {
+  const deviceLabel = `${row.display_name} (${row.instance_id})`;
+  const rename = state.renameAvailable === true && state.renamingInstanceId !== row.instance_id
+    ? `
+    <button type="button"
+      class="account-devices-action"
+      data-action="rename-device"
+      data-instance-id="${e(row.instance_id)}"
+      aria-label="Rename ${e(deviceLabel)}">
+      Rename
+    </button>`
+    : '';
+  // Self-revoke blocked — render no Revoke button on the current row
   // (Apple/Google "remove from account" pattern). See spec § Behaviour
   // rules. The mount hard-guards the handler too (R30 defect #1).
-  if (row.isCurrent) return '<span class="account-devices-action-placeholder" aria-hidden="true">—</span>';
-  const deviceLabel = `${row.display_name} (${row.instance_id})`;
+  if (row.isCurrent) {
+    return rename.length > 0
+      ? `<div class="account-devices-actions">${rename}</div>`
+      : '<span class="account-devices-action-placeholder" aria-hidden="true">—</span>';
+  }
   return `
+    <div class="account-devices-actions">${rename}
     <button type="button"
       class="account-devices-action account-devices-action--revoke"
       data-action="revoke-device"
@@ -160,6 +201,39 @@ const renderActionsCell = (row: DevicesPageRow): string => {
       aria-label="Revoke ${e(deviceLabel)}">
       Revoke
     </button>
+    </div>
+  `;
+};
+
+/** The editor below the device row. Enter saves; Escape and Cancel keep the
+ *  old name. Its control attributes remain owned by the mount. */
+const renderRenameForm = (row: DevicesPageRow, state: DevicesPageState): string => {
+  const saving = state.renameSaving === true;
+  const inputId = `account-devices-rename-${row.instance_id}`;
+  const errorId = `${inputId}-error`;
+  const error = state.renameError !== undefined && !saving
+    ? `<p class="account-devices-rename-error" id="${e(errorId)}" role="alert">${e(state.renameError)}</p>`
+    : '';
+  const busy = saving ? ' aria-disabled="true" aria-busy="true"' : '';
+  return `
+    <form class="account-devices-rename" data-rename-form data-instance-id="${e(row.instance_id)}">
+      <label class="account-devices-rename-label" for="${e(inputId)}">New name for this device</label>
+      <input id="${e(inputId)}" class="account-devices-rename-input" type="text"
+        data-rename-input data-instance-id="${e(row.instance_id)}"
+        maxlength="${DEVICE_NAME_MAX_CHARS}" autocomplete="off"
+        value="${e(state.renameDraft ?? row.display_name)}"${error.length > 0 ? ` aria-describedby="${e(errorId)}" aria-invalid="true"` : ''}${saving ? ' readonly' : ''}>
+      ${error}
+      <div class="account-devices-rename-actions">
+        <button type="submit" class="account-devices-action"
+          data-action="save-rename" data-instance-id="${e(row.instance_id)}"${busy}>
+          ${saving ? 'Saving…' : 'Save'}
+        </button>
+        <button type="button" class="account-devices-action"
+          data-action="cancel-rename" data-instance-id="${e(row.instance_id)}"${saving ? ' aria-disabled="true"' : ''}>
+          Cancel
+        </button>
+      </div>
+    </form>
   `;
 };
 
@@ -241,23 +315,32 @@ const renderRow = (
   const currentBadge = row.isCurrent
     ? `<span class="account-devices-current-badge">This device</span>`
     : '';
+  const name = `<span class="account-devices-name">${e(row.display_name)}</span>`;
+  const rename = state.renamingInstanceId === row.instance_id
+    ? `<tr class="account-devices-rename-row" data-instance-id="${e(row.instance_id)}">
+        <td class="account-devices-rename-cell" colspan="${COLUMN_COUNT}">
+          ${renderRenameForm(row, state)}
+        </td>
+      </tr>`
+    : '';
   return `
     <tr class="${klasses}" data-instance-id="${e(row.instance_id)}">
       <td class="account-devices-cell account-devices-cell--name">
-        <span class="account-devices-name">${e(row.display_name)}</span>
+        ${name}
         <span class="account-devices-kind">(${e(KIND_LABEL[row.kind])})</span>
         ${currentBadge}
       </td>
       <td class="account-devices-cell account-devices-cell--status">
-        ${renderStatusCell(row)}
+        ${renderStatusCell(row, nowMs)}
       </td>
       <td class="account-devices-cell account-devices-cell--paired">
         ${renderPairedCell(row, nowMs)}
       </td>
       <td class="account-devices-cell account-devices-cell--actions">
-        ${renderActionsCell(row)}
+        ${renderActionsCell(row, state)}
       </td>
     </tr>
+    ${rename}
     ${renderConfirmPanel(row, state)}
   `;
 };
@@ -265,16 +348,15 @@ const renderRow = (
 export const renderDevicesPage = (state: DevicesPageState): string => {
   const nowMs = state.nowMs ?? Date.now();
   // Sort: current first, then connected actives, then offline actives
-  // (most-recently paired first). Revoked rows never reach the renderer
-  // (the mount filters them out — R30).
+  // (most recently used first, else most recently paired). Revoked rows
+  // never reach the renderer (the mount filters them out — R30).
   const sorted = [...state.rows].sort((a, b) => {
     if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
     if (a.connected !== b.connected) return a.connected ? -1 : 1;
-    return b.paired_at - a.paired_at;
+    return (b.last_seen_at ?? b.paired_at) - (a.last_seen_at ?? a.paired_at);
   });
   const rows = sorted.map((r) => renderRow(r, state, nowMs)).join('');
-  const body = `
-    ${renderRefresh(state.refresh)}
+  const table = state.listUnavailable === true ? '' : `
     <div class="account-devices-table-scroll" data-recued-scroll-rail>
       <table class="account-devices-table" role="table" aria-label="Paired devices">
         <thead>
@@ -291,10 +373,16 @@ export const renderDevicesPage = (state: DevicesPageState): string => {
       </table>
     </div>
   `;
+  const body = `
+    ${renderRefresh(state.refresh)}${table}
+  `;
 
+  // ⛔ This said "A device cannot remove itself" while Account & servers
+  // revoked this browser's own access. Only the host knows where its device can.
   return section({
     title: 'Devices',
-    hint: 'Devices paired to this server. Use a different device to remove one. A device cannot remove itself.',
+    hint: `Devices paired to this server. Use a different device to revoke one.${
+      state.selfRemovalHint !== undefined ? ` ${state.selfRemovalHint}` : ''}`,
     body,
     id: 'account-devices',
   });

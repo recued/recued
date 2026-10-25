@@ -61,14 +61,16 @@ const deps = (opts: { granted?: readonly string[]; wired?: boolean; readGranted?
   };
 };
 
-describe('the write tier gates and the create tier does not — the slice boundary', () => {
-  it('both calendar writes require plan approval; work.create deliberately does not', () => {
+describe('the write tier gates — and since D-329 the create tier does too', () => {
+  it('both calendar writes require plan approval, and so does work.create (D-329)', () => {
     // Driven through the REAL predicate, not by asserting the classification
     // string: the string is an input to a decision, and the decision is the
     // thing that must not drift.
     expect(planApproval.requiresPlanApproval({ ...TIER1_TOOL_DESCRIPTORS['calendar.create'], tier: 1 })).toBe(true);
     expect(planApproval.requiresPlanApproval({ ...TIER1_TOOL_DESCRIPTORS['calendar.update'], tier: 1 })).toBe(true);
-    expect(planApproval.requiresPlanApproval({ ...TIER1_TOOL_DESCRIPTORS['work.create'], tier: 1 })).toBe(false);
+    // D-329 — the owner: "work.create can be auto after 3 approval so it is not that bad to
+    // be a write". Approving it anywhere runs it, and repeats teach a standing rule.
+    expect(planApproval.requiresPlanApproval({ ...TIER1_TOOL_DESCRIPTORS['work.create'], tier: 1 })).toBe(true);
 
     expect(TIER1_CLASSIFICATIONS['calendar.create']).toBe('write');
     expect(TIER1_CLASSIFICATIONS['calendar.update']).toBe('write');

@@ -1,0 +1,10 @@
+{
+  // A part of the test type-check: the decision tests (`d-*`) directly in
+  // backend/server/src/__tests__, half of backend's test files, checked as a program
+  // of their own by test/typecheck-tests.mjs, which says why.
+  "extends": "./tsconfig.test.json",
+  "include": [
+    "backend/server/src/__tests__/d-*.ts",
+    "backend/server/src/__tests__/d-*.tsx"
+  ]
+}

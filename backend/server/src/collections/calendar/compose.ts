@@ -442,6 +442,7 @@ export const composeCalendarStack = (
       async restart(slug) { authenticationPaused.delete(slug); const row = instances.get('calendar', slug);
         if (!row || closed) throw new Error('Calendar collection is unavailable.');
         await startLive(row, 'background'); if (!live.has(slug)) throw new Error('Calendar collection did not restart.'); },
+      caughtUp: (slug) => live.get(slug)?.caughtUp ?? Promise.resolve(),
     },
   };
 

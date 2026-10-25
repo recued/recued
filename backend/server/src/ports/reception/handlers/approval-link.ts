@@ -59,6 +59,7 @@ import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
 import {
   APPROVAL_LINK_DEFAULT_SUBMIT_BUTTON_LABEL,
   APPROVAL_LINK_DEFAULT_SUCCESS_MESSAGE,
+  APPROVAL_LINK_OPTION_ID_MAX,
   APPROVAL_LINK_VISITOR_ANSWER_MAX,
   APPROVAL_LINK_VISITOR_COMMENT_MAX,
   APPROVAL_LINK_VISITOR_EMAIL_MAX,
@@ -88,6 +89,7 @@ import {
   renderApprovalLinkHtml,
   renderApprovalLinkPlaceholderHtml,
   renderApprovalLinkSuccessHtml,
+  renderApprovalLinkUnavailableHtml,
   type ApprovalLinkRenderInput,
 } from './approval-link-render.js';
 import type { ReceptionEndpointContext } from '../redacted-packet.js';
@@ -97,9 +99,11 @@ import type { ApprovalIntentStore } from '../../../storage/reception-approval-st
 
 const NOT_IMPLEMENTED_BODY = { error: { code: 'not_implemented' } } as const;
 
-/** Max POST body bytes. Approval forms are small (radio + textarea +
- *  email + name). 16 KB is a comfortable ceiling. */
-const MAX_BODY_BYTES = 16 * 1024;
+/** A BMP character can require nine bytes in a URLencoded form (%XX per UTF-8
+ * byte). Budget for every rendered field, plus names, nonce, token and decision;
+ * decoded field limits below still enforce the advertised character bounds. */
+const MAX_BODY_BYTES = 9 * (APPROVAL_LINK_VISITOR_NAME_MAX + APPROVAL_LINK_VISITOR_EMAIL_MAX
+  + Math.max(APPROVAL_LINK_VISITOR_ANSWER_MAX, APPROVAL_LINK_VISITOR_COMMENT_MAX, APPROVAL_LINK_OPTION_ID_MAX)) + 1024;
 
 /** Form-nonce TTL — visitors have 30 minutes to submit after loading.
  *  Mirrors the intake_form / drop_link nonce. */
@@ -140,6 +144,10 @@ const writeHtmlResponse = (res: ServerResponse, body: string, status = 200): voi
   res.setHeader('x-frame-options', 'DENY');
   res.setHeader('content-length', String(Buffer.byteLength(body, 'utf8')));
   res.end(body);
+};
+
+export const writeApprovalLinkUnavailableResponse = (res: ServerResponse): void => {
+  writeHtmlResponse(res, renderApprovalLinkUnavailableHtml(), 410);
 };
 
 const writeErrorPage = (
@@ -321,6 +329,7 @@ export interface ApprovalLinkPacketHandlerDeps {
 
 export const createApprovalLinkPacketHandler = (
   deps: ApprovalLinkPacketHandlerDeps,
+  renderOptions: Pick<ApprovalLinkRenderInput, 'submitted' | 'error_message'> & { status?: number } = {},
 ): ReceptionKindHandler => {
   return async (req: IncomingMessage, res: ServerResponse, endpoint: ReceptionEndpointContext) => {
     const endpoint_id = endpoint.endpoint_id;
@@ -338,6 +347,10 @@ export const createApprovalLinkPacketHandler = (
     if (!config) {
       writeHtmlResponse(res, renderApprovalLinkPlaceholderHtml(), 503);
       return;
+    }
+
+    if (!row.enabled || row.revoked_at !== null || row.expires_at !== null && row.expires_at <= deps.now()) {
+      writeApprovalLinkUnavailableResponse(res); return;
     }
 
     const intent = deps.getApprovalIntentStore().findByEndpoint(endpoint_id);
@@ -393,6 +406,7 @@ export const createApprovalLinkPacketHandler = (
         : null;
 
     const renderInput: ApprovalLinkRenderInput = {
+      ...renderOptions,
       display_name: config.display_name,
       action_kind: config.action_kind,
       prompt: config.prompt,
@@ -410,7 +424,7 @@ export const createApprovalLinkPacketHandler = (
       ...(config.options !== undefined ? { options: config.options } : {}),
     };
 
-    writeHtmlResponse(res, renderApprovalLinkHtml(renderInput));
+    writeHtmlResponse(res, renderApprovalLinkHtml(renderInput), renderOptions.status ?? 200);
   };
 };
 
@@ -453,11 +467,13 @@ export const createApprovalLinkConsumeHandler = (
     try {
       bodyRaw = await readBody(req);
     } catch (err) {
-      const message =
-        err instanceof Error && err.message === 'body_too_large'
-          ? 'Submission was too large.'
-          : 'Submission could not be parsed.';
-      writeErrorPage(res, 'this approval link', message, 413);
+      const oversized = err instanceof Error && err.message === 'body_too_large';
+      writeHtmlResponse(res, renderApprovalLinkErrorHtml({ display_name: 'this approval link',
+        message: oversized ? 'Submission was too large. Go back to shorten your response, or review the request again.' : 'Submission could not be parsed.',
+        ...(oversized && verifyOrigin(req, deps.trustForwardedProto === true) ? {
+          recovery_url: `/reception/approve/${encodeURIComponent(endpoint_id)}?t=${encodeURIComponent(extractBearer(req))}`,
+        } : {}),
+      }), 413);
       return;
     }
 
@@ -489,17 +505,30 @@ export const createApprovalLinkConsumeHandler = (
       return;
     }
 
+    const recover = async (message: string) => {
+      // Reuse the current-request checks and redacted form builder. Values are
+      // response-local, escaped by the renderer and never persisted or put in URLs.
+      const submitted: NonNullable<ApprovalLinkRenderInput['submitted']> = {};
+      for (const [field, max] of [['visitor_name', APPROVAL_LINK_VISITOR_NAME_MAX], ['visitor_email', APPROVAL_LINK_VISITOR_EMAIL_MAX],
+        ['comment', APPROVAL_LINK_VISITOR_COMMENT_MAX], ['answer', APPROVAL_LINK_VISITOR_ANSWER_MAX], ['decision', 16], ['option_id', 200]] as const) {
+        submitted[field] = (parsed.get(field) ?? '').slice(0, max);
+      }
+      await createApprovalLinkPacketHandler(deps, { submitted, error_message: message, status: 400 })(req,res,endpoint);
+    };
+
     const formNonce = parsed.get('form_nonce') ?? '';
     if (
       formNonce.length === 0 ||
       !deps.getApprovalLinkNonceStore().consume(endpoint_id, formNonce, deps.now())
     ) {
-      writeErrorPage(
-        res,
-        display_name,
-        'This approval link is stale. Please reload the page and try again.',
-        400,
-      );
+      // A browser reload can repeat the successful POST with its spent nonce.
+      // Confirm the existing record without accepting another write or outcome.
+      if (deps.getApprovalIntentStore().findByEndpoint(endpoint_id)?.consumed_at != null) {
+        writeHtmlResponse(res, renderApprovalLinkAlreadyConsumedHtml({ display_name }), 200); return;
+      }
+      writeHtmlResponse(res, renderApprovalLinkErrorHtml({ display_name,
+        message: 'This response form is stale. Review the request again before sending a response.',
+        recovery_url: `/reception/approve/${encodeURIComponent(endpoint_id)}?t=${encodeURIComponent(extractBearer(req))}` }), 400);
       return;
     }
 
@@ -507,7 +536,7 @@ export const createApprovalLinkConsumeHandler = (
     // action_kind. Malformed inputs short-circuit to 400.
     const built = buildOutcome(config, parsed);
     if ('error' in built) {
-      writeErrorPage(res, display_name, 'Submission was incomplete.', 400);
+      await recover('Submission was incomplete.');
       return;
     }
 
@@ -520,15 +549,15 @@ export const createApprovalLinkConsumeHandler = (
     // abuse; per-field caps protect against silent persistence of
     // oversize PII).
     if (visitorName.length > APPROVAL_LINK_VISITOR_NAME_MAX) {
-      writeErrorPage(res, display_name, 'Submission metadata too long.', 400);
+      await recover('Submission metadata too long.');
       return;
     }
     if (visitorEmail.length > APPROVAL_LINK_VISITOR_EMAIL_MAX) {
-      writeErrorPage(res, display_name, 'Submission metadata too long.', 400);
+      await recover('Submission metadata too long.');
       return;
     }
     if (built.kind === 'answer' && built.answer.length > APPROVAL_LINK_VISITOR_ANSWER_MAX) {
-      writeErrorPage(res, display_name, 'Answer too long.', 400);
+      await recover('Answer too long.');
       return;
     }
     if (
@@ -536,12 +565,12 @@ export const createApprovalLinkConsumeHandler = (
       built.comment !== undefined &&
       built.comment.length > APPROVAL_LINK_VISITOR_COMMENT_MAX
     ) {
-      writeErrorPage(res, display_name, 'Comment too long.', 400);
+      await recover('Comment too long.');
       return;
     }
 
     if (config.on_action.on_approve_action === 'quote_completion' && built.kind === 'reject' && !built.comment?.trim()) {
-      writeErrorPage(res, display_name, 'Describe the corrections you need, then submit your response again.', 400); return;
+      await recover('Describe the corrections you need, then submit your response again.'); return;
     }
     const consumeInput: ApprovalLinkConsumeInput = {
       ...(visitorName.length > 0 ? { visitor_name: visitorName } : {}),
@@ -551,7 +580,10 @@ export const createApprovalLinkConsumeHandler = (
     const failures = validateApprovalLinkConsume(consumeInput, config);
     if (failures.length > 0) {
       const first = failures[0]!;
-      writeErrorPage(res, display_name, first.detail, 400);
+      await recover(first.code === 'visitor_email_invalid' ? 'Enter a valid email address, or leave it blank if optional.'
+        : first.code === 'visitor_email_match_failed' ? 'Use the email address this request was sent to.'
+          : first.code === 'visitor_email_required' ? 'Enter your email address.'
+            : first.code === 'visitor_name_required' ? 'Enter your name.' : 'Check your response and contact details, then submit again.');
       return;
     }
 

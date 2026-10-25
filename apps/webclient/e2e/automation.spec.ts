@@ -929,6 +929,9 @@ test('Automation keeps manual watch runs owned through reconciliation', async ({
     '[data-recued-automation-subnav="coming-up"]',
   );
   const statusFilter = page.locator(`[${AUTOMATION_STATUS_FILTER}]`);
+  // The filter row goes inert while the run is pending, and the select with
+  // it, however deep in the row the select sits.
+  const inertAroundStatusFilter = page.locator('[inert]').filter({ has: statusFilter });
 
   await expect(row).toContainText('last poll never');
   await page.evaluate(() => {
@@ -950,7 +953,7 @@ test('Automation keeps manual watch runs owned through reconciliation', async ({
   await expect(runNow).not.toHaveAttribute('disabled');
   await expect(runNow).toBeFocused();
   await expect(schedulesTab).toHaveAttribute('aria-disabled', 'true');
-  await expect(statusFilter.locator('..')).toHaveAttribute('inert', '');
+  await expect(inertAroundStatusFilter).toHaveCount(1);
 
   // These internal controls bypass the shell's route-switch guard. Even a
   // synthetic activation must leave the pending action visible and focused.
@@ -984,7 +987,7 @@ test('Automation keeps manual watch runs owned through reconciliation', async ({
   await expect(runNow).toBeFocused();
   await expect(row).not.toContainText('last poll never');
   await expect(schedulesTab).not.toHaveAttribute('aria-disabled');
-  await expect(statusFilter.locator('..')).not.toHaveAttribute('inert');
+  await expect(inertAroundStatusFilter).toHaveCount(0);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
 
   await schedulesTab.click();

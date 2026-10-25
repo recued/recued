@@ -7,6 +7,91 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.24 — 2026-10-24
+
+When your AI wants to change something, the approval now reaches you wherever
+you get approvals, and the change happens as soon as you say yes. Your AI can
+add a passport, a car or anything else you own, with its reminders, and finds a
+person's records when you ask about them by name, every passport for a family
+trip included. Email addresses and links are hidden from the AI even when they
+are not in your contacts, and a reminder is now a notification you can get on
+Telegram, Slack, Discord or WhatsApp.
+
+### Before you update
+
+- **The household only receives reminders.** A household's Telegram group gets
+  each reminder as a message, and nothing sent from the group answers it. The
+  join invite, the member list and join requests are gone. Ticking a task off
+  on a Home Assistant list no longer marks it done in Recued: the list shows
+  the tasks, and you finish them in Recued.
+
+### Added
+
+- **Approvals reach you everywhere.** When the chat wants to add or change a
+  calendar event, update a task or stop a run, its approval reaches every place
+  you get approvals: the app, your phone and your messages. Say yes in any of
+  them and it happens at once, and the chat you asked in says how it went.
+- **Your AI adds what you own.** Tell the chat about a passport, a visa or a car
+  and it adds it, with the reminders its type keeps, as Yours does.
+- **Your AI can correct or forget what it remembered.** An AI may revise or
+  forget the memory entries it saved itself, and you can undo either.
+- **"Did you mean" in Data → Search**, offered from the words in your own
+  records. Search across everything now finds calendar events too.
+- **A contact's details reach your AI.** When it reads a contact, it sees their
+  phone, company, title, birthday and address, as hidden from it as every name.
+- **Each agreement has its own key.** An agreement's Connect tab creates that
+  agreement's key, shows it once and can turn it off, and the key can use
+  exactly what the agreement switches on. An agreement made before this keeps
+  its key and its key's own list.
+- **Pick a Home Assistant list by name** in Reminders for shared assets.
+
+### Changed
+
+- **A reminder is a notification.** Reminders reach every channel whose
+  notifications are on, Telegram, Slack, Discord and WhatsApp included, and
+  Settings says when nothing would reach your phone.
+- **Reminders have no Done button.** A reminder offers Later, Not renewing (or
+  Not needed) and Stop reminding, and says where the task is finished. A
+  passport is renewed by entering its new date, and Done on a passport in
+  Today acknowledges its reminder.
+- **Asking about someone shows their records first.** The chat finds a
+  person's passport or other belongings by their name, shows them before
+  anyone else's, and gives the AI every traveller's passport check for a
+  family trip in one lookup.
+- **Settings → Approval & notifications reads as five cards**: Channels, What
+  you are notified about, Digest, Quiet hours and Household. The household
+  part is Reminders for shared assets and names the assets it covers.
+- **Connections reads more simply.** Adding an API connection asks first how it
+  signs in, editing one reads as Connection then Sign-in, Manage
+  authentication is numbered steps, saved OAuth apps stay one screen long, and
+  the extra tools sit under the lists.
+- **Yours → Occurrences is now Due**, and a task says its deadline in words.
+- **Read-aloud replies use only a voice on this device.** The Transcription
+  card says that voice notes leave your server as audio.
+- **Contracts say what each switch is**, and what each AI tool needs.
+
+### Fixed
+
+- **Privacy.** An email address or a link, written by you or returned in an
+  email or a tool's result, is replaced by a stand-in before it reaches the
+  AI, even when it belongs to no contact; you still see the real one in every
+  reply. A name that is one common word, such as "Will", no longer changes
+  your own words, and words you typed no longer reach the AI beside the
+  stand-in that hid them.
+- **The AI gets dates right.** An email's date is your date, and a meeting's day
+  is the right one.
+- **An email the AI addresses to a person goes to their address.**
+- **An approval that expired says so**, and an AI app that asks twice for the
+  same change is asked about once.
+- **The chat sees what you have on file** that your message names before it
+  answers, and on a large or busy server too.
+- **A device connecting, or an AI app's request, no longer stops the server
+  for a second.** AI apps and chat-app messages wait until the server has
+  started.
+- **A busy server no longer loses the parts of an email** that a template
+  splits into parcels or orders.
+- **A Digest time inside quiet hours goes when they end.**
+
 ## 26.10.22 — 2026-10-22
 
 The Browser Bridge from the Chrome Web Store works with your server again. On

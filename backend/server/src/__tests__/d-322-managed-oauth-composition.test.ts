@@ -256,5 +256,7 @@ describe('D-322 production composition and saved-account lifetime', () => {
       await broker.close();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+    // Boots the composed server, then again after the disk is closed and unlocked: ~6.3 s
+    // alone, past the default 30 s in three sweeps on 2026-10-23. No duration is asserted.
+  }, 120_000);
 });

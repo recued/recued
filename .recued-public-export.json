@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "04c3f207a96bc6a895dd10c20d04014eba6d31bb",
-    "tree": "7a3b79fe20fb4fabea597dd677820efb46d379c4",
-    "committed_at": "2026-10-22T23:30:19-07:00"
+    "commit": "45ddb74d7d1974a4755a7c5afd89b27b6aea37d4",
+    "tree": "c86eee0d1e4ce142b6c9790aa5fb79415c05eb27",
+    "committed_at": "2026-10-24T21:14:56-07:00"
   },
-  "export_manifest_sha256": "1b8b2bc6d5e9e97c2dca1d74df5613d47d746037afa87a9e7387085c8217e1d9",
-  "version": "26.10.22",
+  "export_manifest_sha256": "046fe82991e1899e051301ff05a3ec27fb016cb672f483f33ab45b6bf792a94b",
+  "version": "26.10.24",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -142,6 +142,7 @@
       "backend/server/src/__tests__/customer-refund-upgrade.test.ts",
       "backend/server/src/__tests__/customer-refund-workflow.test.ts",
       "backend/server/src/__tests__/customer-refunds.test.ts",
+      "backend/server/src/__tests__/customer-signoff-recovery.test.ts",
       "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
       "backend/server/src/__tests__/d-145-phase-10-foundation-pack-pre-install.test.ts",
@@ -281,6 +282,7 @@
       "backend/server/src/__tests__/d-321-run-untested-tools.test.ts",
       "backend/server/src/__tests__/d-321-tool-version-update-review.test.ts",
       "backend/server/src/__tests__/d-324-reminders-live.test.ts",
+      "backend/server/src/__tests__/d-325-attribute-reading.test.ts",
       "backend/server/src/__tests__/d-325-device-observations.test.ts",
       "backend/server/src/__tests__/d-325-evidence-refresh-batch.test.ts",
       "backend/server/src/__tests__/d-325-final-observation-bindings.test.ts",
@@ -397,6 +399,7 @@
       "backend/server/src/__tests__/quote-signoff-pack-versions.test.ts",
       "backend/server/src/__tests__/quote-signoff-receipt.test.ts",
       "backend/server/src/__tests__/quote-signoff-reminders.test.ts",
+      "backend/server/src/__tests__/quote-signoff-response.test.ts",
       "backend/server/src/__tests__/quote-signoff-service.test.ts",
       "backend/server/src/__tests__/quote-signoff-workflow.test.ts",
       "backend/server/src/__tests__/re-read-after-write-cache.test.ts",
@@ -863,7 +866,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "9e24b7e8819a2d4a6bc8d064dcc8ca607b9cb8edac376a92e191c6830dacbf0d",
+    "sha256": "9d05a2dd95a8a21622b7adec21785080e17e40a2633a178bb3ce51d6f4d59f84",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -880,11 +883,11 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1127,
+    "files_changed": 1129,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1056
+        "comments_rewritten": 1058
       },
       {
         "id": "internal-design-document",
@@ -991,7 +994,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 7593,
-    "sha256": "690a8ca850e7e06bfa738530ae3711864d2dd8a2b35e04a70c7d313181cbc152"
+    "file_count": 7750,
+    "sha256": "c79f5bf05170ade19c5fbbc23e627d8b18300f278ef5747bdbe5cf1b670c8fff"
   }
 }

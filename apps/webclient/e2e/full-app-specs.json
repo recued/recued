@@ -19,6 +19,8 @@
   "reception.spec.ts",
   "settings.spec.ts",
   "certificate-upload-editing.spec.ts",
+  "certificate-upload-focus.spec.ts",
+  "certificate-removal-focus.spec.ts",
   "certificate-read-recovery.spec.ts",
   "tls-renew-focus.spec.ts",
   "hostnames-form-focus.spec.ts",
@@ -42,6 +44,9 @@
   "notification-kind-policy.spec.ts",
   "attention.spec.ts",
   "yours.spec.ts",
+  "yours-design.spec.ts",
+  "yours-polish.spec.ts",
+  "yours-structure.spec.ts",
   "navigation-drawer.spec.ts",
   "live-control.spec.ts",
   "kitchen.spec.ts",
@@ -61,5 +66,7 @@
   "connection-replacement.spec.ts",
   "preapproval-reconciliation.spec.ts",
   "permission-regression.spec.ts",
-  "automation-rehearsal.spec.ts"
+  "automation-rehearsal.spec.ts",
+  "contrast-floor.spec.ts",
+  "phone-targets.spec.ts"
 ]

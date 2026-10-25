@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { nodeArgon2 } from '../keys/password-kdf.js';
 import {
   generateEd25519Keypair,
   ed25519Sign,
@@ -28,7 +29,8 @@ import {
   TOKEN_ARGON2_PARAMS,
   type Ed25519Keypair,
 } from '../keys/index.js';
-import { base64ToBytes } from '@recued/crypto';
+import { base64ToBytes, bytesToBase64, randomBytes } from '@recued/crypto';
+import { argon2idAsync } from '@noble/hashes/argon2.js';
 
 const FAST_ARGON2 = { t: 1, m: 1024, p: 1 };
 
@@ -170,6 +172,36 @@ describe('D-148 P1 — Argon2id bearer token hash + verify', () => {
   it('verifyBearerToken returns false (not throws) on malformed record', async () => {
     const malformed = { hash_b64: 'not-base64!!!', salt_b64: 'AAAA', params: FAST_ARGON2 };
     expect(await verifyBearerToken('whatever', malformed)).toBe(false);
+  });
+
+  it('a hash the pure-JS Argon2id made verifies here, and one made here verifies with it', async () => {
+    // Tokens issued before Node's own Argon2 was used were hashed by @noble's. The
+    // middle set has every cost distinct, so no two can be swapped unseen.
+    for (const params of [FAST_ARGON2, { t: 3, m: 4096, p: 2 }, TOKEN_ARGON2_PARAMS]) {
+      const bearer = generateBearerToken(); const salt = randomBytes(16);
+      const noble = await argon2idAsync(bearer, salt, { ...params, dkLen: 32 });
+      const old = { hash_b64: bytesToBase64(noble), salt_b64: bytesToBase64(salt), params };
+      expect(await verifyBearerToken(bearer, old)).toBe(true);
+      expect(await verifyBearerToken(`${bearer}x`, old)).toBe(false);
+      const made = await hashBearerToken(bearer, params);
+      const again = await argon2idAsync(bearer, base64ToBytes(made.salt_b64), { ...params, dkLen: 32 });
+      expect(bytesToBase64(again)).toBe(made.hash_b64);
+    }
+    // A verify computes as many bytes as the stored hash holds.
+    const bearer = generateBearerToken(); const salt = randomBytes(16);
+    const short = await argon2idAsync(bearer, salt, { ...FAST_ARGON2, dkLen: 16 });
+    expect(await verifyBearerToken(bearer, { hash_b64: bytesToBase64(short), salt_b64: bytesToBase64(salt), params: FAST_ARGON2 })).toBe(true);
+  }, 30_000);
+
+  it.skipIf(!nodeArgon2)('a verify at the shipped cost leaves the event loop free', async () => {
+    // The pure-JS one held every connection, request and timer for about a second.
+    const bearer = generateBearerToken(); const record = await hashBearerToken(bearer);
+    let ticks = 0; const timer = setInterval(() => { ticks += 1; }, 2);
+    try {
+      const before = ticks;
+      for (let run = 0; run < 3; run++) expect(await verifyBearerToken(bearer, record)).toBe(true);
+      expect(ticks - before, 'timers ran while the bearer was being verified').toBeGreaterThan(0);
+    } finally { clearInterval(timer); }
   });
 });
 

@@ -25,7 +25,7 @@ const workCollections = new Set(['asset', 'task', 'note', 'commitment', 'project
 export const situationSourceReadOp = (collection: string): string | undefined => workCollections.has(collection)
   ? 'core.work-entity.read'
   : ({ calendar: 'core.data.calendar.list', reminder: 'core.reminder.list', contact: 'core.contact.resolve',
-    mail: 'core.data.mail.get', mail_fact: 'core.mail.fact.list', file: 'core.data.file.get',
+    mail: 'core.mail.get', mail_fact: 'core.mail.fact.list', file: 'core.storage.file.get',
     memory: 'core.memory.read', history_trace: 'core.situation.read',
     episode: 'core.situation.read', occasion: 'core.situation.read' } as Record<string, string>)[collection];
 const allowed = (grants: ReadGrantChecker, collection: string): boolean => {

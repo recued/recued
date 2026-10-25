@@ -6189,6 +6189,15 @@ ${LIST_PREVIEW_STYLES}
   opacity: 0.62;
   cursor: default;
 }
+/* A finger's height on a phone. ⛔ 36px. */
+@media (max-width: 640px) {
+  [${SELLER_PAGE_ATTR}] .seller-toolbar button,
+  [${SELLER_PAGE_ATTR}] .seller-form-footer button,
+  [${SELLER_PAGE_ATTR}] .seller-offer-actions button,
+  [${SELLER_PAGE_ATTR}] .seller-readiness-meta a {
+    min-height: 44px;
+  }
+}
 [${SELLER_PAGE_ATTR}] .seller-section {
   display: grid;
   gap: 10px;

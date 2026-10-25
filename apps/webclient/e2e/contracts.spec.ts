@@ -9,6 +9,41 @@ const CONTRACTS_LIST_TAB = 'data-recued-contracts-list-tab';
 
 installFullAppHooks();
 
+for (const width of [390, 1280]) {
+  test(`Contracts keeps the key on Connect and grant filters through access repaints at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?contracts=paged#contracts/door_paged_01/connect`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    // D-327 — Connect holds this agreement's key; the rules for every agreement
+    // moved to the list page.
+    await expect(page.locator('[data-recued-contract-key]')).toBeVisible();
+    await expect(page.locator('[data-recued-permissions-create-actor]')).toHaveCount(0);
+
+    await page.locator(`[${CONTRACTS_DETAIL_TAB}][data-tab="ops"]`).click();
+    const filter = page.locator('[data-recued-contract-grants-op-filter]');
+    await filter.fill('core.ai');
+    await expect(page.locator('[data-recued-contract-grants-cell]').first()).toBeVisible();
+    const reads = await page.evaluate(() => window.__app.rpcCallCount('contract.grant.read'));
+    const tools = page.getByRole('checkbox', { name: 'MCP tools', exact: true });
+    await tools.focus(); await page.keyboard.press('Space');
+    await expect(tools).not.toBeChecked(); await expect(tools).toBeFocused();
+    await expect(filter).toHaveValue('core.ai');
+
+    await page.locator('[data-recued-contracts-revoke]').click();
+    await page.locator('[data-recued-contracts-revoke-cancel]').click();
+    await expect(page.locator('[data-recued-contracts-revoke-confirm]')).toHaveCount(0);
+    await expect(filter).toHaveValue('core.ai');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('contract.grant.read'))).toBe(reads);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('collection.contract.revokeContract'))).toBe(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('contract.grant.write'))).toBe(0);
+
+    await page.locator(`[${CONTRACTS_DETAIL_TAB}][data-tab="connect"]`).click();
+    await expect(page.locator('[data-recued-contract-key]')).toBeVisible();
+    await page.locator(`[${CONTRACTS_DETAIL_TAB}][data-tab="ops"]`).click();
+    await expect(filter).toHaveValue('core.ai');
+  });
+}
+
 test('Contracts moves focus from an inventory row into its exact detail', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?journey=bounded-verification`);
@@ -159,6 +194,7 @@ test('Contracts contains creation failures and preserves the form retry', async 
   await page.goto(
     `${HARNESS_URL}?contracts=paged`
       + '&contracts_mint_response=fail-once-slow-retry'
+      + '&hold_rpc=collection.contract.mintContract'
       + '#contracts/view/others',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -170,7 +206,8 @@ test('Contracts contains creation failures and preserves the form retry', async 
   const name = form.getByRole('textbox', { name: 'Contract name' });
   await name.fill('Retry contract');
   const submit = form.locator('[data-recued-contracts-new-submit]');
-  await submit.click();
+  await submit.focus();
+  await page.keyboard.press('Enter');
 
   await expect(submit).toHaveText('Creating…');
   await expect(submit).toHaveAttribute('aria-disabled', 'true');
@@ -185,6 +222,9 @@ test('Contracts contains creation failures and preserves the form retry', async 
     ),
   ).toBe(1);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.(
+    'collection.contract.mintContract',
+  ))).toBe(1);
   const failureId = `mint_${'M'.repeat(220)}`;
   const error = form.locator('[data-recued-contracts-new-error]');
   await expect(error).toHaveText(
@@ -203,7 +243,8 @@ test('Contracts contains creation failures and preserves the form retry', async 
     )).toBe(true);
   }
 
-  await submit.click();
+  await submit.focus();
+  await page.keyboard.press('Enter');
   await expect(submit).toHaveText('Creating…');
   await expect(submit).toBeFocused();
   await submit.dispatchEvent('click');
@@ -212,6 +253,9 @@ test('Contracts contains creation failures and preserves the form retry', async 
       () => window.__app.rpcCallCount('collection.contract.mintContract'),
     ),
   ).toBe(2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.(
+    'collection.contract.mintContract',
+  ))).toBe(1);
   await expect(page).toHaveURL(/#contracts\/door_paged_new\/connect$/);
   await expect(page.locator(
     `[${CONTRACTS_DETAIL_HEADING}="door_paged_new"]`,
@@ -243,7 +287,7 @@ test('Contracts contains a long created identity across detail and inventory', a
     + '.contracts-detail-limits, .contracts-tabs, '
     + '[data-recued-contracts-tab-body], [data-recued-contracts-connect], '
     + '.contracts-snippet-grid, [data-recued-contracts-snippet], '
-    + '[data-recued-permissions-panel]',
+    + '[data-recued-contract-key]',
   );
   expect(await detailOwners.evaluateAll((elements) => elements.every(
     (element) => element.scrollWidth <= element.clientWidth + 1,
@@ -531,27 +575,24 @@ test('Contracts Connect renders a full-size mobile credential editor', async ({ 
   await expect(page.locator(
     '[data-recued-contracts-connect]',
   ).getByRole('heading', { level: 3 })).toHaveText([
-    'Claude Desktop',
+    'Key',
+    "Claude Desktop, on the server's computer",
+    'Claude Code',
     'Cursor',
+    'Cline',
     'Codex',
     'Another AI app',
   ]);
 
-  const form = page.locator('[data-recued-permissions-create]');
-  const save = form.locator('[data-recued-permissions-create-save]');
-  await expect(save).toHaveText('Add the rule');
-  expect(await form.evaluate(
-    (element) => getComputedStyle(element).flexDirection,
-  )).toBe('column');
-  expect((await save.boundingBox())?.height).toBeGreaterThanOrEqual(36);
-
-  const denyTarget = form.locator(
-    'label:has([data-recued-permissions-create-denied])',
-  );
-  expect((await denyTarget.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  // D-327 — the agreement's own key, not a server-wide door panel.
+  const key = page.locator('[data-recued-contract-key]');
+  await expect(key).toContainText('This agreement has a key');
+  const turnOff = key.locator('[data-recued-contract-key-turn-off]');
+  await expect(turnOff).toHaveText('Turn off this key');
+  expect((await turnOff.boundingBox())?.height).toBeGreaterThanOrEqual(36);
 
   const doorTargets = page.locator('[data-recued-contracts-door-toggle]');
-  expect(await doorTargets.count()).toBe(3);
+  expect(await doorTargets.count()).toBe(2);
   const doorHeights = await doorTargets.evaluateAll((targets) => targets.map(
     (target) => target.getBoundingClientRect().height,
   ));
@@ -579,6 +620,29 @@ test('Contracts Connect renders a full-size mobile credential editor', async ({ 
   }
 });
 
+test('Contracts list keeps the rules for every agreement full-size on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts/view/others`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const rules = page.locator('[data-recued-contracts-rules]');
+  await rules.locator('summary').click();
+  const form = rules.locator('[data-recued-permissions-create]');
+  const save = form.locator('[data-recued-permissions-create-save]');
+  await expect(save).toHaveText('Add the rule');
+  expect(await form.evaluate(
+    (element) => getComputedStyle(element).flexDirection,
+  )).toBe('column');
+  expect((await save.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  const denyTarget = form.locator(
+    'label:has([data-recued-permissions-create-denied])',
+  );
+  expect((await denyTarget.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  expect(await rules.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
 test('Contracts grants contain long operation labels and keep full mobile targets', async ({ page }) => {
   await page.setViewportSize({ width: 280, height: 844 });
   await page.goto(
@@ -600,7 +664,8 @@ test('Contracts grants contain long operation labels and keep full mobile target
     expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
     const owners = panel.locator(
       ':scope, .cg-filter-results, .cg-kind, .cg-op-ingredient, .cg-cell, '
-        + '.cg-cell-name, .cg-also-reads, .cg-source',
+        + '.cg-cell-name, .cg-cell-text, .cg-cell-title, .cg-also-reads, .cg-source, '
+        + '.cg-ai-tools-note, .cg-needs, .cg-need',
     );
     expect(await owners.evaluateAll((elements) => elements.every(
       (element) => element.scrollWidth <= element.clientWidth + 1,
@@ -633,6 +698,42 @@ test('Contracts grants contain long operation labels and keep full mobile target
   )).toBeVisible();
   await assertGrantTargets();
 
+});
+
+/** D-327 follow-on — the owner could not tell that `work.create` alone adds nothing
+ *  on an agreement that grants nothing by default. Ops now opens with the AI tools,
+ *  and under each one the other switches it needs, which the owner can press there. */
+test('Contracts opens Ops with the AI tools, each saying what else it needs', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts/door_paged_01/ops`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const panel = page.locator('[data-recued-contract-grants]');
+  await expect(panel.locator('.cg-op-ingredient-name').first()).toHaveText('AI tools');
+  await expect(panel.locator('[data-recued-contract-grants-ai-tools-note]')).toBeVisible();
+
+  // The owner's words beside the id, and the join on hover.
+  const task = panel.locator('[data-recued-contract-grants-cell][data-entry="core.work-entity.task.create"]');
+  await expect(task.locator('[data-recued-contract-grants-title]')).toHaveText('Create a task');
+  await expect(task).toHaveAttribute('title', /AI tools that need this: work\.create \(to add tasks\)/);
+
+  const needs = panel.locator('[data-recued-contract-grants-needs][data-entry="primitive.work.create"]');
+  await expect(needs).toBeVisible();
+  const buttons = needs.locator('[data-recued-contract-grants-need]');
+  await expect(buttons).toHaveCount(4);
+  const heights = await buttons.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
+  expect(Math.min(...heights)).toBeGreaterThanOrEqual(24);
+  expect(await panel.locator('.cg-needs, .cg-need, .cg-cell-title, .cg-ai-tools-note').evaluateAll(
+    (els) => els.every((el) => el.scrollWidth <= el.clientWidth + 1),
+  )).toBe(true);
+
+  // Pressing a need switches that switch: the same one as its own row.
+  const need = needs.locator('[data-entry="core.work-entity.task.create"]');
+  const before = await task.getAttribute('data-effective');
+  const after = before === 'on' ? 'off' : 'on';
+  await need.click();
+  await expect(need).toHaveAttribute('data-effective', after);
+  await expect(task).toHaveAttribute('data-effective', after);
 });
 
 test('Contracts detail tabs form one arrow-key keyboard stop', async ({ page }) => {

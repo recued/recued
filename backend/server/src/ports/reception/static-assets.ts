@@ -232,6 +232,15 @@ body {
   font-size: 12px;
 }
 
+.rcp-error-summary {
+  margin: 16px 0; padding: 16px; border: 1px solid var(--danger);
+  border-radius: 10px; background: var(--danger-weak); color: var(--fg);
+}
+.rcp-error-summary h2 { margin: 0 0 8px; font-size: 18px; }
+.rcp-error-summary p { margin: 0 0 8px; }
+.rcp-error-summary a { color: var(--accent-strong); font-weight: 600; }
+.rcp-error-summary:focus { outline: 2px solid var(--danger); outline-offset: 3px; }
+
 /* D-207 slice 2 render mode — the remaining shared block kinds a paired
  * recipe's output.render can put on this page. Same vocabulary, same renderer
  * as the owner's Recipes panel; only the stylesheet differs. */

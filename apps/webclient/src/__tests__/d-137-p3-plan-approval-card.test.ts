@@ -1325,8 +1325,9 @@ describe('D-137 P3 plan-approval chat route', () => {
       '#logs/run-exact-1/return/chat/session/chat_1/plan/plan_receipt/'
       + 'answer/msg_plan_receipt',
     );
-    expect(runLink.getAttribute('aria-label')).toBe('See this run under Runs');
-    expect(runLink.textContent).toBe('See this run →');
+    expect(runLink.getAttribute('aria-label')).toBe('Review this run in Logs');
+    expect(runLink.textContent).toBe('Review run');
+    expect(runLink.getAttribute('data-recued-run-review-link')).toBe('');
 
     h.publish(tokenStreamed('turn_execute', 'Done.', 6));
     await tick();
@@ -2248,6 +2249,73 @@ describe('D-137 P3 plan-approval chat route', () => {
       CHAT_ROUTE_PLAN_CANCEL_ATTR,
     )[0]!.getAttribute('aria-disabled')).toBeNull();
 
+    h.route.dispose();
+  });
+});
+
+describe('D-329 — a held write\'s card', () => {
+  it('carries the held mark from the live proposal, the resolution and a reload', () => {
+    const live = reduceChatThreadEvent(hydrated(), planProposed({ plan_id: 'plan_held', held: true }));
+    expect(onlyPlanCard(live)).toMatchObject({ plan_id: 'plan_held', held: true });
+    const plain = reduceChatThreadEvent(hydrated(), planProposed({ plan_id: 'plan_plain' }));
+    expect(onlyPlanCard(plain).held).toBeUndefined();
+    const resolved = applyPlanResolution(plain, chatPlan({
+      plan_id: 'plan_plain', status: 'approved', resolved_at: 4_000, hold: { run_id: 'run-1' },
+    }));
+    expect(onlyPlanCard(resolved)).toMatchObject({ status: 'approved', held: true });
+    const recovered = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...chatSession(),
+      messages: [],
+      plans: [{ plan: chatPlan({ plan_id: 'plan_held', hold: { run_id: 'run-1' } }), payload_available: true }],
+    } as never);
+    expect(onlyPlanCard(recovered)).toMatchObject({ plan_id: 'plan_held', held: true });
+  });
+
+  it('an approval that expired unanswered reads Expired, says no one answered, and offers nothing', async () => {
+    const h = mountChatRoute();
+    await openMountedRoute(h);
+    h.publish(planProposed({ plan_id: 'plan_lapsed', turn_id: 'turn_lapsed', args: { subject: 'Review me' }, held: true }));
+    h.publish(messageComplete('turn_lapsed', assistantMessage('msg_plan_lapsed', 'Needs approval.')));
+    await tick();
+    h.publish(planResolved(chatPlan({
+      plan_id: 'plan_lapsed', turn_id: 'turn_lapsed', status: 'cancelled', resolved_at: 9_000,
+      hold: { run_id: 'run-1', lapsed_at: 9_000 },
+    })));
+    await tick();
+    const card = requirePlanCard(h.root, 'plan_lapsed');
+    expect(card.getAttribute('data-status')).toBe('cancelled');
+    expect(card.getAttribute('aria-label')).toMatch(/^Expired: /);
+    expect(planHint(card)?.textContent).toBe(
+      'Its approval expired before anyone answered it, so nothing ran. Ask Chat again if you still want it.',
+    );
+    expect(allText(card)).toContain('No one answered in time');
+    expect(collectByAttr(card, CHAT_ROUTE_PLAN_APPROVE_ATTR)).toHaveLength(0);
+    h.route.dispose();
+  });
+
+  it('says approving does it now, and offers no "Continue in Chat" once approved', async () => {
+    const h = mountChatRoute({
+      approvePlan: async () => ({
+        plan: chatPlan({ plan_id: 'plan_held', turn_id: 'turn_held', status: 'approved', resolved_at: 4_000,
+          hold: { run_id: 'run-1' } }),
+      }),
+    });
+    await openMountedRoute(h);
+    h.publish(planProposed({ plan_id: 'plan_held', turn_id: 'turn_held', args: { subject: 'Review me' }, held: true }));
+    h.publish(messageComplete('turn_held', assistantMessage('msg_plan_held', 'Needs approval.')));
+    await tick();
+    expect(planHint(requirePlanCard(h.root, 'plan_held'))?.textContent).toBe(
+      'Look at what is below. Saying yes does it now, once, with exactly '
+      + 'these details. You can also answer it from your phone or your messages.',
+    );
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => {
+      expect(requirePlanCard(h.root, 'plan_held').getAttribute('data-status')).toBe('approved');
+    });
+    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_CONTINUE_ATTR)).toHaveLength(0);
+    expect(planHint(requirePlanCard(h.root, 'plan_held'))?.textContent).toBe(
+      'You said yes to exactly these details. Recued is doing it now, and Chat will say when it is done.',
+    );
     h.route.dispose();
   });
 });

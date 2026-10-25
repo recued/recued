@@ -11,13 +11,13 @@ import { startServer, type RunningServer } from '../server.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { createEventBus } from '../events/bus.js';
+import { createClientTokenStore } from '../pairing/client-tokens.js';
+import Database from 'better-sqlite3';
 import WebSocket from 'ws';
 
-const REALM = 'phase-6-realm';
-
-const connectWs = (port: number): Promise<WebSocket> =>
+const connectWs = (port: number, bearer: string): Promise<WebSocket> =>
   new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${REALM}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(bearer)}`);
     ws.on('open', () => resolve(ws));
     ws.on('error', reject);
   });
@@ -48,9 +48,13 @@ const collectMessages = (ws: WebSocket, count: number, timeoutMs = 1000): Promis
 describe('D-121 Phase 6 — WS events.subscribe rpc integration', () => {
   let server: RunningServer;
   let bus: ReturnType<typeof createEventBus>;
+  let db: Database.Database;
+  let clientTokens: ReturnType<typeof createClientTokenStore>;
 
   beforeAll(async () => {
     bus = createEventBus();
+    db = new Database(':memory:');
+    clientTokens = createClientTokenStore(db, { argon2_params: { t: 1, m: 8, p: 1 } });
     const manifests = createManifestRegistry('/nonexistent');
     const recipeStore = createRecipeStore('/nonexistent');
     server = await startServer(0, {
@@ -60,22 +64,27 @@ describe('D-121 Phase 6 — WS events.subscribe rpc integration', () => {
         baseVault: {},
       },
       eventsDeps: { bus },
+      clientTokens,
     });
     server.wsServer.maxInstances = 0;
   });
 
   afterAll(async () => {
     await server.close();
+    db.close();
   });
 
-  const registerClient = async (instance_id: string): Promise<WebSocket> => {
-    const ws = await connectWs(server.port);
-    const ackP = nextMessage(ws);
-    ws.send(JSON.stringify({ type: 'register', instance_id, display_name: instance_id }));
-    const ack = await ackP;
-    expect(ack.type).toBe('registered');
-    return ws;
+  /** A connection whose token carries no paired device (or the one named). */
+  const connectWithToken = async (instance_id?: string): Promise<WebSocket> => {
+    const issued = await clientTokens.issue({
+      client_kind: 'webclient',
+      ...(instance_id !== undefined ? { metadata: { instance_id } } : {}),
+    });
+    return connectWs(server.port, `${issued.token_id}.${issued.bearer}`);
   };
+
+  /** A paired device: its identity comes from its token. */
+  const registerClient = (instance_id: string): Promise<WebSocket> => connectWithToken(instance_id);
 
   const callRpc = async (
     ws: WebSocket,
@@ -110,7 +119,7 @@ describe('D-121 Phase 6 — WS events.subscribe rpc integration', () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
     const before = bus.subscriberCount();
     expect(before).toBe(0);
-    const ws = await connectWs(server.port);
+    const ws = await connectWithToken();
     const reply = await callRpc(ws, 'events.subscribe', { kinds: ['execution'] });
 
     expect(reply.error?.code).toBe('unauthorized');
@@ -203,41 +212,20 @@ describe('D-121 Phase 6 — WS events.subscribe rpc integration', () => {
     expect(bus.subscriberCount()).toBe(before);
   });
 
-  it('chat_result is accepted ONLY from the winning claimant connection (F3)', async () => {
+  it('a paired connection is never sent a delegated chat request, even after it sends register', async () => {
+    // Chat delegation went to "registered extensions", and any connection
+    // could make itself one with `register` — then receive each delegated
+    // request's input. `register` is retired (2026-10-23), so no connection
+    // is an extension and delegation finds none.
     const a = await registerClient('ext-chat-a');
-    const b = await registerClient('ext-chat-b');
+    const frames: Array<{ type?: string }> = [];
+    a.on('message', (data) => frames.push(JSON.parse(data.toString())));
+    a.send(JSON.stringify({ type: 'register', instance_id: 'ext-chat-a' }));
+    await new Promise((r) => setTimeout(r, 50));
 
-    const waitForType = (ws: WebSocket, type: string): Promise<any> =>
-      new Promise((resolve) => {
-        const onMsg = (data: any): void => {
-          const m = JSON.parse(data.toString());
-          if (m.type === type) {
-            ws.removeListener('message', onMsg);
-            resolve(m);
-          }
-        };
-        ws.on('message', onMsg);
-      });
-
-    // Server initiates a chat delegation; both A + B receive the broadcast.
-    const aBroadcastP = waitForType(a, 'chat_broadcast');
-    const p = server.wsServer.delegateChat('some-slug', { x: 1 }, 5000);
-    const request_id = (await aBroadcastP).request_id as string;
-
-    // A claims (wins) — wait for the confirm so the claim is recorded.
-    const aConfirmP = waitForType(a, 'chat_confirmed');
-    a.send(JSON.stringify({ type: 'chat_claim', request_id }));
-    await aConfirmP;
-
-    // B (a non-claimant) forges a result FIRST — it must be DROPPED, not win.
-    b.send(JSON.stringify({ type: 'chat_result', request_id, result: 'FORGED' }));
-    await new Promise((r) => setTimeout(r, 50)); // let the server process B's frame
-
-    // A (the winner) submits the real result — this is what resolves.
-    a.send(JSON.stringify({ type: 'chat_result', request_id, result: 'REAL' }));
-    expect(await p).toBe('REAL');
-
+    await expect(server.wsServer.delegateChat('some-slug', { x: 1 }, 500))
+      .rejects.toThrow('No extension connected');
+    expect(frames.filter((f) => f.type === 'chat_broadcast')).toHaveLength(0);
     a.close();
-    b.close();
   });
 });

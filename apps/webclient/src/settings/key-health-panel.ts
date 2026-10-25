@@ -83,6 +83,7 @@ import {
 } from './keyfile-posture.js';
 import { ROTATION_COPY, ROTATION_ERROR_COPY } from './rotation-center.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { KEY_HEALTH_WORKSPACE_STYLES } from './key-health-workspace-styles.js';
 
 // ════════════════════════════════════════════════════════════════
 // Element ids — stable for DOM tests + host introspection
@@ -1221,4 +1222,4 @@ export const KEY_HEALTH_PANEL_STYLES = `
   font-size: 12px;
   word-break: break-all;
 }
-`;
+` + '\n' + KEY_HEALTH_WORKSPACE_STYLES;

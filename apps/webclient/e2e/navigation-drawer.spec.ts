@@ -38,15 +38,25 @@ test('the navigation drawer opens on the current route', async ({ page }) => {
   const close = page.getByRole('navigation', {
     name: 'Primary navigation',
   }).getByRole('button', { name: 'Close navigation' });
+  // Both ends of the drawer are a finger's size on a phone. ⛔ They were
+  // 36px and 38px.
   const closeTarget = await close.boundingBox();
-  expect(closeTarget?.width).toBeGreaterThanOrEqual(36);
-  expect(closeTarget?.height).toBeGreaterThanOrEqual(36);
+  expect(closeTarget?.width).toBeGreaterThanOrEqual(44);
+  expect(closeTarget?.height).toBeGreaterThanOrEqual(44);
+  const toggleTarget = await page.locator(`[${DRAWER_TOGGLE}]`).boundingBox();
+  expect(toggleTarget?.width).toBeGreaterThanOrEqual(44);
+  expect(toggleTarget?.height).toBeGreaterThanOrEqual(44);
   await expect(current).toHaveAttribute('aria-current', 'page');
   await expect(current).toBeFocused();
 });
 
 test('the navigation drawer stays inside a short narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 280, height: 480 });
+  // Short of room, the top bar keeps its menu button whole and inside the
+  // screen. ⛔ At 280px it gave way to a 16px sliver.
+  const toggle = await page.locator(`[${DRAWER_TOGGLE}]`).boundingBox();
+  expect(toggle?.width).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(280);
   await page.locator(`[${DRAWER_TOGGLE}]`).click();
 
   const drawer = page.locator(`[${DRAWER}]`);

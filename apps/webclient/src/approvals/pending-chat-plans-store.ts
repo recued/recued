@@ -139,9 +139,11 @@ interface PendingPlanSnapshotLoad {
  * in-memory tombstones so a long-running tab cannot grow without limit. */
 const RESOLVED_PLAN_TOMBSTONE_LIMIT = 256;
 
+/** D-329 — a held write's approval is its hold's ask, which the approval inbox already
+ *  lists: listed here as well, one decision would read as two. Its card stays in its chat. */
 const planFromRecord = (record: ChatPlanRecord): PendingChatPlan | null => {
   const plan = record.plan;
-  if (plan.status !== 'proposed') return null;
+  if (plan.status !== 'proposed' || plan.hold !== undefined) return null;
   return {
     plan_id: plan.plan_id,
     session_id: plan.session_id,
@@ -378,6 +380,7 @@ export const createPendingChatPlansStore = (
 
   const unsubscribers: Array<() => void> = [
     opts.subscribe('chat.plan_proposed', (event) => {
+      if (event.held === true) return;
       const mutation = proposedMutation(event, now());
       if (resolvedPlanIds.has(mutation.plan.plan_id)) return;
       applyLiveMutation(mutation);

@@ -30,6 +30,12 @@ export interface StoreBackedMemoryWriteAdapterOptions {
   /** The authoring session's provenance (chat session + governing contract),
    *  bound at construction from the dispatch context. Optional. */
   session?: UserMemorySession;
+  /** D-198 §10 — the author contract (`authoringContractId`), bound at
+   *  construction like the origin. Absent when the source names no author. */
+  author_contract_id?: string;
+  /** D-198 §10 — the earlier entry this write replaces, already checked to be
+   *  the same author's current version. Absent for an ordinary write. */
+  replaces?: string;
 }
 
 /** Coerce the primitive's opaque `payload` into a stored text body (mirrors the
@@ -62,6 +68,10 @@ export const createStoreBackedMemoryWriteAdapter = (
         ? { provenance_entity_ids: request.provenance_entity_ids }
         : {}),
       ...(options.session !== undefined ? { session: options.session } : {}),
+      ...(options.author_contract_id !== undefined
+        ? { author_contract_id: options.author_contract_id }
+        : {}),
+      ...(options.replaces !== undefined ? { replaces: options.replaces } : {}),
     });
     return {
       memory_id: row.memory_id,

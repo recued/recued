@@ -1,11 +1,12 @@
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AssetRule, AssetRuleWhen, MailFactThing, SituationFact, SituationQuery, SituationRef, Sphere, TravelValidityRule } from '@recued/contracts';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AssetRule, AssetRuleWhen, MailFactThing, OccasionInput, SituationFact, SituationQuery, SituationRef, Sphere, TravelValidityRule } from '@recued/contracts';
 import { createWorkEntityStore, ensureWorkEntitySchema, type WorkEntityStore } from '../storage/work-entity-store.js';
 import { autoRegisterRecuedBuiltinSources } from '../work-entity-source-boot.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import { createAssetOccurrenceService } from '../situations/asset-occurrence-service.js';
+import { createOccasionClockService } from '../situations/occasion-clock-service.js';
 import { buildSituationSources, situationSourceAccess } from '../situations/sources.js';
 import { createSituationQuery, type SituationReadContext, type SituationSource } from '../situations/query.js';
 import { relateTravelDocuments, travelDocumentsVisible } from '../situations/travel-document-relations.js';
@@ -92,6 +93,22 @@ const fixture = async (zone: string) => {
   thing('stream', 'subscription', { merchant: 'StreamCo', state: 'active' });
   history.saveOccasion({ title: 'Wedding anniversary', month_day: day(6).slice(5), people: [person(bob)], muted: false, sphere: 'personal',
     rules: [rule('date', { kind: 'expiry', field: 'next_on' }, { reaction: { notify: true, occurrence: 'notice', emit: false }, schedule: { before: [{ amount: 3, unit: 'days' }], on_day: true } })] }, T0);
+  // Occasions a chat message names by a title word, a place or a person; one a calendar
+  // event's clock stands for; a trip a travel check relates; and birthdays nothing names.
+  const dinner = calendar.listSnapshots({ limit: 100 }).find(row => row.hot.summary === 'Dinner with Bob')!;
+  const annual = (title: string, on: string, extra: Partial<OccasionInput> = {}) => history.saveOccasion({ title, month_day: on.slice(5), people: [], muted: false,
+    rules: [rule('date', { kind: 'expiry', field: 'next_on' }, { reaction: { notify: true, occurrence: 'notice', emit: false }, schedule: { before: [{ amount: 3, unit: 'days' }], on_day: true } })],
+    ...extra }, T0);
+  annual('Kestrel festival', day(4));
+  annual('Harbour regatta', day(8), { where: { key: 'label:lisbon', name: 'Lisbon' } });
+  annual('Algarve week', day(11), { where: { key: 'country:PT', name: 'Portugal' } });
+  annual('Yearly catch-up', day(25), { people: [person(bob)], source: { collection: 'calendar', id: `home:${dinner.record_id}` } });
+  // A task its rule opens, named by the rule's words and never by the occasion's own title.
+  annual("Mother's day", day(5), { rules: [rule('flowers', { kind: 'expiry', field: 'next_on' }, { title: 'Order flowers', expiry_policy: 'strict_expire', schedule: { before: [{ amount: 7, unit: 'days' }], on_day: true } })] });
+  for (let index = 0; index < 24; index += 1) {
+    const friend = contacts.upsertManual({ email: `friend${index}@example.test`, name: `${['Zora', 'Milo', 'Ines', 'Theo'][index % 4]} Friend${index}` }, T0);
+    annual(`Birthday of friend ${index}`, day((index * 37) % 400 - 120), { people: [person(friend)] });
+  }
 
   // The household's own assets, then a generated batch over every rule shape.
   const passport = put({ name: 'Ana passport', class_id: 'passport', holder_contact: person(ana), dates: { expires_on: '2027-01-15', issued_on: '2017-02-01' },
@@ -145,6 +162,7 @@ const fixture = async (zone: string) => {
     when: { from: T0 - 2 * DAY, to: T0 - 2 * DAY }, act_by: T0 - 2 * DAY, people: [], subjects: [{ collection: 'asset', id: pump.id }],
     related: [{ collection: 'asset', id: hose.id }], evidence: [{ collection: 'episode', id: 'pump-service' }], consequence: 'routine', sphere: 'personal', updated_at: T0 - 2 * DAY }];
   await occurrences.tick();
+  await createOccasionClockService({ db, work, dispatchers, timeZone: () => zone, now: () => time }).tick();
   // Written after the last evaluation: these are read as dirty.
   put({ name: 'New visa', class_id: 'passport', holder_contact: person(bob), dates: { expires_on: day(15) }, settings: { nationality: 'US' },
     rules: [rule('renew', { kind: 'expiry', field: 'expires_on' }, { consequence: 'floor' })] });
@@ -164,9 +182,10 @@ const fixture = async (zone: string) => {
       ...relateTravelDocuments(facts, RULES, zone, travelDocumentsVisible(context, situationSourceAccess('asset'))), ...learned(facts)],
     relationClasses: () => ['travel_adapter'] };
   const boilerService = work.listCommitments().find(row => row.statement === 'service · Boiler')!;
+  const flowers = work.listCommitments().find(row => row.statement.includes('Order flowers'))!;
   // The reference reads every record: the same sources without their indexes.
   return { scan: createSituationQuery({ ...deps, sources: sources.map(({ index: _index, ...source }) => source) }), indexed: createSituationQuery(deps), reads, sphereOf, sources,
-    ids: { porto: `home:${porto.record_id}`, ana: person(ana), bob: person(bob), car: car.id, insurance: insurance.id, passport: passport.id, paris: paris.id, quote: quote.id, project: project.id, boilerService: boilerService.id } };
+    ids: { porto: `home:${porto.record_id}`, ana: person(ana), bob: person(bob), car: car.id, insurance: insurance.id, passport: passport.id, paris: paris.id, quote: quote.id, project: project.id, boilerService: boilerService.id, flowers: flowers.id } };
 };
 
 const grants = (denied: string[] = []) => ({ isVerbOpGranted: () => true, isCollectionReadGranted: (collection: string) => !denied.includes(collection), isTopicReadGranted: () => true });
@@ -208,6 +227,13 @@ describe('D-325 §6.3 indexed situation read', () => {
       { time: { from: at, to: at + 7 * DAY }, text: 'StreamCo' },
       { time: { from: at, to: at + 7 * DAY }, surface: 'prefetch', text: 'what time is dinner?', limit_clusters: 2, limit_items: 3 },
       { time: { from: at, to: at + 7 * DAY }, place: { key: 'label:porto', name: 'Porto' } },
+      // An occasion named by a title word, by a name several contacts share, and by both.
+      { time: { from: at, to: at + 14 * DAY }, surface: 'prefetch', text: 'When is the Kestrel festival this year?', limit_clusters: 2, limit_items: 3 },
+      { time: { from: at, to: at + 14 * DAY }, surface: 'prefetch', text: 'What should I get Zora?', limit_clusters: 2, limit_items: 3 },
+      { time: { from: at, to: at + 14 * DAY }, surface: 'prefetch', text: 'Is Bob coming to the catch-up?', limit_clusters: 2, limit_items: 3 },
+      // Named by its rule's words; and reached only as the clock of a task it opened.
+      { time: { from: at, to: at + 14 * DAY }, surface: 'prefetch', text: 'Did I order the flowers yet?', limit_clusters: 2, limit_items: 3 },
+      { time: { from: at, to: at + 14 * DAY }, surface: 'prefetch', text: 'anything else?', subjects: [{ collection: 'commitment', id: f.ids.flowers }], limit_clusters: 2, limit_items: 3 },
     ];
     let items = 0; let compared = 0;
     // The index rows were written at T0; later reads must not need a new evaluation.
@@ -219,7 +245,7 @@ describe('D-325 §6.3 indexed situation read', () => {
         items += expected.clusters.reduce((sum, cluster) => sum + cluster.items.length, 0); compared += 1;
       }
     }
-    expect(compared).toBe(3 * 33 * 5); expect(items).toBeGreaterThan(400);
+    expect(compared).toBe(3 * 38 * 5); expect(items).toBeGreaterThan(400);
     time = T0;
     // The calendar event carries its trip, so its travellers' documents are checked against it.
     const [porto] = await f.sources.find(source => source.collection === 'calendar')!.read({ time: T0 }, undefined, contexts.owner, new Set([f.ids.porto]));
@@ -230,6 +256,14 @@ describe('D-325 §6.3 indexed situation read', () => {
     expect(named.clusters).toHaveLength(1);
     expect(new Set(named.clusters[0]!.items.map(item => item.ref.id))).toEqual(new Set([f.ids.insurance, f.ids.car]));
     expect(f.reads.filter(read => read.source === 'asset').every(read => read.only !== undefined)).toBe(true);
+    // A chat message reads the occasion it names and the trip a travel check relates,
+    // not the 30 on file: read whole, 300 birthdays took 76 of a prefetch's 88 ms.
+    f.reads.length = 0;
+    await f.indexed({ time: { from: T0, to: T0 + 14 * DAY }, surface: 'prefetch', text: 'When is the Kestrel festival this year?', limit_clusters: 2, limit_items: 3 }, contexts.owner!);
+    const occasionReads = f.reads.filter(read => read.source === 'occasion');
+    expect(occasionReads.length).toBeGreaterThan(0);
+    expect(occasionReads.every(read => read.only !== undefined)).toBe(true);
+    expect(occasionReads.reduce((sum, read) => sum + read.only!, 0)).toBe(2);
   }, 180_000);
 
   it('reads the classes a learned relation names, as the server composes it', async () => {
@@ -275,5 +309,78 @@ describe('D-325 §6.3 indexed situation read', () => {
       { owner: true, grants: grants() });
     expect(named.clusters.flatMap(cluster => cluster.subjects).map(ref => ref.id)).toEqual([due[1]]);
     expect(reads).toEqual([1]);
+  });
+
+  it('ranks the passport of the person a message names above others its word matched', async () => {
+    // Three floor clocks a year or more out score the same, and their groups were ordered by
+    // a hashed id: Maya Chen's passport was missing from 4 of 6 prefetches of this message.
+    const renew = rule('renew', { kind: 'expiry', field: 'expires_on' }, { consequence: 'floor', schedule: { before: [{ amount: 6, unit: 'months' }], on_day: true } });
+    for (let variant = 0; variant < 8; variant += 1) {
+      const store = new Database(':memory:'); ensureWorkEntitySchema(store); const own = createWorkEntityStore(store); autoRegisterRecuedBuiltinSources(own);
+      const contacts = createContactStore(store);
+      const holders = ['Maya Chen', 'Lena Park', 'Ana Lin'].map((name, index) => contacts.upsertManual({ email: `p${index}@example.test`, name }, T0));
+      const passports = holders.map((holder, index) => own.writeAsset({ id: `passport-${variant}-${index}`, source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' },
+        name: 'Passport', class_id: 'passport', holder_contact: holder.contact_id ?? holder.email, dates: { expires_on: day(800 + index * 200) }, rules: [renew] }, T0));
+      const dispatchers = createWorkEntityDispatchers({ store: own, resolver: createWorkEntityResolver(own), now: () => T0 });
+      await createAssetOccurrenceService({ db: store, work: own, dispatchers, now: () => T0, timeZone: () => 'UTC' }).tick();
+      const query = createSituationQuery({ sources: buildSituationSources({ db: store, work: own, reminders: createReminderStore(store), contacts, calendars: () => [],
+        now: () => T0, timeZone: () => 'UTC' }), sourceForCollection: situationSourceAccess, now: () => T0, namedPeople: createSituationNamedPeople(contacts) });
+      const result = await query({ time: { from: T0, to: T0 + 14 * DAY }, surface: 'prefetch', text: "Open Maya Chen's passport record and tell me when it expires.",
+        limit_clusters: 2, limit_items: 3 }, { owner: true, grants: grants() });
+      expect(result.clusters.flatMap(cluster => cluster.items)).toHaveLength(2);
+      expect(result.clusters[0]!.subjects.map(ref => ref.id), `variant ${variant}`).toEqual([passports[0]!.id]);
+      store.close();
+    }
+  });
+
+  it('lists every traveller\'s passport check for a family trip, where the block shows three', async () => {
+    // The owner: "a trip for whole family, AI -> contact.search -> understand: family=8,
+    // situation.prefetch -> owner.passport, situation.query -> all the rest of family passports".
+    // The tool showed three items a group, so it could name three of the eight.
+    const store = new Database(':memory:'); ensureWorkEntitySchema(store); const own = createWorkEntityStore(store); autoRegisterRecuedBuiltinSources(own);
+    const contacts = createContactStore(store);
+    const family = ['Ana', 'Ben', 'Cara', 'Dev', 'Eli', 'Fay', 'Gus', 'Hal'].map((first, index) =>
+      contacts.upsertManual({ email: `family${index}@example.test`, name: `${first} Stone` }, T0));
+    const travellers = family.map(person => person.contact_id ?? person.email);
+    const renew = rule('renew', { kind: 'expiry', field: 'expires_on' }, { consequence: 'floor', schedule: { before: [{ amount: 6, unit: 'months' }], on_day: true } });
+    const passports = travellers.map((holder, index) => own.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, name: 'Passport',
+      class_id: 'passport', holder_contact: holder, dates: { expires_on: day(900 + index * 30), issued_on: '2022-01-01' }, settings: { nationality: 'GB' }, rules: [renew] }, T0));
+    const trip = own.writeBooking({ source_id: 'recued.booking', title: 'Lisbon family trip', slot_start_at: Date.parse(day(20)), slot_end_at: Date.parse(day(27)),
+      source_extension_blob: { trip: { destination_country: 'PT', traveller_contact_ids: travellers } } }, T0);
+    const dispatchers = createWorkEntityDispatchers({ store: own, resolver: createWorkEntityResolver(own), now: () => T0 });
+    await createAssetOccurrenceService({ db: store, work: own, dispatchers, now: () => T0, timeZone: () => 'UTC' }).tick();
+    const query = createSituationQuery({ sources: buildSituationSources({ db: store, work: own, reminders: createReminderStore(store), contacts, calendars: () => [],
+      now: () => T0, timeZone: () => 'UTC' }), sourceForCollection: situationSourceAccess, now: () => T0, namedPeople: createSituationNamedPeople(contacts),
+      relate: (facts: readonly SituationFact[], _query: SituationQuery, context: SituationReadContext) =>
+        relateTravelDocuments(facts, RULES, 'UTC', travelDocumentsVisible(context, situationSourceAccess('asset'))) });
+    const owner: SituationReadContext = { owner: true, grants: grants() };
+    const checked = (result: Awaited<ReturnType<typeof query>>) => new Set(result.clusters.flatMap(cluster => cluster.items)
+      .filter(item => item.kind === 'travel_validity').map(item => item.ref.id));
+    const asked = await query({ time: { from: T0, to: T0 + 30 * DAY }, subjects: [{ collection: 'booking', id: trip.id }] }, owner);
+    expect(checked(asked)).toEqual(new Set(passports.map(passport => passport.id)));
+    // The chat's own lookup keeps its three, and counts the rest it leaves to the tool.
+    const block = await query({ time: { from: T0, to: T0 + 14 * DAY }, surface: 'prefetch', text: 'Is the family ready for the Lisbon trip?',
+      limit_clusters: 2, limit_items: 3 }, owner);
+    expect(block.clusters.flatMap(cluster => cluster.items).length).toBeLessThanOrEqual(3);
+    expect(block.omitted).toBeGreaterThanOrEqual(6);
+    store.close();
+  });
+
+  it('reads the suppressions once for a pass over the occasions, not once for each', async () => {
+    const proposals = createProactiveProposalStore(db); const history = createProactiveHistoryStore(db, proposals);
+    const notice = rule('date', { kind: 'expiry', field: 'next_on' }, { reaction: { notify: true, occurrence: 'notice', emit: false } });
+    for (let index = 0; index < 30; index += 1) history.saveOccasion({ title: `Birthday ${index}`, month_day: day(index).slice(5),
+      people: [`friend${index}@example.test`], muted: false, rules: [notice] }, T0);
+    proposals.saveSuppression({ kind: 'person', value: 'friend3@example.test' }, T0);
+    const occasions = buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [], now: () => time, timeZone: () => 'UTC' })
+      .find(source => source.collection === 'occasion')!;
+    const prepare = vi.spyOn(db, 'prepare');
+    const facts = await occasions.read({ time: { from: T0, to: T0 + 40 * DAY } }, undefined, { owner: true, grants: grants() });
+    expect(new Set(facts.map(fact => fact.ref.id)).size).toBe(29);
+    expect(facts.some(fact => fact.people.includes('friend3@example.test'))).toBe(false);
+    expect(prepare.mock.calls.filter(([sql]) => sql.includes('FROM proactive_suppressions'))).toHaveLength(1);
+    // Given ids, the read evaluates just those occasions rather than every one on file.
+    const one = facts[0]!.ref.id;
+    expect((await occasions.read({ time: { from: T0, to: T0 + 40 * DAY } }, undefined, { owner: true, grants: grants() }, new Set([one]))).map(fact => fact.ref.id)).toEqual([one]);
   });
 });

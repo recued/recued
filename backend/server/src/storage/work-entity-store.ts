@@ -17,11 +17,13 @@
 
 import {
   FTS_REINDEX_PAGE,
+  checkQuerySpelling,
   createFtsTable,
   deleteRecord as ftsDeleteRecord,
   indexRecord as ftsIndexRecord,
   search as ftsSearch,
   toFtsMatch,
+  type FtsWordCheck,
 } from '@recued/fts';
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
@@ -35,8 +37,8 @@ import {
   workEntitySearchableText,
 } from '../work-entity-searchable-text.js';
 import {
-  ASSET_SOURCE_RANKS, AssetValidationError, validateAsset, canonicalJSONStringify,
-  type Asset, type AssetPatch, type AssetWriteSource, type AssetCondition, type AssetReading,
+  ASSET_SOURCE_RANKS, ASSET_DOCUMENT_DETAILS_ATTRIBUTE, AssetValidationError, validateAsset, canonicalJSONStringify,
+  type Asset, type AssetPatch, type AssetWriteSource, type AssetCondition, type AssetReading, type AssetAttributeReadingCommand, type AssetAddEvidenceCommand,
   CONFLICT_POLICIES,
   COMMITMENT_AMOUNT_REGEX,
   COMMITMENT_CURRENCY_REGEX,
@@ -1255,6 +1257,9 @@ export type AssetWriteInput = AssetPatch & WorkEntitySourceIdentityInput & {
   /** Host-only accepted preset baseline. Public dispatchers whitelist
    * AssetPatch fields and never forward this authority from an op/RPC. */
   preset_application?: boolean;
+  /** Host-only revision for a confirmed attribute copy. Public patch dispatchers
+   * never forward it; retries recognize the canonical field receipt. */
+  attribute_reading_revision?: { field: string; revision: string };
 };
 export interface AssetObservationBinding {
   id: string; asset_id: string; actor_ref: string; source_ref: string; fields: string[]; enabled: boolean;
@@ -2326,6 +2331,8 @@ interface WorkEntityStoreInternal {
 
 export interface WorkEntityStore {
   writeAsset(input: AssetWriteInput, now?: number): Asset;
+  recordAttributeReading(input: AssetAttributeReadingCommand, source: AssetWriteSource, now?: number): Asset;
+  addAssetEvidence(input: AssetAddEvidenceCommand, verifyAttachment: () => void, now?: number): Asset;
   ensureAsset(input: AssetWriteInput & { id: string }, now?: number): { asset: Asset; created: boolean };
   readAsset(id: string): Asset | null;
   /** Raw point-read equivalents, including deleted/unavailable rows and explicit
@@ -2346,6 +2353,17 @@ export interface WorkEntityStore {
   assetCandidates(query?: Pick<WorkEntityListQuery, 'search'>): Generator<{ assets: Asset[] }, boolean, void> | undefined;
   listAssetChildren(id: string): Asset[];
   countAssets(query?: WorkEntityListQuery): number;
+  /** D-325 §15.7 amendment — the assets whose reminders reach the household: those
+   *  the asset list shows whose audience is `household`, their own or else a live
+   *  parent's (as `readAssetEffective` inherits it), and that are active or lent (as
+   *  the reminder service sends). By name: the first `limit`, and how many in all.
+   *  Optional so a test double need not carry it; the store this server builds does. */
+  listHouseholdAssets?(limit: number): { assets: Array<{ id: string; name: string }>; total: number };
+  /** The assets the asset list shows that name a holder, newest-updated first, at
+   *  most `limit`: what `work.search` matches a holder's name against, since a name
+   *  is never indexed. Optional so a test double need not carry it; the store this
+   *  server builds does. */
+  listAssetsWithHolder?(limit: number): Asset[];
   deleteAsset(id: string, opts?: { tombstone?: boolean; now?: number }): boolean;
   walkByAssetId(after_id: string, batch_size: number): Asset[];
   /** ID-ordered active/lent assets with an assigned class, using the ordinary
@@ -2577,6 +2595,12 @@ export interface WorkEntityStore {
    *  `toFtsMatch`. `work-entity-fts-write-paths.test.ts` asserts the two paths
    *  agree query-for-query. */
   matchTextsByQuery(texts: readonly string[], query: string): number[];
+  /** Each plain word of a search checked against the durable index: present,
+   *  or the closest word a record holds (`checkQuerySpelling`). ⚠ INDEX-WIDE —
+   *  every kind and Source — so a caller confirms a suggestion against what IT
+   *  may read before showing it to anyone (`work.search` does). Optional so a
+   *  test double need not carry it; the store this server builds does. */
+  checkSpelling?(query: string): FtsWordCheck[];
   deleteRecordsForSource(source_id: string): number;
   /** D-192 — count the canonical rows a Source teardown would purge
    *  (all sync_states), for the removal-dialog "[N] records" preview.
@@ -2986,7 +3010,7 @@ export const createWorkEntityStore = (
           (draft[name] as Record<string, unknown>)[field] = structuredClone(value);
           // Every explicit manual sample, including an identical sample or
           // clear, invalidates stale handoffs even within one clock tick.
-          if (manualSample) draft.field_sources[path] = { ...source, revision: newId() };
+          if (manualSample) draft.field_sources[path] = { ...source, revision: name === 'readings' && input.attribute_reading_revision?.field === field ? input.attribute_reading_revision.revision : newId() };
         }
       }
     }
@@ -3021,6 +3045,60 @@ export const createWorkEntityStore = (
       db.prepare(`INSERT INTO asset_retirement_job(asset_id,status,created_at) VALUES(?,?,?)
         ON CONFLICT(asset_id) DO UPDATE SET status=excluded.status,created_at=excluded.created_at`).run(written.id, written.status, now);
     }
+    return written;
+  })();
+  const recordAttributeReading: WorkEntityStore['recordAttributeReading'] = (input, source, now = Date.now()) => db.transaction(() => {
+    const validField = (value: unknown): value is string => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/u.test(value) && !['constructor', 'prototype'].includes(value);
+    if (source.kind !== 'owner' || input.action !== 'asset.record_attribute_reading') throw new AssetValidationError('Recording an attribute requires the owner');
+    if (!validField(input.attribute) || input.attribute === ASSET_DOCUMENT_DETAILS_ATTRIBUTE || !validField(input.field)) throw new AssetValidationError('Choose an ordinary text attribute and a valid reading field');
+    if (typeof input.request_id !== 'string' || !/^[a-zA-Z0-9:_-]{16,160}$/u.test(input.request_id)) throw new AssetValidationError('A stable reading request is required');
+    if (!input.expected_source || typeof input.expected_source.value !== 'string' || !input.expected_target || typeof input.expected_target.exists !== 'boolean'
+      || input.expected_target.value !== null) throw new AssetValidationError('Review the text and choose a new or unknown reading');
+    if (!input.reading || Object.keys(input.reading).some(key => !['value', 'unit', 'as_of'].includes(key))
+      || !Number.isSafeInteger(input.reading.as_of) || input.reading.as_of < 0) throw new AssetValidationError('Enter the actual observation time');
+    const asset = readAsset(input.id); const registered = asset && getSource(asset.source_id);
+    if (!asset || asset.deleted_at != null || asset.sync_state !== 'live' || !['active', 'lent'].includes(asset.status)
+      || !registered || registered.source_kind !== 'builtin' || !registered.write_capable) throw new AssetValidationError('Choose an active local asset');
+    const sourcePath = `attributes.${input.attribute}`; const path = `readings.${input.field}`;
+    const reading: AssetReading = { ...input.reading, evidence: [{ collection: 'asset', id: asset.id, field: sourcePath, value: input.expected_source.value }] };
+    const revision = `attribute:${createHash('sha256').update(canonicalJSONStringify({ input, source })).digest('hex')}`;
+    // The operation identity lives in the existing field receipt, so this
+    // optional capability needs no new table, trigger, or work on plain edits.
+    if (asset.field_sources[path]?.kind === 'owner' && asset.field_sources[path]?.revision === revision) {
+      if (canonicalJSONStringify(asset.readings[input.field]) !== canonicalJSONStringify(reading)) throw new AssetValidationError('This reading field changed. Refresh and review its current value.');
+      return asset;
+    }
+    if (input.reading.as_of > now) throw new AssetValidationError('The observation time cannot be in the future');
+    if (!Object.hasOwn(asset.attributes, input.attribute) || asset.attributes[input.attribute] !== input.expected_source.value
+      || canonicalJSONStringify(asset.field_sources[sourcePath] ?? null) !== canonicalJSONStringify(input.expected_source.source))
+      throw new AssetValidationError('This text or its source changed. Refresh and review it before recording a reading.');
+    const target = { exists: Object.hasOwn(asset.readings, input.field), value: asset.readings[input.field] ?? null, source: asset.field_sources[path] ?? null };
+    if (canonicalJSONStringify(target) !== canonicalJSONStringify(input.expected_target)) throw new AssetValidationError('This reading field changed. Refresh and review its current value.');
+    if (asset.rules.some(rule => rule.when.kind === 'objective' && rule.when.field === input.field && rule.when.unit !== input.reading.unit)) throw new AssetValidationError('Use the unit required by this reading’s rules');
+    return writeAsset({ id: asset.id, source_id: asset.source_id, source,
+      readings: { [input.field]: reading },
+      attribute_reading_revision: { field: input.field, revision } }, now);
+  })();
+  const addAssetEvidence: WorkEntityStore['addAssetEvidence'] = (input, verifyAttachment, now = Date.now()) => db.transaction(() => {
+    if (typeof input.path !== 'string' || !/^(readings|observations)\.[a-z][a-z0-9_]{0,63}$/u.test(input.path)
+      || input.evidence?.collection !== 'file' || typeof input.evidence.id !== 'string' || !input.evidence.id.startsWith('file:')) throw new AssetValidationError('Choose a saved observation and an attached file');
+    const [group, field] = input.path.split('.') as ['readings' | 'observations', string];
+    const asset = readAsset(input.id); const registered = asset && getSource(asset.source_id);
+    if (!asset || asset.deleted_at != null || asset.sync_state !== 'live' || !['active', 'lent'].includes(asset.status) || !registered?.write_capable || registered.source_kind !== 'builtin') throw new AssetValidationError('Choose an active local asset');
+    verifyAttachment();
+    const value = asset[group][field]; const source = asset.field_sources[input.path] ?? null;
+    if (!value || !input.expected?.value) throw new AssetValidationError('Record the observation before adding evidence');
+    const citation = { collection: 'file', id: input.evidence.id };
+    const evidence = [...input.expected.value.evidence];
+    if (!evidence.some(row => canonicalJSONStringify(row) === canonicalJSONStringify(citation))) evidence.push(citation);
+    const next = { ...input.expected.value, evidence };
+    if (canonicalJSONStringify(source) !== canonicalJSONStringify(input.expected.source)) throw new AssetValidationError('This observation changed. Refresh and review it before adding evidence.');
+    if (canonicalJSONStringify(value) === canonicalJSONStringify(next)) return asset;
+    if (canonicalJSONStringify(value) !== canonicalJSONStringify(input.expected.value)) throw new AssetValidationError('This observation changed. Refresh and review it before adding evidence.');
+    const draft = structuredClone(asset); draft[group][field]!.evidence = evidence;
+    validateAsset(draft);
+    const written = persistAsset(draft, asset, now);
+    if (group === 'readings') saveAssetReading(asset.id, field, written.readings[field]!);
     return written;
   })();
   const projectAssetEffective = (id: string, read: WorkEntityStore['readAsset'], canReadParent: (parent: Asset) => boolean = () => true): Asset | null => {
@@ -3137,6 +3215,26 @@ export const createWorkEntityStore = (
   const countAssets: WorkEntityStore['countAssets'] = query => {
     const { where } = assetListWhere(query);
     return (db.prepare(`SELECT COUNT(*) AS n FROM ${ASSET_TABLE} ${where.sql}`).get(...where.params) as { n: number }).n;
+  };
+  const listAssetsWithHolder: NonNullable<WorkEntityStore['listAssetsWithHolder']> = limit => {
+    const { where } = assetListWhere();
+    return (db.prepare(`SELECT * FROM ${ASSET_TABLE} ${where.sql} AND holder_contact IS NOT NULL ORDER BY updated_at DESC,id ASC LIMIT ?`)
+      .all(...where.params, limit) as AssetRow[]).map(rowToAsset);
+  };
+  // Each row climbs its parents only while its audience is unset, so it ends on the
+  // first audience it has; the depth bound stands in for the no-cycles rule.
+  const listHouseholdAssets: NonNullable<WorkEntityStore['listHouseholdAssets']> = limit => {
+    const { where } = assetListWhere();
+    const rows = db.prepare(`WITH RECURSIVE effective(id, name, status, audience, parent, depth) AS (
+        SELECT id, name, status, audience, belongs_to, 0 FROM ${ASSET_TABLE} ${where.sql}
+        UNION ALL
+        SELECT effective.id, effective.name, effective.status, parent.audience, parent.belongs_to, effective.depth + 1
+        FROM effective JOIN ${ASSET_TABLE} parent ON parent.id = effective.parent AND parent.deleted_at IS NULL
+        WHERE effective.audience IS NULL AND effective.depth < 64)
+      SELECT id, name, COUNT(*) OVER () AS total FROM effective
+      WHERE audience = 'household' AND status IN ('active', 'lent') ORDER BY js_lower(name), id LIMIT ?`)
+      .all(...where.params, limit) as Array<{ id: string; name: string; total: number }>;
+    return { assets: rows.map(({ id, name }) => ({ id, name })), total: rows[0]?.total ?? 0 };
   };
   const deleteAsset: WorkEntityStore['deleteAsset'] = (id, options) => db.transaction(() => {
     const now = options?.now ?? Date.now();
@@ -4732,9 +4830,9 @@ export const createWorkEntityStore = (
     countCommitments,
     writeAsset, ensureAsset, readAsset, readAssets, readAssetEffective, readAssetsEffective,
     hasDefaultAssetProjection() { return this.readAssetEffective === readAssetEffective && this.readAssetsEffective === readAssetsEffective; },
-    listAssets, assetCandidates, countAssets, deleteAsset, walkByAssetId, walkAssetsForClassUpdates, walkAssetsForEvidenceRefresh,
+    listAssets, assetCandidates, countAssets, listHouseholdAssets, listAssetsWithHolder, deleteAsset, walkByAssetId, walkAssetsForClassUpdates, walkAssetsForEvidenceRefresh,
     listAssetChildren: id => (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE belongs_to=? AND deleted_at IS NULL ORDER BY id`).all(id) as AssetRow[]).map(rowToAsset),
-    bindAssetObservations, moveAssetObservations, listAssetObservationBindings, listAssetObservationBindingsForAssets, allowAssetAutomaticUpdates, assetObservationHandoffs, writeAssetObservations, assetReadingHistory, assetReadingHistories, withAssetReadingHistories, assetReadingAt,
+    bindAssetObservations, moveAssetObservations, listAssetObservationBindings, listAssetObservationBindingsForAssets, allowAssetAutomaticUpdates, assetObservationHandoffs, writeAssetObservations, assetReadingHistory, assetReadingHistories, withAssetReadingHistories, assetReadingAt, recordAttributeReading, addAssetEvidence,
     pendingAssetRetirements, acknowledgeAssetRetirement,
     writeBooking,
     ensureBooking,
@@ -4763,6 +4861,8 @@ export const createWorkEntityStore = (
     listRecordIdentitiesForSource,
     searchIdsByText,
     matchTextsByQuery,
+    checkSpelling: (query: string): FtsWordCheck[] =>
+      checkQuerySpelling(db, WORK_ENTITY_FTS_TABLE, query),
     deleteRecordsForSource,
     countRecordsForSource,
     stagePendingWrite,

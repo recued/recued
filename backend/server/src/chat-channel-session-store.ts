@@ -1,5 +1,5 @@
 import type { SessionEntry, SessionStateStore } from '@recued/chat';
-import type { ChatMessage } from '@recued/contracts';
+import { chatSourceCitationsOf, type ChatSourceCitation, type ChatMessage } from '@recued/contracts';
 import type { ChatStore } from './storage/chat-store.js';
 
 /** A `SessionStateStore` whose history is hydrated from the per-pair
@@ -13,6 +13,8 @@ export interface ChatStoreBackedSessionStateStore extends SessionStateStore {
   /** No-op retained for interface stability. This store performs no
    *  durable writes (see the module note); there is nothing to await. */
   flush(): Promise<void>;
+  /** Sources from the same preloaded conversation, no additional storage read. */
+  sourceCitations(session_id: string): readonly ChatSourceCitation[];
 }
 
 const messageToSessionEntry = (message: ChatMessage): SessionEntry | null => {
@@ -42,6 +44,7 @@ export const createChatStoreSessionStateStore = (
   chatStore: ChatStore,
 ): ChatStoreBackedSessionStateStore => {
   const bySession = new Map<string, SessionEntry[]>();
+  const sourcesBySession = new Map<string, ChatSourceCitation[]>();
 
   const cacheAppend = (entry: SessionEntry): void => {
     const list = bySession.get(entry.session_id);
@@ -61,6 +64,8 @@ export const createChatStoreSessionStateStore = (
       return bySession.get(session_id) ?? [];
     },
 
+    sourceCitations(session_id: string): readonly ChatSourceCitation[] { return sourcesBySession.get(session_id) ?? []; },
+
     async preload(session_id: string): Promise<readonly SessionEntry[]> {
       // Degrade to EMPTY — never a STALE prior turn — when the durable read
       // throws. This store is long-lived across turns, and the orchestrator's
@@ -72,6 +77,7 @@ export const createChatStoreSessionStateStore = (
       // unwarmed (empty) cache" intent — before re-throwing for the caller.
       const messages = await chatStore.listMessages(session_id).catch((err) => {
         bySession.delete(session_id);
+        sourcesBySession.delete(session_id);
         throw err;
       });
       const entries = messages.flatMap((message) => {
@@ -79,6 +85,8 @@ export const createChatStoreSessionStateStore = (
         return entry ? [entry] : [];
       });
       bySession.set(session_id, entries);
+      sourcesBySession.set(session_id, chatSourceCitationsOf(messages.slice().reverse().flatMap(message =>
+        message.role === 'assistant' ? message.source_citations ?? [] : [])));
       return entries;
     },
 

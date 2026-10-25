@@ -302,6 +302,9 @@ export interface RecordsStore {
   installNamespace(input: RecordsInstallInput): RecordsNamespaceSummary;
   execute(call: RecordsExecutionCall): unknown;
   getNamespace(owner: RecordsPackRef): RecordsNamespaceSummary | null;
+  /** `getNamespace(owner)?.state` alone: reads only the lifecycle columns and
+   * decodes no schema, for a caller that checks ready and version per request. */
+  getNamespaceState(owner: RecordsPackRef): RecordsNamespaceState | null;
   listNamespaces(): RecordsNamespaceSummary[];
   listKinds(owner: RecordsPackRef): Array<{ kind: string; rows: number; payload_bytes: number }>;
   ownerSearch(input: RecordsOwnerSearchInput): RecordsSearchResult;
@@ -914,7 +917,25 @@ const csvCell = (value: unknown): string => {
   return sharedCsvCell(rendered, { alwaysQuote: true });
 };
 
-const stateFromRow = (row: NamespaceRow): RecordsNamespaceState => {
+// The columns `stateFromRow` reads, and all that `getNamespaceState` selects.
+// Typing the row as this Pick makes reading any other column a compile error.
+const NAMESPACE_STATE_COLUMNS = [
+  'state', 'version', 'from_version', 'target_version', 'storage_schema_hash', 'declaration_hash',
+  'target_storage_schema_hash', 'migration_id', 'last_known_state', 'detected_at', 'reason',
+  'evidence_ref', 'updated_at',
+] as const satisfies readonly (keyof NamespaceRow)[];
+type NamespaceStateRow = Pick<NamespaceRow, typeof NAMESPACE_STATE_COLUMNS[number]>;
+
+// The columns a record read (`ownerGet`, `ownerInspect`) takes from its namespace: the
+// state it checks and the schema it decodes. `SELECT *` also copied the pack's
+// operations, subscribers and migration plans out of SQLite on every read (15.5 KB of
+// operations for invoice-book). Typed as this Pick, like the state row above.
+const NAMESPACE_READ_COLUMNS = [
+  'publisher', 'pack_slug', 'state', 'schema_json',
+] as const satisfies readonly (keyof NamespaceRow)[];
+type NamespaceReadRow = Pick<NamespaceRow, typeof NAMESPACE_READ_COLUMNS[number]>;
+
+const stateFromRow = (row: NamespaceStateRow): RecordsNamespaceState => {
   if (row.state === 'ready') return {
     state: 'ready',
     version: row.version!,
@@ -1595,9 +1616,20 @@ export const createRecordsStore = (
     for (const wake of waiters) wake();
   };
 
+  // Prepared once per store, like the other statements on every read and write
+  // (`rowStmt`, `globalLimit`, `globalQuota`): `db.prepare` re-parsed the same SQL
+  // on each call. Preparing, across its callers, was 2.2 s of one 12 s test that
+  // writes 2,000 records (2026-10-23).
+  let namespaceStatement: Database.Statement | undefined;
   const namespaceRow = (owner: RecordsPackRef): NamespaceRow | undefined =>
-    db.prepare(`SELECT * FROM ${NAMESPACE_TABLE} WHERE publisher=? AND pack_slug=?`)
+    (namespaceStatement ??= db.prepare(`SELECT * FROM ${NAMESPACE_TABLE} WHERE publisher=? AND pack_slug=?`))
       .get(owner.publisher, owner.pack_slug) as NamespaceRow | undefined;
+  let namespaceReadStatement: Database.Statement | undefined;
+  const namespaceReadRow = (owner: RecordsPackRef): NamespaceReadRow | undefined =>
+    (namespaceReadStatement ??= db.prepare(`SELECT ${NAMESPACE_READ_COLUMNS.join(',')}
+      FROM ${NAMESPACE_TABLE} WHERE publisher=? AND pack_slug=?`))
+      .get(owner.publisher, owner.pack_slug) as NamespaceReadRow | undefined;
+  let namespaceStateStatement: Database.Statement | undefined;
 
   // Cache decoded declarations only. Each call still reads current namespace
   // authority; changed database text replaces the corresponding single entry.
@@ -1618,16 +1650,29 @@ export const createRecordsStore = (
     lastOperations = { text: row.operations_json, bindings, byDigest };
     return lastOperations;
   };
-  let lastSchema: { text: string; schema: RecordsSchemaSnapshot } | undefined;
-  const installedSchema = (row: NamespaceRow): RecordsSchemaSnapshot => {
-    if (lastSchema?.text === row.schema_json) return lastSchema.schema;
+  // Decoded schemas by namespace, each with the exact text it was decoded from — the
+  // row is still read on every call, so a changed schema is decoded again. ⚠ More
+  // than one: reads alternate between packs' namespaces, and a single slot re-parsed
+  // on every switch. Every record read (`ownerGet`, `ownerInspect`) used to parse its
+  // own copy: `ownerGet` alone was 4.9 s of that test. Callers only read the decoded
+  // schema. ⚠ Not keyed by the text: a read's text is a new string every time, so a
+  // lookup hashed all of it (12.7 KB for invoice-book) on every read, 0.8 s of the
+  // 5.4 s customer-jobs' 100-addition chain took (2026-10-23). Comparing it with the
+  // namespace's last text does not hash it.
+  const decodedSchemas = new Map<string, { text: string; schema: RecordsSchemaSnapshot }>();
+  const installedSchema = (row: Pick<NamespaceRow, 'publisher' | 'pack_slug' | 'schema_json'>): RecordsSchemaSnapshot => {
+    const key = namespaceKey(row);
+    const decoded = decodedSchemas.get(key);
+    if (decoded?.text === row.schema_json) return decoded.schema;
     const schema = JSON.parse(row.schema_json) as RecordsSchemaSnapshot;
-    lastSchema = { text: row.schema_json, schema };
+    if (decoded === undefined && decodedSchemas.size >= 16) decodedSchemas.delete(decodedSchemas.keys().next().value!);
+    decodedSchemas.set(key, { text: row.schema_json, schema });
     return schema;
   };
 
+  let globalLimitStatement: Database.Statement | undefined;
   const globalLimit = (key: 'row_limit' | 'byte_limit' | 'outbox_limit'): number => {
-    const row = db.prepare(`SELECT value FROM ${META_TABLE} WHERE key=?`)
+    const row = (globalLimitStatement ??= db.prepare(`SELECT value FROM ${META_TABLE} WHERE key=?`))
       .get(`records.global.${key}`) as { value: string } | undefined;
     if (row === undefined) return RECORDS_QUOTA_NO_LIMIT;
     const parsed = Number(row.value);
@@ -1637,14 +1682,17 @@ export const createRecordsStore = (
     return parsed;
   };
 
+  let quotaRowsStatement: Database.Statement | undefined;
+  let quotaOutboxStatement: Database.Statement | undefined;
+  let quotaReservationStatement: Database.Statement | undefined;
   const globalQuota = (): RecordsGlobalQuotaSnapshot => {
-    const rows = db.prepare(`SELECT count(*) AS row_count,
-      coalesce(sum(payload_bytes),0) AS payload_bytes FROM ${ROW_TABLE}`)
+    const rows = (quotaRowsStatement ??= db.prepare(`SELECT count(*) AS row_count,
+      coalesce(sum(payload_bytes),0) AS payload_bytes FROM ${ROW_TABLE}`))
       .get() as { row_count: number; payload_bytes: number };
-    const events = db.prepare(`SELECT count(*) AS outbox_count FROM ${OUTBOX_TABLE}
-      WHERE status='pending'`).get() as { outbox_count: number };
-    const reservations = db.prepare(`SELECT coalesce(sum(reserved_byte_delta),0) AS bytes
-      FROM ${MIGRATION_TABLE} WHERE status IN ('running','failed')`)
+    const events = (quotaOutboxStatement ??= db.prepare(`SELECT count(*) AS outbox_count FROM ${OUTBOX_TABLE}
+      WHERE status='pending'`)).get() as { outbox_count: number };
+    const reservations = (quotaReservationStatement ??= db.prepare(`SELECT coalesce(sum(reserved_byte_delta),0) AS bytes
+      FROM ${MIGRATION_TABLE} WHERE status IN ('running','failed')`))
       .get() as { bytes: number };
     return {
       row_count: rows.row_count,
@@ -1810,10 +1858,15 @@ export const createRecordsStore = (
     return entity!;
   };
 
+  // Its own statement, not one shared by SQL text: `safeIntegers(true)` is a mode
+  // set on the statement, and no other caller may inherit it.
+  let rowStatement: Database.Statement | undefined;
   const rowStmt = (owner: RecordsPackRef, kind: string, id: string): RowShape | undefined => {
-    const stmt = db.prepare(`SELECT * FROM ${ROW_TABLE} WHERE publisher=? AND pack_slug=? AND kind=? AND pk=?`);
-    stmt.safeIntegers(true);
-    return stmt.get(owner.publisher, owner.pack_slug, kind, id) as RowShape | undefined;
+    if (!rowStatement) {
+      rowStatement = db.prepare(`SELECT * FROM ${ROW_TABLE} WHERE publisher=? AND pack_slug=? AND kind=? AND pk=?`);
+      rowStatement.safeIntegers(true);
+    }
+    return rowStatement.get(owner.publisher, owner.pack_slug, kind, id) as RowShape | undefined;
   };
 
   const safeNumber = (value: number | bigint, label: string): number => {
@@ -1925,15 +1978,22 @@ export const createRecordsStore = (
     }
   };
 
+  // The statements from here to deleteRecord run on every create, update and delete, or
+  // every event retired, and are prepared once per store like namespaceRow's: compiling
+  // them on each call was a quarter of the CPU that seeding 6,306 ledger operations took
+  // (2026-10-23). None iterates or sets a mode on its statement, so one serves every call.
+  let reverseDeleteStatement: Database.Statement | undefined;
+  let reverseInsertStatement: Database.Statement | undefined;
   const replaceReverseRefs = (
     owner: RecordsPackRef,
     kind: string,
     id: string,
     physical: PhysicalFields,
   ): void => {
-    db.prepare(`DELETE FROM ${REVERSE_TABLE} WHERE publisher=? AND pack_slug=? AND source_kind=? AND source_pk=?`)
+    (reverseDeleteStatement ??= db.prepare(`DELETE FROM ${REVERSE_TABLE}
+      WHERE publisher=? AND pack_slug=? AND source_kind=? AND source_pk=?`))
       .run(owner.publisher, owner.pack_slug, kind, id);
-    const insert = db.prepare(`INSERT INTO ${REVERSE_TABLE}
+    const insert = reverseInsertStatement ??= db.prepare(`INSERT INTO ${REVERSE_TABLE}
       (publisher,pack_slug,source_kind,source_pk,source_slot,target_kind,target_pk)
       VALUES (?,?,?,?,?,?,?)`);
     for (const slot of SLOT_NAMES.filter((name) => name.startsWith('r'))) {
@@ -1958,6 +2018,14 @@ export const createRecordsStore = (
     if (emits && ns.outbox_count + 1 > ns.outbox_limit) {
       fail('records_backpressure', 'Records outbox quota would be exceeded');
     }
+    // A global limit the owner never set is RECORDS_QUOTA_NO_LIMIT, which no count
+    // reaches (it is 9 PB of payload). Then counting every row of every pack on each
+    // write decides nothing. All three are read first: an invalid one still refuses.
+    const rowLimit = globalLimit('row_limit');
+    const byteLimit = globalLimit('byte_limit');
+    const outboxLimit = globalLimit('outbox_limit');
+    if (rowLimit === RECORDS_QUOTA_NO_LIMIT && byteLimit === RECORDS_QUOTA_NO_LIMIT
+      && (!emits || outboxLimit === RECORDS_QUOTA_NO_LIMIT)) return;
     const global = globalQuota();
     if (global.row_count + rowDelta > global.row_limit
       || global.payload_bytes + global.reserved_payload_bytes + byteDelta > global.byte_limit) {
@@ -1975,6 +2043,7 @@ export const createRecordsStore = (
     }
   };
 
+  let accountingStatement: Database.Statement | undefined;
   const updateAccounting = (
     owner: RecordsPackRef,
     rowDelta: number,
@@ -1982,19 +2051,20 @@ export const createRecordsStore = (
     eventDelta: number,
     stamp: number,
   ): void => {
-    const changed = db.prepare(`UPDATE ${NAMESPACE_TABLE}
+    const changed = (accountingStatement ??= db.prepare(`UPDATE ${NAMESPACE_TABLE}
       SET row_count=row_count+?, payload_bytes=payload_bytes+?, outbox_count=outbox_count+?,
           data_generation=data_generation+1, updated_at=?
       WHERE publisher=? AND pack_slug=?
-        AND row_count+? >= 0 AND payload_bytes+? >= 0 AND outbox_count+? >= 0`)
+        AND row_count+? >= 0 AND payload_bytes+? >= 0 AND outbox_count+? >= 0`))
       .run(rowDelta, byteDelta, eventDelta, stamp, owner.publisher, owner.pack_slug, rowDelta, byteDelta, eventDelta);
     if (changed.changes !== 1) fail('records_incoherent', 'Records accounting update failed');
   };
 
+  let outboxDecrementStatement: Database.Statement | undefined;
   const decrementOutboxAccounting = (owner: RecordsPackRef, stamp: number): void => {
-    const changed = db.prepare(`UPDATE ${NAMESPACE_TABLE}
+    const changed = (outboxDecrementStatement ??= db.prepare(`UPDATE ${NAMESPACE_TABLE}
       SET outbox_count=outbox_count-1,updated_at=?
-      WHERE publisher=? AND pack_slug=? AND outbox_count>0`)
+      WHERE publisher=? AND pack_slug=? AND outbox_count>0`))
       .run(stamp, owner.publisher, owner.pack_slug);
     if (changed.changes !== 1) {
       fail('records_incoherent', 'Records outbox accounting decrement failed');
@@ -2006,6 +2076,10 @@ export const createRecordsStore = (
     catch { /* a screen-refresh sink never breaks a committed write */ }
   };
 
+  let outboxRootStatement: Database.Statement | undefined;
+  let outboxFanoutStatement: Database.Statement | undefined;
+  let outboxInsertStatement: Database.Statement | undefined;
+  let deliveryInsertStatement: Database.Statement | undefined;
   const enqueue = (
     ns: NamespaceRow,
     kind: string,
@@ -2025,22 +2099,22 @@ export const createRecordsStore = (
     const eventId = randomUUID();
     const rootEventId = execution.root_event_id ?? eventId;
     if (execution.root_event_id !== undefined
-      && !db.prepare(`SELECT 1 FROM ${OUTBOX_TABLE} WHERE event_id=? OR root_event_id=? LIMIT 1`)
+      && !(outboxRootStatement ??= db.prepare(`SELECT 1 FROM ${OUTBOX_TABLE} WHERE event_id=? OR root_event_id=? LIMIT 1`))
         .get(rootEventId, rootEventId)) {
       fail('records_invalid', 'record watcher root event is forged or expired');
     }
     if (execution.root_event_id !== undefined) {
-      const fanout = db.prepare(`SELECT count(*) AS n FROM ${OUTBOX_TABLE} WHERE root_event_id=?`)
+      const fanout = (outboxFanoutStatement ??= db.prepare(`SELECT count(*) AS n FROM ${OUTBOX_TABLE} WHERE root_event_id=?`))
         .get(rootEventId) as { n: number };
       if (fanout.n >= RECORDS_MAX_CAUSAL_FANOUT) {
         fail('records_backpressure', 'record watcher causal fan-out budget is exhausted');
       }
     }
-    db.prepare(`INSERT INTO ${OUTBOX_TABLE}
+    (outboxInsertStatement ??= db.prepare(`INSERT INTO ${OUTBOX_TABLE}
       (event_id,publisher,pack_slug,kind,pk,event_type,event_revision,changed_fields_json,
        activation_generation,subscriber_digest,cause,root_event_id,causal_depth,watcher_digest,
        status,retry_count,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending',0,?)`)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending',0,?)`))
       .run(
         eventId, ns.publisher, ns.pack_slug, kind, id, type, revision,
         JSON.stringify([...changedFields].sort()), ns.activation_generation,
@@ -2076,7 +2150,7 @@ export const createRecordsStore = (
       created_at: stamp,
     };
     const subscribers = JSON.parse(ns.subscribers_json) as RecordsSubscriberBinding[];
-    const insertDelivery = db.prepare(`INSERT INTO ${OUTBOX_DELIVERY_TABLE}
+    const insertDelivery = deliveryInsertStatement ??= db.prepare(`INSERT INTO ${OUTBOX_DELIVERY_TABLE}
       (event_id,binding_digest,recipe_id,recipe_digest,trigger_digest,subscriber_json,status,retry_count)
       VALUES (?,?,?,?,?,?, 'pending',0)`);
     for (const subscriber of subscribers) {
@@ -2160,7 +2234,7 @@ export const createRecordsStore = (
     const ns = namespaceRow(owner);
     if (!ns) return {};
     const out: Record<string, string[]> = {};
-    const schema = JSON.parse(ns.schema_json) as RecordsSchemaSnapshot;
+    const schema = installedSchema(ns);
     for (const entity of Object.keys(schema.entities ?? {})) {
       const key = declaredNaturalKey(ns, entity);
       if (key !== undefined) out[entity] = [...key].sort();
@@ -2168,6 +2242,7 @@ export const createRecordsStore = (
     return out;
   };
 
+  let insertRowStatement: Database.Statement | undefined;
   const insertRow = (
     owner: RecordsPackRef,
     kind: string,
@@ -2178,11 +2253,9 @@ export const createRecordsStore = (
     payload: number,
     stamp: number,
   ): void => {
-    const columns = SLOT_NAMES.join(',');
-    const placeholders = SLOT_NAMES.map(() => '?').join(',');
-    db.prepare(`INSERT INTO ${ROW_TABLE}
-      (publisher,pack_slug,kind,pk,version,revision,created_at,updated_at,created_by,updated_by,payload_bytes,${columns})
-      VALUES (?,?,?,?,?,0,?,?,?,?,?,${placeholders})`)
+    (insertRowStatement ??= db.prepare(`INSERT INTO ${ROW_TABLE}
+      (publisher,pack_slug,kind,pk,version,revision,created_at,updated_at,created_by,updated_by,payload_bytes,${SLOT_NAMES.join(',')})
+      VALUES (?,?,?,?,?,0,?,?,?,?,?,${SLOT_NAMES.map(() => '?').join(',')})`))
       .run(
         owner.publisher, owner.pack_slug, kind, id, version, stamp, stamp, principal, principal, payload,
         ...SLOT_NAMES.map((slot) => physical[slot]),
@@ -2251,6 +2324,7 @@ export const createRecordsStore = (
     return { record: projectRow(tx.row, schema), replayed: tx.replayed };
   };
 
+  let updateRowStatement: Database.Statement | undefined;
   const updateRecord = (
     call: RecordsExecutionCall,
     ns: NamespaceRow,
@@ -2326,10 +2400,10 @@ export const createRecordsStore = (
       reserveMutation(currentNs, 0, delta, emits);
       validateReferences(call.binding.owner, call.binding.entity, id, next);
       const stamp = now();
-      const assignments = SLOT_NAMES.map((slot) => `${slot}=?`).join(',');
-      const result = db.prepare(`UPDATE ${ROW_TABLE} SET ${assignments},revision=revision+1,
+      const result = (updateRowStatement ??= db.prepare(`UPDATE ${ROW_TABLE}
+        SET ${SLOT_NAMES.map((slot) => `${slot}=?`).join(',')},revision=revision+1,
         updated_at=?,updated_by=?,payload_bytes=?
-        WHERE publisher=? AND pack_slug=? AND kind=? AND pk=? AND version=? AND revision=?`)
+        WHERE publisher=? AND pack_slug=? AND kind=? AND pk=? AND version=? AND revision=?`))
         .run(
           ...SLOT_NAMES.map((slot) => next[slot]), stamp, call.principal, payload,
           call.binding.owner.publisher, call.binding.owner.pack_slug, call.binding.entity, id,
@@ -2344,6 +2418,8 @@ export const createRecordsStore = (
     return { record: projectRow(tx, schema) };
   };
 
+  let deleteBlockersStatement: Database.Statement | undefined;
+  let deleteRowStatement: Database.Statement | undefined;
   const deleteRecord = (
     call: RecordsExecutionCall,
     schema: RecordsSchemaSnapshot,
@@ -2382,8 +2458,8 @@ export const createRecordsStore = (
       if (version !== expectedVersion || revision !== expectedRevision || expectedVersion !== currentNs.version) {
         fail('records_conflict', 'stale Records version/revision', { current_version: version, current_revision: revision });
       }
-      const blockers = db.prepare(`SELECT source_kind,source_pk,source_slot FROM ${REVERSE_TABLE}
-        WHERE publisher=? AND pack_slug=? AND target_kind=? AND target_pk=? LIMIT 21`)
+      const blockers = (deleteBlockersStatement ??= db.prepare(`SELECT source_kind,source_pk,source_slot FROM ${REVERSE_TABLE}
+        WHERE publisher=? AND pack_slug=? AND target_kind=? AND target_pk=? LIMIT 21`))
         .all(call.binding.owner.publisher, call.binding.owner.pack_slug, call.binding.entity, id) as Array<Record<string, string>>;
       if (blockers.length > 0) {
         fail('records_relationship_restrict', 'record has inbound references', { blockers: blockers.slice(0, 20) });
@@ -2391,8 +2467,8 @@ export const createRecordsStore = (
       const emits = !SUPPRESSED_CAUSES.has(cause);
       reserveMutation(currentNs, -1, -safeNumber(current.payload_bytes, 'payload_bytes'), emits);
       const stamp = now();
-      const deleted = db.prepare(`DELETE FROM ${ROW_TABLE}
-        WHERE publisher=? AND pack_slug=? AND kind=? AND pk=? AND version=? AND revision=?`)
+      const deleted = (deleteRowStatement ??= db.prepare(`DELETE FROM ${ROW_TABLE}
+        WHERE publisher=? AND pack_slug=? AND kind=? AND pk=? AND version=? AND revision=?`))
         .run(call.binding.owner.publisher, call.binding.owner.pack_slug, call.binding.entity, id, expectedVersion, expectedRevision);
       if (deleted.changes !== 1) fail('records_conflict', 'concurrent Records delete lost CAS');
       const event = enqueue(currentNs, call.binding.entity, id, revision + 1, 'record.deleted', [], cause, call, stamp);
@@ -5048,12 +5124,12 @@ export const createRecordsStore = (
 
   const ownerGet = (owner: RecordsPackRef, entity: string, id: string): RecordsFriendlyRecord | null => {
     assertPackRef(owner);
-    const ns = namespaceRow(owner);
+    const ns = namespaceReadRow(owner);
     if (!ns) return null;
     if (ns.state !== 'ready' && ns.state !== 'orphaned' && ns.state !== 'incoherent') {
       fail('records_not_ready', `namespace is ${ns.state}`);
     }
-    const schema = JSON.parse(ns.schema_json) as RecordsSchemaSnapshot;
+    const schema = installedSchema(ns);
     entityFor(schema, entity);
     const row = rowStmt(owner, entity, assertId(id));
     return row ? projectRow(row, schema) : null;
@@ -5065,12 +5141,12 @@ export const createRecordsStore = (
     id: string,
   ): { record: RecordsFriendlyRecord | null; diagnostics: RecordsOwnerRecordDiagnostics | null } => {
     assertPackRef(owner);
-    const ns = namespaceRow(owner);
+    const ns = namespaceReadRow(owner);
     if (!ns) return { record: null, diagnostics: null };
     if (ns.state !== 'ready' && ns.state !== 'orphaned' && ns.state !== 'incoherent') {
       fail('records_not_ready', `namespace is ${ns.state}`);
     }
-    const schema = JSON.parse(ns.schema_json) as RecordsSchemaSnapshot;
+    const schema = installedSchema(ns);
     entityFor(schema, entity);
     const row = rowStmt(owner, entity, assertId(id));
     if (!row) return { record: null, diagnostics: null };
@@ -5708,6 +5784,13 @@ export const createRecordsStore = (
       assertPackRef(owner);
       const row = namespaceRow(owner);
       return row ? summary(row) : null;
+    },
+    getNamespaceState(owner) {
+      assertPackRef(owner);
+      const row = (namespaceStateStatement ??= db.prepare(`SELECT ${NAMESPACE_STATE_COLUMNS.join(',')}
+        FROM ${NAMESPACE_TABLE} WHERE publisher=? AND pack_slug=?`))
+        .get(owner.publisher, owner.pack_slug) as NamespaceStateRow | undefined;
+      return row ? stateFromRow(row) : null;
     },
     listNamespaces() {
       return (db.prepare(`SELECT * FROM ${NAMESPACE_TABLE} ORDER BY publisher,pack_slug`).all() as NamespaceRow[]).map(summary);

@@ -109,6 +109,8 @@ const CONTACT_SCHEMA: EntitySchemaIngredientInput = {
   },
 };
 
+/** An asset's two maps of what the owner typed, keyed by names the owner chose. */
+const OWNER_TYPED_ASSET_FIELDS = ['settings', 'attributes'] as const;
 /** P6: ordinary optional fields, protected on model egress by existing tags. */
 const ASSET_SCHEMA: EntitySchemaIngredientInput = {
   ingredient_id: 'recued-canonical-asset', entity_id: 'asset', scope: 'data.asset',
@@ -139,8 +141,10 @@ const SITUATION_SCHEMAS: EntitySchemaIngredientInput[] = [
   ...['situation_ref', 'situation_ambiguity'].map(entity_id => ({ ingredient_id: `recued-canonical-${entity_id.replaceAll('_', '-')}`, entity_id,
     scope: `data.${entity_id}`, projection_mode: 'canonical_mirror' as const, schema_mode: 'static' as const,
     target_id: { fields: ['id'], template: '{id}' },
+    // An ambiguity's `name` is the name a model passed in `people`, or a title its
+    // text matched: content, so a name reads as the alias it has everywhere.
     meta_fields: [{ key: entity_id === 'situation_ref' ? 'id' : 'name', type: 'string' as const,
-      source_path: entity_id === 'situation_ref' ? 'id' : 'name', privacy: 'external_id' as const }],
+      source_path: entity_id === 'situation_ref' ? 'id' : 'name', privacy: entity_id === 'situation_ref' ? 'external_id' as const : 'content' as const }],
     source_operations: { list: { catalog: `recued-canonical-${entity_id.replaceAll('_', '-')}`, operation: 'situation.query' } } })),
 ];
 
@@ -353,9 +357,38 @@ export const CANONICAL_PII_ENTITY_PRIVACY_TAGS: readonly EntityPrivacyTag[] =
   Object.freeze([
     ...SITUATION_SCHEMAS.map(schema => ({ entity_id: schema.entity_id,
       fields: (schema.meta_fields ?? []).map(field => ({ path: field.key, kind: field.privacy! })) })),
+    { entity_id: 'asset_context_asset', fields: [{ path: 'id', kind: 'external_id' }, { path: 'name', kind: 'content' }] },
+    { entity_id: 'chat_source_reference', fields: [{ path: 'asset_id', kind: 'external_id' }, { path: 'file_ref', kind: 'external_id' }] },
+    { entity_id: 'asset_context_ref', fields: [
+      { path: 'asset_id', kind: 'external_id' }, { path: 'rule_id', kind: 'external_id' }, { path: 'binding_id', kind: 'external_id' },
+    ] },
+    { entity_id: 'asset_context_evidence', fields: [{ path: 'id', kind: 'external_id' }, { path: 'value', kind: 'content' }] },
+    { entity_id: 'asset_context_node', fields: [
+      { path: 'label', kind: 'content' }, { path: 'title', kind: 'content' }, { path: 'name', kind: 'content' },
+      { path: 'value', kind: 'content' }, { path: 'rule', kind: 'content' }, { path: 'rule.id', kind: 'external_id' }, { path: 'source.ref', kind: 'external_id' },
+    ] },
     {
       entity_id: 'asset',
-      fields: (ASSET_SCHEMA.meta_fields ?? []).map(field => ({ path: field.key, kind: field.privacy! })),
+      fields: [...(ASSET_SCHEMA.meta_fields ?? []).map(field => ({ path: field.key, kind: field.privacy! })),
+        // What the owner typed into settings and attributes is content: the scan
+        // walks every text value in each map, so a name aliased elsewhere in the
+        // turn is aliased here too (2026-10-23b), as in a situation's details.
+        ...OWNER_TYPED_ASSET_FIELDS.map(path => ({ path, kind: 'content' as const })),
+        // `work.read` names the holder beside `holder_contact` (an id): a name, so it
+        // reads as the same alias as the person the model was asked about.
+        { path: 'holder_name', kind: 'name' as const }],
+    },
+    {
+      // A situation item's copy of the same two maps (2026-10-23a). Entries for
+      // one entity merge, so these add to the item's schema-derived tags.
+      entity_id: 'situation_item',
+      fields: [...OWNER_TYPED_ASSET_FIELDS.map(path => ({ path: `details.${path}`, kind: 'content' as const })),
+        // The chat's lookup sends its items without markers (the chat refuses a
+        // producer's own), so the item tags the id of each ref it holds, as a
+        // `situation_ref` marker does in the tool's result. A contact's id can be
+        // its email.
+        ...['ref.id', 'evidence[].id', ...['what', 'when', 'where', 'who'].map(dimension => `${dimension}.evidence[].id`)]
+          .map(path => ({ path, kind: 'external_id' as const }))],
     },
     {
       // Each anchor is stamped on its own, so its tags hold at any index. A
@@ -382,6 +415,12 @@ export const CANONICAL_PII_ENTITY_PRIVACY_TAGS: readonly EntityPrivacyTag[] =
         { path: 'target_id', kind: 'email' },
         { path: 'phone', kind: 'phone' },
         { path: 'company', kind: 'org' },
+        // `contact.read` carries the mailing address: the street lines and the postal
+        // code, as the vendor contact schemas tag them; city, state and country stay
+        // visible, as they do there.
+        { path: 'mailing_address.address1', kind: 'address' },
+        { path: 'mailing_address.address2', kind: 'address' },
+        { path: 'mailing_address.zip', kind: 'address' },
       ],
     },
     {

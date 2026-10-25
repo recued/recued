@@ -48,6 +48,7 @@ type PreListenerExecutionContext =
   & StartListenerExposureRuntimeOptions['listener']['execution'];
 
 export interface StartPreListenerRuntimeOptions {
+  readonly bootTrace?: import('../cli/boot-trace.js').BootTrace;
   readonly args: string[];
   readonly dbPath: string;
   readonly port: number;
@@ -140,6 +141,7 @@ export interface StartPreListenerRuntimeOptions {
 export const startPreListenerRuntime = async (
   options: StartPreListenerRuntimeOptions,
 ): Promise<ListenerExposureRuntimeResult> => {
+  options.bootTrace?.mark('ingress-compose-start');
   const ingressRpcContext = await composeIngressRpcContext({
     dbPath: options.dbPath,
     storage: options.storage,
@@ -159,7 +161,9 @@ export const startPreListenerRuntime = async (
     // `composeClientSecurityContext` below, which does.
   });
 
+  options.bootTrace?.mark('ingress-compose-complete');
   const cloudBaseUrl: string = options.runtimeConfig.get('cloud.base_url') as string;
+  options.bootTrace?.mark('security-compose-start');
   const clientSecurity = await composeClientSecurityContext({
     db: options.storage.db,
     auditLog: options.storage.auditLog,
@@ -172,6 +176,7 @@ export const startPreListenerRuntime = async (
     getBackupRecovery: () => backupRecoveryForPassport(options.archiveDeps),
     env: options.env,
   });
+  options.bootTrace?.mark('security-compose-complete');
   // Publish the passport-export substrate to the (already-constructed)
   // archive runtime's late-bound getter — `clientSecurity` is the first
   // point the cert-stack-dependent passport providers exist. Undefined on a
@@ -199,6 +204,7 @@ export const startPreListenerRuntime = async (
   }
 
   return startListenerExposureRuntime({
+    bootTrace: options.bootTrace,
     listener: {
       port: options.port,
       webhooksEnabled: options.webhooksEnabled,

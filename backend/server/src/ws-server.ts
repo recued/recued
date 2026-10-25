@@ -1,8 +1,9 @@
 import { makeAutomationRehearsalHandlers, type AutomationRehearsalDeps } from './automation-rehearsal-handler.js';
-/** WebSocket server — real-time channel between server and extension(s).
+/** WebSocket server — real-time channel between server and its paired clients.
  *
  *  Upgrades HTTP connections on /ws to WebSocket. Each connected client
- *  authenticates with a realm token and registers an instance_id.
+ *  authenticates with the bearer it was issued at pairing, which carries its
+ *  paired instance identity.
  *
  *  All extension→server method calls use a generic rpc envelope:
  *
@@ -557,6 +558,22 @@ export const RPC_WS_MAX_IN_FLIGHT_GLOBAL = 256;
  *  downloads across all data sockets. The shipped upload transport is
  *  strictly ack-paced (one chunk in flight per socket); this process-wide cap
  *  prevents a bearer from bypassing that property with many sockets. */
+/** ⛔ Each bearer check on an upgrade is an Argon2id hash — 32 MiB and about
+ *  0.4 s of the main thread on a quiet machine — run even for an unknown token,
+ *  so timing never says which tokens exist. Unbounded, sixteen bogus upgrades
+ *  at once held `/health` for 37 s. Two bounds keep that cost from being a
+ *  stranger's to spend: at most this many checks run at once (more are turned
+ *  away as a transient failure, which clients retry)… */
+export const UPGRADE_VERIFY_MAX_IN_FLIGHT = 4;
+/** …and an address whose checks keep failing is refused without one for a
+ *  while. Generous, because behind a reverse proxy every client shares one
+ *  address: ten DEFINITE failures in a minute, then thirty seconds of quick
+ *  refusals; any success clears the count. */
+export const UPGRADE_FAILURES_BEFORE_COOLDOWN = 10;
+export const UPGRADE_FAILURE_WINDOW_MS = 60_000;
+export const UPGRADE_COOLDOWN_MS = 30_000;
+const UPGRADE_FAILURE_SOURCES_MAX = 1024;
+
 export const DATA_WS_MAX_IN_FLIGHT_GLOBAL = 16;
 
 /** Maximum serialized JSON bytes queued on one WebSocket. A normal socket
@@ -654,14 +671,15 @@ export const sendBoundedWsJson = (
 export interface WsClient {
   ws: any; // WebSocket instance (from ws package)
   realm: string;
-  /** Set ONLY by the `register` message (extensions / bridges). Webclients
-   *  are bearer-only and never register, so theirs stays null. Every
-   *  "find/broadcast to a connected extension" path (delegateAi /
-   *  delegateChat / peerCache* / kernel-recipe / server-heartbeat) +
-   *  the `maxInstances` count key on this field, so it must stay the
-   *  "registered extension" marker — do NOT populate it for webclients
-   *  (that would mis-route bridge-only frames to a webclient that drops
-   *  them, and count webclient tabs against the extension limit). */
+  /** The "registered extension" marker. Only the `register` message set
+   *  it, and that was retired 2026-10-23, so it is null for every
+   *  connection now: a client's paired identity is `token_instance_id`.
+   *  Every "find/broadcast to a connected extension" path (delegateAi /
+   *  delegateChat / kernel-recipe / server-heartbeat) + the
+   *  `maxInstances` count still key on it — do NOT populate it for
+   *  webclients (that would mis-route extension-only frames to a client
+   *  that drops them, and count browser tabs against the extension
+   *  limit). */
   instance_id: string | null;
   /** D-151 follow-on — paired-instance identity DERIVED from the verified
    *  client token's `metadata.instance_id` (stamped at `/auth/pair`,
@@ -679,11 +697,11 @@ export interface WsClient {
   token_instance_id?: string | null;
   display_name: string;
   connected_at: number;
-  /** User_id reported by the extension on `register`. Populated when
-   *  the ext is signed in; undefined for anonymous/free use. The
-   *  server-heartbeat emitter uses any registered client's user_id as
-   *  the `uid` on its own heartbeat payload — all of one account's
-   *  exts + server share the same uid in the cloud aggregator. */
+  /** User_id the extension reported on the retired `register` message.
+   *  Nothing sets it now; owner checks fall back to the self-host owner
+   *  (`resolveGatedClientOwnerId`). ⛔ Never take it from a client again:
+   *  a reported id rewrote the Devices row, hiding the device from the
+   *  owner and making Revoke refuse it. */
   user_id?: string;
   /** D-148 § A.2.1 — durable `client_tokens.token_id` resolved at WS
    *  bearer-verify time. Populated for clients that present the
@@ -776,31 +794,31 @@ export interface WsServerHandle {
     instance_id: string;
     connected_at: number;
   }>;
-  /** Last-seen `user_id` from any connected client. The server-heartbeat
-   *  emitter uses this as `uid` on its own heartbeat payload so the cloud
-   *  aggregator groups server + ext under the same user bucket.
-   *  Undefined when no signed-in client has ever registered. */
+  /** Last-seen `user_id` from any connected client. Always undefined now:
+   *  only the retired `register` message ever reported one (a client's
+   *  identity comes from its pairing token). Kept for the handle's
+   *  existing callers. */
   getPairedUserId(): string | undefined;
-  /** Forcibly disconnect a connected instance with the
-   *  `instance_revoked` close message. Used by `pair.revoke` (explicit
-   *  user action) and the `register { intent: 'replace' }` path. The
-   *  extension's on-close handler reads the close reason and self-
-   *  cleans vault + installed state.
+  /** Forcibly disconnect EVERY connection of an instance — each open tab
+   *  and any binary data socket — with the `instance_revoked` close
+   *  message. Used by `pair.revoke` (explicit user action). The client's
+   *  on-close handler reads the close reason and self-cleans its local
+   *  state.
    *
-   *  Returns `{ revoked, client_token_id? }`. `revoked: true` iff the
-   *  instance was found and closed. `client_token_id` (when present)
-   *  is the durable `client_tokens.token_id` the closed socket was
-   *  authenticated under — read from `WsClient.client_token_id`
-   *  BEFORE the socket is deleted from the `clients` map. Populated
-   *  for sockets that completed the structured `<token_id>.<bearer>`
-   *  bearer-verify handshake; undefined only when the composition does
-   *  not wire `clientTokens`, so the caller stamps `detail.client_token_id` only when the join is
-   *  actually meaningful. Mirrors `pair_consume`'s targeting
-   *  convention so the device-credential ledger joins consume → revoke
-   *  on the same column. */
+   *  Returns `{ revoked, client_token_id?, client_token_ids? }`.
+   *  `revoked: true` iff at least one connection was found and closed.
+   *  `client_token_ids` lists every durable `client_tokens.token_id` the
+   *  closed connections were authenticated under (read BEFORE teardown),
+   *  so the caller can revoke each bearer; `client_token_id` is the first
+   *  of them, which the caller stamps as `detail.client_token_id` —
+   *  mirroring `pair_consume`'s targeting convention so the device-
+   *  credential ledger joins consume → revoke on the same column. Both
+   *  are absent/empty only when the composition does not wire
+   *  `clientTokens`. */
   revokeConnectedInstance(instance_id: string): {
     revoked: boolean;
     client_token_id?: string;
+    client_token_ids?: readonly string[];
   };
   /** D-148 § A.6.5 — close every connected WS client with the
    *  `instance_revoked` close message (code 4003), same wire semantics
@@ -963,17 +981,13 @@ export interface AttachWebSocketOptions {
    *  methods dispatch. Absent → those rpc methods return
    *  `not_configured`. */
   bootstrapDeps?: BootstrapHandlerDeps;
-  /** Server's stable id (UUID), persisted in SQLite at first boot. Sent
-   *  back to the extension on `registered` so the ext can pin the server
-   *  identity in its SyncConfig and advertise `srv_id` on heartbeats.
-   *  Address-independent — same id regardless of which URL the ext used
+  /** Server's stable id (UUID), persisted in SQLite at first boot.
+   *  Address-independent — same id regardless of which URL a client used
    *  to reach the server. */
   serverId?: string;
-  /** Durable paired-device roster. When provided, `pair.list` and
-   *  `pair.revoke` RPCs are dispatched AND the register path upserts
-   *  a row on first successful register per instance. Without it, the
-   *  pair.* RPCs return `not_configured` and register relies only on
-   *  in-memory state (legacy free-tier behavior). */
+  /** Durable paired-device roster (rows are written at `/auth/pair`).
+   *  When provided, `pair.list` and `pair.revoke` RPCs are dispatched;
+   *  without it, the pair.* RPCs return `not_configured`. */
   pairedInstances?: import('./paired-instances-store.js').PairedInstancesStore;
   /** D-148 § A.2.1 — signed-wrapper audit sink for `pair.revoke`'s
    *  high-assurance `pair_revoke` row emission. Optional; composer-
@@ -1652,12 +1666,6 @@ const buildWsBinding = (
     downloadDeps,
     archiveUploadDeps,
   } = options;
-  // Latest `user_id` reported by any registered client — used as `uid`
-  // on the server-heartbeat payload. First client to register with a
-  // non-empty user_id wins; subsequent exts' user_id should match (all
-  // paired devices share one account) but we don't currently enforce —
-  // mismatches are a register-time reject path (future work).
-  let pairedUserId: string | undefined;
   // Resolved at build time by the bundler (see the import note at the top of
   // this file). The guard below is kept for a module that loads but is not the
   // shape we expect; it can no longer be reached by a missing package.
@@ -2356,6 +2364,29 @@ const buildWsBinding = (
   const activeRpcDispatchCountBySocket = new WeakMap<object, number>();
   const activeDataSocketDispatches = new Set<Promise<void>>();
   const activeUpgradeVerifications = new Set<Promise<void>>();
+  /** Definite bearer-check failures per source address (see
+   *  UPGRADE_FAILURES_BEFORE_COOLDOWN). Bounded: a spray of addresses cannot
+   *  grow it without limit. */
+  const upgradeFailures = new Map<string, { count: number; since: number; coolUntil: number }>();
+  const upgradeSourceCoolingDown = (source: string, now: number): boolean =>
+    (upgradeFailures.get(source)?.coolUntil ?? 0) > now;
+  const noteUpgradeFailure = (source: string, now: number): void => {
+    const prior = upgradeFailures.get(source);
+    const entry = prior !== undefined && now - prior.since <= UPGRADE_FAILURE_WINDOW_MS
+      ? { ...prior, count: prior.count + 1 }
+      : { count: 1, since: now, coolUntil: 0 };
+    if (entry.count >= UPGRADE_FAILURES_BEFORE_COOLDOWN) {
+      entry.coolUntil = now + UPGRADE_COOLDOWN_MS;
+      entry.count = 0;
+      entry.since = now;
+    }
+    upgradeFailures.delete(source);
+    upgradeFailures.set(source, entry);
+    if (upgradeFailures.size > UPGRADE_FAILURE_SOURCES_MAX) {
+      const oldest = upgradeFailures.keys().next().value;
+      if (oldest !== undefined) upgradeFailures.delete(oldest);
+    }
+  };
   let upgradeAdmissionOpen = true;
   let rpcAdmissionOpen = true;
   let dataSocketAdmissionOpen = true;
@@ -2382,6 +2413,15 @@ const buildWsBinding = (
       if (typeof socket.terminate === 'function') socket.terminate();
       else socket.close();
     } catch { /* already closed */ }
+  };
+
+  /** The paired device each open binary data socket was admitted for. Those
+   *  sockets never join `clients`, so without this a revoked device kept any
+   *  upload or download it had open. */
+  const dataSocketOwners = new Map<any, { token_id: string; instance_id: string }>();
+  const trackDataSocketOwner = (socket: any, token_id: string, instance_id: string): void => {
+    dataSocketOwners.set(socket, { token_id, instance_id });
+    socket.on('close', () => { dataSocketOwners.delete(socket); });
   };
 
   // D-172 resumable uploads — a SEPARATE WebSocketServer for the dedicated
@@ -2705,6 +2745,7 @@ const buildWsBinding = (
           client.bridge_session_id = session_id;
         }
         clients.set(ws, client);
+        noteDeviceSeen(client);
         wss.emit('connection', ws, req);
       });
     };
@@ -2732,6 +2773,7 @@ const buildWsBinding = (
       const uploadService = uploadDeps.service;
       uploadWss.handleUpgrade(req, socket, head, (wsUp: any) => {
         wsUp.binaryType = 'nodebuffer';
+        trackDataSocketOwner(wsUp, verified?.token_id ?? '', scope_key);
         let chunkInFlight = false;
         wsUp.on('message', (raw: any, isBinary: boolean) => {
           if (!dataSocketAdmissionOpen) return;
@@ -2789,6 +2831,7 @@ const buildWsBinding = (
       const archiveUploadService = archiveUploadDeps.service;
       archiveUploadWss.handleUpgrade(req, socket, head, (wsUp: any) => {
         wsUp.binaryType = 'nodebuffer';
+        trackDataSocketOwner(wsUp, verified?.token_id ?? '', scope_key);
         let chunkInFlight = false;
         wsUp.on('message', (raw: any, isBinary: boolean) => {
           if (!dataSocketAdmissionOpen) return;
@@ -2842,6 +2885,7 @@ const buildWsBinding = (
       const downloadService = downloadDeps.service;
       downloadWss.handleUpgrade(req, socket, head, (wsDl: any) => {
         wsDl.binaryType = 'nodebuffer';
+        trackDataSocketOwner(wsDl, verified?.token_id ?? '', scope_key);
         // The sink wraps the raw socket; `send(chunk, cb)` fires the callback
         // after the frame flushes, which the service awaits as backpressure.
         const sink: DownloadSink = {
@@ -2882,6 +2926,21 @@ const buildWsBinding = (
     // path (no token store) accepts-any with `undefined`. Async-aware: the
     // upgrade handler holds the raw socket open until either `handleUpgrade` or
     // `socket.destroy()` resolves the suspended state.
+    /** ⛔ A browser cannot read the HTTP status of a refused WebSocket
+     *  handshake: the 401 reached it as close 1006, which the webclient
+     *  (rightly) treats as a network drop and retries forever. So a sign-in
+     *  revoked or replaced while the browser was closed — or every sign-in,
+     *  after a server identity reset — was never reported: it showed
+     *  "reconnecting" until someone cleared the browser. On the rpc socket a
+     *  DEFINITE rejection of the bearer therefore completes the upgrade and
+     *  closes with 4401, which the webclient maps to "pair this browser
+     *  again". Nothing is registered and nothing is sent first. */
+    const closeRejectedBearer = (): void => {
+      wss.handleUpgrade(req, socket, head, (ws: any) => {
+        try { ws.close(4401, 'bearer rejected'); } catch { /* already closed */ }
+      });
+    };
+
     const dispatchVerifiedUpgrade = (
       accept: (
         verified: {
@@ -2891,11 +2950,26 @@ const buildWsBinding = (
           token_instance_id?: string | null;
         } | undefined,
       ) => void,
+      rejectBearer: () => void = reject401,
     ): void => {
       const structured = clientTokens ? parseStructuredBearer(realm) : null;
       if (!structured) {
-        if (clientTokens) { reject401(); return; }
+        if (clientTokens) { rejectBearer(); return; }
         accept(undefined);
+        return;
+      }
+      // The expensive check is bounded (see UPGRADE_VERIFY_MAX_IN_FLIGHT):
+      // a source that keeps failing, or a full queue, is turned away first.
+      const source = req.socket?.remoteAddress ?? 'unknown';
+      const startedAt = Date.now();
+      if (upgradeSourceCoolingDown(source, startedAt)) {
+        try { socket.write('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\n\r\n'); } catch { /* closed */ }
+        try { socket.destroy(); } catch { /* destroyed */ }
+        return;
+      }
+      if (activeUpgradeVerifications.size >= UPGRADE_VERIFY_MAX_IN_FLIGHT) {
+        try { socket.write('HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\n\r\n'); } catch { /* closed */ }
+        try { socket.destroy(); } catch { /* destroyed */ }
         return;
       }
       const task = clientTokens!
@@ -2908,7 +2982,12 @@ const buildWsBinding = (
             try { socket.destroy(); } catch { /* already closed */ }
             return;
           }
-          if (!ok || !record) { reject401(); return; }
+          if (!ok || !record) {
+            noteUpgradeFailure(source, Date.now());
+            rejectBearer();
+            return;
+          }
+          upgradeFailures.delete(source);
           // Stamp last_used_at — best-effort; a touch failure shouldn't block
           // the accepted upgrade (the verify already succeeded so the bearer is
           // authoritative).
@@ -2927,7 +3006,9 @@ const buildWsBinding = (
         })
         .catch(() => {
           // verify throws are treated as auth-failure (defense in depth — an
-          // unexpected Argon2id throw must not silently accept).
+          // unexpected Argon2id throw must not silently accept). A plain 401,
+          // never `rejectBearer`: a failure to check is not a verdict, and a
+          // 4401 would have the browser drop a sign-in that may still be good.
           reject401();
         });
       trackUpgradeVerification(task);
@@ -2964,7 +3045,7 @@ const buildWsBinding = (
       dispatchVerifiedUpgrade(acceptArchiveUploadUpgrade);
       return;
     }
-    dispatchVerifiedUpgrade(acceptUpgrade);
+    dispatchVerifiedUpgrade(acceptUpgrade, closeRejectedBearer);
   };
 
   // Legacy single-listener binding — preserved for `attachWebSocket`
@@ -3014,6 +3095,7 @@ const buildWsBinding = (
     ws.on('close', () => {
       detachBridgeOnDisconnect();
       clients.delete(ws);
+      noteDeviceSeen(client);
       // D-121 Phase 6 — drop the bus subscription so a stale callback
       // doesn't keep the closed WS alive in the bus subscribers map.
       eventsDeps?.bus.unsubscribe(ws);
@@ -3025,6 +3107,18 @@ const buildWsBinding = (
       eventsDeps?.bus.unsubscribe(ws);
     });
   });
+
+  /** Devices: when each paired device was last here (its connect and its
+   *  leave). Best-effort — a roster write must never cost a connection. */
+  const noteDeviceSeen = (client: WsClient): void => {
+    const instanceId = resolveGatedClientInstanceId(client);
+    if (pairedInstances === undefined || instanceId === null) return;
+    try {
+      pairedInstances.noteSeen(instanceId);
+    } catch {
+      /* observability for the Devices list only */
+    }
+  };
 
   const handleMessage = (client: WsClient, msg: Record<string, unknown>): void => {
     if (msg.kind === 'notification_receipt') {
@@ -3081,195 +3175,21 @@ const buildWsBinding = (
     }
     switch (msg.type) {
       case 'register': {
-        // Pre-enrollment gate: a server with the recovery-key store
-        // wired but no realm-binding yet refuses to register any
-        // instance. The only way through is `pair.registerRecoveryKey`
-        // via the rpc envelope (also gated below). Once that succeeds,
-        // subsequent registers proceed normally.
-        if (recoveryKeyCheck && !recoveryKeyCheck.exists()) {
-          send(client.ws, {
-            type: 'register_error',
-            code: 'server_not_enrolled',
-            message: 'Server is not encrypted yet. Pair via the extension to enroll a recovery key first.',
-          });
-          client.ws.close(4001, 'server not enrolled');
-          clients.delete(client.ws);
-          break;
-        }
-
-        const requestedId = (msg.instance_id as string) ?? null;
-        const intent = (msg.intent as string | undefined) ?? 'new';
-        const replaceOld = msg.replace_old as string | undefined;
-        const reportedUserId = msg.user_id as string | undefined;
-
-        // ── Intent: replace ──────────────────────────────────────
-        // Atomic swap: revoke replace_old + accept requestedId. This
-        // bypasses the maxInstances limit (swap not growth) and drives
-        // the "I'm migrating from device A to B" UX. Free-tier users
-        // pick this; Pro users pick "add as new" (intent=new) instead.
-        if (intent === 'replace') {
-          if (!replaceOld) {
-            send(client.ws, {
-              type: 'register_error',
-              code: 'bad_request',
-              message: 'intent="replace" requires replace_old',
-            });
-            client.ws.close(4000, 'bad register');
-            clients.delete(client.ws);
-            break;
-          }
-          if (!pairedInstances) {
-            send(client.ws, {
-              type: 'register_error',
-              code: 'not_configured',
-              message: 'server has no durable pairing store; cannot process replace',
-            });
-            client.ws.close(4000, 'bad register');
-            clients.delete(client.ws);
-            break;
-          }
-          const oldRow = pairedInstances.get(replaceOld);
-          if (!oldRow) {
-            send(client.ws, {
-              type: 'register_error',
-              code: 'not_found',
-              message: `replace_old instance ${replaceOld} not found in paired roster`,
-            });
-            client.ws.close(4000, 'bad register');
-            clients.delete(client.ws);
-            break;
-          }
-          if (reportedUserId && oldRow.user_id !== reportedUserId) {
-            send(client.ws, {
-              type: 'register_error',
-              code: 'forbidden',
-              message: 'replace_old belongs to a different user',
-            });
-            client.ws.close(4003, 'forbidden');
-            clients.delete(client.ws);
-            break;
-          }
-          // Close old's ws (if any) + revoke durable row + upsert new.
-          handle.revokeConnectedInstance(replaceOld);
-          pairedInstances.replace({
-            old_instance_id: replaceOld,
-            new_instance_id: requestedId!,
-            user_id: reportedUserId ?? oldRow.user_id,
-            new_display_name: (msg.display_name as string) ?? 'unknown',
-            // D-156 P10 — the client kind resolved from the verified
-            // client token at WS bearer-verify (undefined for legacy /
-            // db-less registers, which the store COALESCEs to the prior
-            // recorded kind).
-            ...(client.client_kind ? { new_kind: client.client_kind } : {}),
-          });
-          // D-156 follow-on — the replace is an atomic revoke-old + add-new
-          // roster mutation, so fan one `pair.list_changed` to every paired
-          // client. A single signal suffices: subscribers re-call `pair.list`,
-          // and the re-fetched authoritative roster reflects BOTH the old's
-          // revocation and the new's addition. `op: 'added'` is the replace's
-          // headline (the user is migrating TO this device). Best-effort: a
-          // bus throw must not abort the registration the user just completed.
-          try {
-            pairRosterBus?.emit({ kind: 'pair.list_changed', op: 'added' });
-          } catch {
-            /* observability-only; never abort the register on emit failure. */
-          }
-          // Fall through to normal register. No maxInstances check (swap).
-        } else {
-          // ── Intent: new (or unspecified — default) ─────────────
-          // Instance limit check — count registered clients excluding this one.
-          if (handle.maxInstances > 0 && requestedId) {
-            const registered = [...clients.values()].filter(
-              c => c.instance_id && c.instance_id !== requestedId && c.ws !== client.ws,
-            );
-            if (registered.length >= handle.maxInstances) {
-              // Include the user's current paired devices so the UI
-              // can render the "new device or replace" picker without
-              // a second round-trip. Only populated when the client
-              // sent user_id on register AND pairedInstances is wired
-              // (durable roster available).
-              let devices: Array<{
-                instance_id: string;
-                display_name: string;
-                added_at: number;
-                connected: boolean;
-              }> | undefined;
-              if (pairedInstances && reportedUserId) {
-                const active = pairedInstances.listActive(reportedUserId);
-                const live = new Set(
-                  [...clients.values()]
-                    .map((c) => c.instance_id)
-                    .filter((id): id is string => !!id),
-                );
-                devices = active.map((row) => ({
-                  instance_id: row.instance_id,
-                  display_name: row.display_name,
-                  added_at: row.added_at,
-                  connected: live.has(row.instance_id),
-                }));
-              }
-              send(client.ws, {
-                type: 'instance_limit',
-                message: `This server allows ${handle.maxInstances} extension${handle.maxInstances > 1 ? 's' : ''}. `
-                  + 'Run your own recued instance to connect more devices, or upgrade to Pro for hosted multi-device sync.',
-                max: handle.maxInstances,
-                current: registered.length,
-                ...(devices ? { devices } : {}),
-              });
-              client.ws.close(4001, 'instance limit');
-              clients.delete(client.ws);
-              break;
-            }
-          }
-        }
-
-        // Reject if the instance_id was revoked earlier — the device
-        // must be re-registered as a new instance (user goes through
-        // the pair flow again). Skipped for intent=replace since we
-        // just upserted (revoked_at=NULL) in the replace transaction.
-        if (intent !== 'replace' && pairedInstances && pairedInstances.isRevoked(requestedId!)) {
-          send(client.ws, {
-            type: 'instance_revoked',
-            instance_id: requestedId,
-            reason: 'this instance was previously revoked; re-pair as a new device',
-          });
-          client.ws.close(4003, 'instance revoked');
-          clients.delete(client.ws);
-          break;
-        }
-
-        client.instance_id = requestedId;
-        client.display_name = (msg.display_name as string) ?? 'unknown';
-        if (reportedUserId) {
-          client.user_id = reportedUserId;
-          pairedUserId ??= reportedUserId;
-        }
-
-        // Upsert durable row so `pair.list` can show this device even
-        // when it's offline. Only when user_id is known (anonymous /
-        // free-tier without sign-in has no durable roster). Skipped
-        // for intent=replace since the replace() transaction already
-        // did an upsert atomically with the revoke.
-        if (intent !== 'replace' && pairedInstances && client.user_id && client.instance_id) {
-          pairedInstances.addOrRefresh({
-            instance_id: client.instance_id,
-            user_id: client.user_id,
-            display_name: client.display_name,
-            // D-156 P10 — kind from the verified client token (see replace
-            // above). A registering extension/bridge carries 'bridge';
-            // absent → store keeps any prior recorded kind (COALESCE).
-            ...(client.client_kind ? { kind: client.client_kind } : {}),
-          });
-        }
-
+        // ⛔ RETIRED 2026-10-23. `register` let a connected client NAME its
+        // own identity: the `user_id` it sent overwrote its Devices row (so
+        // the owner no longer saw it, and Revoke refused it as another
+        // user's), `intent: 'replace'` revoked any other device's row without
+        // touching its bearer, a replace cleared an old row's revocation, and
+        // a bearer paired without an instance could claim any instance. No
+        // shipped client has sent it since the CLI's rpc client retired
+        // (`666108360`, 2026-10-06). A device's identity is the one its
+        // pairing token carries (`token_instance_id`), so nothing here may
+        // change it — say so, rather than drop the frame and leave an old
+        // client waiting for `registered`.
         send(client.ws, {
-          type: 'registered',
-          instance_id: client.instance_id,
-          // Send back the server's stable id so the ext can persist it
-          // in its SyncConfig + advertise it in future heartbeats as
-          // `srv_id`. Omitted when the server wasn't given one (legacy
-          // callers / tests that don't care about identity).
-          ...(serverId ? { server_id: serverId } : {}),
+          type: 'register_error',
+          code: 'unsupported',
+          message: 'This server no longer accepts register: a device is identified by its pairing. Pair this device to connect it.',
         });
         break;
       }
@@ -3568,11 +3488,22 @@ const buildWsBinding = (
     },
 
     getPairedUserId() {
-      return pairedUserId;
+      // Only `register` ever reported one, and it is retired.
+      return undefined;
     },
 
     revokeConnectedInstance(instance_id) {
-      for (const [ws, client] of clients) {
+      // EVERY connection the device holds — one per open tab, plus any
+      // binary data socket. Identity is fixed at the upgrade and never
+      // re-checked, so stopping at the first match left the device's other
+      // tabs fully signed in after Revoke.
+      const at = Math.floor(Date.now() / 1000);
+      const client_token_ids: string[] = [];
+      const noteToken = (token_id: string | undefined): void => {
+        if (token_id && !client_token_ids.includes(token_id)) client_token_ids.push(token_id);
+      };
+      let closed = 0;
+      for (const [ws, client] of [...clients]) {
         // D-156 follow-on — match a bearer-only webclient too (null
         // `instance_id`, paired identity in `token_instance_id`) so a
         // `pair.revoke` against a webclient's durable row also closes its
@@ -3583,30 +3514,30 @@ const buildWsBinding = (
         if (liveId !== instance_id) continue;
         // Snapshot the durable `client_tokens.token_id` (D-148 § A.2.1)
         // BEFORE the close + delete so the caller can stamp
-        // `pair_revoke.detail.client_token_id` without racing the
-        // socket teardown. Populated by the structured-bearer upgrade
-        // path that flips WS auth to `clientTokens.verify`; undefined
-        // only for db-less compositions that did not wire
-        // `clientTokens`, in which case the audit stamp is omitted so
-        // the join stays clean.
-        const client_token_id = client.client_token_id;
-        // Tell the ext why — on-close handler reads this to wipe local
-        // vault + installed state so a revoked device can't linger with
-        // cached secrets. Close code 4003 chosen to distinguish from
-        // instance_limit (4001) and generic close.
-        send(client.ws, {
-          type: 'instance_revoked',
-          instance_id,
-          at: Math.floor(Date.now() / 1000),
-        });
+        // `pair_revoke.detail.client_token_id` and revoke the bearer
+        // without racing the socket teardown. Undefined only for db-less
+        // compositions that did not wire `clientTokens`.
+        noteToken(client.client_token_id);
+        // Tell the client why — its on-close handler wipes local state so a
+        // revoked device can't linger with cached secrets. Close code 4003
+        // distinguishes this from instance_limit (4001) and a generic close.
+        send(client.ws, { type: 'instance_revoked', instance_id, at });
         try { client.ws.close(4003, 'instance revoked'); } catch { /* already closed */ }
         clients.delete(ws);
-        return {
-          revoked: true,
-          ...(client_token_id !== undefined ? { client_token_id } : {}),
-        };
+        closed += 1;
       }
-      return { revoked: false };
+      for (const [socket, owner] of [...dataSocketOwners]) {
+        if (owner.instance_id !== instance_id) continue;
+        noteToken(owner.token_id);
+        try { socket.close(4003, 'instance revoked'); } catch { /* already closed */ }
+        dataSocketOwners.delete(socket);
+        closed += 1;
+      }
+      return {
+        revoked: closed > 0,
+        ...(client_token_ids[0] !== undefined ? { client_token_id: client_token_ids[0] } : {}),
+        client_token_ids,
+      };
     },
 
     revokeAllConnectedInstances() {
@@ -3641,6 +3572,11 @@ const buildWsBinding = (
         try { client.ws.close(4003, 'instance revoked'); } catch { /* already closed */ }
         clients.delete(ws);
         count += 1;
+      }
+      // Every bearer was just revoked, so no upload or download stays open.
+      for (const [socket] of [...dataSocketOwners]) {
+        try { socket.close(4003, 'instance revoked'); } catch { /* already closed */ }
+        dataSocketOwners.delete(socket);
       }
       return count;
     },

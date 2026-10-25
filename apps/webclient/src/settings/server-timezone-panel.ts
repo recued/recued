@@ -35,6 +35,7 @@ import {
   type ServerTimeZoneMode,
   type ServerTimeZoneSetRequest,
 } from '@recued/contracts';
+import { TIMEZONE_WORKSPACE_STYLES } from './timezone-workspace-styles.js';
 
 export const SERVER_TZ_PANEL_ATTR = 'data-recued-server-timezone-panel';
 export const SERVER_TZ_STATE_ATTR = 'data-recued-server-timezone-state';
@@ -596,4 +597,4 @@ export const SERVER_TIMEZONE_PANEL_STYLES = `
   border-radius: 4px;
   font-size: 12px;
 }
-`;
+` + '\n' + TIMEZONE_WORKSPACE_STYLES;

@@ -303,8 +303,10 @@ export const INSTANCE_PREFS = {
     default: 'after_voice',
     allowed: VOICE_SPEAK_MODES,
     description:
-      'Read replies aloud using your browser\'s own speech, which runs on ' +
-      'this device — nothing is sent anywhere to synthesise it. ' +
+      'Read replies aloud in a voice that runs on this device. Recued uses ' +
+      'only voices your browser marks as on-device, so nothing is sent ' +
+      'anywhere to synthesise them; if the browser has no on-device voice ' +
+      'in your language, replies are not read aloud. ' +
       '"after_voice" (the default) speaks only when you spoke first, so a ' +
       'typed conversation stays silent; "always" speaks every reply; ' +
       '"never" turns it off. Long replies are spoken up to a point and then ' +

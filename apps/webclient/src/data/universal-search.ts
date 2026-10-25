@@ -23,7 +23,11 @@
  *  Pure render (HTML strings) + styles + click-dispatch constants the route
  *  wires — mirrors `collection-explorer.ts` and `memory-lens.ts`. */
 
-import type { CollectionSearchGroup, CollectionSearchMatch } from '@recued/contracts';
+import type {
+  CollectionSearchDidYouMean,
+  CollectionSearchGroup,
+  CollectionSearchMatch,
+} from '@recued/contracts';
 
 /** Click-dispatch contract with the route's `onClick`. */
 export const SEARCH_OPEN_RECORD_ACTION = 'universal-search-open-record';
@@ -39,6 +43,9 @@ export const SEARCH_OPEN_PACK_ACTION = 'universal-search-open-pack';
 export const SEARCH_PACK_SLUG_ATTR = 'data-search-pack';
 export const SEARCH_MARKETPLACE_ACTION = 'universal-search-marketplace';
 export const SEARCH_OPEN_MARKET_PACK_ACTION = 'universal-search-open-market-pack';
+export const SEARCH_DID_YOU_MEAN_ACTION = 'universal-search-did-you-mean';
+/** The corrected query the "did you mean" button runs. */
+export const SEARCH_DID_YOU_MEAN_QUERY_ATTR = 'data-search-did-you-mean';
 
 /** An installed capability that matched. Deliberately NOT a
  *  `CollectionSearchGroup`: a recipe has no `record_id`, no `received_at` and no
@@ -84,6 +91,13 @@ export interface UniversalSearchProps {
   capabilitiesLoading?: boolean;
   /** `collection.searchAll` groups, server-ordered by hit count. */
   groups?: ReadonlyArray<CollectionSearchGroup>;
+  /** The server's "did you mean": the query with each word NO store holds
+   *  replaced by the closest word one does. Offered, never applied — the
+   *  groups answer what was typed. */
+  didYouMean?: CollectionSearchDidYouMean;
+  /** The typed words no searched store holds. The stores dropped them and
+   *  answered with the rest, so the groups match only the other words. */
+  absentWords?: ReadonlyArray<string>;
   /** Installed recipes matching the same query — the owner's CAPABILITIES, as
    *  opposed to their records. Ranked by the shared `rankSearchable`, so this
    *  agrees with what `tools.search` finds for the AI. */
@@ -294,6 +308,47 @@ const renderMarketGroup = (
   </li>`).join('')}</ul>
 </section>`;
 
+/** Google's "Did you mean", built from the owner's own words.
+ *
+ *  ⚠ A BUTTON THAT RUNS THE CORRECTED SEARCH, not a silent swap of the results:
+ *  what is on the page answers what was typed, and a search that quietly
+ *  answered a different question would be the same lie as an unlabelled
+ *  partial match. Corrected words are bold, the rest is as typed.
+ *
+ *  ⛔ MARK, THEN ESCAPE. Bolding the escaped string would let a corrected word
+ *  match inside an entity (`amp` in `&amp;`) and break the markup; the marks
+ *  are placed on the raw text and survive escaping untouched. */
+const renderDidYouMean = (d: CollectionSearchDidYouMean, actionAttr: string): string => {
+  let marked = d.query;
+  for (const c of d.corrections) {
+    const word = c.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    marked = marked.replace(
+      new RegExp(`(?<![\\p{L}\\p{N}\\p{M}])${word}(?![\\p{L}\\p{N}\\p{M}])`, 'gu'),
+      (w) => `\u0001${w}\u0002`,
+    );
+  }
+  const shown = e(marked).replace(/\u0001/g, '<strong>').replace(/\u0002/g, '</strong>');
+  return `<p class="rq-did-you-mean">Did you mean
+  <button type="button" class="rq-did-you-mean-btn"
+    ${e(actionAttr)}="${SEARCH_DID_YOU_MEAN_ACTION}"
+    ${SEARCH_DID_YOU_MEAN_QUERY_ATTR}="${e(d.query)}">${shown}</button>?</p>`;
+};
+
+/** “A”, “A” or “B”, “A”, “B” or “C” — escaped. */
+const quotedWords = (words: ReadonlyArray<string>): string => {
+  const q = words.map((w) => `“${e(w)}”`);
+  return q.length < 2 ? (q[0] ?? '') : `${q.slice(0, -1).join(', ')} or ${q.at(-1)}`;
+};
+
+/** ⛔⛔ SAYS THE QUERY WAS NOT SEARCHED AS TYPED. A store that misses drops the
+ *  word no record holds and answers with the rest, so "Castelanos invoice"
+ *  listed every invoice, the Car Lease one first, under the owner's own words.
+ *  Without this line those rows read as answers about Castelanos. Only beside
+ *  record groups: the empty page already says nothing matched, and installed
+ *  recipes and packs are matched by a different rule. */
+const renderAbsentWords = (words: ReadonlyArray<string>): string =>
+  `<p class="rq-absent" role="status">No record holds ${quotedWords(words)}, so these results match only your other words.</p>`;
+
 /** The offer, shown only on an empty own-result. ⚠ It NAMES the cloud, because
  *  the owner is about to send their query off this machine and a button reading
  *  "search more" would hide that. */
@@ -333,14 +388,18 @@ export const renderUniversalSearch = (
     ? props.capabilitiesLoading === true ? 'Searching…' : 'Searching records…'
     : props.capabilitiesLoading === true ? 'Searching installed recipes and packs…' : '';
   const progress = pending ? `<p class="rq-hint" role="status">${pending}</p>` : '';
+  const didYouMean = props.didYouMean !== undefined
+    ? renderDidYouMean(props.didYouMean, props.actionAttr)
+    : '';
   if (groups.length === 0 && recipes.length === 0 && packs.length === 0) {
     // An unfinished local read cannot establish an empty result or justify
     // offering a cloud search. Completed groups remain usable while it runs.
-    if (progress) return `<div class="rq-search">${box}${progress}</div>`;
+    if (progress) return `<div class="rq-search">${box}${didYouMean}${progress}</div>`;
     // ⛔ NAMES THE SCOPE IT SEARCHED. "No results" alone cannot be told apart
     // from "the search did not run", and an owner reading the shorter sentence
     // concludes their data is not there when it may simply not be synced.
     return `<div class="rq-search">${box}
+${didYouMean}
 <p class="rq-empty">Nothing on this server matches “${e(q)}”. Sources still syncing will not appear yet.</p>
 ${props.marketplaceError !== undefined
   ? `<p class="rq-error" role="alert">${e(props.marketplaceError)}</p>`
@@ -352,7 +411,12 @@ ${market.length === 0 && props.marketplaceOffered === true
   }
   const total = groups.reduce((n, g) => n + g.matches.length, 0);
   const places = groups.length + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
+  const absent = groups.length > 0 && props.absentWords !== undefined && props.absentWords.length > 0
+    ? renderAbsentWords(props.absentWords)
+    : '';
   return `<div class="rq-search">${box}
+${absent}
+${didYouMean}
 <p class="rq-summary" role="status">${total + recipes.length + packs.length}${groups.some((g) => g.more) ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
 ${progress}
 ${groups.map((g) => renderGroup(g, props.actionAttr, now)).join('')}
@@ -384,4 +448,8 @@ export const UNIVERSAL_SEARCH_STYLES = `
 .rq-market-offer { align-self: flex-start; font: inherit; padding: 0.4rem 0.6rem; cursor: pointer; }
 .rq-subtle { font-size: 0.75rem; opacity: 0.65; margin: 0.15rem 0 0; }
 .rq-more { align-self: flex-start; font: inherit; padding: 0.25rem 0.5rem; cursor: pointer; }
+.rq-did-you-mean { margin: 0.25rem 0; }
+.rq-absent { margin: 0.25rem 0; }
+.rq-did-you-mean-btn { font: inherit; color: inherit; background: none; border: 0; padding: 0;
+  text-decoration: underline; cursor: pointer; }
 `;

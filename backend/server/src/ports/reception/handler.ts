@@ -102,6 +102,7 @@ import type { DropBlobStore } from '../../storage/reception-drop-store.js';
 import {
   createApprovalLinkConsumeHandler,
   createApprovalLinkPacketHandler,
+  writeApprovalLinkUnavailableResponse,
   type ApprovalLinkNonceStore,
 } from './handlers/approval-link.js';
 import type { ApprovalIntentStore } from '../../storage/reception-approval-store.js';
@@ -450,6 +451,19 @@ const writeAccessLog = (
     // best-effort; the substrate's visibility is more important than
     // 100% logging fidelity.
   }
+};
+
+/** Browser approval visits get a neutral next step. API and upload callers
+ * retain their existing status and JSON contract. */
+const writeGoneResponse = (req: IncomingMessage, res: ServerResponse, kind: ReceptionEndpointKind): void => {
+  const acceptsHtml = req.headers.accept?.split(',').some(value => {
+    const [media, ...parameters] = value.trim().split(';');
+    const quality = parameters.find(parameter => parameter.trim().startsWith('q='));
+    return media?.trim().toLowerCase() === 'text/html' && (!quality || Number(quality.trim().slice(2)) > 0);
+  });
+  if (kind === 'approval_link' && (req.method === 'GET' || req.method === 'POST') && acceptsHtml) {
+    writeApprovalLinkUnavailableResponse(res);
+  } else writeJson(res, 410, { error: { code: 'gone' } });
 };
 
 /** D-149 P12 § A.20.5 — IP-block-list membership check. Returns `false`
@@ -1375,7 +1389,7 @@ export const createReceptionPortHandler = (
         outcome: 'revoked',
         url_path_redacted,
       });
-      writeJson(res, 410, { error: { code: 'gone' } });
+      writeGoneResponse(req, res, route.kind);
       return;
     }
     if (cached.summary.expires_at !== null && cached.summary.expires_at <= now) {
@@ -1387,7 +1401,7 @@ export const createReceptionPortHandler = (
         outcome: 'expired',
         url_path_redacted,
       });
-      writeJson(res, 410, { error: { code: 'gone' } });
+      writeGoneResponse(req, res, route.kind);
       return;
     }
     if (!cached.summary.enabled) {

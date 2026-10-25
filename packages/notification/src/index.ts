@@ -35,6 +35,7 @@ import { HANDLED_ASK_RETENTION_MS as ASK_LOAD_WINDOW_MS } from './ask-store.js';
 import type { AskStore, NewPendingAsk } from './ask-store.js';
 import { createAskDeliveryController, type AskDeliveryControllerDeps } from './ask-delivery.js';
 import type { AskDestinationResolution, AskDeliveryDestination, AskDeliveryGroup, AskDeliveryInput, AskDeliveryStore, UnmatchedAskReply } from './ask-delivery-store.js';
+import { receivesOnly } from './ask-delivery-store.js';
 import {
   createAskSerializer,
   mintAskId as defaultMintAskId,
@@ -93,7 +94,7 @@ export {
   type NewPendingAsk,
 } from './ask-store.js';
 export { mintAskId } from './correlation.js';
-export { createAskDeliveryStore } from './ask-delivery-store.js';
+export { createAskDeliveryStore, receivesOnly } from './ask-delivery-store.js';
 export type {
   AskDeliveryStore, AskDeliveryRecord, AskDeliveryGroup, AskDeliveryInput,
   AskDeliveryDestination, AskDeliveryAttempt, AskDeliveryOutcome, AskDeliveryEnvelope,
@@ -1258,11 +1259,15 @@ export const createNotificationBlock = (
           const group = await deps.deliveryStore?.get(ask.delivery_group_id);
           // accepts() already verified the physical origin and its current
           // authority. Persist only the role, never the sender or channel in
-          // the handler's Answer. A household member is not an owner signal.
+          // the handler's Answer. ⚠ By accepts()'s own rule: the owner's
+          // destination answers through its principal, or with none from the
+          // owner's own private conversation (D-325 §15.7, 2026-10-24); a copy
+          // that only receives never answers.
           const owner = reply.via === 'ui' || reply.landing_capability === true || !!origin && group?.destinations.some(destination =>
             destination.channel === reply.via && destination.connection_name === origin.connection_name
             && destination.connection_enrolled_at === origin.connection_enrolled_at && destination.recipient === origin.recipient
-            && destination.expected_sender === origin.sender) === true;
+            && !receivesOnly(destination)
+            && (destination.expected_sender === undefined || destination.expected_sender === origin.sender)) === true;
           participant = { owner };
         }
         // `open → answered` — the durable, once-only dedup point (A.5).

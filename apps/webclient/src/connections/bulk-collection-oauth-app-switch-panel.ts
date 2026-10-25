@@ -110,13 +110,13 @@ export const createBulkCollectionOAuthAppSwitchPanel = (deps: {
     const app = target(); const active = deps.host.ownerDocument?.activeElement as HTMLElement | null | undefined;
     const focusedAction = active && host.contains(active) ? active.dataset.bulkAppAction : undefined;
     const focusChoice = active?.hasAttribute('data-bulk-app-choice') === true && host.contains(active);
-    host.innerHTML = '<section class="accounts-bulk-app-switch" aria-label="Bulk saved-app switching"><style>'
+    host.innerHTML = '<section class="accounts-bulk-app-switch" aria-label="Switch OAuth app for several accounts"><style>'
       + '.accounts-bulk-app-switch{border:1px solid var(--border,#ccc);border-radius:12px;padding:16px;overflow-wrap:anywhere;min-width:0}'
       + '.accounts-bulk-app-switch label{display:block;margin:10px 0}.accounts-bulk-app-switch select{max-width:100%;width:100%;box-sizing:border-box}'
       + '.accounts-bulk-app-switch button{margin:4px}.accounts-bulk-app-switch li{margin:12px 0}.accounts-bulk-app-switch code{white-space:normal}</style>'
-      + '<h2 tabindex="-1" data-bulk-app-heading>Bulk saved-app switching</h2>'
-      + '<p>Move native Mail and Calendar accounts to another saved Google or Microsoft OAuth app. Keep collection names, saved data, resource selections and sync state.</p>'
-      + '<p>Each distinct sign-in needs authorization with the same vendor account. Linked collections sharing a grant switch together, including unselected companions shown in the review.</p>'
+      + '<h2 tabindex="-1" data-bulk-app-heading>Switch OAuth app for several accounts</h2>'
+      + '<p>Move Mail and Calendar accounts to another saved Google or Microsoft OAuth app. Their names, saved data, chosen folders and calendars, and sync state stay as they are.</p>'
+      + '<p>Each sign-in is authorized again with the same Google or Microsoft account. Accounts that share one sign-in switch together; the review shows any that were not selected.</p>'
       + (phase === 'select' ? '<label>Destination saved OAuth app<select data-bulk-app-choice' + (loading ? ' disabled' : '') + '><option value="">Choose a saved app</option>'
         + apps.map(a => '<option value="' + e(a.issuer + ':' + a.id) + '"' + (appKey === a.issuer + ':' + a.id ? ' selected' : '') + '>'
           + e((a.issuer === 'google' ? 'Google' : 'Microsoft') + ' · ' + a.label + ' · ' + a.client_id) + '</option>').join('') + '</select></label>'

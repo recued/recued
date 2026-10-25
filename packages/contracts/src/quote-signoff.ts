@@ -71,6 +71,14 @@ export interface QuoteSignoffFollowUp {
   };
 }
 
+/** Owner-only canonical reply. Comments stay out of exported receipts. */
+export interface QuoteSignoffResponse {
+  decision: 'accepted' | 'declined' | 'not_recorded' | 'unavailable';
+  received_at: number | null;
+  recorded_at: number | null;
+  reason?: string;
+}
+
 export interface QuoteSignoffSummary {
   signoff_id: string;
   quote_id: string;
@@ -92,6 +100,8 @@ export interface QuoteSignoffSummary {
   state: QuoteSignoffState;
   /** Owner review is separate from the customer's recorded acceptance. */
   release_review?: 'not_queued' | 'waiting' | 'running' | 'closed';
+  /** Present on the owner's list; older servers may omit it. */
+  response?: QuoteSignoffResponse;
   /** Computed from the current quote and clock, including while awaiting review. */
   availability: 'current' | 'superseded' | 'expired' | 'unavailable';
   created_at: number;
@@ -114,6 +124,10 @@ export interface QuoteSignoffSummary {
 export interface QuoteSignoffPrepareResult {
   signoff: QuoteSignoffSummary;
   preview_hash: string;
+  /** Review authorization deadline and response-time server clock. Optional
+   * for older servers; independent of the saved customer link deadline. */
+  preview_expires_at?: number;
+  preview_server_now?: number;
   /** The exact text the customer will be shown. */
   customer_preview: string;
 }
@@ -124,6 +138,18 @@ export interface QuoteSignoffPublishInput {
   remember_link_for_reminders?: boolean;
 }
 export interface QuoteSignoffPublishResult { signoff: QuoteSignoffSummary; share_url: string }
+/** Resume the immutable saved request without preparing a replacement. */
+export interface QuoteSignoffResumeResult extends QuoteSignoffPrepareResult {
+  display_name: string;
+  expiry_days: number;
+  parent?: QuoteSignoffSummary;
+}
+export interface CustomerRequestLinkCheckInput {
+  kind: 'signoff' | 'completion';
+  request_id: string;
+  share_url: string;
+}
+export interface CustomerRequestLinkCheckResult { current: boolean }
 export interface QuoteSignoffListInput {
   limit?: number;
   /** Literal customer, quote label/reference or invoice-reference search. */
@@ -139,6 +165,8 @@ export interface QuoteSignoffListResult {
   signoffs: QuoteSignoffSummary[];
   truncated: boolean;
   next_cursor?: string;
+  /** Server time sampled for this response; absent on older servers. */
+  server_now?: number;
 }
 export interface QuoteSignoffQuoteChoice {
   id: string; label: string; customer: string; amount: string; currency: string; revision: number;

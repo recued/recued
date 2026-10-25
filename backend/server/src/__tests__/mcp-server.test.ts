@@ -1153,6 +1153,8 @@ describe('MCP protocol version negotiation', () => {
 
     expect(response.result.supportedVersions).toEqual([
       '2026-07-28',
+      '2025-11-25',
+      '2025-06-18',
       '2024-11-05',
     ]);
     expect(response.result).toMatchObject({
@@ -1182,19 +1184,69 @@ describe('MCP protocol version negotiation', () => {
     });
   });
 
-  it('selects the implemented legacy fallback during initialize', async () => {
+  it('answers a ping with an empty result, before any handshake', async () => {
     const response = await _testing.dispatch({
       jsonrpc: '2.0',
-      id: 'init',
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-11-25',
-        capabilities: {},
-        clientInfo: { name: 'legacy-test', version: '1' },
-      },
-    }, makeDeps() as McpDeps) as { result: { protocolVersion: string } };
+      id: 7,
+      method: 'ping',
+    }, makeDeps() as McpDeps);
 
-    expect(response.result.protocolVersion).toBe('2024-11-05');
+    expect(response).toEqual({ jsonrpc: '2.0', id: 7, result: {} });
+  });
+
+  it('answers a modern ping with an empty, server-stamped result', async () => {
+    const response = await _testing.dispatch({
+      jsonrpc: '2.0',
+      id: 'ping',
+      method: 'ping',
+      params: { _meta: modernMeta },
+    }, makeDeps() as McpDeps) as { result: Record<string, unknown> };
+
+    expect(Object.keys(response.result).sort()).toEqual(['_meta', 'resultType']);
+    expect(response.result).toMatchObject({ resultType: 'complete' });
+    expect(response.result._meta).toMatchObject({
+      'io.modelcontextprotocol/serverInfo': { name: 'recued', version: RELEASE_VERSION },
+    });
+  });
+
+  it('answers no notification, acted on or not, nor a request sent without an id', async () => {
+    for (const message of [
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 3, reason: 'timeout' } },
+      { jsonrpc: '2.0', method: 'notifications/roots/list_changed' },
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 3, _meta: modernMeta } },
+      { jsonrpc: '2.0', method: 'tools/list' },
+    ]) {
+      expect(await _testing.dispatch(message, makeDeps() as McpDeps), message.method).toBeNull();
+    }
+    // A null id is still a request, so it is answered.
+    expect(await _testing.dispatch({ jsonrpc: '2.0', id: null, method: 'ping' }, makeDeps() as McpDeps))
+      .toEqual({ jsonrpc: '2.0', id: null, result: {} });
+  });
+
+  it("settles initialize on the client's revision, else the newest older one it implements", async () => {
+    // 2025-11-25 is what the official TS SDK 1.32.2 (Cline 3.0.73's) proposes.
+    // 2025-03-26 needs JSON-RPC batches, which Recued refuses, so its client
+    // gets the newest revision older than its own, never a newer one.
+    for (const [proposed, settled] of [
+      ['2025-11-25', '2025-11-25'],
+      ['2025-06-18', '2025-06-18'],
+      ['2025-03-26', '2024-11-05'],
+      ['2024-11-05', '2024-11-05'],
+    ] as const) {
+      const response = await _testing.dispatch({
+        jsonrpc: '2.0',
+        id: 'init',
+        method: 'initialize',
+        params: {
+          protocolVersion: proposed,
+          capabilities: {},
+          clientInfo: { name: 'legacy-test', version: '1' },
+        },
+      }, makeDeps() as McpDeps) as { result: { protocolVersion: string } };
+
+      expect(response.result.protocolVersion, proposed).toBe(settled);
+    }
   });
 
   it('rejects undeclared modern revisions instead of silently serving them', async () => {
@@ -1216,7 +1268,7 @@ describe('MCP protocol version negotiation', () => {
       code: -32022,
       message: 'Unsupported MCP protocol version: 2099-01-01',
       data: {
-        supported: ['2026-07-28', '2024-11-05'],
+        supported: ['2026-07-28', '2025-11-25', '2025-06-18', '2024-11-05'],
         requested: '2099-01-01',
       },
     });

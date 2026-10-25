@@ -40,6 +40,7 @@ const PAIR_ENDPOINT_CODES_TODAY = [
   'database_encryption_not_configured',
   'encryption_enrollment_busy',
   'realm_directory_conflict',
+  'too_many_attempts',
 ] as const;
 
 /** The four the hand-copied lists in both clients never learned. */

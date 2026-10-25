@@ -26,6 +26,7 @@ import {
   EMPTY_ROSTER,
   activeProfile,
   beginPendingProfile,
+  commitPairToRoster,
   ensureActiveProfileFor,
   migrateLegacyFields,
   noteConnected,
@@ -34,7 +35,9 @@ import {
   renameProfile as renameInRoster,
   retargetProfile as retargetInRoster,
   setActiveField,
+  setProfileField,
   switchTo,
+  type PairedProfileFields,
   type ProfileRoster,
 } from './server-profiles.js';
 
@@ -76,6 +79,10 @@ export interface WebclientProfileStore {
   /** Add-or-activate by URL, returning the active id. Idempotent for a URL
    *  this browser already knows, so re-pairing never duplicates a row. */
   ensureProfile(server_url: string): Promise<string>;
+  /** `ensureProfile`, then a pairing's fields, saved as ONE write: a record
+   *  that already had a sign-in keeps it until the new one replaces it
+   *  whole. Returns the active id. */
+  commitPair(server_url: string, fields: PairedProfileFields): Promise<string>;
   /** Point the five-key surface at another known profile. Unknown id is a
    *  no-op — a stale click must not strand the app with no server. */
   switchProfile(id: string): Promise<void>;
@@ -96,6 +103,8 @@ export interface WebclientProfileStore {
     id: string,
     next_url: string,
     next_token: WebclientServerProfile['webclient_token'],
+    /** Refuse (null) unless the stored token is still this one. */
+    expected_token_id?: string | null,
   ): Promise<string | null>;
   /** Drop a profile and its stored bearer. Removing the active one falls
    *  back to the most recently connected survivor. */
@@ -107,6 +116,26 @@ export interface WebclientProfileStore {
    *  this record. Idempotent: an attempt already open is reused. */
   beginNewProfile(): Promise<void>;
 }
+
+/** Swap the ACTIVE server's record for a fresh pending one, leaving every
+ *  other server as it was. The store then reads as unpaired — what a
+ *  single-server browser reaches by wiping — and pairing adopts the pending
+ *  record for whichever server is paired next.
+ *
+ *  ⛔ Not `removeProfile(active)`: the pointer falls to the most recently used
+ *  other server, which the next boot then mounts in place of the pair form,
+ *  and any per-field removal after it writes into THAT server. The pending
+ *  record opens first for the same reason. */
+export const retireActiveProfile = async (
+  store: WebclientProfileStore,
+): Promise<void> => {
+  const retiring = await store.activeProfileId();
+  await store.beginNewProfile();
+  const pending = await store.activeProfileId();
+  if (retiring !== null && retiring !== pending) {
+    await store.removeProfile(retiring);
+  }
+};
 
 export interface WebclientLocalStore {
   get<K extends WebclientLocalKey>(key: K): Promise<WebclientLocalStorage[K] | null>;
@@ -123,6 +152,23 @@ export interface WebclientLocalStore {
   clear(): Promise<void>;
 }
 
+/** The five-key surface for ONE profile, by id, never the active pointer. */
+export interface WebclientProfilePinning {
+  /** ⛔ A tab works on the server it STARTED on. The active pointer is shared
+   *  by every tab and a sibling's switch moves it, so a tab reading through
+   *  it dialed the other server on its next reconnect — with its OWN bearer
+   *  when that server had none — and a token rotation, a backup restore or a
+   *  certificate-pin write landed on the other server's record.
+   *
+   *  Reads and writes go to profile `id` under the roster lock. Once that
+   *  profile is gone (forgotten in another tab), reads are null and writes
+   *  are dropped rather than landing on another record. Its address is its
+   *  identity: `set('server_url')` to a different address throws (moving it
+   *  is `retargetProfile`), `remove('server_url')` removes the profile, and
+   *  `clear` still wipes the whole browser — every server, from any tab. */
+  pinnedTo(id: string): WebclientLocalStore;
+}
+
 /** What the concrete factories return: the five-key surface a consumer of
  *  the ACTIVE server needs, plus the roster surface only the switcher, the
  *  offline recovery paths, and pairing reach for.
@@ -130,7 +176,21 @@ export interface WebclientLocalStore {
  *  Split deliberately. Most of the app — and every hand-rolled test fixture —
  *  speaks `WebclientLocalStore` and should not have to grow seven methods it
  *  never calls just to satisfy a type. */
-export type WebclientProfileAwareStore = WebclientLocalStore & WebclientProfileStore;
+export type WebclientProfileAwareStore =
+  WebclientLocalStore & WebclientProfileStore & WebclientProfilePinning;
+
+/** Pin a five-key store to the profile it resolves right now. The shell does
+ *  this before its first read, so everything it reads or writes about its
+ *  server stays on that record however other tabs move the active pointer.
+ *  A store without a roster (a hand-rolled single-server fixture) has nothing
+ *  to pin and comes back as it is. */
+export const pinStoreToActiveProfile = async (
+  store: WebclientLocalStore | WebclientProfileAwareStore,
+): Promise<WebclientLocalStore> => {
+  if (!('pinnedTo' in store)) return store;
+  const id = await store.activeProfileId();
+  return id === null ? store : store.pinnedTo(id);
+};
 
 /** Minimal IndexedDB-shaped surface the webclient depends on. Tests
  *  inject a fake; production wires `indexedDB.open` against the real
@@ -277,7 +337,7 @@ const createProfileBackedStore = (
       return next;
     }));
 
-  return {
+  const store: WebclientProfileAwareStore = {
     async get(key) {
       const k = ensureKey(key);
       const projected = projectProfile(activeProfile(await readRoster()));
@@ -347,6 +407,13 @@ const createProfileBackedStore = (
       return next.activeId as string;
     },
 
+    async commitPair(server_url, fields) {
+      const next = await mutate((r) =>
+        commitPairToRoster(r, server_url, fields, mintProfileId),
+      );
+      return next.activeId as string;
+    },
+
     async switchProfile(id) {
       await mutate((r) => switchTo(r, id));
     },
@@ -356,8 +423,9 @@ const createProfileBackedStore = (
       return next.profiles.find((profile) => profile.id === id)?.label ?? null;
     },
 
-    async retargetProfile(id, next_url, next_token) {
-      const next = await mutate((r) => retargetInRoster(r, id, next_url, next_token));
+    async retargetProfile(id, next_url, next_token, expected_token_id) {
+      const next = await mutate((r) =>
+        retargetInRoster(r, id, next_url, next_token, expected_token_id));
       const saved = next.profiles.find((profile) => profile.id === id);
       // The algebra returns the roster UNTOUCHED on a refusal, so "did it
       // apply" is read off the stored URL rather than assumed from the call
@@ -376,7 +444,47 @@ const createProfileBackedStore = (
     async beginNewProfile() {
       await mutate((r) => beginPendingProfile(r, mintProfileId));
     },
+
+    pinnedTo(id) {
+      const record = async (): Promise<WebclientLocalStorage> =>
+        projectProfile((await readRoster()).profiles.find((p) => p.id === id) ?? null);
+      return {
+        async get(key) {
+          const k = ensureKey(key);
+          return ((await record())[k] ?? null) as WebclientLocalStorage[typeof key] | null;
+        },
+        async set(key, value) {
+          const k = ensureKey(key);
+          if (k === 'server_url') {
+            if (value === (await record()).server_url) return;
+            throw new Error(
+              'webclient.local-store: a pinned profile keeps its address; move it with retargetProfile',
+            );
+          }
+          await mutate((r) => setProfileField(r, id, k, value));
+        },
+        async remove(key) {
+          const k = ensureKey(key);
+          await mutate((r) => (k === 'server_url'
+            ? removeFromRoster(r, id)
+            : setProfileField(r, id, k, null)));
+        },
+        async inspect() {
+          const out = blank();
+          const projected = await record();
+          for (const k of WEBCLIENT_LOCAL_KEYS) {
+            const v = projected[k];
+            if (v !== undefined && v !== null) {
+              (out as unknown as Record<string, unknown>)[k] = v;
+            }
+          }
+          return out;
+        },
+        clear: () => store.clear(),
+      };
+    },
   };
+  return store;
 };
 
 /** In-memory implementation. Used by tests + the SW boot-flow before

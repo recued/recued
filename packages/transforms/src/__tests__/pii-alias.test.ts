@@ -31,6 +31,9 @@ import {
   holdsPiiAliasToken,
   derivePiiRestoreAuthority,
   restoreInStringWithAuthority,
+  cloneLedger,
+  commitLedger,
+  restrictStagedLedgerToRestoreAuthority,
 } from '../pii-alias.js';
 
 /* ──────────────── ledgerKindForAlias (D-167 B3) ──────────────── */
@@ -377,12 +380,70 @@ describe('scanContent — case-discipline', () => {
     expect(out.text).toBe('cap_pii.Org1 and cap2_pii.Org1 are the same brand');
   });
 
-  it('does NOT fresh-allocate unanchored spans (no NER, no regex extraction)', () => {
+  it('does NOT fresh-allocate an unanchored name or phone (no NER)', () => {
     const l = createLedger('s1');
-    // No ledger anchor for "carol@otherorg.com" — must pass through raw.
-    const out = scanContent(l, 'CC carol@otherorg.com on the follow-up');
-    expect(out.text).toBe('CC carol@otherorg.com on the follow-up');
+    const out = scanContent(l, 'Ask Carol Diaz on +1 415 555 0199 about it');
+    expect(out.text).toBe('Ask Carol Diaz on +1 415 555 0199 about it');
     expect(out.replacements).toBe(0);
+  });
+
+  // 2026-10-24 (owner decision, D-167 amendment) — an address is PII whether or
+  // not the ledger knows it, and its shape is unambiguous. This passed raw before.
+  it('aliases an address at an unknown domain by its shape, and restores it', () => {
+    const l = createLedger('s1');
+    const out = scanContent(l, 'CC carol@otherorg.com on the follow-up');
+    expect(out.text).toBe('CC m1@d1.invalid on the follow-up');
+    expect(restoreInString(l, out.text)).toBe('CC carol@otherorg.com on the follow-up');
+  });
+});
+
+/* ──────────────── B4 at the prose pass ──────────────── */
+
+// 2026-10-24 — a name or org that is ONE common word, or one character, is
+// aliased in its own field and never blind-replaced in prose. A calendar
+// attendee shown as "Me" reached the ledger through a situation's `who`, and
+// the owner's "Help me interpret…" went to the model as "Help pii.Person2
+// interpret…" (bench 128 on a fresh seed).
+describe('scanContent — a one-word common name stays out of prose', () => {
+  it('aliases "Me" in its field and leaves the owner\'s "me" alone', () => {
+    const l = createLedger('b4');
+    expect(aliasIdentifierField(l, 'name', 'Me')).toBe('pii.Person1');
+    const out = scanContent(l, 'Help me interpret this, then tell me what to check. Me first.');
+    expect(out.text).toBe('Help me interpret this, then tell me what to check. Me first.');
+    expect(out.replacements).toBe(0);
+    expect(restoreInString(l, 'who: pii.Person1')).toBe('who: Me');
+  });
+
+  it('leaves "will" and a first-name "Will" alone, and keeps a full name aliased', () => {
+    const will = createLedger('b4');
+    aliasIdentifierField(will, 'name', 'Will');
+    expect(scanContent(will, 'will you email Will about it?').text)
+      .toBe('will you email Will about it?');
+    const full = createLedger('b4');
+    aliasIdentifierField(full, 'name', 'Will Harper');
+    expect(scanContent(full, 'will you email Will Harper about it?').text)
+      .toBe('will you email pii.Person1 about it?');
+  });
+
+  it('still aliases a distinctive one-word name in prose', () => {
+    const l = createLedger('b4');
+    aliasIdentifierField(l, 'name', 'Quinn');
+    expect(scanContent(l, 'Ask Quinn first').text).toBe('Ask pii.Person1 first');
+  });
+
+  it('never blind-replaces a one-character name, or a common-word org', () => {
+    const x = createLedger('b4');
+    aliasIdentifierField(x, 'name', 'X');
+    expect(scanContent(x, 'X marks the spot').text).toBe('X marks the spot');
+    const gap = createLedger('b4');
+    expect(aliasIdentifierField(gap, 'org', 'Gap')).toBe('pii.Org1');
+    expect(scanContent(gap, 'mind the gap at Gap').text).toBe('mind the gap at Gap');
+  });
+
+  it('seeds nothing from content for such a value, as the replace half refuses it', () => {
+    const l = createLedger('b4');
+    seedKnownValuesFromContent(l, 'will you email Will?', buildKnownValueIndex([{ value: 'Will', kind: 'name' }]));
+    expect([...l.byKindRealValue.keys()]).toEqual([]);
   });
 });
 
@@ -415,10 +476,11 @@ describe('scanContent — domain-anchored email completion', () => {
   });
   // ⛔ The fix above once excluded EVERY value before `@`, not just an issued
   // alias local part, so a known value at a domain the ledger does not know
-  // reached the provider raw. Each of these was aliased before it.
+  // reached the provider raw. Since 2026-10-24 the whole address is aliased (an
+  // unknown domain no longer stays raw), so neither half reaches the provider.
   it.each([
-    ['name', 'Maya', 'use maya@newco.io', 'use cap_pii.Person1@newco.io'],
-    ['org', 'Acme', 'acme@gmail.com', 'cap_pii.Org1@gmail.com'],
+    ['name', 'Maya', 'use maya@newco.io', 'use m1@d1.invalid'],
+    ['org', 'Acme', 'acme@gmail.com', 'm1@d1.invalid'],
   ] as const)('still aliases a known %s right before @ at an unknown domain', (kind, value, original, expected) => {
     const l = createLedger('unknown-domain');
     aliasIdentifierField(l, kind, value);
@@ -474,11 +536,12 @@ describe('scanContent — domain-anchored email completion', () => {
     expect(matches[0]).not.toBe(matches[1]);
   });
 
-  it('does NOT alias emails at unknown domains (no ledger anchor)', () => {
+  it('aliases an address at an unknown domain under that domain\'s OWN alias (2026-10-24)', () => {
     const l = createLedger('s1');
-    aliasIdentifierField(l, 'email', 'alice@acme.com');
+    aliasIdentifierField(l, 'email', 'alice@acme.com');                     // m1, d1
     const out = scanContent(l, 'plus carol@unrelated.io for context');
-    expect(out.text).toBe('plus carol@unrelated.io for context');
+    expect(out.text).toBe('plus m2@d2.invalid for context');
+    expect(restoreInString(l, out.text)).toBe('plus carol@unrelated.io for context');
   });
 
   it('idempotent — same email mentioned twice gets one alias number', () => {
@@ -508,14 +571,18 @@ describe('scanContent — domain-anchored email completion boundaries', () => {
     expect(out.text).toBe('CC m2@d1.invalid.');
   });
 
+  // A longer domain is a DIFFERENT domain: never acme.com's `d1`. Since 2026-10-24
+  // it is aliased under its own row instead of passing raw.
   it('does not alias across an ASCII country-code suffix', () => {
     const out = scanWithAcmeAnchor('CC bob@acme.com.au today');
-    expect(out.text).toBe('CC bob@acme.com.au today');
+    expect(out.text).toBe('CC m2@d2.invalid today');
+    expect(restoreInString(out.l, out.text)).toBe('CC bob@acme.com.au today');
   });
 
   it('does not alias across a longer ASCII domain label', () => {
     const out = scanWithAcmeAnchor('CC bob@acme.community today');
-    expect(out.text).toBe('CC bob@acme.community today');
+    expect(out.text).toBe('CC m2@d2.invalid today');
+    expect(restoreInString(out.l, out.text)).toBe('CC bob@acme.community today');
   });
 
   it('does not alias across a Cyrillic domain label after a dot', () => {
@@ -554,8 +621,8 @@ describe('scanContent — domain-anchored email completion boundaries', () => {
 describe('scanContent - D-167 sentence-final periods and Unicode guards', () => {
   it('aliases a name before a sentence-final period', () => {
     const l = createLedger('s1');
-    aliasIdentifierField(l, 'name', 'Bob');
-    const out = scanContent(l, 'talked to Bob.');
+    aliasIdentifierField(l, 'name', 'Ilsa');
+    const out = scanContent(l, 'talked to Ilsa.');
     expect(out.text).toBe('talked to pii.Person1.');
   });
 
@@ -575,9 +642,9 @@ describe('scanContent - D-167 sentence-final periods and Unicode guards', () => 
 
   it('does not alias a name inside a longer word', () => {
     const l = createLedger('s1');
-    aliasIdentifierField(l, 'name', 'Bob');
-    const out = scanContent(l, 'meet Bobby');
-    expect(out.text).toBe('meet Bobby');
+    aliasIdentifierField(l, 'name', 'Ilsa');
+    const out = scanContent(l, 'meet Ilsabeth');
+    expect(out.text).toBe('meet Ilsabeth');
   });
 
   it('does not partial-match a shorter ledger name inside a distinct longer token (no "John"→alias inside "Johnam")', () => {
@@ -639,24 +706,24 @@ describe('scanContent - D-167 sentence-final periods and Unicode guards', () => 
 
   it('preserves a name match before a space boundary', () => {
     const l = createLedger('s1');
-    aliasIdentifierField(l, 'name', 'Bob');
-    const out = scanContent(l, 'Bob went home');
+    aliasIdentifierField(l, 'name', 'Ilsa');
+    const out = scanContent(l, 'Ilsa went home');
     expect(out.text).toBe('pii.Person1 went home');
   });
 
   it('preserves a name match before a comma boundary', () => {
     const l = createLedger('s1');
-    aliasIdentifierField(l, 'name', 'Bob');
-    const out = scanContent(l, 'hi Bob, ok');
+    aliasIdentifierField(l, 'name', 'Ilsa');
+    const out = scanContent(l, 'hi Ilsa, ok');
     expect(out.text).toBe('hi pii.Person1, ok');
   });
 
   it('round-trips a name before a sentence-final period through restore', () => {
     const l = createLedger('s1');
-    aliasIdentifierField(l, 'name', 'Bob');
-    const out = scanContent(l, 'talked to Bob.');
+    aliasIdentifierField(l, 'name', 'Ilsa');
+    const out = scanContent(l, 'talked to Ilsa.');
     expect(out.text).toBe('talked to pii.Person1.');
-    expect(restoreInString(l, out.text)).toBe('talked to Bob.');
+    expect(restoreInString(l, out.text)).toBe('talked to Ilsa.');
   });
 });
 
@@ -1045,11 +1112,15 @@ describe('aliasArgs — forward re-alias of restored args (the inverse of restor
     expect(out['filter.contact.email']).toBe('m1@d1.invalid');
   });
 
-  it('leaves an unknown value untouched (ledger-anchored, no NER / fresh allocation)', () => {
+  it('leaves an unknown name untouched (no NER), and aliases an unknown address by shape', () => {
     const l = createLedger('s1');
     aliasIdentifierField(l, 'email', 'alice@acme.com');
-    const args = { to: 'zoe@elsewhere.com', n: 1 };
-    expect(aliasArgs(l, args)).toEqual(args);
+    expect(aliasArgs(l, { note: 'Zoe Park', n: 1 })).toEqual({ note: 'Zoe Park', n: 1 });
+    // 2026-10-24 — restored args going back to the model carry the address the
+    // owner's message showed aliased, never the raw one.
+    const args = aliasArgs(l, { to: 'zoe@elsewhere.com', n: 1 });
+    expect(args).toEqual({ to: 'm2@d2.invalid', n: 1 });
+    expect(restoreInString(l, args.to)).toBe('zoe@elsewhere.com');
   });
 
   it('counts content replacements when a counters bag is supplied', () => {
@@ -1800,7 +1871,8 @@ describe('P1 — seed and replace consult ONE rule', () => {
   it('seeds AND replaces a name right before @ at an unknown domain', () => {
     const ledger = createLedger('p1');
     const out = aliasKnownValuesInContent(ledger, 'use maya@newco.io', indexOf('Maya', 'name'));
-    expect(out.text).toBe('use cap_pii.Person1@newco.io');
+    // Since 2026-10-24 the whole address is aliased, its domain with it.
+    expect(out.text).toBe('use m1@d1.invalid');
   });
 
   it('allocates nothing for a value that only precedes an issued alias domain', () => {
@@ -1940,18 +2012,18 @@ describe('D-227 — an email whose local part renders a known name carries that 
     }
   });
 
-  it('⛔ mints the link ONCE — a second earner falls back, at ANY domain', () => {
+  it('⛔ never lets two addresses share a token — a later one keeps the person by its slot, at ANY domain', () => {
     // `byKindBaseAlias` keys on the BASE alone, so two composites sharing
     // `pii.Person1` collapse to one row and restore returns whichever was
     // written last. A first cut scoped this per-DOMAIN and a round-trip probe
     // caught it: `sarah.chen@acme.com` restored to `sarah-chen@other.com`.
+    // D-227 dropped the later ones to `m<N>`; D-326 keeps the person on each and
+    // makes the base unique with the address's own slot.
     const ledger = seeded();
-    expect(aliasIdentifierField(ledger, 'email', 'sarah.chen@acme.com'))
-      .toBe('pii.Person1@d1.invalid');
-    expect(aliasIdentifierField(ledger, 'email', 'sarahchen@acme.com'))
-      .toMatch(/^m\d+@d1\.invalid$/);
-    expect(aliasIdentifierField(ledger, 'email', 'sarah-chen@other.com'))
-      .toMatch(/^m\d+@d2\.invalid$/);
+    const reals = ['sarah.chen@acme.com', 'sarahchen@acme.com', 'sarah-chen@other.com'];
+    const aliased = reals.map((r) => aliasIdentifierField(ledger, 'email', r));
+    expect(aliased).toEqual(['pii.Person1@d1.invalid', 'pii.Person1.m2@d1.invalid', 'pii.Person1.m3@d2.invalid']);
+    expect(restoreInString(ledger, aliased.join(' | '))).toBe(reals.join(' | '));
   });
 
   it('⛔ ROUND-TRIPS every form — the hard zero-failure-restore invariant', () => {
@@ -1961,6 +2033,19 @@ describe('D-227 — an email whose local part renders a known name carries that 
     ];
     const aliased = reals.map((r) => aliasIdentifierField(ledger, 'email', r));
     expect(restoreInString(ledger, aliased.join(' | '))).toBe(reals.join(' | '));
+  });
+
+  it('⛔ stays an alias once an email pass has LOWERCASED it', () => {
+    // Text-driven email extraction canonicalizes an address, so a second pass
+    // meets `pii.person1@d1.invalid`. Read as a real address it was aliased again,
+    // and a follow-up by that address could never be restored.
+    const ledger = seeded();
+    const alias = aliasIdentifierField(ledger, 'email', 'sarah.chen@acme.com');
+    expect(alias).toBe('pii.Person1@d1.invalid');
+    const rows = ledger.byKindRealValue.size;
+    expect(isAlreadyAliased(alias.toLowerCase())).toBe(true);
+    expect(aliasIdentifierField(ledger, 'email', alias.toLowerCase())).toBe(alias.toLowerCase());
+    expect(ledger.byKindRealValue.size).toBe(rows);
   });
 
   it('⛔ types the composite by its `@`, never by the local part', () => {
@@ -2009,6 +2094,147 @@ describe('D-227 — an email whose local part renders a known name carries that 
   });
 });
 
+
+describe('D-326 — an address is aliased together with the contact it belongs to', () => {
+  /** The owner's data says whose an address is; the request supplies the lookup,
+   *  as the chat egress sets it on each staged ledger. */
+  const LEO = 'Leo Marsh';
+  const ownedBy = (...emails: string[]) => (email: string) => (emails.includes(email) ? LEO : undefined);
+
+  it('links an address that does not spell the name, minting the name as a side effect', () => {
+    // The domain row rides every address; the owner's name row now rides it too.
+    const ledger = createLedger('owner-link');
+    ledger.ownerOfEmail = ownedBy('lm@acme.com');
+    expect(aliasIdentifierField(ledger, 'email', 'lm@acme.com')).toBe('pii.Person1@d1.invalid');
+    expect(ledger.byKindRealValue.get('name::Leo Marsh')?.alias_value).toBe('pii.Person1');
+    expect(restoreInString(ledger, 'pii.Person1 (pii.Person1@d1.invalid)')).toBe('Leo Marsh (lm@acme.com)');
+  });
+
+  it('gives the same aliases whether the name or the address came first', () => {
+    const nameFirst = createLedger('name-first');
+    nameFirst.ownerOfEmail = ownedBy('lm@acme.com');
+    expect(aliasIdentifierField(nameFirst, 'name', LEO)).toBe('pii.Person1');
+    expect(aliasIdentifierField(nameFirst, 'email', 'lm@acme.com')).toBe('pii.Person1@d1.invalid');
+    const addressFirst = createLedger('address-first');
+    addressFirst.ownerOfEmail = ownedBy('lm@acme.com');
+    expect(aliasIdentifierField(addressFirst, 'email', 'lm@acme.com')).toBe('pii.Person1@d1.invalid');
+    expect(aliasIdentifierField(addressFirst, 'name', LEO)).toBe('pii.Person1');
+  });
+
+  it('⛔ never relabels an address the ledger already holds', () => {
+    // A token that changes mid-conversation is worse than one that never linked:
+    // shown before its owner was known (a later turn's lookup), it stays opaque.
+    const ledger = createLedger('no-relabel');
+    expect(aliasIdentifierField(ledger, 'email', 'lm@acme.com')).toBe('m1@d1.invalid');
+    ledger.ownerOfEmail = ownedBy('lm@acme.com');
+    expect(aliasIdentifierField(ledger, 'email', 'lm@acme.com')).toBe('m1@d1.invalid');
+    expect(ledger.byKindRealValue.has('name::Leo Marsh')).toBe(false);
+  });
+
+  it('⛔ keeps the person on every later address, each restoring to ITSELF', () => {
+    const ledger = createLedger('several');
+    const reals = ['leo.marsh@gmail.com', 'lm@gmail.com', 'leo@marsh-joinery.test'];
+    ledger.ownerOfEmail = ownedBy(...reals);
+    const aliased = reals.map((r) => aliasIdentifierField(ledger, 'email', r));
+    expect(aliased).toEqual(['pii.Person1@d1.invalid', 'pii.Person1.m2@d1.invalid', 'pii.Person1.m3@d2.invalid']);
+    // Decorated with the owner's words, and echoed lowercased: still each its OWN
+    // address. A tail reveals only the words of THAT address the owner typed, so
+    // `lm@` gets none, and the later `leo@marsh-joinery.test` keeps its slot first.
+    const disclosed = tokenizeForOverlap('Leo Marsh');
+    const decorated = aliased.map((a) => decorateOverlapReveal(ledger, a, disclosed));
+    expect(decorated).toEqual([
+      'pii.Person1.leo.marsh@d1.invalid', 'pii.Person1.m2@d1.invalid', 'pii.Person1.m3.leo.marsh@d2.invalid',
+    ]);
+    // ⛔ All caps too: `PII.PERSON1.M2@D1.INVALID` restored to the FIRST address
+    // until the canonical casing lowercased the slot (2026-10-24).
+    for (const forms of [aliased, decorated, ...[aliased, decorated].flatMap((f) => [
+      f.map((d) => d.toLowerCase()), f.map((d) => d.toUpperCase()),
+    ])]) {
+      expect(restoreInString(ledger, forms.join(' | '))).toBe(reals.join(' | '));
+    }
+  });
+
+  it('recognises every form at every site that reads one — idempotent, typed, gated, classified', () => {
+    // A new alias FORM must be learned by every site that recognises a form
+    // (D-227 found three that missed one, 2026-10-23 a fourth).
+    const ledger = createLedger('forms');
+    ledger.ownerOfEmail = ownedBy('leo.marsh@gmail.com', 'lm@gmail.com');
+    for (const real of ['leo.marsh@gmail.com', 'lm@gmail.com']) aliasIdentifierField(ledger, 'email', real);
+    const forms = [
+      'pii.Person1.m2@d1.invalid',
+      'pii.Person1.m2.leo.marsh@d1.invalid',
+      'pii.Person1.m2.leo.marsh.gmail@d1.invalid', // the slot plus the three words decoration allows
+    ];
+    for (const form of forms) {
+      for (const casing of [form, form.toLowerCase()]) {
+        expect(isAlreadyAliased(casing)).toBe(true);
+        expect(ledgerKindForAlias(casing)).toBe('email_local');
+        expect(containsPotentialPiiAliasLiteral(`x ${casing} y`)).toBe(true);
+        expect(restoreInString(ledger, casing)).toBe('lm@gmail.com');
+      }
+    }
+    const { known, decorated, unknown } = classifyAliasTokens(ledger, forms.join(' '));
+    expect(unknown).toEqual([]);
+    expect(known).toEqual([forms[0]]);
+    expect(decorated).toEqual(forms.slice(1));
+  });
+
+  it('asks the ledger\'s owner lookup when an address is first aliased, and never for one it holds', () => {
+    const ledger = createLedger('hook');
+    const asked: string[] = [];
+    ledger.ownerOfEmail = (email) => { asked.push(email); return ownedBy('lm@acme.com')(email); };
+    expect(aliasIdentifierField(ledger, 'email', 'LM@Acme.com')).toBe('pii.Person1@d1.invalid');
+    expect(aliasIdentifierField(ledger, 'email', 'stranger@acme.com')).toBe('m2@d1.invalid');
+    expect(aliasIdentifierField(ledger, 'email', 'lm@acme.com')).toBe('pii.Person1@d1.invalid');
+    // Asked once per new address, canonical; a held address asks nothing.
+    expect(asked).toEqual(['lm@acme.com', 'stranger@acme.com']);
+  });
+
+  it('gives an address found only in prose its owner too', () => {
+    // `scanContent`'s completion of an address at a known domain follows the same rule.
+    const ledger = createLedger('prose');
+    ledger.ownerOfEmail = ownedBy('lm@acme.com');
+    aliasIdentifierField(ledger, 'email', 'office@acme.com');
+    expect(scanContent(ledger, 'Write to lm@acme.com or office@acme.com.').text)
+      .toBe('Write to pii.Person1@d1.invalid or m1@d1.invalid.');
+  });
+
+  it('⛔ never decorates with an `m<N>`-shaped word — it would read as an address slot', () => {
+    const ledger = createLedger('m-word');
+    getOrAllocate(ledger, 'name', 'Leo M2 Marsh');
+    expect(decorateOverlapReveal(ledger, 'pii.Person1', tokenizeForOverlap('leo m2'))).toBe('pii.Person1.leo');
+  });
+
+  it('⛔ a shown address makes its PERSON restorable on its own, and keeps the name row', () => {
+    // As the domain half always was. Before, "it is from pii.Person1" reached the
+    // owner unrestored whenever the name itself was not in the packet.
+    const baseline = createLedger('person-half');
+    const staged = cloneLedger(baseline);
+    staged.ownerOfEmail = ownedBy('lm@acme.com');
+    const later = aliasIdentifierField(staged, 'email', 'lm@acme.com');
+    for (const shown of [later, later.replace('pii.Person1', 'pii.Person1.leo')]) {
+      const authority = derivePiiRestoreAuthority(staged, JSON.stringify({ from: shown }));
+      expect(restoreInStringWithAuthority(authority, 'It is from pii.Person1.')).toBe('It is from Leo Marsh.');
+    }
+    const authority = derivePiiRestoreAuthority(staged, JSON.stringify({ from: later }));
+    restrictStagedLedgerToRestoreAuthority(baseline, staged, authority);
+    expect(staged.byKindRealValue.has('name::Leo Marsh')).toBe(true);
+    expect(staged.byKindRealValue.has('email_local::lm@acme.com')).toBe(true);
+  });
+
+  it('⛔ the lookup is the request\'s: a clone or a commit never carries it', () => {
+    // Set on each request's staged clone. Carried to the session ledger, it would
+    // answer the next turn from the previous turn's index.
+    const session = createLedger('lookup-scope');
+    const staged = cloneLedger(session);
+    staged.ownerOfEmail = ownedBy('lm@acme.com');
+    aliasIdentifierField(staged, 'email', 'lm@acme.com');
+    expect(cloneLedger(staged).ownerOfEmail).toBeUndefined();
+    commitLedger(session, staged);
+    expect(session.ownerOfEmail).toBeUndefined();
+    expect(session.byKindRealValue.has('name::Leo Marsh')).toBe(true);
+  });
+});
 
 describe('the alias VOCABULARY ratchet', () => {
   /** ⛔⛔ EVERY ALIAS TOKEN IN AN EGRESSED PACKET MUST BE ONE THE LEDGER ISSUED.
@@ -2073,5 +2299,61 @@ describe('the alias VOCABULARY ratchet', () => {
     expect(r.known.length).toBeGreaterThan(0);
     expect(r.decorated.length).toBe(1);
     expect(r.unknown).toEqual([]);
+  });
+});
+
+// 2026-10-24 (owner decision, D-167 amendment) — an email address or an `http(s)`
+// URL in prose is PII whether or not the ledger knows it; both shapes are
+// unambiguous, so the content pass aliases them without a ledger anchor.
+describe('scanContent — an address or URL the ledger does not know', () => {
+  it('aliases a URL on an unknown host WHOLE: its path and query are where a token sits', () => {
+    const l = createLedger('u');
+    const original = 'Reset at https://accounts.example/reset?token=s3cr3t&email=maya@client.test now.';
+    const out = scanContent(l, original);
+    // The address inside is part of the URL, never aliased into it.
+    expect(out.text).toBe('Reset at pii.Url1 now.');
+    expect(restoreInString(l, out.text)).toBe(original);
+  });
+
+  it('leaves sentence punctuation and an unbalanced bracket outside the URL', () => {
+    const l = createLedger('u');
+    const original = 'Join [the call](https://zoom.example/j/123?pwd=abc), or see (https://x.example/a). Wiki: https://w.example/A_(b).';
+    const out = scanContent(l, original);
+    expect(out.text).toBe('Join [the call](pii.Url1), or see (pii.Url2). Wiki: pii.Url3.');
+    expect(restoreInString(l, out.text)).toBe(original);
+  });
+
+  it('keeps a URL on a KNOWN host in the form its field gets, so a URL never changes alias shape', () => {
+    const l = createLedger('u');
+    aliasIdentifierField(l, 'url', 'https://acme.example/home');         // host → d1
+    const out = scanContent(l, 'Pricing: https://acme.example/pricing');
+    expect(out.text).toBe('Pricing: https://d1.invalid/pricing');
+  });
+
+  it('gives one URL one alias however often it appears, and an aliased text is left alone', () => {
+    const l = createLedger('u');
+    const first = scanContent(l, 'See https://docs.example.org/d/1AbC/edit and https://docs.example.org/d/1AbC/edit.');
+    expect(first.text).toBe('See pii.Url1 and pii.Url1.');
+    expect(scanContent(l, 'Again: https://docs.example.org/d/1AbC/edit').text).toBe('Again: pii.Url1');
+    expect(scanContent(l, first.text)).toEqual({ text: first.text, replacements: 0 });
+  });
+
+  it('leaves what only looks like an address alone: a package version, a scoped package, an issued alias', () => {
+    const l = createLedger('u');
+    const text = 'Pin react@18.3.1 and @recued/contracts; m1@d1.invalid, pii.Person1@d1.invalid and https://d2.invalid/x stay.';
+    expect(scanContent(l, text)).toEqual({ text, replacements: 0 });
+  });
+
+  it('aliases an address at an unknown domain and restores it lower-cased, as every address is', () => {
+    const l = createLedger('u');
+    const out = scanContent(l, 'Mail Bob.Smith@Example.COM!');
+    expect(out.text).toBe('Mail m1@d1.invalid!');
+    expect(restoreInString(l, out.text)).toBe('Mail bob.smith@example.com!');
+  });
+
+  it('still allocates nothing for an unanchored name, phone or bare domain', () => {
+    const l = createLedger('u');
+    const text = 'Carol Diaz (+44 20 7946 0958) at recued.com';
+    expect(scanContent(l, text)).toEqual({ text, replacements: 0 });
   });
 });

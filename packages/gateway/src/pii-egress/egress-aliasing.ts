@@ -40,6 +40,7 @@ import {
   aliasIdentifierField,
   aliasRecallArgs,
   buildKnownValueIndex,
+  classifyAliasTokens,
   cloneLedger,
   commitLedger,
   containsPotentialPiiAliasLiteral,
@@ -460,6 +461,49 @@ export const decorateOverlapForEgress = <T>(
     return node;
   };
   return decorate(value) as T;
+};
+
+/**
+ * The owner's words as the model RECEIVES them: `text` is owner-authored text the
+ * egress has already aliased. `readable` is that text with every alias token
+ * blanked — the words still there as typed — and `aliases` is each token with the
+ * real value it stands for, in order of appearance (a token the ledger cannot
+ * restore is left out).
+ *
+ * ⛔⛔ ANYTHING DERIVED FROM THE OWNER'S WORDS MUST BE DERIVED FROM `readable`. An
+ * overlap tail and the pre-seed index both used the RAW message, on D-224's premise
+ * that "the user typed it, so revealing it leaks nothing". Since the content pass
+ * aliases a name the ledger knows in the owner's own message too, that premise is
+ * false for exactly those names: `user_message` read `pii.Person1 at pii.Org1`
+ * while a tool result read `pii.Person1.sarah.chen.northwind@d1.invalid` and the
+ * index line read `sarah: contact.search` (bench 175, 2026-10-23: 136 of 136
+ * packets). Blanked, not deleted, so positions and word boundaries survive.
+ */
+export interface OwnerTextAsSent {
+  readonly readable: string;
+  readonly aliases: readonly { readonly token: string; readonly real: string }[];
+}
+
+export const ownerTextAsSent = (ledger: Ledger, text: string): OwnerTextAsSent => {
+  if (typeof text !== 'string' || text.length === 0) return { readable: '', aliases: [] };
+  const report = classifyAliasTokens(ledger, text);
+  // Longest first, so a token inside a longer one (`pii.Person1` in
+  // `cap_pii.Person1`) is blanked with the longer one rather than out of it.
+  const tokens = [...new Set([...report.known, ...report.decorated, ...report.unknown])]
+    .sort((a, b) => b.length - a.length);
+  let readable = text;
+  const found: Array<{ token: string; real: string; at: number }> = [];
+  for (const token of tokens) {
+    const first = readable.indexOf(token);
+    if (first < 0) continue;
+    for (let at = first; at >= 0; at = readable.indexOf(token, at + token.length)) {
+      readable = `${readable.slice(0, at)}${' '.repeat(token.length)}${readable.slice(at + token.length)}`;
+    }
+    const real = restoreInString(ledger, token);
+    if (real !== token) found.push({ token, real, at: first });
+  }
+  found.sort((a, b) => a.at - b.at);
+  return { readable, aliases: found.map(({ token, real }) => ({ token, real })) };
 };
 
 /** A schema-attested historical value admitted to the turn-local candidate

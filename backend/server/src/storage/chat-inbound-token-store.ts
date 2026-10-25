@@ -317,6 +317,22 @@ export interface CreateChatInboundTokenStoreOptions {
    * can receive. It is deliberately token-id-only: the consumer re-reads the
    * committed row and cannot act on a stale pre-mutation record. */
   onAuthorityChanged?: (token_id: string) => Promise<void> | void;
+  /** D-327 — the checklist of a key bound to an agreement that is its key's
+   *  whole authority, computed from the agreement's grant rows
+   *  (`keyChecklistFromAgreementGrants`), or `null` for every other contract,
+   *  whose keys keep their stored checklist.
+   *
+   *  ⛔ APPLIED TO EVERY RECORD THIS STORE HANDS OUT, which is the point. A key's
+   *  checklist is read in some forty places — through the predicate and straight
+   *  off `record.grants` alike (the AI door, the peer loopback filter) — and
+   *  they all obtain the record here. Answering once at the source keeps them
+   *  from each needing to learn the rule; a reader that somehow bypassed the
+   *  store would see the stored map, which issuance keeps EMPTY for such a key,
+   *  so it fails closed rather than open.
+   *
+   *  Absent ⇒ stored checklists everywhere (tests, and any embedder without a
+   *  contract store). */
+  resolveKeyChecklist?: (contract_id: string) => Readonly<Record<string, boolean>> | null;
 }
 
 export const createChatInboundTokenStore = (
@@ -324,6 +340,13 @@ export const createChatInboundTokenStore = (
   options: CreateChatInboundTokenStoreOptions = {},
 ): ChatInboundTokenStore => {
   initializePreapprovalContractReads(db);
+  // D-327 — see `resolveKeyChecklist`. Every record leaves through here.
+  const withKeyChecklist = (record: McpInboundTokenRecord): McpInboundTokenRecord => {
+    if (record.contract_id === undefined || !options.resolveKeyChecklist) return record;
+    const checklist = options.resolveKeyChecklist(record.contract_id);
+    return checklist === null ? record : { ...record, grants: { ...checklist } };
+  };
+  const toRecord = (row: Row): McpInboundTokenRecord => withKeyChecklist(rowToRecord(row));
   const authorityChanges = new Set<Promise<void>>();
   const notifyAuthorityChanged = (token_id: string): void => {
     if (!options.onAuthorityChanged) return;
@@ -467,17 +490,17 @@ export const createChatInboundTokenStore = (
         contract_id: value.contract_id ?? null,
         updated_at: now,
       }));
-      return { record, bearer_plaintext: bearer };
+      return { record: withKeyChecklist(record), bearer_plaintext: bearer };
     },
     getTokenById(token_id) {
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
-      const record = row ? rowToRecord(row) : null;
+      const record = row ? toRecord(row) : null;
       recordPreapprovalContractRead(db, PREAPPROVAL_MCP_TOKEN_QUERY, [token_id, ...Object.keys(record?.grants ?? {}).sort()], true);
       return record;
     },
     listTokens() {
       const rows = listStmt.all() as Row[];
-      return rows.map(rowToRecord);
+      return rows.map(toRecord);
     },
     updateTokenGrants({ token_id, grants, chat_mode, now }) {
       // Preserve-on-absent: `undefined` ⇒ that column is left untouched. Pick
@@ -498,7 +521,7 @@ export const createChatInboundTokenStore = (
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
       if (!row) return null;
       notifyAuthorityChanged(token_id);
-      return rowToRecord(row);
+      return toRecord(row);
     },
     updateTokenContract({ token_id, contract_id, now }) {
       // `contract_id` is already `string | null`; better-sqlite3 binds null to
@@ -513,7 +536,7 @@ export const createChatInboundTokenStore = (
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
       if (!row) return null;
       notifyAuthorityChanged(token_id);
-      return rowToRecord(row);
+      return toRecord(row);
     },
     revokeToken({ token_id, now }) {
       const result = mutatePreapprovalContractQueries(db, PREAPPROVAL_MCP_TOKEN_QUERY,
@@ -541,7 +564,7 @@ export const createChatInboundTokenStore = (
       const candidateBuf = Buffer.from(candidate_hash, 'hex');
       if (expectedBuf.length !== candidateBuf.length) return null;
       if (!timingSafeEqual(expectedBuf, candidateBuf)) return null;
-      const record = rowToRecord(row);
+      const record = toRecord(row);
       if (record.revoked_at !== null) return null;
       // ⛔ Expiry is the CONTRACT's, checked by `isContractLive` at each
       // consumer — the transport (`boundContractActive`, which collapses the

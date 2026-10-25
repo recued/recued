@@ -186,6 +186,14 @@ export const RECEPTION_SECTION_NAV_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+/* A finger's height on a phone. ⛔ 36px. */
+@media (max-width: 640px) {
+  [${RECEPTION_ROUTE_TABS_ATTR}] .reception-route-tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
 [data-customer-job-header]{position:sticky;top:0;z-index:5;background:var(--bg,var(--surface));padding:10px 0 4px;border-bottom:1px solid var(--border);display:grid;gap:8px}
 [data-customer-job-header] h2,[data-customer-job-header] p{margin:0}[data-customer-job-header] h2{font-size:20px}
 [data-customer-job-header] a{color:var(--accent)}[data-customer-job-header] .customer-job-primary{justify-self:start;font-weight:650}

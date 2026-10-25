@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 
 import type { CollectionHealth, CollectionSearchMatch } from '@recued/contracts';
 
 import { createCollectionRegistry } from '../registry.js';
 import type { Collection } from '../types.js';
 import { handleCollectionSearchAll } from '../collection-handler.js';
+import { createCollectionTable } from '../table.js';
+import { createCalendarTable } from '../calendar/calendar-table.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -107,5 +110,158 @@ describe('its argument handling', () => {
     ['unknown platform', { query: 'k', platforms: ['nope'] }],
   ])('rejects %s', async (_label, args) => {
     await expect(run([store('mail', 'inbox', 1)], args)).rejects.toThrow();
+  });
+});
+
+// ── Real tables from here on ─────────────────────────────────────────────────
+// ⛔ A double that searches is how calendar went missing: the real calendar
+// collection's `search()` is a no-op, and the doubles above all search. These
+// use the real FTS tables behind the Collection surface the registry yields.
+
+const dbs: Database.Database[] = [];
+afterEach(() => {
+  while (dbs.length > 0) dbs.pop()!.close();
+});
+
+/** A real mail table behind the Collection wrapper, forwarding `search` and
+ *  `checkSpelling` the way every collection this server builds does. */
+const mailStore = (slug: string, bodies: Record<string, string>): Collection => {
+  const db = new Database(':memory:');
+  dbs.push(db);
+  const table = createCollectionTable({ db, platform: 'mail', slug });
+  for (const [id, body] of Object.entries(bodies)) {
+    table.upsert({
+      record_id: `uid:${id}`, received_at: NOW, modified_at: NOW,
+      hot_fields: { from: 'a@b.c', subject: id, is_read: true },
+      size_bytes: 10, source_id: `<${id}>`, body_inline: body, origin_actor: 'system',
+    });
+  }
+  return {
+    platform: 'mail', slug, health: health('mail', slug),
+    search: (q: never) => table.search(q),
+    checkSpelling: (q: string) => table.checkSpelling(q),
+  } as unknown as Collection;
+};
+
+/** A real calendar table behind the collection shape calendar REALLY has:
+ *  `search()` a documented no-op, the store on `.table`. */
+const calendarStore = (slug: string, events: Record<string, string>): Collection => {
+  const db = new Database(':memory:');
+  dbs.push(db);
+  const table = createCalendarTable({ db, slug });
+  for (const [id, summary] of Object.entries(events)) {
+    table.upsert({
+      event: {
+        source_id: id, ical_uid: `${id}@x`, calendar_id: 'primary', summary,
+        start_at: NOW, end_at: NOW + 3_600_000, timezone: 'UTC',
+        is_all_day: false, status: 'confirmed', attendees: [],
+        created_at: NOW, updated_at: NOW,
+      },
+      size_bytes: 20, body_inline: `${summary}.`, now: NOW,
+    } as never);
+  }
+  return {
+    platform: 'calendar', slug, health: health('calendar', slug), table,
+    search: () => [],
+    checkSpelling: (q: string) => table.checkSpelling(q),
+  } as unknown as Collection;
+};
+
+describe('calendar, whose Collection.search() is a no-op', () => {
+  it('⛔ is searched through its table, so events reach universal search', async () => {
+    const { groups } = await run(
+      [mailStore('inbox', { m1: 'Kestrel invoice' }), calendarStore('work', { e1: 'Kestrel review' })],
+      { query: 'kestrel' },
+    );
+    expect(groups.map((g) => g.platform).sort()).toEqual(['calendar', 'mail']);
+    const calendar = groups.find((g) => g.platform === 'calendar');
+    expect(calendar?.matches[0]?.hot_fields.summary).toBe('Kestrel review');
+  });
+});
+
+describe('did you mean — from the searched stores\' own words', () => {
+  it('⛔ offers the owner\'s spelling of a misspelled name', async () => {
+    const result = await run(
+      [mailStore('inbox', { m1: 'Invoice from Ana Castellanos', m2: 'Castellanos replied' })],
+      { query: 'Castelanos invoice' },
+    );
+    expect(result.did_you_mean).toEqual({
+      query: 'Castellanos invoice',
+      corrections: [{ typed: 'Castelanos', word: 'Castellanos', records: 2 }],
+    });
+  });
+
+  it('counts the records of every store that holds the word, calendar included', async () => {
+    const result = await run(
+      [mailStore('inbox', { m1: 'Call Castellanos' }), calendarStore('work', { e1: 'Castellanos lunch' })],
+      { query: 'Castelanos' },
+    );
+    expect(result.did_you_mean?.corrections).toEqual([
+      { typed: 'Castelanos', word: 'Castellanos', records: 2 },
+    ]);
+  });
+
+  it('⛔ leaves a word that only ONE store holds — here, only the calendar', async () => {
+    const result = await run(
+      [mailStore('inbox', { m1: 'Kestrel invoice' }), calendarStore('work', { e1: 'Kestral offsite' })],
+      { query: 'Kestral' },
+    );
+    expect(result.did_you_mean).toBeUndefined();
+    expect(result.absent_words).toBeUndefined();
+    expect(result.groups.map((g) => g.platform)).toEqual(['calendar']);
+  });
+
+  it('is absent when every word is on file', async () => {
+    const result = await run([mailStore('inbox', { m1: 'Castellanos' })], { query: 'Castellanos' });
+    expect(result.did_you_mean).toBeUndefined();
+    expect(result.absent_words).toBeUndefined();
+  });
+
+  it('⛔ names the word every store dropped when the results matched only the others', async () => {
+    // The store relaxed "Castelanos invoice" to "invoice": both invoices come back,
+    // the other company's included, and nothing in a row says the name was gone.
+    const result = await run(
+      [mailStore('inbox', { m1: 'Invoice from Ana Castellanos', m2: 'Car lease invoice' })],
+      { query: 'Castelanos invoice' },
+    );
+    expect(result.groups[0]?.matches.length).toBe(2);
+    expect(result.absent_words).toEqual(['Castelanos']);
+    expect(result.did_you_mean?.query).toBe('Castellanos invoice');
+  });
+
+  it('names a dropped word even with nothing close on file', async () => {
+    const result = await run(
+      [mailStore('inbox', { m1: 'Car lease invoice' })],
+      { query: 'Zylberstein invoice' },
+    );
+    expect(result.groups[0]?.matches.length).toBe(1);
+    expect(result.absent_words).toEqual(['Zylberstein']);
+    expect(result.did_you_mean).toBeUndefined();
+  });
+
+  it('⛔ offers nothing when a searched store cannot check its words — it may hold the word', async () => {
+    const result = await run(
+      [mailStore('inbox', { m1: 'Castellanos' }), store('file', 'docs', 0)],
+      { query: 'Castelanos' },
+    );
+    expect(result.did_you_mean).toBeUndefined();
+    expect(result.absent_words).toBeUndefined();
+  });
+
+  it('⛔ offers nothing when a store\'s check throws', async () => {
+    const broken = {
+      ...store('file', 'docs', 0),
+      checkSpelling: () => { throw new Error('index mid-migration'); },
+    } as unknown as Collection;
+    const result = await run([mailStore('inbox', { m1: 'Castellanos' }), broken], { query: 'Castelanos' });
+    expect(result.did_you_mean).toBeUndefined();
+  });
+
+  it('asks only the stores it searched — a store filtered out cannot block the offer', async () => {
+    const result = await run(
+      [mailStore('inbox', { m1: 'Castellanos' }), store('file', 'docs', 0)],
+      { query: 'Castelanos', platforms: ['mail'] },
+    );
+    expect(result.did_you_mean?.query).toBe('Castellanos');
   });
 });

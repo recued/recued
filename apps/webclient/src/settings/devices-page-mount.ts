@@ -65,12 +65,14 @@
 
 import type { ServerPairedDevice } from '@recued/contracts';
 import {
+  DEVICE_NAME_MAX_CHARS,
   renderDevicesPage,
   type DevicesPageRow,
   type DevicesPageState,
 } from '@recued/ui-shared/account';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { DEVICES_WORKSPACE_STYLES } from './devices-workspace-styles.js';
 
 // ════════════════════════════════════════════════════════════════
 // Rpc callers
@@ -87,6 +89,13 @@ export type PairRevokeCaller = (args: {
   instance_id: string;
 }) => Promise<{ ok: true }>;
 
+/** Renames one device. Production wires
+ *  `(args) => conn('pair.rename', args)`; tests inject a fake. */
+export type PairRenameCaller = (args: {
+  instance_id: string;
+  display_name: string;
+}) => Promise<{ ok: true; display_name: string }>;
+
 // ════════════════════════════════════════════════════════════════
 // Mount options + handle
 // ════════════════════════════════════════════════════════════════
@@ -101,6 +110,9 @@ export interface MountDevicesPageOptions {
   /** `pair.revoke` rpc caller. Fires on the user's "Yes, revoke"
    *  click after the inline confirm. */
   runPairRevoke: PairRevokeCaller;
+  /** `pair.rename` rpc caller. Absent (an older server, a test), no row
+   *  offers Rename. */
+  runPairRename?: PairRenameCaller;
   /** Optional — the locally-known instance id for this client. When
    *  set, the matching row is pinned to the top + denied a Revoke
    *  button (self-revoke blocked per spec § Behaviour rules). When
@@ -140,6 +152,10 @@ export interface DevicesPageMount {
 
 interface MountState {
   rows: DevicesPageRow[];
+  renamingInstanceId?: string;
+  renameDraft?: string;
+  renameSaving?: boolean;
+  renameError?: string;
   confirmingInstanceId?: string;
   revokingInstanceId?: string;
   revokeError?: string;
@@ -153,6 +169,11 @@ interface MountState {
 const LIST_ERROR_COPY =
   "Couldn't load paired devices — check your server's connection, then retry.";
 
+/** This browser's row has no Revoke; Account & servers is where it revokes
+ *  its own access (Forget, then "Revoke access and forget"). */
+export const DEVICES_SELF_REMOVAL_HINT =
+  'To revoke this browser’s own access, open Account & servers and choose Forget.';
+
 const REVOKE_ERROR_COPY = (detail: string): string => {
   const trimmed = detail.trim();
   const punctuatedDetail = trimmed.length === 0
@@ -161,8 +182,8 @@ const REVOKE_ERROR_COPY = (detail: string): string => {
       ? trimmed
       : `${trimmed}.`;
   const firstSentence = punctuatedDetail
-    ? `Recued could not shut this device out: ${punctuatedDetail}`
-    : 'Recued could not shut this device out.';
+    ? `Recued could not revoke this device: ${punctuatedDetail}`
+    : 'Recued could not revoke this device.';
   return `${firstSentence} Try again, or do it from another device you have paired.`;
 };
 
@@ -181,9 +202,11 @@ const toDevicesPageRow = (
   // R30 — the pairing date (`added_at`, unix seconds → ms). Shown in its
   // own "Paired" column. We no longer overload `connected_at ?? added_at`
   // as "last seen": that mislabeled the pairing time for offline rows
-  // (defect #2). Accurate last-seen-while-offline awaits the D-156 P10
-  // contract field; until then the renderer shows an Online/Offline status.
+  // (defect #2). The server keeps the real one now (unix seconds → ms).
   paired_at: (device.added_at || 0) * 1000,
+  ...(typeof device.last_seen_at === 'number' && device.last_seen_at > 0
+    ? { last_seen_at: device.last_seen_at * 1000 }
+    : {}),
   isCurrent:
     currentInstanceId !== undefined &&
     device.instance_id === currentInstanceId,
@@ -290,16 +313,42 @@ export const mountDevicesPage = (
       || doc.activeElement === doc.body;
   };
 
+  /** The rename field the owner is typing in, if one is open. Its value is
+   *  read back before every render, which replaces the whole table. */
+  const renameInput = (): HTMLInputElement | null => {
+    if (typeof host.querySelector !== 'function') return null;
+    return host.querySelector<HTMLInputElement>('[data-rename-input]');
+  };
+
   const render = (): void => {
     if (disposed) return;
+    // A refresh mid-rename must not take the typed name with it.
+    const typed = renameInput();
+    if (typed !== null && state.renamingInstanceId !== undefined) {
+      state = { ...state, renameDraft: typed.value };
+    }
     const pageState: DevicesPageState = {
       rows: state.rows,
+      selfRemovalHint: DEVICES_SELF_REMOVAL_HINT,
+      ...(options.runPairRename !== undefined ? { renameAvailable: true } : {}),
+      ...(state.renamingInstanceId !== undefined
+        ? {
+          renamingInstanceId: state.renamingInstanceId,
+          ...(state.renameDraft !== undefined ? { renameDraft: state.renameDraft } : {}),
+          ...(state.renameSaving === true ? { renameSaving: true } : {}),
+          ...(state.renameError !== undefined ? { renameError: state.renameError } : {}),
+        }
+        : {}),
       refresh: {
         pending: state.loading,
         ...(state.lastSuccessfulAt !== undefined
           ? { lastSuccessfulAt: state.lastSuccessfulAt }
           : {}),
       },
+      // A list that never loaded is not an empty one: no "No paired devices yet."
+      ...(state.listError && state.lastSuccessfulAt === undefined
+        ? { listUnavailable: true }
+        : {}),
       ...(state.confirmingInstanceId !== undefined
         ? { confirmingInstanceId: state.confirmingInstanceId }
         : {}),
@@ -350,17 +399,83 @@ export const mountDevicesPage = (
     const action = owned ? active.getAttribute?.('data-action') : undefined;
     const instanceId = owned ? active.getAttribute?.('data-instance-id') ?? undefined : undefined;
     const restoreAction = action === 'refresh-devices' || action === 'retry-list'
-      || action === 'revoke-device' || action === 'cancel-revoke' || action === 'confirm-revoke';
+      || action === 'revoke-device' || action === 'cancel-revoke' || action === 'confirm-revoke'
+      || action === 'rename-device' || action === 'save-rename' || action === 'cancel-rename';
     const restoreReceipt = owned && active.hasAttribute?.('data-device-revoke-success');
+    const restoreRenameInput = owned && active.hasAttribute?.('data-rename-input');
     setState(patch);
     if (!focusIsUnowned()) return;
-    if (restoreAction) {
+    if (restoreRenameInput) {
+      focusRenameInput(false);
+    } else if (restoreAction) {
       if (focusAction(action, instanceId)) return;
       if (action === 'retry-list') focusRecoveredRoster();
       else focusAction('refresh-devices');
     } else if (restoreReceipt) {
       focusSuccessReceipt();
     }
+  };
+
+  /** Focus the open rename field, its text selected on first opening so
+   *  typing replaces the old name; after a refresh, the caret goes back to
+   *  the end. */
+  const focusRenameInput = (select: boolean): void => {
+    const input = renameInput();
+    if (input === null) return;
+    input.focus({ preventScroll: true });
+    if (select) {
+      input.select?.();
+      input.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    } else input.setSelectionRange?.(input.value.length, input.value.length);
+  };
+
+  const closeRename = (instanceId: string): void => {
+    setState({
+      renamingInstanceId: undefined,
+      renameDraft: undefined,
+      renameSaving: false,
+      renameError: undefined,
+    });
+    focusAction('rename-device', instanceId);
+  };
+
+  // ⛔ There was no rename: two browsers of one kind read alike here
+  // ("Chrome on macOS"), and which one to revoke was a guess.
+  const doRename = async (instanceId: string): Promise<void> => {
+    const rename = options.runPairRename;
+    if (disposed || rename === undefined || state.renameSaving === true) return;
+    if (state.renamingInstanceId !== instanceId) return;
+    const typed = renameInput()?.value ?? state.renameDraft ?? '';
+    const name = typed.trim();
+    if (name.length === 0 || name.length > DEVICE_NAME_MAX_CHARS) {
+      setState({
+        renameDraft: typed,
+        renameError: `Type a name of 1 to ${DEVICE_NAME_MAX_CHARS} characters.`,
+      });
+      focusRenameInput(false);
+      return;
+    }
+    setState({ renameDraft: typed, renameSaving: true, renameError: undefined });
+    focusAction('save-rename', instanceId);
+    try {
+      await rename({ instance_id: instanceId, display_name: name });
+    } catch (err) {
+      if (disposed) return;
+      setState({
+        renameSaving: false,
+        renameError: `Recued could not rename this device: ${humanizeRpcError(err)}`,
+      });
+      focusRenameInput(false);
+      return;
+    }
+    if (disposed) return;
+    // Show the new name at once; the roster read confirms it.
+    setState({
+      rows: state.rows.map((row) =>
+        row.instance_id === instanceId ? { ...row, display_name: name } : row),
+    });
+    closeRename(instanceId);
+    void refresh();
   };
 
   // ── Roster fetch ─────────────────────────────────────────────
@@ -542,9 +657,58 @@ export const mountDevicesPage = (
       void doRevoke(instanceId);
       return;
     }
+    if (action === 'rename-device') {
+      if (!instanceId || options.runPairRename === undefined || state.renameSaving === true) return;
+      const row = state.rows.find((candidate) => candidate.instance_id === instanceId);
+      if (row === undefined) return;
+      setState({
+        renamingInstanceId: instanceId,
+        renameDraft: row.display_name,
+        renameSaving: false,
+        renameError: undefined,
+      });
+      focusRenameInput(true);
+      return;
+    }
+    if (action === 'cancel-rename') {
+      if (state.renameSaving === true) return;
+      closeRename(instanceId);
+      return;
+    }
+    // `save-rename` is the form's submit button; the submit listener saves.
+  };
+
+  const onSubmit = (event: Event): void => {
+    const form = event.target as HTMLElement | null;
+    if (form?.hasAttribute?.('data-rename-form') !== true) return;
+    event.preventDefault();
+    const instanceId = form.getAttribute('data-instance-id') ?? '';
+    if (instanceId.length > 0) void doRename(instanceId);
+  };
+
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape') return;
+    const target = event.target as HTMLElement | null;
+    if (target?.hasAttribute?.('data-rename-input') === true) {
+      if (state.renameSaving === true) return;
+      // The rename is the innermost thing open: Escape closes it alone.
+      event.stopPropagation();
+      closeRename(target.getAttribute('data-instance-id') ?? '');
+      return;
+    }
+    // An open revoke confirmation answers Escape as its Cancel does.
+    // ⛔ The alert dialog ignored it.
+    const confirming = state.confirmingInstanceId;
+    if (confirming !== undefined && state.revokingInstanceId === undefined) {
+      event.stopPropagation();
+      setState({ confirmingInstanceId: undefined, revokeError: undefined });
+      focusAction('revoke-device', confirming);
+    }
   };
 
   host.addEventListener('click', onClick);
+  host.addEventListener('submit', onSubmit);
+  host.addEventListener('keydown', onKeyDown as EventListener);
   render();
   // Fire-and-forget initial fetch (DD#4).
   void refresh();
@@ -568,6 +732,8 @@ export const mountDevicesPage = (
       settleRevokeRoster();
       if (unsubscribePairList) unsubscribePairList();
       host.removeEventListener('click', onClick);
+      host.removeEventListener('submit', onSubmit);
+      host.removeEventListener('keydown', onKeyDown as EventListener);
       host.innerHTML = '';
     },
   };
@@ -624,16 +790,22 @@ export const DEVICES_PAGE_STYLES = `
   vertical-align: top;
   color: var(--fg);
 }
-.account-devices-cell--name { display: flex; flex-direction: column; gap: 2px; }
+/* The name cell stays a table cell and stacks its lines as blocks. As a flex
+   box it stopped being a cell, so its row line ended under its own text
+   instead of at the bottom of the row. */
 .account-devices-cell--actions { text-align: right; }
-.account-devices-name { font-weight: 600; }
-.account-devices-kind { color: var(--fg-muted); font-size: 12px; }
+.account-devices-name { display: block; font-weight: 600; }
+.account-devices-kind { display: block; margin-top: 2px; color: var(--fg-muted); font-size: 12px; }
 .account-devices-current-badge {
-  align-self: flex-start;
-  margin-top: 2px;
+  display: block;
+  width: fit-content;
+  margin-top: 4px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--accent);
+  /* The accent with a fifth of the strongest ink: plain accent on its own
+     wash measured 4.32:1 for this 11px label, under 4.5:1. This holds 5.6:1
+     light and 6.1:1 dark. */
+  color: color-mix(in srgb, var(--accent) 80%, var(--fg-strong));
   background: var(--accent-weak);
   border-radius: var(--wc-radius-pill, 999px);
   padding: 1px 8px;
@@ -708,4 +880,34 @@ export const DEVICES_PAGE_STYLES = `
 }
 .account-devices-list-error-text { flex: 1; }
 .account-devices-retry { min-height: var(--wc-control-h, 28px); }
-`;
+.account-devices-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.account-devices-rename { display: flex; flex-direction: column; gap: 6px; }
+.account-devices-rename-label { font-size: 12px; color: var(--fg-muted); }
+.account-devices-rename-input {
+  font: inherit;
+  font-size: 13px;
+  min-height: var(--wc-control-h, 32px);
+  padding: 0 8px;
+  border-radius: var(--wc-radius, 6px);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--fg);
+  /* Fills its column rather than setting it: at phone width a fixed field
+     pushed Revoke out of view. */
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 7em;
+  max-width: 260px;
+}
+.account-devices-rename-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.account-devices-rename-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.account-devices-rename-error { margin: 0; color: var(--danger); font-size: 12px; }
+` + '\n' + DEVICES_WORKSPACE_STYLES;

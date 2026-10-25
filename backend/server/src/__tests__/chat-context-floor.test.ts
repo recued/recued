@@ -121,11 +121,20 @@ describe('context floor', () => {
     // At FULL fidelity the shipped catalog alone needs a large endpoint. At
     // LEAN it fits almost anything. Rung 0 is not an optimisation — it is what
     // makes a small endpoint servable at all, and this pins both ends.
+    //
+    // ⚠ THE LINE IS A 64k WINDOW, raised from 32k by the owner on 2026-10-24
+    //   ("raise the 32k-window"), when the full catalog stood 44 tokens under the
+    //   old one. Both are in ESTIMATOR tokens: 2 bytes a token, where the catalog
+    //   measures ~4.8 with a real tokenizer (`ESTIMATED_BYTES_PER_TOKEN`). Over
+    //   its budget a turn abandons its trims and sends the prompt for the
+    //   provider to judge, so a real 32k model holds a catalog well past the old
+    //   line. It now trips past 57,088 estimator tokens, about 2.35x the catalog
+    //   of that day: it guards a step change in cost, not one model size.
     expect(
       minimumWindowFor(full, 8_000),
-      `the FULL catalog needs ${minimumWindowFor(full, 8_000)} — a 32k endpoint `
-      + 'can no longer serve it even before the conversation',
-    ).toBeLessThanOrEqual(32_768);
+      `the FULL catalog needs ${minimumWindowFor(full, 8_000)} by the estimate — a 64k `
+      + 'endpoint can no longer serve it even before the conversation',
+    ).toBeLessThanOrEqual(65_536);
     expect(
       minimumWindowFor(leanEquivalent, 8_000),
       'the LEAN catalog must fit a 16k endpoint, or rung 0 buys nothing',

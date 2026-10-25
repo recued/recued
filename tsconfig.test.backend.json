@@ -1,0 +1,19 @@
+{
+  // A part of the test type-check: tsconfig.test.json's backend/ patterns, less the
+  // decision tests that tsconfig.test.backend-decisions.json checks, as a program of
+  // their own by test/typecheck-tests.mjs, which says why.
+  "extends": "./tsconfig.test.json",
+  "include": [
+    "backend/**/src/**/*.test.ts",
+    "backend/**/src/**/*.test.tsx",
+    "backend/**/src/**/__tests__/**/*.ts",
+    "backend/**/src/**/__tests__/**/*.tsx"
+  ],
+  // ⚠ An `exclude` here replaces tsconfig.test.json's, so its two entries come first.
+  "exclude": [
+    "**/node_modules",
+    "**/dist",
+    "backend/server/src/__tests__/d-*.ts",
+    "backend/server/src/__tests__/d-*.tsx"
+  ]
+}

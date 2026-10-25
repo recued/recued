@@ -23,7 +23,7 @@
  *
  *  ── The derived states ──────────────────────────────────────────────
  *    - `connecting`   — never yet reached `connected` this session and
- *                       still within the grace window (fresh boot).
+ *                       still within the first-connect window (fresh boot).
  *    - `connected`    — the socket is up.
  *    - `reconnecting` — was connected, the socket dropped, still within
  *                       the grace window (ride-out-the-blip).
@@ -59,6 +59,12 @@
  *  a real `connected` clears it. Re-arming on every transition would
  *  push the offline deadline forever and `offline` would never trigger.
  *
+ *  ── Two windows: starting up vs. dropping ───────────────────────────
+ *  The window armed at construction is {@link WEBCLIENT_FIRST_CONNECT_GRACE_MS}.
+ *  Once the socket has connected this session, every later one is
+ *  {@link WEBCLIENT_OFFLINE_GRACE_MS}. Opening the app is a cold first
+ *  connect, and it needs longer than a socket that was up and dropped.
+ *
  *  ── Seams ───────────────────────────────────────────────────────────
  *  `setTimer` mirrors the ws-client's timer seam (returns a `{ cancel }`
  *  handle) so tests drive BOTH the grace deadline and the heartbeat-stale
@@ -71,11 +77,23 @@ import { SERVER_HEARTBEAT_INTERVAL_MS } from '@recued/contracts';
 import type { WebclientWsClient, WebclientWsState } from './ws-client.js';
 
 /** How long the socket may sit continuously non-`connected` before the
- *  status crosses to `offline`. Long enough to ride out a quick server
- *  restart / network blip without a scary flash; short enough that an
- *  rpc against a genuinely-down server fast-fails well inside the 30s
- *  per-call timeout. */
+ *  status crosses to `offline`, once it has connected this session. Long
+ *  enough to ride out a quick server restart / network blip without a
+ *  scary flash; short enough that an rpc against a genuinely-down server
+ *  fast-fails well inside the 30s per-call timeout. */
 export const WEBCLIENT_OFFLINE_GRACE_MS = 6_000;
+
+/** The same window for a fresh boot, before the socket has ever connected.
+ *  Opening the app wakes the device's network and opens a cold first
+ *  socket. When an attempt fails, the ws-client retries after 1, 2 and then
+ *  4 s, so its fourth attempt starts about 7 s in (up to 8.4 s with
+ *  jitter). Under the 6 s window, a launch whose socket took longer than
+ *  that showed "cannot reach this server" moments before it connected, and
+ *  the offline sweep failed every call the first screen had queued. 15 s
+ *  leaves that fourth attempt time to finish on a slow network and stays
+ *  well inside the 30s per-call timeout, so a launch against a server that
+ *  really is down still fast-fails its calls. */
+export const WEBCLIENT_FIRST_CONNECT_GRACE_MS = 15_000;
 
 /** How long the socket may sit `connected` WITHOUT a `server_heartbeat`
  *  before the status crosses to `stalled` — a half-open server (the socket
@@ -157,8 +175,13 @@ interface ConnectionStatusOptions {
   /** The ws-client whose state drives this controller. Only `onState`
    *  + `state` are read. */
   ws: Pick<WebclientWsClient, 'onState' | 'state'>;
-  /** Override the grace window (tests; bespoke compositions). */
+  /** Override the grace window (tests; bespoke compositions). It sets the
+   *  first-connect window too unless `firstConnectGraceMs` is given, so a
+   *  test that shortens it gets a short boot window as well. */
   offlineGraceMs?: number;
+  /** Override the first-connect window. Defaults to `offlineGraceMs` when
+   *  that is given, else {@link WEBCLIENT_FIRST_CONNECT_GRACE_MS}. */
+  firstConnectGraceMs?: number;
   /** Override the heartbeat-stale window (tests). Defaults to
    *  {@link WEBCLIENT_HEARTBEAT_STALE_MS}. */
   heartbeatStaleMs?: number;
@@ -184,6 +207,9 @@ export const createWebclientConnectionStatus = (
 ): WebclientConnectionStatusController => {
   const setTimer = options.setTimer ?? realTimer;
   const graceMs = options.offlineGraceMs ?? WEBCLIENT_OFFLINE_GRACE_MS;
+  const firstConnectGraceMs = options.firstConnectGraceMs
+    ?? options.offlineGraceMs
+    ?? WEBCLIENT_FIRST_CONNECT_GRACE_MS;
   const staleMs = options.heartbeatStaleMs ?? WEBCLIENT_HEARTBEAT_STALE_MS;
   const staleConfirmMs =
     options.heartbeatStaleConfirmMs ?? WEBCLIENT_HEARTBEAT_STALE_CONFIRM_MS;
@@ -191,9 +217,12 @@ export const createWebclientConnectionStatus = (
   // Boot non-connected: the bootstrap constructs this BEFORE the first
   // `ws.connect()`, so we start in `connecting` and arm the grace timer
   // immediately — a server that's down at boot crosses to `offline`
-  // after the grace window without ever needing a state transition.
+  // after the first-connect window without ever needing a state transition.
   let cur: WebclientConnectionStatus = 'connecting';
   let graceTimer: { cancel: () => void } | null = null;
+  // Picks the window: false until the socket first connects, so every
+  // grace armed before then is the longer first-connect one.
+  let hasConnected = false;
   // SEPARATE from the grace timer: armed while `connected`, reset by each
   // heartbeat; firing it (no beat in the window) is what crosses to
   // `stalled`. Unlike grace it is NOT armed-once — every beat re-arms it.
@@ -231,7 +260,7 @@ export const createWebclientConnectionStatus = (
       if (disposed) return;
       // Only commit to offline if we haven't reconnected in the meantime.
       if (cur !== 'connected') emit('offline');
-    }, graceMs);
+    }, hasConnected ? graceMs : firstConnectGraceMs);
   };
 
   const cancelStale = (): void => {
@@ -274,6 +303,7 @@ export const createWebclientConnectionStatus = (
   const onWsState = (state: WebclientWsState): void => {
     if (disposed) return;
     if (state === 'connected') {
+      hasConnected = true;
       cancelGrace();
       emit('connected');
       // Now expect beats — arm a fresh stale countdown. A healthy server's

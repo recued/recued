@@ -843,5 +843,6 @@ describe('executeRecipe — L2 cache replay charges the context cap', () => {
     const r2 = await executeRecipe(mkCtx());
     expect(r2.success).toBe(false);
     expect(r2.errors[0]?.message).toMatch(/step context is/);
-  });
+    // ~7 s alone, past the default 30 s once in a loaded sweep (2026-10-23). No duration is asserted.
+  }, 120_000);
 });

@@ -14,6 +14,7 @@ import {
   type ServerSwitchWorkState,
 } from './server-switcher.js';
 import type { ServerSwitchActiveWork } from './server-switch-work-tracker.js';
+import { defaultProfileLabel } from '../storage/server-profiles.js';
 
 export const SERVER_SWITCH_CONVERGENCE_ATTR =
   'data-recued-server-switch-convergence';
@@ -56,10 +57,10 @@ export const SERVER_SWITCH_CONVERGENCE_STYLES = `
   max-height: 100%;
   overflow: auto;
   padding: 20px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,.35));
+  border: 1px solid var(--border, rgba(127,127,127,.35));
   border-radius: 14px;
-  background: var(--recued-surface, #fff);
-  color: var(--recued-text, #172226);
+  background: var(--surface, #fff);
+  color: var(--fg, #172226);
   box-shadow: 0 24px 64px rgba(0, 0, 0, .24);
 }
 [${SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR}] h2 {
@@ -74,7 +75,7 @@ export const SERVER_SWITCH_CONVERGENCE_STYLES = `
 [${SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR}] .recued-switch-convergence-identity {
   padding: 10px 12px;
   border-radius: 9px;
-  background: var(--recued-surface-subtle, rgba(127,127,127,.09));
+  background: var(--surface-subtle, rgba(127,127,127,.09));
   overflow-wrap: anywhere;
 }
 [${SERVER_SWITCH_CONVERGENCE_ACTIVE_WORK_ATTR}] {
@@ -87,7 +88,7 @@ export const SERVER_SWITCH_CONVERGENCE_STYLES = `
 [${SERVER_SWITCH_CONVERGENCE_ACTIVE_WORK_ITEM_ATTR}] {
   padding: 8px 10px;
   border-radius: 8px;
-  background: var(--recued-surface-subtle, rgba(127,127,127,.09));
+  background: var(--surface-subtle, rgba(127,127,127,.09));
   font-size: 13px;
   font-weight: 650;
   overflow-wrap: anywhere;
@@ -99,9 +100,9 @@ export const SERVER_SWITCH_CONVERGENCE_STYLES = `
   margin: 4px 0 10px;
   padding: 10px 12px;
   resize: vertical;
-  border: 1px solid var(--recued-border, rgba(127,127,127,.4));
+  border: 1px solid var(--border, rgba(127,127,127,.4));
   border-radius: 8px;
-  background: var(--recued-surface, #fff);
+  background: var(--surface, #fff);
   color: inherit;
   font: inherit;
 }
@@ -117,43 +118,34 @@ export const SERVER_SWITCH_CONVERGENCE_STYLES = `
 [${SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR}] {
   min-height: 44px;
   padding: 8px 14px;
-  border: 1px solid var(--recued-border, rgba(127,127,127,.45));
+  border: 1px solid var(--border, rgba(127,127,127,.45));
   border-radius: 9px;
-  background: var(--recued-surface, #fff);
+  background: var(--surface, #fff);
   color: inherit;
   font: inherit;
   font-weight: 650;
   cursor: pointer;
 }
 [${SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR}] {
-  border-color: var(--recued-accent, #315cbd);
-  background: var(--recued-accent, #315cbd);
-  color: var(--recued-on-accent, #fff);
+  border-color: var(--accent, #147d9e);
+  background: var(--accent, #147d9e);
+  color: var(--on-accent, #fff);
 }
 [${SERVER_SWITCH_CONVERGENCE_COPY_ATTR}]:focus-visible,
 [${SERVER_SWITCH_CONVERGENCE_CHECK_ATTR}]:focus-visible,
 [${SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR}]:focus-visible,
 [${SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR}]:focus-visible {
-  outline: 2px solid var(--recued-accent, #315cbd);
+  outline: 2px solid var(--accent, #147d9e);
   outline-offset: 2px;
 }
 [${SERVER_SWITCH_CONVERGENCE_ERROR_ATTR}] {
-  color: var(--recued-danger, #b3261e);
+  color: var(--danger, #b3261e);
   font-weight: 600;
 }
 [${SERVER_SWITCH_CONVERGENCE_STATUS_ATTR}] {
   min-height: 1.5em;
-  color: var(--recued-muted, #5f6b70);
+  color: var(--fg-muted, #5f6b70);
   font-size: 13px;
-}
-@media (prefers-color-scheme: dark) {
-  [${SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR}],
-  [${SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR}],
-  [${SERVER_SWITCH_CONVERGENCE_COPY_ATTR}],
-  [${SERVER_SWITCH_CONVERGENCE_CHECK_ATTR}] {
-    background: var(--recued-surface, #172226);
-    color: var(--recued-text, #eef4f6);
-  }
 }
 `;
 
@@ -205,10 +197,13 @@ const errorCopy = (error: unknown): string =>
     ? error.message
     : 'This tab could not change servers. Try again.';
 
-const identityCopy = (identity: ServerSwitchConvergenceIdentity): string =>
-  identity.serverUrl.trim().length > 0
-    ? `${identity.label} (${identity.serverUrl})`
-    : identity.label;
+/** "alice (alice.recued.cloud:8443)": the address as a person reads it, not
+ *  the stored `wss://…/ws` one; left out when the name already is it. */
+const identityCopy = (identity: ServerSwitchConvergenceIdentity): string => {
+  if (identity.serverUrl.trim().length === 0) return identity.label;
+  const address = defaultProfileLabel(identity.serverUrl);
+  return address === identity.label ? identity.label : `${identity.label} (${address})`;
+};
 
 const DRAFT_COPY_TIMEOUT_MS = 5_000;
 

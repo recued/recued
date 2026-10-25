@@ -2,12 +2,12 @@
  *  owner's own zero-config work graph.
  *
  *  ⛔ WHY THIS TOOL NEEDS ITS OWN GATE TESTS AND NOT JUST HAPPY-PATH ONES.
- *  `work.create` is `classification: 'unknown'`, which means it deliberately
- *  BYPASSES the P3 plan-approval gate (the `memory.write` precedent — an
- *  approval card between "add a task" and a task is the whole cost of the
- *  feature). So the per-kind op grant is not the FIRST line of defence, it is
- *  the ONLY one. Every refusal below is therefore load-bearing, and a green
- *  happy path proves nothing about them.
+ *  `work.create` was `classification: 'unknown'` until D-329, which BYPASSED the
+ *  P3 plan-approval gate, so the per-kind op grant was the only line of defence.
+ *  It is `write` now and held for approval first, but a standing write rule the
+ *  owner accepted lets it run without asking (D-329 §3.4), so the per-kind grant is
+ *  still all that stands between a call and the row. Every refusal below is
+ *  load-bearing, and a green happy path proves nothing about them.
  */
 
 import Database from 'better-sqlite3';

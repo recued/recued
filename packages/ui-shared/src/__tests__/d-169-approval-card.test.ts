@@ -716,6 +716,15 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
 });
 
 describe('D-174 — renderApprovalCard', () => {
+  it('names a recipe-wide history fallback without implying an exact run', () => {
+    const card = renderApproval(approvalModel(), () => {}, {
+      links: { runHref: '#logs/recipe/recipe-1', runLabel: 'Recipe run history' },
+    });
+    const links = collectByAttr(card, APPROVAL_CARD_LINK_ATTR);
+    expect(links).toHaveLength(1);
+    expect(links[0]?.textContent).toBe('Recipe run history');
+    expect(links[0]?.getAttribute('href')).toBe('#logs/recipe/recipe-1');
+  });
   it('renders the approval context, actions, and cross-route links', () => {
     const card = renderApproval(
       approvalModel(),

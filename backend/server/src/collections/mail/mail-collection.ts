@@ -658,6 +658,11 @@ export interface MailCollection extends Collection {
   /** A mailbox read succeeded in this live collection. Separate from the
    * durable sync clock: fetching a page does not refresh stored mail. */
   readonly mailboxAccessVerified: boolean;
+  /** Settles once the sync started last has caught up with the mailbox — its
+   *  scan and then a poll or catch-up succeeded — or recorded a failure, or
+   *  stopped. `null` until a sync starts: one deferred while the vault is locked
+   *  has not. The owner's Re-sync answers on it (`resync-wait.ts`). */
+  readonly caughtUp: Promise<void> | null;
   /** Records adjacent in time to an anchor — the reply direction (`next`) or
    *  the context direction (`prev`).
    *
@@ -850,6 +855,13 @@ export const createMailCollection = (
    *  credential was refused. */
   let lastProviderFailure: MailSyncFailureKind | undefined;
   let mailboxAccessVerified = false;
+  /** See `MailCollection.caughtUp`; `markCaughtUp` settles it. */
+  let caughtUp: Promise<void> | null = null;
+  let settleCaughtUp: (() => void) | null = null;
+  const markCaughtUp = (): void => {
+    settleCaughtUp?.();
+    settleCaughtUp = null;
+  };
   let scanRetryMs = opts.firstScanRetryMs ?? MAIL_FIRST_SCAN_RETRY_MS;
   const clearScanRetry = (): void => {
     if (scanRetry !== null) {
@@ -896,6 +908,8 @@ export const createMailCollection = (
       // A reporting write must never break a sync that otherwise worked.
       bumpError('mail updateAuthState failed', err);
     }
+    // A failed read ends the wait too: a Re-sync answers with the failure.
+    if (auth_state !== 'healthy') markCaughtUp();
   };
 
   /** An expired credential and a flaky network need DIFFERENT things from the
@@ -944,6 +958,9 @@ export const createMailCollection = (
     if (outcome.ok) {
       lastProviderFailure = undefined;
       touchSyncClock(outcome.at);
+      // A start's scan is followed by a poll or catch-up: once one succeeds,
+      // the mailbox has caught up.
+      if (outcome.phase === 'poll') markCaughtUp();
       return;
     }
     lastProviderFailure = outcome.failure ?? 'transient';
@@ -1552,6 +1569,8 @@ export const createMailCollection = (
       stopSync = stop;
       state = 'connected';
       lastIndexedAt = nowOf();
+      // A provider that reports no outcomes has caught up as far as can be told.
+      if (stopOutcomes === undefined) markCaughtUp();
       // Deliberately do not report healthy here: installing a listener is not
       // proof that an inbound fetch succeeded. Message/outcome evidence owns it.
     } catch (err) {
@@ -1567,6 +1586,7 @@ export const createMailCollection = (
       if (closed || stopSync) return Promise.resolve();
       if (startInFlight) return startInFlight;
       const generation = syncGeneration;
+      caughtUp = new Promise<void>((resolve) => { settleCaughtUp = resolve; });
       let active: Promise<void>;
       active = runSyncStart(generation).finally(() => {
         if (startInFlight === active) startInFlight = null;
@@ -1577,6 +1597,7 @@ export const createMailCollection = (
     async stop() {
       // Invalidate provider callbacks before any asynchronous teardown.
       syncGeneration += 1;
+      markCaughtUp();
       clearScanRetry();
       state = 'disconnected';
       const activeStart = startInFlight;
@@ -2372,6 +2393,7 @@ export const createMailCollection = (
     gate,
     sync,
     get mailboxAccessVerified() { return mailboxAccessVerified; },
+    get caughtUp() { return caughtUp; },
     sendCapable: provider.sendCapable,
     // D-239 — a getter, because IMAP's `mutationCapable` is itself a lazy
     // getter on the provider. Reading it eagerly here would force that
@@ -2397,6 +2419,7 @@ export const createMailCollection = (
     get: (record_id) => table.get(record_id),
     list: (query: CollectionListQuery) => table.list(query),
     search: (query: CollectionSearchQuery): CollectionSearchMatch[] => table.search(query),
+    checkSpelling: (query: string) => table.checkSpelling(query),
     // ⛔ MUST BE FORWARDED HERE, NOT JUST ON THE TABLE. The chat handler iterates
     // `registry.list()`, which yields these Collection wrappers — a method that
     // exists only on CollectionTable is invisible to it, and the call silently

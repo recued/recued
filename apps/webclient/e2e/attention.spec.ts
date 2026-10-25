@@ -73,10 +73,14 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
       return { width: rect.width, height: rect.height };
     }),
   );
+  // A finger's size on a phone, the bell too. ⛔ They were 36-38px.
   expect(Math.min(...targetSizes.map(({ width }) => width)))
-    .toBeGreaterThanOrEqual(36);
+    .toBeGreaterThanOrEqual(44);
   expect(Math.min(...targetSizes.map(({ height }) => height)))
-    .toBeGreaterThanOrEqual(36);
+    .toBeGreaterThanOrEqual(44);
+  const bellTarget = await bell.boundingBox();
+  expect(bellTarget?.width).toBeGreaterThanOrEqual(44);
+  expect(bellTarget?.height).toBeGreaterThanOrEqual(44);
 
   const geometry = await dialog.evaluate((node) => {
     const rect = node.parentElement!.getBoundingClientRect();

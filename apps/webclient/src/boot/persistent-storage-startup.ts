@@ -381,8 +381,9 @@ const STYLES = `
   background: transparent;
   color: var(--fg-muted);
 }
+/* ⛔ A 38% accent ring measured 1.76:1 on white. */
 .persistent-storage-recovery button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .persistent-storage-recovery-status {

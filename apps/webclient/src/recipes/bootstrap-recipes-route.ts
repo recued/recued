@@ -902,6 +902,11 @@ const RECIPES_ROUTE_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+/* The action row's links are a finger's height on a phone. ⛔ 36px. A link
+   inside a sentence keeps the sentence's line. */
+@media (max-width: 640px) {
+  [${RECIPES_ROUTE_HOST_ATTR}] .recipes-actions > .recipes-inline-link { min-height: 44px; }
+}
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-actions {
   display: flex;
   flex-wrap: wrap;
@@ -961,7 +966,7 @@ const RECIPES_ROUTE_STYLES = `
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-search:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-weak);
+  box-shadow: var(--wc-ring);
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-chip-row {
   display: flex;
@@ -1075,7 +1080,7 @@ const RECIPES_ROUTE_STYLES = `
 [${RECIPES_ROUTE_RECIPE_CARD_ATTR}]:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-weak);
+  box-shadow: var(--wc-ring);
 }
 [${RECIPES_ROUTE_RECIPE_CARD_ATTR}] .recipe-card {
   border: 0;
@@ -1297,6 +1302,71 @@ const RECIPES_ROUTE_STYLES = `
 [${RECIPES_ROUTE_DETAIL_ATTR}] > * {
   min-width: 0;
   max-width: 100%;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-workspace,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-main,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-support {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  max-width: 100%;
+  gap: 16px;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-main > .recipes-detail-header,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-main > .recipes-result-panel,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-support {
+  box-sizing: border-box;
+  padding: clamp(14px, 2vw, 22px);
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 10px);
+  background: var(--surface);
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-main > .recipes-detail-header {
+  gap: 12px;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-main > .recipes-result-panel {
+  gap: 12px;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-main > .recipes-result-panel > h2 {
+  font-size: 16px;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-main > .recipes-result-panel .recipes-result-tools > .recipes-button {
+  min-height: 44px;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-workspace .recipes-actions {
+  margin: 0;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-workspace .recipes-actions > .recipes-button {
+  box-sizing: border-box;
+  min-height: 44px;
+  max-width: 100%;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-readiness {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-readiness > * {
+  margin: 0;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-support > .recipes-detail-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-support .recipes-detail-section > .recipes-inline-link {
+  box-sizing: border-box;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+@media (min-width: 1100px) {
+  [${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-workspace {
+    grid-template-columns: minmax(0, 1fr) 310px;
+    align-items: start;
+    gap: 20px;
+  }
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-header {
   display: grid;
@@ -2466,78 +2536,99 @@ const renderRecipeDetail = (
   const canRunDefaultsDirectly = (defaultPrimitiveOnly || mainDishAnswersAll)
     && canExecute
     && targetRunnability?.status !== 'blocked';
+  const readiness = [
+    renderRunnabilityLine(targetRunnability),
+    defaultRunMissingPacks === null ? renderPackInstallOffer(missingPacks) : '',
+    renderPiiLine(pii?.get(entry.recipe_id)),
+  ].join('').trim();
   return `
     <div ${RECIPES_ROUTE_DETAIL_ATTR}="${e(entry.recipe_id)}">
       <a class="recipes-inline-link" href="#recipes" ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-list" ${RECIPES_ROUTE_BACK_ATTR}>← Recipes</a>
-      <header class="recipes-detail-header">
-        <h1 class="recipes-detail-title"
-          ${RECIPES_ROUTE_DETAIL_HEADING_ATTR}="${e(entry.recipe_id)}" tabindex="-1">
-          <span class="recipes-detail-name">${e(name)}</span>
-          <span class="recipe-card-badge recipe-card-badge--${e(triggerKind)}">${e(triggerKind)}</span>
-        </h1>
-        <p class="recipes-detail-meta">v${entry.version} · ${e(entry.publisher_id)}${fromPack !== '' ? ` · ${fromPack}` : ''} · ${renderPackageSource(entry)}</p>
-        <div class="recipes-actions">
-          ${isManual ? `<button type="button" class="recipes-button recipes-button--primary"
-            ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
-            ${RECIPES_ROUTE_ACTION_ATTR}="${canRunDefaultsDirectly ? 'run-defaults' : 'open-run'}"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy
-              ? ' aria-disabled="true" aria-busy="true"'
-              : ''}${missingPackRunAttrs(missingPacks)}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
-          ${defaultPrimitiveOnly || mainDishAnswersAll ? `<button type="button" class="recipes-button"
-            ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${missingPackRunAttrs(missingPacks)}>Run with overrides</button>` : ''}
-          <button type="button" class="recipes-button"
-            ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
-          ${actionKind === 'autorun' && autoRun?.preapproval
-            ? `<a class="recipes-button" href="${e(preapprovalHref(autoRun.preapproval.proposal_id))}">Look at this run</a>`
-            : actionKind === 'autorun' && canPreapprove && autoRun?.lifecycle_revision !== undefined && !autoRun.auto_disabled
-              ? `<button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="review-auto-run"
-                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Look at the next run</button>` : ''}
-          ${isManual ? '' : `<a class="recipes-button recipes-button--primary"
-            href="${serializeShellRoute('automation', entry.recipe_id)}"
-            ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation</a>`}
-          <a class="recipes-button"
-            href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
-            ${RECIPES_ROUTE_EDIT_LINK_ATTR}>Edit in Kitchen</a>
+      <div class="recipes-detail-workspace">
+        <div class="recipes-detail-main">
+          <header class="recipes-detail-header">
+            <h1 class="recipes-detail-title"
+              ${RECIPES_ROUTE_DETAIL_HEADING_ATTR}="${e(entry.recipe_id)}" tabindex="-1">
+              <span class="recipes-detail-name">${e(name)}</span>
+              <span class="recipe-card-badge recipe-card-badge--${e(triggerKind)}">${e(triggerKind)}</span>
+            </h1>
+            <p class="recipes-detail-meta">v${entry.version} · ${e(entry.publisher_id)}${fromPack !== '' ? ` · ${fromPack}` : ''} · ${renderPackageSource(entry)}</p>
+            ${readiness.length === 0 ? '' : `<div class="recipes-detail-readiness">${readiness}</div>`}
+            <div class="recipes-actions">
+              ${isManual ? `<button type="button" class="recipes-button recipes-button--primary"
+                ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
+                ${RECIPES_ROUTE_ACTION_ATTR}="${canRunDefaultsDirectly ? 'run-defaults' : 'open-run'}"
+                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy
+                  ? ' aria-disabled="true" aria-busy="true"'
+                  : ''}${missingPackRunAttrs(missingPacks)}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
+              ${defaultPrimitiveOnly || mainDishAnswersAll ? `<button type="button" class="recipes-button"
+                ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
+                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${missingPackRunAttrs(missingPacks)}>Run with overrides</button>` : ''}
+              <button type="button" class="recipes-button"
+                ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
+                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
+              ${actionKind === 'autorun' && autoRun?.preapproval
+                ? `<a class="recipes-button" href="${e(preapprovalHref(autoRun.preapproval.proposal_id))}">Look at this run</a>`
+                : actionKind === 'autorun' && canPreapprove && autoRun?.lifecycle_revision !== undefined && !autoRun.auto_disabled
+                  ? `<button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="review-auto-run"
+                    ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Look at the next run</button>` : ''}
+              ${isManual ? '' : `<a class="recipes-button recipes-button--primary"
+                href="${serializeShellRoute('automation', entry.recipe_id)}"
+                ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation</a>`}
+              <a class="recipes-button"
+                href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
+                ${RECIPES_ROUTE_EDIT_LINK_ATTR}>Edit in Kitchen</a>
+            </div>
+            ${isManual && defaultRunMissingPacks !== null
+              ? renderPackInstallOffer(defaultRunMissingPacks)
+              : isManual && defaultRunError !== null
+                ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
+                : ''}
+          </header>
+          ${renderRecipeResultPanel(
+            resultPanel,
+            installed,
+            resultActionRegistry,
+            resultFilterStates,
+            resultGridStates,
+            recordRefPickers,
+            { display_mode: displayMode, run_review_return: { surface: 'recipes', recipeId: entry.recipe_id } },
+            selectStates,
+          )}
         </div>
-        ${isManual && defaultRunMissingPacks !== null
-          ? renderPackInstallOffer(defaultRunMissingPacks)
-          : isManual && defaultRunError !== null
-            ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
-            : ''}
-      </header>
-      ${dishes.markup}
-      <section class="recipes-detail-section">
-        <h2 class="recipes-detail-section-title">Exposed as a tool</h2>
-        <p class="recipes-detail-note">Whether the AI can call this recipe is granted per contract — it can be exposed through one contract and not another. <a class="recipes-inline-link" href="#contracts" ${RECIPES_ROUTE_CONTRACTS_LINK_ATTR}>Manage in Contracts →</a></p>
-      </section>
-      ${renderRunnabilityLine(targetRunnability)}
-      ${defaultRunMissingPacks === null ? renderPackInstallOffer(missingPacks) : ''}
-      ${renderPiiLine(pii?.get(entry.recipe_id))}
-      ${description !== '' ? `<section class="recipes-detail-section"><h2 class="recipes-detail-section-title">About</h2><p class="recipes-detail-note">${e(description)}</p>${repo !== undefined ? `<a class="recipes-inline-link" href="${e(repo)}" target="_blank" rel="noopener noreferrer">Issues &amp; support</a>` : ''}</section>` : ''}
-      <section class="recipes-detail-section">
-        <h2 class="recipes-detail-section-title">Depends on</h2>
-        <div ${RECIPES_ROUTE_RECIPE_SUMMARY_ATTR}>
-          ${recipeGrantSummary(entry, tool, connections, packs)}
-        </div>
-      </section>
-      <section class="recipes-detail-section">
-        <h2 class="recipes-detail-section-title">Runs &amp; automation</h2>
-        <a class="recipes-inline-link" href="${serializeShellRoute('logs', 'recipe', entry.recipe_id)}" ${RECIPES_ROUTE_RUNS_LINK_ATTR}>View runs in Logs →</a>
-        <a class="recipes-inline-link" href="${serializeShellRoute('automation', entry.recipe_id)}" ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation →</a>
-        ${automationText !== '' ? `<p class="recipes-detail-note"><strong>Automation:</strong> ${automationText}</p>` : `<p class="recipes-detail-note">${e(emptyAutomationCopy)}</p>`}
-      </section>
-      ${renderRecipeResultPanel(
-        resultPanel,
-        installed,
-        resultActionRegistry,
-        resultFilterStates,
-        resultGridStates,
-        recordRefPickers,
-        { display_mode: displayMode },
-        selectStates,
-      )}
+        <aside class="recipes-detail-support" aria-label="Recipe setup and information">
+          ${dishes.markup}
+          <section class="recipes-detail-section">
+            <h2 class="recipes-detail-section-title">Runs &amp; automation</h2>
+            <a class="recipes-inline-link" href="${serializeShellRoute('logs', 'recipe', entry.recipe_id)}" ${RECIPES_ROUTE_RUNS_LINK_ATTR}>View runs in Logs →</a>
+            <a class="recipes-inline-link" href="${serializeShellRoute('automation', entry.recipe_id)}" ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation →</a>
+            ${automationText !== '' ? `<p class="recipes-detail-note"><strong>Automation:</strong> ${automationText}</p>` : `<p class="recipes-detail-note">${e(emptyAutomationCopy)}</p>`}
+          </section>
+          ${description !== '' ? `<section class="recipes-detail-section"><h2 class="recipes-detail-section-title">About</h2><p class="recipes-detail-note">${e(description)}</p>${repo !== undefined ? `<a class="recipes-inline-link" href="${e(repo)}" target="_blank" rel="noopener noreferrer">Issues &amp; support</a>` : ''}</section>` : ''}
+          <section class="recipes-detail-section">
+            <h2 class="recipes-detail-section-title">Depends on</h2>
+            <div ${RECIPES_ROUTE_RECIPE_SUMMARY_ATTR}>
+              ${recipeGrantSummary(entry, tool, connections, packs)}
+            </div>
+          </section>
+          <section class="recipes-detail-section">
+            <h2 class="recipes-detail-section-title">Exposed as a tool</h2>
+            <p class="recipes-detail-note">Whether the AI can call this recipe is granted per contract — it can be exposed through one contract and not another. <a class="recipes-inline-link" href="#contracts" ${RECIPES_ROUTE_CONTRACTS_LINK_ATTR}>Manage in Contracts →</a></p>
+          </section>
+          <section class="recipes-detail-section">
+            <details ${RECIPES_ROUTE_DEFINITION_ATTR}>
+              <summary>Definition (read-only)</summary>
+              ${definition.kind === 'loaded'
+                ? `<pre>${e(JSON.stringify(definition.recipe, null, 2))}</pre>`
+                : definition.kind === 'loading'
+                  ? '<p class="recipes-detail-muted">Loading the definition…</p>'
+                  : definition.kind === 'failed'
+                    ? `<p role="alert">Could not load the definition: ${e(definition.message)}</p>`
+                    : `<pre>${e(JSON.stringify(entry.recipe, null, 2))}</pre>`}
+            </details>
+          </section>
+        </aside>
+      </div>
       ${renderRelatedRecipesSection(
         entry,
         installed,
@@ -2553,18 +2644,6 @@ const renderRecipeDetail = (
         autoRunBusy,
         autoRunErrors,
       )}
-      <section class="recipes-detail-section">
-        <details ${RECIPES_ROUTE_DEFINITION_ATTR}>
-          <summary>Definition (read-only)</summary>
-          ${definition.kind === 'loaded'
-            ? `<pre>${e(JSON.stringify(definition.recipe, null, 2))}</pre>`
-            : definition.kind === 'loading'
-              ? '<p class="recipes-detail-muted">Loading the definition…</p>'
-              : definition.kind === 'failed'
-                ? `<p role="alert">Could not load the definition: ${e(definition.message)}</p>`
-                : `<pre>${e(JSON.stringify(entry.recipe, null, 2))}</pre>`}
-        </details>
-      </section>
     </div>
   `;
 };

@@ -17,7 +17,7 @@ import { fsyncDir } from '../durable-fs.js';
 import { archiveImportOperationId } from './archive-import-receipts.js';
 import { archiveStagingName, isGeneratedExportName } from './export-store.js';
 import { createRemoteBackupStore, remoteBackupObjectKey, remoteBackupScratchPath, remoteBackupView, type RemoteBackupRow } from './remote-backup-store.js';
-import { createS3RemoteBackupTransport, hashRemoteBackupFile, RemoteBackupTransferError,
+import { createS3RemoteBackupTransport, hashRemoteBackupFile, RemoteBackupCleanupDeniedError, RemoteBackupTransferError,
   type RemoteBackupTransport, type RemoteArchiveBytes } from './remote-backup-s3.js';
 
 export interface ResolvedBackupDestination {
@@ -68,8 +68,15 @@ export const createRemoteBackups = (options: {
   };
   const abortParts = async (row: RemoteBackupRow, transport: RemoteBackupTransport, signal?: AbortSignal): Promise<void> => {
     if (!row.multipart_id) return;
-    await transport.abort(row.object_key, row.multipart_id, signal);
-    store.update(row.operation_id, current => { delete current.multipart_id; });
+    try { await transport.abort(row.object_key, row.multipart_id, signal); }
+    catch (error) {
+      store.update(row.operation_id, current => {
+        if (error instanceof RemoteBackupCleanupDeniedError) current.multipart_cleanup_issue = 'permission_denied';
+        else delete current.multipart_cleanup_issue;
+      });
+      throw error;
+    }
+    store.update(row.operation_id, current => { delete current.multipart_id; delete current.multipart_cleanup_issue; });
   };
   const prune = async (verified: RemoteBackupRow, transport: RemoteBackupTransport, signal?: AbortSignal): Promise<void> => {
     const group = store.rows().filter(row => row.destination_fingerprint === verified.destination_fingerprint);
@@ -206,7 +213,10 @@ export const createRemoteBackups = (options: {
         // A lost PUT/complete reply does not prove failure. Read back the exact
         // object before deciding the result; never generate another export.
         try { await context.transport.upload(row.object_key, pinned, bytes, uploadId => {
-          store.update(id, current => { if (uploadId === null) delete current.multipart_id; else current.multipart_id = uploadId; });
+          store.update(id, current => {
+            if (uploadId === null) delete current.multipart_id; else current.multipart_id = uploadId;
+            delete current.multipart_cleanup_issue;
+          });
         }); } catch { /* the following read determines whether delivery happened */ }
         const current = store.update(id, entry => { entry.state = 'verifying'; });
         try { await abortParts(current, context.transport); } catch { /* cleanup cannot overrule a successful object read */ }

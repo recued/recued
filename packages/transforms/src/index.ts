@@ -106,6 +106,8 @@ export {
   // alias. Closes the cross-session memory-recall leak.
   aliasRecallArgs,
   scanContent,
+  // 2026-10-24 — does a text hold an address or URL the content pass aliases unanchored?
+  hasShapeToAlias,
   preScanReservePii,
   phoneMatchDigits,
   ledgerKindForAlias,
@@ -218,3 +220,5 @@ export const getTransform = (name: string): TransformFn | undefined => TRANSFORM
 
 // D-193 — the absolute-instant rule `date_parse`'s `require_offset` applies.
 export { parseInstantWithOffset } from './date.js';
+// A calendar event on the owner's clock, as `event_when` renders it.
+export { eventWhen } from './date.js';

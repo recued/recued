@@ -5,7 +5,7 @@
  * occasion or rule has gone.
  *
  * The clock services run with the server's own publish and resolve helpers and a
- * controlled clock. The last case composes the real collection context.
+ * controlled clock. The last two cases compose the real collection context.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,7 +29,7 @@ import { createProactiveHistoryStore } from '../storage/proactive-history-store.
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { createSituationStore, type SituationStore } from '../storage/situation-store.js';
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
-import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
+import { createWorkEntityDispatchers, RenewalDateRequiredError } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import { autoRegisterRecuedBuiltinSources } from '../work-entity-source-boot.js';
 import { unlockServerVault } from './helpers/unlocked-vault.js';
@@ -195,7 +195,8 @@ describe('D-325 rule situations — a published notice resolves when its cycle e
 });
 
 describe('D-325 rule situations — composed', () => {
-  it('the server resolves a published notice when its cycle ends, an occasion’s when it is deleted, and a task when it closes', async () => {
+  /** The server's own storage, app and collection contexts, its vault unlocked. */
+  const composedServer = async () => {
     const dir = mkdtempSync(join(tmpdir(), 'recued-rule-situations-')); dirs.push(dir);
     const dbPath = join(dir, 'server.db'); const runtimeConfig = createRuntimeConfigStore({});
     const storage = await composeStorageContext({ dbPath, runtimeConfig,
@@ -211,6 +212,12 @@ describe('D-325 rule situations — composed', () => {
         contactStore: app.contactStoreRef, mailFactStore: storage.mailFactStoreRef, gateRegistry: storage.gateRegistry,
         accountStore: storage.accountStore, eventBus: storage.eventBus, keys: app.keys, connectionStore: app.connectionStoreRef,
         workEntityStore: storage.workEntityStoreRef, enrichmentCascade: app.enrichmentCascadeRef });
+      return { storage, collection };
+    } catch (error) { storage.db.close(); throw error; }
+  };
+  it('the server resolves a published notice when its cycle ends, an occasion’s when it is deleted, and a task when it closes', async () => {
+    const { storage, collection } = await composedServer();
+    try {
       const work = storage.workEntityStoreRef!; const situations = collection.situationStore!; const service = collection.assetOccurrences!;
       const history = createProactiveHistoryStore(storage.db, createProactiveProposalStore(storage.db));
       const rows = createAssetOccurrenceStore(storage.db);
@@ -229,6 +236,20 @@ describe('D-325 rule situations — composed', () => {
       history.deleteOccasion(party.id);
       await tick(); await tick();
       expect([warranty, renewal, gathering].map(row => states(situations, row!.id))).toEqual([['proposed', 'resolved'], ['proposed', 'resolved'], ['proposed', 'resolved']]);
+    } finally { storage.db.close(); }
+  }, 60_000);
+  it('the server refuses Done alone on a class’s renewal, the owner’s or an agent’s, while its asset holds the task’s own date (§15.7, 2026-10-24)', async () => {
+    const { storage, collection } = await composedServer();
+    try {
+      const work = storage.workEntityStoreRef!; const dispatchers = collection.workEntityDispatchers!;
+      // A renewal as a class makes it: the class's own rule, due within its reminders.
+      const passport = work.writeAsset({ source_id: 'recued.asset', source, name: 'Passport', settings: { class_rule_ids: ['renew'] },
+        dates: { warranty_ends_on: new Date(Date.now() + 3 * DAY).toISOString().slice(0, 10) }, rules: [task()] }, Date.now());
+      await collection.assetOccurrences!.reconcileAsset(passport.id);
+      const [renewal] = createAssetOccurrenceStore(storage.db).byAsset(passport.id); const id = renewal!.commitment_id!;
+      await expect(dispatchers.ownerCommitmentFulfill({ id })).rejects.toBeInstanceOf(RenewalDateRequiredError);
+      await expect(dispatchers.commitmentFulfill({ id })).rejects.toBeInstanceOf(RenewalDateRequiredError);
+      expect(work.readCommitment(id)!.lifecycle_state).toBe('pending');
     } finally { storage.db.close(); }
   }, 60_000);
 });

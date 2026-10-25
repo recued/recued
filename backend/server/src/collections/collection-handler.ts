@@ -13,6 +13,8 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { absentFromAll, applySpellingCorrections, mergeSpellingChecks, type FtsWordCheck } from '@recued/fts';
+
 import { repairCollectionPasswords } from './password-repair.js';
 import {
   collectionSourceFreshnessOf,
@@ -25,6 +27,7 @@ import type {
   CollectionListQuery,
   CollectionPlatform,
   CollectionRecord,
+  CollectionSearchDidYouMean,
   CollectionSearchMatch,
   CollectionSearchGroup,
   CollectionSearchQuery,
@@ -353,7 +356,11 @@ const SEARCH_ALL_MAX_PER_GROUP = 25;
 export const handleCollectionSearchAll = async (
   deps: CollectionHandlerDeps,
   args: { query?: unknown; per_group?: unknown; platforms?: unknown },
-): Promise<{ groups: CollectionSearchGroup[] }> => {
+): Promise<{
+  groups: CollectionSearchGroup[];
+  did_you_mean?: CollectionSearchDidYouMean;
+  absent_words?: string[];
+}> => {
   if (typeof args.query !== 'string') {
     throw new RpcError('bad_request', 'query must be a string', 400);
   }
@@ -380,11 +387,15 @@ export const handleCollectionSearchAll = async (
 
   const now = (deps.now ?? Date.now)();
   const groups: CollectionSearchGroup[] = [];
+  const searched: Collection[] = [];
   for (const c of deps.registry.list()) {
     if (platforms !== undefined && !platforms.has(c.platform)) continue;
+    searched.push(c);
     let matches: CollectionSearchMatch[];
     try {
-      matches = c.search({ platform: c.platform, slug: c.slug, query, limit: perGroup });
+      matches = isCalendarCollection(c)
+        ? calendarSearchMatches(c, query, perGroup)
+        : c.search({ platform: c.platform, slug: c.slug, query, limit: perGroup });
     } catch {
       // ⚠ ONE STORE MUST NOT SINK THE SEARCH. A malformed FTS expression or a
       // store mid-migration throws; the other collections still have answers,
@@ -403,7 +414,64 @@ export const handleCollectionSearchAll = async (
   }
   // Hit count first, then slug — deterministic, and NOT a relevance claim.
   groups.sort((a, b) => (b.matches.length - a.matches.length) || a.slug.localeCompare(b.slug));
-  return { groups };
+  return { groups, ...searchAllSpelling(searched, query) };
+};
+
+/** ⛔⛔ CALENDAR'S `Collection.search()` IS A NO-OP (calendar-collection.ts) —
+ *  its store lives on `.table` — so a fan-out over `search()` alone left every
+ *  event out of universal search, under a box that says "Search mail,
+ *  calendar, files". The route test missed it because its calendar double
+ *  searched; the real collection does not. Same mapping as the chat's
+ *  `calendar.search`. */
+const calendarSearchMatches = (
+  c: CalendarCollection,
+  query: string,
+  limit: number,
+): CollectionSearchMatch[] =>
+  c.table.search({ query, limit }).map((m) => ({
+    record_id: m.record_id,
+    hot_fields: { ...m.hot },
+    rank: m.rank,
+    ...(typeof m.body === 'string' ? { body: m.body } : {}),
+    ...(m.body_truncated === true ? { body_truncated: true } : {}),
+  }));
+
+/** What the searched stores' own words say about the query: the typed words
+ *  none of them holds (`absent_words`) and "did you mean" (see
+ *  `CollectionSearchDidYouMean`).
+ *
+ *  ⛔ FAILS CLOSED. A word is absent, and a correction stands, only when EVERY
+ *  searched store reports it absent, so a store that cannot check — no
+ *  `checkSpelling`, or one that throws — ends both: it may be the store holding
+ *  the word. Then "no record holds X" would be false, and a correction would
+ *  steer the owner away from their own record. A missing line costs a retype;
+ *  a wrong one costs the record. */
+const searchAllSpelling = (
+  searched: ReadonlyArray<Collection>,
+  query: string,
+): { did_you_mean?: CollectionSearchDidYouMean; absent_words?: string[] } => {
+  const checks: FtsWordCheck[][] = [];
+  for (const c of searched) {
+    if (c.checkSpelling === undefined) return {};
+    try {
+      checks.push(c.checkSpelling(query));
+    } catch {
+      return {};
+    }
+  }
+  const absent = absentFromAll(checks);
+  const corrections = mergeSpellingChecks(checks);
+  return {
+    ...(absent.length > 0 ? { absent_words: absent } : {}),
+    ...(corrections.length > 0
+      ? {
+        did_you_mean: {
+          query: applySpellingCorrections(query, corrections),
+          corrections: corrections.map(({ typed, word, records }) => ({ typed, word, records })),
+        },
+      }
+      : {}),
+  };
 };
 
 // ────────────────────────────────────────────────────────────────

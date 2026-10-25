@@ -27,7 +27,7 @@
 export const INSECURE_CONTEXT_SPLASH_MESSAGE =
   'This page was opened on a web address that is not safe enough. It starts ' +
   'with http, not https, so your browser turns off the security Recued needs ' +
-  'to pair this device. Two ways to fix it. On the computer running your ' +
+  'to pair this browser. Two ways to fix it. On the computer running your ' +
   'server, open http://localhost instead. Or give the server an https address ' +
   '(Recued Pro sets one up, or bring your own), then open that.';
 

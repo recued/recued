@@ -17,7 +17,10 @@ import { collectionProvider, collectionIdentityUrl, collectionAbilities, collect
   readCollectionIdentity, matchingCollectionAccount, verifyCollectionReads, collectionPermissionChoices, requestedCollectionAbilities,
   collectionPermissionCaps, type CollectionAbilities } from './collection-authentication-checks.js';
 
-export interface CollectionAuthenticationLifecycle { stop(slug: string): Promise<void>; restart(slug: string): Promise<void>; running?(slug: string): boolean }
+export interface CollectionAuthenticationLifecycle { stop(slug: string): Promise<void>; restart(slug: string): Promise<void>; running?(slug: string): boolean;
+  /** Settles once the running collection's sync has caught up with its source (`caughtUp`).
+   *  At once when none is running, or its sync waits for the vault. */
+  caughtUp?(slug: string): Promise<void> }
 export interface CollectionAuthenticationService {
   handle(request: CollectionAuthenticationRequest): Promise<CollectionAuthenticationResponse>;
   prepareSavedAccess?(platform: 'mail' | 'calendar', slug: string): Promise<import('./authentication-access-verification.js').PreparedAuthenticationAccess>;

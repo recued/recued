@@ -21,3 +21,4 @@ recued-server-identity.json
 test-results/
 playwright-report/
 backend/server/.tmp-*/
+backend/server/.test-server-bundle/

@@ -132,6 +132,11 @@ export interface CreateCalendarCollectionOptions {
 export interface CalendarCollection extends Collection {
   /** Host-only: prepare asynchronous body storage before a shared commit. */
   prepareVerifiedUpsert?(payload: ProviderEventPayload, expected_version: string): Promise<PreparedLocalWrite>;
+  /** Settles once the sync started last has caught up with the calendar — its
+   *  scan and first poll are done, either of them failing — or has stopped.
+   *  `null` until a sync starts: one deferred while the vault is locked has
+   *  not. The owner's Re-sync answers on it (`resync-wait.ts`). */
+  readonly caughtUp: Promise<void> | null;
   /** Calendar warehouse table backing the dispatcher's read path. */
   readonly table: CalendarCollectionTable;
   /** Live provider used for write-back. The dispatcher calls
@@ -261,6 +266,13 @@ export const createCalendarCollection = (
   let startInFlight: Promise<void> | null = null;
   let syncGeneration = 0;
   let closed = false;
+  /** See `CalendarCollection.caughtUp`; `markCaughtUp` settles it. */
+  let caughtUp: Promise<void> | null = null;
+  let settleCaughtUp: (() => void) | null = null;
+  const markCaughtUp = (): void => {
+    settleCaughtUp?.();
+    settleCaughtUp = null;
+  };
 
   const bumpError = (msg: string, err: unknown): void => {
     localErrorCount++;
@@ -319,6 +331,7 @@ export const createCalendarCollection = (
     if (closed) return;
     if (outcome.ok) touchSyncClock(outcome.at);
     else if (outcome.failure === 'auth') markCredentialRejected();
+    markCaughtUp();
   });
 
   const prepareUpsert = async (
@@ -488,6 +501,7 @@ export const createCalendarCollection = (
       state = stateName('error');
       bumpError('calendar provider connect failed', err);
       if (calendarSyncFailureOf(err) === 'auth') markCredentialRejected();
+      markCaughtUp();
       throw err;
     }
     if (!isCurrentGeneration(generation)) return;
@@ -551,6 +565,7 @@ export const createCalendarCollection = (
       if (!isCurrentGeneration(generation)) return;
       bumpError('calendar initialScan failed', err);
       if (calendarSyncFailureOf(err) === 'auth') markCredentialRejected();
+      markCaughtUp();
       await backfillRecorder.finish('failed');
     }
     if (!isCurrentGeneration(generation)) return;
@@ -568,10 +583,14 @@ export const createCalendarCollection = (
       stopSync = stop;
       state = stateName('connected');
       lastIndexedAt = nowOf();
+      // A start polls once before it returns; a provider that reports no
+      // outcomes has caught up here.
+      if (provider.onSyncOutcome === undefined) markCaughtUp();
     } catch (err) {
       if (!isCurrentGeneration(generation)) return;
       state = stateName('error');
       bumpError('calendar startSync failed', err);
+      markCaughtUp();
     }
   };
 
@@ -580,6 +599,7 @@ export const createCalendarCollection = (
       if (closed || stopSync) return Promise.resolve();
       if (startInFlight) return startInFlight;
       const generation = syncGeneration;
+      caughtUp = new Promise<void>((resolve) => { settleCaughtUp = resolve; });
       let active: Promise<void>;
       active = runSyncStart(generation).finally(() => {
         if (startInFlight === active) startInFlight = null;
@@ -590,6 +610,7 @@ export const createCalendarCollection = (
     async stop() {
       // Invalidate initial-scan and live-sync callbacks before the first await.
       syncGeneration += 1;
+      markCaughtUp();
       state = stateName('disconnected');
       const activeStart = startInFlight;
       const stops: Promise<void>[] = [];
@@ -670,6 +691,7 @@ export const createCalendarCollection = (
     slug,
     gate,
     sync,
+    get caughtUp() { return caughtUp; },
     upsert: (_record: CollectionRecord) => { /* legacy surface — dispatcher writes via applyVerifiedUpsert */ },
     delete: (_record_id: string) => false,
     // D-198 Slice 5 — real read surface (the dispatcher still owns writes). The
@@ -682,6 +704,9 @@ export const createCalendarCollection = (
     list: (query: CollectionListQuery): CollectionRecord[] =>
       table.listSnapshots(toCalendarListQuery(query)).map(snapshotToCollectionRecord),
     search: (_query: CollectionSearchQuery): CollectionSearchMatch[] => [],
+    // Unlike `search`, the spelling check is real: the universal search's
+    // "did you mean" must hear from every store it searched, calendar included.
+    checkSpelling: (query: string) => table.checkSpelling(query),
     health,
     runRetention,
     async close() {

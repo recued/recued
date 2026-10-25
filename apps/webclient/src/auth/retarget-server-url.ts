@@ -33,6 +33,7 @@
  */
 
 import { probeServerIdentity, type IdentityProbeOutcome } from './identity-probe.js';
+import { normaliseServerUrlToWs } from './pair-code-success.js';
 import { decideServerUrlChange } from './server-url-change-guard.js';
 import type { WebclientTokenStore } from '../storage/token-store.js';
 import type { WebclientServerProfile, WebclientTokenRecord } from '@recued/contracts';
@@ -45,6 +46,9 @@ export type RetargetOutcome =
   | { readonly kind: 'invalid_address' }
   /** Another profile already holds that address, or the id is stale. */
   | { readonly kind: 'rejected_by_store' }
+  /** The profile's sign-in changed (rotated, re-paired) after this edit read
+   *  it. Saving would have put the older, re-sealed token back over it. */
+  | { readonly kind: 'sign_in_changed' }
   /** ⚠ The bearer could not be re-sealed. Nothing was written — the profile
    *  still points at its old address with its old record, which is the only
    *  state from which the user can still reach their server. */
@@ -52,11 +56,16 @@ export type RetargetOutcome =
 
 export interface RetargetDeps {
   readonly tokenStore: WebclientTokenStore;
+  /** Saves only while the stored token is still `expected_token_id` — the one
+   *  this edit re-sealed — and returns null otherwise. */
   readonly retarget: (
     id: string,
     next_url: string,
     next_token: WebclientTokenRecord | null,
+    expected_token_id: string | null,
   ) => Promise<string | null>;
+  /** Read back after a refusal, to say which one it was. */
+  readonly listProfiles?: () => Promise<ReadonlyArray<WebclientServerProfile>>;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -72,9 +81,15 @@ export interface RetargetDeps {
  *  Takes no `tokenStore` and writes nothing, which is the point. */
 export const verifyRetargetCandidate = async (
   profile: WebclientServerProfile,
-  candidateUrl: string,
+  typedUrl: string,
   deps: { readonly fetch?: typeof globalThis.fetch },
 ): Promise<{ kind: 'verified' } | RetargetOutcome> => {
+  // ⛔ The address as the live client DIALS it. The CLI prints
+  // `https://host`, which pairing turns into `wss://host/ws`; saved as typed it
+  // passed this check and then never connected, because the server takes
+  // upgrades only under `/ws`.
+  const candidateUrl = normaliseServerUrlToWs(typedUrl);
+  if (candidateUrl === null) return { kind: 'invalid_address' };
   const pinnedKey = profile.server_public_key;
   if (!pinnedKey) {
     // Without a pinned key there is nothing the probe could verify AGAINST, so
@@ -101,12 +116,13 @@ export const verifyRetargetCandidate = async (
 
 export const retargetServerUrl = async (
   profile: WebclientServerProfile,
-  candidateUrl: string,
+  typedUrl: string,
   deps: RetargetDeps,
 ): Promise<RetargetOutcome> => {
   // ONE definition of "may this be saved", shared with the Check button.
-  const verdict = await verifyRetargetCandidate(profile, candidateUrl, deps);
+  const verdict = await verifyRetargetCandidate(profile, typedUrl, deps);
   if (verdict.kind !== 'verified') return verdict;
+  const candidateUrl = normaliseServerUrlToWs(typedUrl)!;
   const pinnedKey = profile.server_public_key!;
 
   // ── Re-seal, before anything is written ──────────────────────────────────
@@ -138,7 +154,15 @@ export const retargetServerUrl = async (
     }
   }
 
-  const saved = await deps.retarget(profile.id, candidateUrl, nextToken);
-  if (saved === null) return { kind: 'rejected_by_store' };
-  return { kind: 'saved', server_url: saved };
+  // ⛔ Compare-and-set on the token this edit read: a rotation or re-pair made
+  // since (in another tab, say) must not be overwritten by the older token
+  // re-sealed above, which the server no longer honours.
+  const expectedTokenId = profile.webclient_token?.token_id ?? null;
+  const saved = await deps.retarget(profile.id, candidateUrl, nextToken, expectedTokenId);
+  if (saved !== null) return { kind: 'saved', server_url: saved };
+  const now = (await deps.listProfiles?.().catch(() => null))
+    ?.find((candidate) => candidate.id === profile.id);
+  return now !== undefined && (now.webclient_token?.token_id ?? null) !== expectedTokenId
+    ? { kind: 'sign_in_changed' }
+    : { kind: 'rejected_by_store' };
 };

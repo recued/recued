@@ -1,14 +1,16 @@
 /** Pre-enrollment gate tests.
  *
  *  When `recoveryKeyCheck` is wired but no realm-binding exists yet:
- *    - `register` messages are rejected with `server_not_enrolled`.
- *    - All rpc methods EXCEPT `pair.registerRecoveryKey` return
- *      `server_not_enrolled`.
+ *    - All rpc methods EXCEPT `pair.registerRecoveryKey` (and the archive
+ *      import path) return `server_not_enrolled`.
  *    - After successful enrollment via `pair.registerRecoveryKey`,
- *      the gate lifts: subsequent register + rpc calls succeed.
+ *      the gate lifts: subsequent rpc calls succeed.
  *
  *  When the store is NOT wired, the gate is bypassed entirely
- *  (legacy mode — register and rpc work as before).  */
+ *  (legacy mode — rpc works as before).
+ *
+ *  (The `register` message also carried this gate until it was retired on
+ *  2026-10-23; the server now refuses it outright — see `ws-server.test.ts`.) */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
@@ -47,12 +49,6 @@ const callRpc = (
     ws.send(JSON.stringify({ type: 'rpc', request_id, method, args }));
   });
 
-const sendRegister = (ws: WebSocket, instance_id: string): Promise<{ type: string; code?: string; message?: string }> =>
-  new Promise((resolve) => {
-    ws.once('message', (data) => resolve(JSON.parse(data.toString())));
-    ws.send(JSON.stringify({ type: 'register', instance_id }));
-  });
-
 describe('server NOT enrolled — gates active', () => {
   let server: RunningServer;
   let db: Database.Database;
@@ -67,15 +63,6 @@ describe('server NOT enrolled — gates active', () => {
   afterAll(async () => {
     await server.close();
     db.close();
-  });
-
-  it('register is rejected with server_not_enrolled', async () => {
-    const ws = await connectWs(server.port, 'test-realm');
-    const reply = await sendRegister(ws, 'ext-1');
-    expect(reply.type).toBe('register_error');
-    expect(reply.code).toBe('server_not_enrolled');
-    expect(reply.message).toMatch(/not encrypted/i);
-    ws.close();
   });
 
   it('rpc methods other than pair.registerRecoveryKey are rejected', async () => {
@@ -135,15 +122,6 @@ describe('server NOT enrolled — gates active', () => {
     }
   });
 
-  it('after enrollment, register succeeds normally', async () => {
-    // The previous test already enrolled. New WS, register should
-    // sail through.
-    const ws = await connectWs(server.port, 'test-realm');
-    const reply = await sendRegister(ws, 'ext-2');
-    expect(reply.type).toBe('registered');
-    ws.close();
-  });
-
   it('after enrollment, other rpc methods are reachable', async () => {
     const ws = await connectWs(server.port, 'test-realm');
     try {
@@ -170,13 +148,6 @@ describe('server WITHOUT recovery-key store — gate bypassed (legacy)', () => {
 
   afterAll(async () => {
     await server.close();
-  });
-
-  it('register works without enrollment (legacy compatibility)', async () => {
-    const ws = await connectWs(server.port, 'test-realm');
-    const reply = await sendRegister(ws, 'ext-legacy');
-    expect(reply.type).toBe('registered');
-    ws.close();
   });
 
   it('rpc methods are reachable without enrollment', async () => {

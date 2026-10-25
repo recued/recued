@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   SERVER_SWITCH_CONTINUITY_SESSION_KEY,
   consumeServerSwitchArrival,
+  peekServerSwitchArrival,
   requestServerSwitchReload,
   safeServerSwitchLandingHash,
   serverSwitchLandingAreaLabel,
@@ -65,6 +66,19 @@ describe('deliberate server-switch continuity', () => {
       targetProfileId: 'profile-office',
     });
     expect(consumeServerSwitchArrival(storage)).toBeNull();
+  });
+
+  it('can be read without being used up, for the pair form a switch opened', () => {
+    // A switch to a saved server with no sign-in opens pairing; the form reads
+    // which server to fill in, and the shell still confirms the arrival later.
+    const storage = memoryStorage();
+    requestServerSwitchReload({ targetProfileId: 'profile-lab', storage, reload: vi.fn() });
+
+    expect(peekServerSwitchArrival(storage)).toEqual({ targetProfileId: 'profile-lab' });
+    expect(peekServerSwitchArrival(storage)).toEqual({ targetProfileId: 'profile-lab' });
+    expect(consumeServerSwitchArrival(storage)).toEqual({ targetProfileId: 'profile-lab' });
+    expect(peekServerSwitchArrival(storage)).toBeNull();
+    expect(peekServerSwitchArrival(memoryStorage())).toBeNull();
   });
 
   it('carries one canonical recovery-return area without source-owned detail', () => {

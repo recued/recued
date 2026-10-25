@@ -120,3 +120,35 @@ export const kernelWriteStaysInRecued = (
 
   return false;
 };
+
+/** D-329 — the same proof for a held Tier-1 tool call, through the kernel op the tool
+ *  writes with: `work.create` its kind's create (it never names a Source), `work.update` its
+ *  kind's update or a task's mark-done (by the id it names), a calendar tool its calendar
+ *  (absent = the local one), the memory tools the memory store (a forget is an overlay mark
+ *  in it). Any other tool, or arguments that do not say, answers `false` — `recipe.schedule`
+ *  among them: its row is local, but the runs it starts act on their own. */
+export const tier1WriteStaysInRecued = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+): boolean => {
+  const kind = typeof args.kind === 'string' && isWorkEntityKind(args.kind) ? args.kind : undefined;
+  const calendar = { slug: nonBlankString(args.calendar_id) ? args.calendar_id.trim() : RESERVED_LOCAL_CALENDAR_SLUG };
+  switch (tool) {
+    case 'work.create':
+      return kind !== undefined && kernelWriteStaysInRecued(`core.work-entity.${kind}.create`, [{}]);
+    case 'work.update':
+      return kind !== undefined && kernelWriteStaysInRecued(
+        kind === 'task' && args.done !== undefined ? 'core.work-entity.task.mark-done' : `core.work-entity.${kind}.update`,
+        [{ id: args.id }],
+      );
+    case 'calendar.create':
+      return kernelWriteStaysInRecued('core.data.calendar.create', [calendar]);
+    case 'calendar.update':
+      return kernelWriteStaysInRecued('core.data.calendar.update', [calendar]);
+    case 'memory.write':
+    case 'memory.forget':
+      return kernelWriteStaysInRecued('core.memory.write', [{}]);
+    default:
+      return false;
+  }
+};

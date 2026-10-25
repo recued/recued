@@ -92,6 +92,9 @@ export const createAssetClockStore = (db: Database.Database) => {
       })();
     },
     rows: (asset_id: string): AssetClockRow[] => select.all(asset_id) as AssetClockRow[],
+    /** Every class an evaluated asset has. */
+    classes: (): string[] => (db.prepare('SELECT DISTINCT class_id FROM asset_clock_state WHERE class_id IS NOT NULL')
+      .all() as { class_id: string }[]).map(row => row.class_id),
     /** Evaluated travel documents and assets of these classes. An asset not yet
      * evaluated is always a candidate, so it needs no tag here. */
     relations(classes: readonly string[]): string[] {

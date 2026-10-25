@@ -1,14 +1,14 @@
 /** Production overview panel with explicit read, save and send acknowledgements. */
 import type { SituationDeliverySettings, SituationDeliveryStatus } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { mountSituationDeliveryPanel } from '../../src/settings/situation-delivery-panel.js';
+import { mountSituationDeliveryPanel, SITUATION_DELIVERY_PANEL_STYLES } from '../../src/settings/situation-delivery-panel.js';
 import { WEBCLIENT_POLISH_STYLES } from '../../src/shell/webclient-polish-styles.js';
 
 type Kind = 'read' | 'save' | 'send';
 type Outcome = 'success' | 'error' | 'unsupported';
 const host = document.querySelector<HTMLElement>('#panel')!;
 const style = document.createElement('style');
-style.textContent = `${PRIMITIVE_STYLES}\n${WEBCLIENT_POLISH_STYLES}`;
+style.textContent = `${PRIMITIVE_STYLES}\n${WEBCLIENT_POLISH_STYLES}\n${SITUATION_DELIVERY_PANEL_STYLES}`;
 document.head.appendChild(style);
 let current: SituationDeliveryStatus = {
   settings: { frequency: 'weekly', weekday: 1, time: '09:00', day_of: true },

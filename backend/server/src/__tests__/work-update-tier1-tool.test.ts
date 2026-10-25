@@ -128,9 +128,9 @@ const deps = (opts: { granted?: readonly string[] } = {}) => {
 };
 
 describe('work.update sits on the WRITE side of the slice boundary', () => {
-  it('gates on plan approval, unlike work.create', () => {
+  it('gates on plan approval, as work.create does since D-329', () => {
     expect(planApproval.requiresPlanApproval({ ...TIER1_TOOL_DESCRIPTORS['work.update'], tier: 1 })).toBe(true);
-    expect(planApproval.requiresPlanApproval({ ...TIER1_TOOL_DESCRIPTORS['work.create'], tier: 1 })).toBe(false);
+    expect(planApproval.requiresPlanApproval({ ...TIER1_TOOL_DESCRIPTORS['work.create'], tier: 1 })).toBe(true);
     // Shared identity ⇒ sequential, same axis as calendar.update.
     expect(TIER1_CONCURRENCY_SAFE['work.update']).toBe(false);
   });

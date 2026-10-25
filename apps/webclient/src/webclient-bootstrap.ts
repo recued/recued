@@ -208,6 +208,7 @@ import {
 } from './shell/connection-indicator.js';
 import {
   SERVER_SWITCHER_STYLES,
+  needsPairingAgain,
   serverSwitchReviewCoversActiveWork,
   serverSwitchReviewCoversWorkState,
   serverSwitchWorkStateHasChatDraft,
@@ -300,6 +301,7 @@ import {
 } from './reception/bootstrap.js';
 import { parseReceptionAddress } from './reception/navigation.js';
 import { createArchiveDownload } from './settings/archive-download.js';
+import { connectArchiveDownloadSocket } from './settings/archive-download-connection.js';
 import { createArchiveUpload } from './settings/archive-upload.js';
 import { createArchiveRebindStash } from './settings/archive-rebind-stash.js';
 import { prepareBrowserArchiveImportReceipt } from './settings/archive-import-receipt.js';
@@ -467,6 +469,7 @@ import {
   type DataMemoryDeleteCaller,
   type DataMemoryGetCaller,
   type DataMemoryImportCaller,
+  type DataMemoryRestoreCaller,
   type DataMemoryListCaller,
   type DataMemoryUpdateCaller,
   type DataManageRescheduleLinkCaller,
@@ -595,6 +598,7 @@ import {
   shouldRemountForSameRoute,
   type WebclientRouteId,
 } from './shell/route.js';
+import { focusRunReviewReturn } from './logs/run-review.js';
 import type {
   NotificationsDescribeBridgesCaller,
   NotificationsDescribeCaller,
@@ -774,16 +778,14 @@ import type {
   PermissionsDeleteOverrideCaller,
   PermissionsUpsertOverrideCaller,
   PermissionsListCatalogOperationsCaller,
-  PermissionsListInboundTokensCaller,
-  PermissionsIssueInboundTokenCaller,
-  PermissionsRevokeInboundTokenCaller,
-  PermissionsUpdateInboundTokenCaller,
-  PermissionsToolCatalogCaller,
   PermissionsMintContractCaller,
-  PermissionsRevokeContractCaller,
   PermissionsListContractsCaller,
-  PermissionsUpdateInboundContractCaller,
 } from './settings/permissions-panel.js';
+import type {
+  ContractKeyIssueCaller,
+  ContractKeyListCaller,
+  ContractKeyRevokeCaller,
+} from './contracts/contract-key-panel.js';
 import type {
   ContractsListCaller,
   ContractsRevokeCaller,
@@ -927,9 +929,10 @@ import {
 import type {
   ReceptionStatusInput,
 } from './reception/spine.js';
-import type {
-  WebclientLocalStore,
-  WebclientProfileStore,
+import {
+  pinStoreToActiveProfile,
+  type WebclientLocalStore,
+  type WebclientProfileStore,
 } from './storage/local-store.js';
 import { defaultProfileLabel } from './storage/server-profiles.js';
 import type {
@@ -1144,10 +1147,14 @@ export const WEBCLIENT_SHELL_STYLES = `
      light values here. Hard-coding --surface/--fg on the shell host —
      which wraps every route — was the root of the app-wide dark-on-dark
      in dark mode (visual-UX review). */
-  min-height: 100vh;
-  min-height: 100dvh;
-  height: 100vh;
-  height: 100dvh;
+  /* ⛔ The connection banner is fixed over the bottom of the viewport. With
+     the shell a full viewport tall, on a phone it covered the Chat box and
+     its Send button ("Back online" still hid Send for its ~4 s). The shell
+     ends above it instead: the banner's MEASURED height, 0px when hidden. */
+  min-height: calc(100vh - var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));
+  min-height: calc(100dvh - var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));
+  height: calc(100vh - var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));
+  height: calc(100dvh - var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
@@ -1282,7 +1289,7 @@ export const WEBCLIENT_SHELL_STYLES = `
 [${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  box-shadow: 0 0 0 4px var(--accent-weak);
+  box-shadow: var(--wc-ring, 0 0 0 2px var(--surface), 0 0 0 4px var(--accent));
 }
 [${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] .webclient-global-run-glyph {
   font-size: 10px;
@@ -1555,8 +1562,18 @@ export const WEBCLIENT_SHELL_STYLES = `
     gap: 8px;
     padding: 8px 10px;
   }
+  /* The top bar's controls and the drawer's close button are a finger's
+     size, like the Run button beside them. ⛔ They were 36-38px. The drawer's
+     rows keep 40px: that height is what fits the whole list on one screen. */
   [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand {
+    min-height: 44px;
     font-size: 15px;
+  }
+  [${WEBCLIENT_SHELL_DRAWER_TOGGLE_ATTR}],
+  [${WEBCLIENT_SHELL_DRAWER_ATTR}] .webclient-shell-drawer-close {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
   }
   [${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] {
     width: 44px;
@@ -1570,6 +1587,15 @@ export const WEBCLIENT_SHELL_STYLES = `
      Account dialog, so they remain available at phone widths. */
   [${WEBCLIENT_SHELL_DRAWER_ATTR}] {
     width: min(300px, 92vw);
+  }
+}
+/* Narrower than a phone, like a folded one at 280px, four 44px buttons leave
+   the name no room, so the mark stands alone. ⛔ The menu button gave way
+   instead, down to a 16px sliver. */
+@media (max-width: 319px) {
+  [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand {
+    gap: 0;
+    font-size: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2333,9 +2359,11 @@ export interface BootstrapWebclientOptions {
   ) => { cancel: () => void };
   /** Connection-status grace window (ms) — how long the socket may sit
    *  continuously non-`connected` before the chip/banner/rpc layer treat
-   *  it as `offline`. Defaults to `WEBCLIENT_OFFLINE_GRACE_MS` (6s).
-   *  Tests shorten it (alongside `setConnectionStatusTimer`) to drive
-   *  the offline transition without a real wait. */
+   *  it as `offline`. Defaults to `WEBCLIENT_FIRST_CONNECT_GRACE_MS` (15s)
+   *  until the socket first connects and `WEBCLIENT_OFFLINE_GRACE_MS` (6s)
+   *  after that; setting it sets both. Tests shorten it (alongside
+   *  `setConnectionStatusTimer`) to drive the offline transition without a
+   *  real wait. */
   connectionStatusGraceMs?: number;
   /** Timer seam for the connection-status controller's grace deadline.
    *  Mirrors the ws-client's `setTimer`. Defaults to a `setTimeout`-
@@ -2637,6 +2665,15 @@ export interface BootstrapWebclientOptions {
   /** Silent URL rewrite used to remove source-server record ids before the
    *  reload. Production defaults to history.replaceState. */
   replaceHashForServerSwitch?: (hash: string) => void;
+  /** The code of a pairing link (`?code=`, what `recued pair` prints) this
+   *  page was opened with while the browser already used a server. Account
+   *  offers to add a server with it; the boot has already wiped it from the
+   *  address bar. */
+  pairingLinkCode?: string;
+  /** Put that code back in the address bar before the add-server reload, so
+   *  the pair form reads it as it reads any pairing link. Production defaults
+   *  to history.replaceState. */
+  carryPairingLinkCode?: (code: string) => void;
   /** Short grace for the final `instance_revoked` frame after a self-revoke
    *  rpc loses its reply with the closing socket. Production uses the helper
    *  default; deterministic tests may shorten it. */
@@ -3019,8 +3056,15 @@ export const bootstrapWebclient = async (
   // Owner decision surfaces cannot be driven through the recipe DOM bridge.
   // Mark the whole client before it renders or starts asynchronous hydration.
   if (typeof document !== 'undefined') document.documentElement.setAttribute('data-recued-owner-surface', '');
+  // ⛔ Everything this tab reads or writes about its server goes to the
+  // record it STARTS on, by id. The store's five-key surface follows the
+  // active pointer, which every tab shares and a sibling's switch moves:
+  // read through it, this tab's next reconnect dialed the other server —
+  // with this server's own token when that one had none — and a rotation,
+  // restore or certificate-pin write landed on the other server's record.
+  const localStore = await pinStoreToActiveProfile(options.localStore);
   // 1. Hydrate pair state — the rest of the pipeline depends on this.
-  const pair = await hydratePairState(options.localStore);
+  const pair = await hydratePairState(localStore);
   // Restore the hydrated server as a named profile deliberately. The logical
   // five-key read above already resolves through the persisted active pointer,
   // but making the roster boundary explicit keeps cold boot (including lazy
@@ -3062,7 +3106,7 @@ export const bootstrapWebclient = async (
   // Async browser storage/crypto must finish before connection grace starts;
   // otherwise a slow scope digest can make initial route reads fail offline.
   const bindArchiveImportReceipt = options.enableArchiveBackupPanel === false ? null
-    : await prepareBrowserArchiveImportReceipt({ localStore: options.localStore });
+    : await prepareBrowserArchiveImportReceipt({ localStore });
 
   // 2. WS client — `resolveBearer` re-unwraps on every reconnect (DD#2).
   const ws: WebclientWsClient = createWebclientWsClient({
@@ -3072,11 +3116,11 @@ export const bootstrapWebclient = async (
       // browser mid-session, the store now returns null. The ws-client
       // surfaces a reconnect failure via its own error path; we just
       // refuse to fabricate a URL.
-      const current = await options.localStore.get('server_url');
+      const current = await localStore.get('server_url');
       return current ?? pair.serverUrl;
     },
     resolveBearer: async () => {
-      const current = await options.localStore.get('webclient_token');
+      const current = await localStore.get('webclient_token');
       const record = current ?? pair.token;
       // DD#2 — unwrap fresh on every call; never cache plaintext.
       const plaintext = await options.tokenStore.unwrap(record, {
@@ -3198,7 +3242,7 @@ export const bootstrapWebclient = async (
   //      surfaces) receive the same broadcast but filter on
   //      `target_token_id` and no-op.
   const tokenRotation = createTokenRotationHandler({
-    localStore: options.localStore,
+    localStore,
     tokenStore: options.tokenStore,
     subscriber,
     ws,
@@ -3231,13 +3275,13 @@ export const bootstrapWebclient = async (
     options.enableCertPinStalePanel === false
       ? null
       : createCertPinStateWatcher({
-          localStore: options.localStore,
+          localStore,
           ...(options.onCertPinRefreshError !== undefined
             ? { onRefreshError: options.onCertPinRefreshError }
             : {}),
         });
   const certPin = createCertPinHandler({
-    localStore: options.localStore,
+    localStore,
     subscriber,
     ...(options.onCertPinError !== undefined
       ? { onError: options.onCertPinError }
@@ -4902,6 +4946,19 @@ export const bootstrapWebclient = async (
     ?? (typeof switchHistory?.replaceState === 'function'
       ? (hash: string): void => switchHistory.replaceState(null, '', hash)
       : undefined);
+  // ⛔ A pairing link opened while this browser already used a server was
+  // dropped without a word. Held here until the owner adds a server with it,
+  // or says not now.
+  let pairingLinkCode: string | null = options.pairingLinkCode ?? null;
+  const carryPairingLinkCode = options.carryPairingLinkCode
+    ?? ((code: string): void => {
+      const view = doc?.defaultView;
+      const href = view?.location?.href;
+      if (href === undefined || typeof view?.history?.replaceState !== 'function') return;
+      const url = new URL(href);
+      url.searchParams.set('code', code);
+      view.history.replaceState(view.history.state, '', url.toString());
+    });
   const replaceActiveHashWithoutNavigation = (hash: string): boolean => {
     if (replaceHashForServerSwitch === undefined) return false;
     try {
@@ -5299,6 +5356,32 @@ export const bootstrapWebclient = async (
       // fallback if the immediate sibling hint cannot be delivered.
       console.error('webclient: active server profile signal failed', err);
     }
+  };
+  /** Leave the current server the way an Account switch does, for the two
+   *  other ways out of it — "Add another server…" and forgetting the current
+   *  server. They used to reload bare: sibling tabs were not told, the old
+   *  server's route and record ids rode along to the next server, and nothing
+   *  said where the tab had gone. Now: tell siblings, keep only a safe area
+   *  of the address, name the destination so its arrival is confirmed ("Now
+   *  using X."), and reload past the leave-page prompt — the owner's review
+   *  of unsent work already answered it. `null`: no server to name (none is
+   *  left), so the next page is the pair form. */
+  const leaveServerFor = (targetProfileId: string | null): void => {
+    signalActiveServerProfileChanged();
+    const landingHash = safeServerSwitchLandingHash(activeHash);
+    if (landingHash !== activeHash) replaceHashForServerSwitch?.(landingHash);
+    intentionalServerSwitchReload = true;
+    if (targetProfileId !== null && reloadForServerSwitch !== undefined) {
+      requestServerSwitchReload({
+        targetProfileId,
+        ...(options.serverSwitchContinuityStorage !== undefined
+          ? { storage: options.serverSwitchContinuityStorage }
+          : {}),
+        reload: reloadForServerSwitch,
+      });
+      return;
+    }
+    reloadForServerSwitch?.();
   };
   const armAcceptedServerSwitchSignal = (): boolean => {
     const pageEvents = doc.defaultView as unknown as {
@@ -6078,7 +6161,18 @@ export const bootstrapWebclient = async (
                     refreshAccountMenu();
                     return;
                   }
-                  reloadForServerSwitch();
+                  // Name the new attempt: pairing usually fills in this very
+                  // record, and then its arrival is confirmed like a switch.
+                  const attemptId = await profileStore.activeProfileId().catch(() => null);
+                  if (pairingLinkCode !== null) {
+                    try {
+                      carryPairingLinkCode(pairingLinkCode);
+                    } catch (err) {
+                      // The form still opens; the owner types the code.
+                      console.error('webclient: could not carry the pairing link code', err);
+                    }
+                  }
+                  leaveServerFor(attemptId);
                 })();
               },
             }
@@ -6086,6 +6180,7 @@ export const bootstrapWebclient = async (
           switchWorkState: currentServerSwitchWorkState,
           switchActiveWork: currentServerSwitchActiveWork,
           activeWork: switchWorkTracker.activeWork(),
+          onDismissPairingLink: () => { pairingLinkCode = null; },
           onReturnToWork: navigateHash,
           onResumeServerUpdateGuide: (guide) => {
             const marker = credentialRotationServerUpdateContinuity.read();
@@ -6186,9 +6281,24 @@ export const bootstrapWebclient = async (
 
               failureStage = 'persist';
               switchAttempted = true;
-              await profileStore.switchProfile(id);
+              // ⛔ A saved server this browser has no sign-in for is not made
+              // active: its record holds only an address, which every start
+              // reads as a pairing cut short ("another tab is saving", a
+              // repair card whose Clear deletes it). Open a fresh pairing
+              // instead. The pair form fills this server's address in from
+              // its record, and pairing that address re-attaches to the
+              // record, name and all.
+              const target = (await profileStore.listProfiles())
+                .find((profile) => profile.id === id);
+              const pairsAgain = target !== undefined && needsPairingAgain(target);
+              if (pairsAgain) await profileStore.beginNewProfile();
+              else await profileStore.switchProfile(id);
               failureStage = 'verify';
-              if (await profileStore.activeProfileId() !== id) {
+              const activeAfterSwitch = await profileStore.activeProfileId();
+              const startedPairing = pairsAgain
+                && (await profileStore.listProfiles()).some((profile) =>
+                  profile.id === activeAfterSwitch && profile.server_url.length === 0);
+              if (pairsAgain ? !startedPairing : activeAfterSwitch !== id) {
                 throw new Error('selected profile was not made active');
               }
               const workBeforeReload = currentServerSwitchWorkSnapshot();
@@ -6421,7 +6531,7 @@ export const bootstrapWebclient = async (
                     replaySuppressedRetirementReauth();
                     console.error('webclient: revoke server access failed', err);
                     throw new Error(
-                      `Recued could not take this browser’s access away. ${humanizeRpcError(err)} The saved profile is still here; retry or forget it locally.`,
+                      `Recued could not revoke this browser’s access. ${humanizeRpcError(err)} The saved profile is still here; retry or forget it locally.`,
                     );
                   }
                 }
@@ -6458,8 +6568,24 @@ export const bootstrapWebclient = async (
                 // app running against credentials it no longer holds, so that
                 // case reboots onto the roster fallback. Forgetting any other
                 // profile is a local roster edit and only needs a re-render.
-                if (wasActive) reloadForServerSwitch();
-                else refreshAccountMenu();
+                if (!wasActive) {
+                  refreshAccountMenu();
+                  return;
+                }
+                const [after, nextId] = await Promise.all([
+                  profileStore.listProfiles(),
+                  profileStore.activeProfileId(),
+                ]).catch((): [ReadonlyArray<WebclientServerProfile>, null] => [[], null]);
+                const next = after.find((candidate) => candidate.id === nextId);
+                if (next !== undefined && next.server_url.length > 0 && needsPairingAgain(next)) {
+                  // The fallback has no sign-in left: open a fresh pairing for
+                  // it (its address filled in) rather than boot its
+                  // address-only record, which reads as a pairing cut short.
+                  await profileStore.beginNewProfile().catch((err: unknown) => {
+                    console.error('webclient: open pairing for the next server failed', err);
+                  });
+                }
+                leaveServerFor(next !== undefined && next.server_url.length > 0 ? next.id : null);
               },
             }
             : {}),
@@ -6470,6 +6596,8 @@ export const bootstrapWebclient = async (
         // A reload restores the privacy-safe pointer quietly: discoverable in
         // Account, but never forcing the popover over the owner's exact route.
         syncAccountServerUpdateGuide();
+        // A pairing link is the owner's own gesture, just made: answer it.
+        if (pairingLinkCode !== null) accountMenu.offerPairingLink();
         // The theme toggle lives in the menu's quick row now, so it mounts
         // once the menu exists and exposes its slot.
         themeToggle = mountThemeToggle({
@@ -6663,7 +6791,7 @@ export const bootstrapWebclient = async (
   // archive; `currentRealmKey` authorizes a Q2 cross-realm restore.
   const archiveBackupOff = options.enableArchiveBackupPanel === false;
   const assertArchivePair = async (): Promise<void> => {
-    const current = await options.localStore.inspect();
+    const current = await localStore.inspect();
     if (current.server_url !== pair.serverUrl || current.server_public_key !== pair.serverPublicKey) {
       throw new Error('The selected server changed. Reload before starting or checking a remote backup.');
     }
@@ -6886,7 +7014,7 @@ export const bootstrapWebclient = async (
   const archiveRebindStash = archiveBackupOff
     ? undefined
     : createArchiveRebindStash({
-        localStore: options.localStore,
+        localStore,
         tokenStore: options.tokenStore,
       });
 
@@ -6912,15 +7040,19 @@ export const bootstrapWebclient = async (
   const archiveDownload = archiveBackupOff
     ? undefined
     : createArchiveDownload({
-        openSocket: async () => {
+        openSocket: async (signal) => {
+          signal.throwIfAborted();
           const serverUrl =
-            (await options.localStore.get('server_url')) ?? pair.serverUrl;
+            (await localStore.get('server_url')) ?? pair.serverUrl;
+          signal.throwIfAborted();
           const record =
-            (await options.localStore.get('webclient_token')) ?? pair.token;
+            (await localStore.get('webclient_token')) ?? pair.token;
+          signal.throwIfAborted();
           const plaintext = await options.tokenStore.unwrap(record, {
             ...aad,
             token_id: record.token_id,
           });
+          signal.throwIfAborted();
           const bearer = `${record.token_id}.${plaintext}`;
           const base = serverUrl.replace(/\/ws(?=$|\?)/, '/ws/download');
           const separator = base.includes('?') ? '&' : '?';
@@ -6938,24 +7070,7 @@ export const bootstrapWebclient = async (
             encodeBearerSubprotocol(bearer),
           ]);
           ws.binaryType = 'arraybuffer';
-          await new Promise<void>((resolve, reject) => {
-            ws.addEventListener('open', () => resolve());
-            ws.addEventListener('error', () => reject(new Error('download ws failed to open')));
-          });
-          return {
-            send: (text) => ws.send(text),
-            close: () => ws.close(),
-            onText: (cb) =>
-              ws.addEventListener('message', (ev: MessageEvent) => {
-                if (typeof ev.data === 'string') cb(ev.data);
-              }),
-            onBinary: (cb) =>
-              ws.addEventListener('message', (ev: MessageEvent) => {
-                if (ev.data instanceof ArrayBuffer) cb(ev.data);
-              }),
-            onClose: (cb) => ws.addEventListener('close', () => cb()),
-            onError: (cb) => ws.addEventListener('error', () => cb()),
-          };
+          return connectArchiveDownloadSocket(ws, signal);
         },
         saveBlob: (filename, parts) => {
           const urlApi = (globalThis as { URL?: typeof URL }).URL;
@@ -6991,9 +7106,9 @@ export const bootstrapWebclient = async (
     : createArchiveUpload({
         connect: async () => {
           const serverUrl =
-            (await options.localStore.get('server_url')) ?? pair.serverUrl;
+            (await localStore.get('server_url')) ?? pair.serverUrl;
           const record =
-            (await options.localStore.get('webclient_token')) ?? pair.token;
+            (await localStore.get('webclient_token')) ?? pair.token;
           const plaintext = await options.tokenStore.unwrap(record, {
             ...aad,
             token_id: record.token_id,
@@ -7079,6 +7194,11 @@ export const bootstrapWebclient = async (
   const pairRevokeCaller =
     options.enableDevicesPage === true
       ? (args: { instance_id: string }) => rpcConn.call('pair.revoke', args)
+      : undefined;
+  const pairRenameCaller =
+    options.enableDevicesPage === true
+      ? (args: { instance_id: string; display_name: string }) =>
+        rpcConn.call('pair.rename', args)
       : undefined;
 
   // D-163 Slice C — Notifications describe + set_channel callers.
@@ -7332,7 +7452,7 @@ export const bootstrapWebclient = async (
   const manageRescheduleLinkCaller: DataManageRescheduleLinkCaller =
     switchWorkTracker.track(async (input) => {
       const result = await rpcConn.call('reception.manage.mint', input);
-      const serverUrl = (await options.localStore.get('server_url')) ?? pair.serverUrl;
+      const serverUrl = (await localStore.get('server_url')) ?? pair.serverUrl;
       return {
         url: `${receptionHttpBaseFromWsUrl(serverUrl)}${result.manage_path}`,
         expires_at: result.expires_at,
@@ -7580,6 +7700,11 @@ export const bootstrapWebclient = async (
     switchWorkTracker.track(
       (input: typeof args) => rpcConn.call('memory.import', input),
     )(args);
+  // D-198 §10 — the owner undoes an agent's forget.
+  const dataMemoryRestoreCaller: DataMemoryRestoreCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('memory.restore', input),
+    )(args);
   // D-198 Slice 5 — the generic collection explorer reads (schema-driven
   // list→detail over the adapter-backed collections; mail / calendar tabs).
   const dataCollectionListInstancesCaller: DataCollectionListInstancesCaller = () =>
@@ -7694,9 +7819,9 @@ export const bootstrapWebclient = async (
   // `server_url` — never derived from `location.protocol`.
   const uploadConnectFactory: Upload.UploadConnectFactory = async () => {
     const serverUrl =
-      (await options.localStore.get('server_url')) ?? pair.serverUrl;
+      (await localStore.get('server_url')) ?? pair.serverUrl;
     const record =
-      (await options.localStore.get('webclient_token')) ?? pair.token;
+      (await localStore.get('webclient_token')) ?? pair.token;
     const plaintext = await options.tokenStore.unwrap(record, {
       ...aad,
       token_id: record.token_id,
@@ -9077,78 +9202,50 @@ export const bootstrapWebclient = async (
   // bearer auth path is sufficient. A pre-D-137-P5 server surfaces the rpc
   // unknown-method error inside the door's error chip, not a route crash.
   const permissionsListInboundTokensCaller:
-    | PermissionsListInboundTokensCaller
+    | ContractKeyListCaller
     | undefined =
     options.enablePermissionsPanel === false
       ? undefined
       : () => rpcConn.call('chat.inbound_token.list', undefined);
   const permissionsIssueInboundTokenCaller:
-    | PermissionsIssueInboundTokenCaller
+    | ContractKeyIssueCaller
     | undefined =
     options.enablePermissionsPanel === false
       ? undefined
       : (args) => rpcConn.call('chat.inbound_token.issue', args);
   const permissionsRevokeInboundTokenCaller:
-    | PermissionsRevokeInboundTokenCaller
+    | ContractKeyRevokeCaller
     | undefined =
     options.enablePermissionsPanel === false
       ? undefined
       : (args) => rpcConn.call('chat.inbound_token.revoke', args);
-  // D-171 slice 2b — the Chat row toggles the live token's chat_mode in place
-  // via update_grants (token value stable). Gates the Chat row independently of
-  // the door's lifecycle trio above.
-  const permissionsUpdateInboundTokenCaller:
-    | PermissionsUpdateInboundTokenCaller
-    | undefined =
-    options.enablePermissionsPanel === false
-      ? undefined
-      : (args) => rpcConn.call('chat.inbound_token.update_grants', args);
-  // D-171 slice 2c — the grant checklist's live self tool catalog. Read-only;
-  // local-UI only over the pair WS-rpc (`chat.inbound_token.` is reserved from
-  // the MCP channel). Gates the checklist alongside the update caller above.
+  // The Recipes page's live self tool catalog. Read-only; local-UI only over
+  // the pair WS-rpc (`chat.inbound_token.` is reserved from the MCP channel).
   // Read page by page: about 12 tools per installed pack, the largest
   // install-proportional list on the socket.
-  const permissionsToolCatalogCaller:
-    | PermissionsToolCatalogCaller
-    | undefined =
+  const recipesToolCatalogCaller: RecipesToolCatalogCaller | undefined =
     options.enablePermissionsPanel === false
       ? undefined
       : () => listAllTools((request) =>
         rpcConn.call('chat.inbound_token.tool_catalog', request));
-  const recipesToolCatalogCaller: RecipesToolCatalogCaller | undefined =
-    permissionsToolCatalogCaller;
-  // D-171 slice 3b / D-196 R3 — the `#contracts` normal authoring caller plus
-  // the MCP-door Advanced sub-panel (lazy cap/expiry). Gated with the contracts
-  // Contracts detail surface.
-  // `collection.contract.{mintContract,revokeContract,listContracts}` are
-  // per-pair-only (reserved from MCP); `chat.inbound_token.update_contract`
-  // (slice 3a) rebinds the live token's bound contract in place. R3 exposes the
-  // same owner-only mint on the Contracts route for standing doors and customer
-  // templates; customer instances remain server-lifecycle-only.
+  // D-196 R3 / D-327 — the `#contracts` "+ New contract" authoring caller, and
+  // the contract list the suggestion panels name doors against.
+  // `collection.contract.{mintContract,listContracts}` are per-pair-only
+  // (reserved from MCP). R3 exposes the same owner-only mint on the Contracts
+  // route for standing agreements and customer templates; customer instances
+  // remain server-lifecycle-only.
   const permissionsMintContractCaller:
     | PermissionsMintContractCaller
     | undefined =
     options.enablePermissionsPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.contract.mintContract', args);
-  const permissionsRevokeContractCaller:
-    | PermissionsRevokeContractCaller
-    | undefined =
-    options.enablePermissionsPanel === false
-      ? undefined
-      : (args) => rpcConn.call('collection.contract.revokeContract', args);
   const permissionsListContractsCaller:
     | PermissionsListContractsCaller
     | undefined =
     options.enablePermissionsPanel === false
       ? undefined
       : () => rpcConn.call('collection.contract.listContracts', undefined);
-  const permissionsUpdateInboundContractCaller:
-    | PermissionsUpdateInboundContractCaller
-    | undefined =
-    options.enablePermissionsPanel === false
-      ? undefined
-      : (args) => rpcConn.call('chat.inbound_token.update_contract', args);
 
   // D-166 contract_id lifecycle — `#contracts` inventory callers. Default ON;
   // tests opt out via `enableContractsPanel: false`. List + revoke gate the
@@ -9296,6 +9393,18 @@ export const bootstrapWebclient = async (
     options.enableContractsPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.contract.dismissDelegationSuggestion', args);
+  // D-329 §3.4 — the write rules an AI's approvals teach (same panel gate; the
+  // `collection.contract.` family, so the webclient bearer path is the only caller).
+  const writeRulesCallers = options.enableContractsPanel === false
+    ? undefined
+    : {
+        listSuggestions: () => rpcConn.call('collection.contract.listWriteRuleSuggestions', undefined),
+        accept: (args: { key_hash: string; ttl_ms?: number; max_uses?: number }) =>
+          rpcConn.call('collection.contract.acceptWriteRuleSuggestion', args),
+        dismiss: (args: { key_hash: string }) => rpcConn.call('collection.contract.dismissWriteRuleSuggestion', args),
+        listRules: () => rpcConn.call('collection.contract.listWriteRules', undefined),
+        revoke: (args: { rule_id: string }) => rpcConn.call('collection.contract.revokeWriteRule', args),
+      };
   // D-177 rule 5 (5.c, slice C) — the scoped-grant proposal section (same
   // panel gate; same reserved-out-of-MCP family — the webclient bearer path
   // is the only caller).
@@ -9986,7 +10095,7 @@ export const bootstrapWebclient = async (
             ? { baseUrl: options.diagnosticsApiBaseUrl }
             : {}),
           resolveTarget: async () => {
-            const pairMetadata = await options.localStore.get('pair_metadata');
+            const pairMetadata = await localStore.get('pair_metadata');
             const handle = pairMetadata?.server_handle_at_pair ?? '';
             const accountId = options.diagnosticsAccountId ?? handle.trim();
             const hostname =
@@ -10035,6 +10144,9 @@ export const bootstrapWebclient = async (
     workPrompt?: { prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest },
     assetDraft?: ChatRouteRecoveryDraft,
   ): RecoveryContextProbe & RunPageContextProvider & {
+    /** Child read boundary for a keyboard return, without claiming general
+     * recovery freshness for a composition wrapper. */
+    whenRunReviewReturnReady?: () => Promise<void>;
     update?: () => void;
     dispose: () => void;
     /** Leave-guard seam — a route with unsaved work returns true and the
@@ -10144,31 +10256,13 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
-        ...(permissionsUpdateInboundTokenCaller !== undefined
-          ? {
-              permissionsUpdateInboundTokenCaller: switchWorkTracker.track(
-                permissionsUpdateInboundTokenCaller,
-              ),
-            }
-          : {}),
-        ...(permissionsToolCatalogCaller !== undefined
-          ? { permissionsToolCatalogCaller }
-          : {}),
         ...(permissionsMintContractCaller !== undefined
-          && permissionsRevokeContractCaller !== undefined
           && permissionsListContractsCaller !== undefined
-          && permissionsUpdateInboundContractCaller !== undefined
           ? {
               permissionsMintContractCaller: switchWorkTracker.track(
                 permissionsMintContractCaller,
               ),
-              permissionsRevokeContractCaller: switchWorkTracker.track(
-                permissionsRevokeContractCaller,
-              ),
               permissionsListContractsCaller,
-              permissionsUpdateInboundContractCaller: switchWorkTracker.track(
-                permissionsUpdateInboundContractCaller,
-              ),
             }
           : {}),
         ...(contractsListCaller !== undefined
@@ -10214,6 +10308,10 @@ export const bootstrapWebclient = async (
                     grantSetDoorTypesCaller: switchWorkTracker.track(
                       grantSetDoorTypesCaller,
                     ),
+                    // D-327 — an agreement's limits, edited in place.
+                    grantSetLimitsCaller: switchWorkTracker.track(
+                      (args) => rpcConn.call('collection.contract.setLimits', args),
+                    ),
                   }
                 : {}),
               // GAP-B fix — route CLI ops in the Ops grant panel to
@@ -10247,6 +10345,16 @@ export const bootstrapWebclient = async (
           : {}),
         standingTasks: { read: input => rpcConn.call('yours.read', input),
           change: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
+        ...(writeRulesCallers !== undefined
+          ? {
+              writeRules: {
+                ...writeRulesCallers,
+                accept: switchWorkTracker.track(writeRulesCallers.accept),
+                dismiss: switchWorkTracker.track(writeRulesCallers.dismiss),
+                revoke: switchWorkTracker.track(writeRulesCallers.revoke),
+              },
+            }
+          : {}),
         ...(scopedSuggestionsListCaller !== undefined
           && scopedSuggestionsAcceptCaller !== undefined
           && scopedSuggestionsDismissCaller !== undefined
@@ -11045,8 +11153,9 @@ export const bootstrapWebclient = async (
       // Wrap the run-library route in the [Installed | Discover] tab shell. The
       // route mounts UNCHANGED into the Installed pane; the Discover pane
       // browses the marketplace recipe catalog (lazy-loaded on first open).
+      let installedRecipes: ReturnType<typeof bootstrapRecipesRoute> | null = null;
       const mountInstalled = (host: HTMLElement) =>
-        bootstrapRecipesRoute({
+        (installedRecipes = bootstrapRecipesRoute({
           // D-269 — forwarded to this route's run modal.
           serverTimeZone: getServerTimeZone,
           root: host,
@@ -11154,9 +11263,9 @@ export const bootstrapWebclient = async (
             activeHash = hash;
           },
           subscribe: subscriber.on,
-        });
+        }));
       let recipeDiscover: ReturnType<typeof mountRecipeDiscovery> | null = null;
-      return withTrackedServerSwitchWork(mountDiscoverySurface({
+      const library = mountDiscoverySurface({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         idPrefix: 'recued-recipes-library',
@@ -11197,7 +11306,11 @@ export const bootstrapWebclient = async (
         onReactivate: (tab) => {
           if (tab === 'discover') recipeDiscover?.refresh();
         },
-      }));
+      });
+      return withTrackedServerSwitchWork({
+        ...library,
+        whenRunReviewReturnReady: () => installedRecipes?.whenLoaded() ?? Promise.resolve(),
+      });
     }
     // D-291 — ONE mount for both surfaces. `#views/<id>` renders the Data route
     // under the saved-view list, so forking this (very large) options bag would
@@ -11280,6 +11393,7 @@ export const bootstrapWebclient = async (
         memoryCreateCaller: dataMemoryCreateCaller,
         memoryUpdateCaller: dataMemoryUpdateCaller,
         memoryDeleteCaller: dataMemoryDeleteCaller,
+        memoryRestoreCaller: dataMemoryRestoreCaller,
         memoryImportCaller: dataMemoryImportCaller,
         collectionListInstancesCaller: dataCollectionListInstancesCaller,
         collectionListCaller: dataCollectionListCaller,
@@ -11522,6 +11636,9 @@ export const bootstrapWebclient = async (
       activeSettingsRoute = null;
       return withTrackedServerSwitchWork(bootstrapYoursRoute({
         container: appShell.contentRoot,
+        continuityOwner: rpcConn,
+        context: input => rpcConn.call('yours.context', input),
+        subscribeReady: listener => ws.onState(state => { if (state === 'connected') listener(); }),
         segments: hashSource ? parseShellRoute(hashSource.getHash()).segments : [],
         read: input => rpcConn.call('yours.read', input),
         recordOpened: ref => { void rpcConn.call('yours.change', { action: 'navigation.open', ref }).catch(() => {}); },
@@ -11560,6 +11677,7 @@ export const bootstrapWebclient = async (
           collectionListCaller: dataCollectionListCaller,
           openCreateOverlay: () => createSeatHandler?.(),
           situationChangeCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
+          occurrenceAcknowledgeCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
           situationOpenedCaller: input => { void rpcConn.call('yours.change', input).catch(() => {}); },
         },
         subscribe: subscriber.on,
@@ -11624,6 +11742,9 @@ export const bootstrapWebclient = async (
                     : {}),
                   ...(logsRunAddress.returnToReception !== undefined
                     ? { receptionReturn: logsRunAddress.returnToReception }
+                    : {}),
+                  ...(logsRunAddress.returnToWorkspace !== undefined
+                    ? { workspaceReturn: logsRunAddress.returnToWorkspace }
                     : {}),
                 }
               : logsSegment !== undefined
@@ -11978,7 +12099,7 @@ export const bootstrapWebclient = async (
           };
       const settings = withTrackedServerSwitchWork(bootstrapSettingsRoute({
         root: appShell.contentRoot,
-        localStore: options.localStore,
+        localStore,
         // D-196 1d — the same generic runner the Recipes route uses; the Seller
         // page's order actions launch recipes through it rather than each one
         // needing its own `server.seller.*` method.
@@ -11993,8 +12114,8 @@ export const bootstrapWebclient = async (
               serverAddressDeps: {
                 listProfiles: () => options.profileStore!.listProfiles(),
                 tokenStore: options.tokenStore,
-                retarget: (id, next_url, next_token) =>
-                  options.profileStore!.retargetProfile(id, next_url, next_token),
+                retarget: (id, next_url, next_token, expected_token_id) => options.profileStore!
+                  .retargetProfile(id, next_url, next_token, expected_token_id),
                 activeProfileId: () => options.profileStore!.activeProfileId(),
                 // ⛔ THE DIRTY-WORK POLICY LIVES HERE, WHERE THE LEASES DO.
                 // A reload is a discard: an in-flight chat turn, an unsaved
@@ -12139,6 +12260,9 @@ export const bootstrapWebclient = async (
           ? {
               pairListCaller,
               pairRevokeCaller: switchWorkTracker.track(pairRevokeCaller),
+              ...(pairRenameCaller !== undefined
+                ? { pairRenameCaller: switchWorkTracker.track(pairRenameCaller) }
+                : {}),
             }
           : {}),
         ...(options.currentInstanceId !== undefined
@@ -12161,7 +12285,9 @@ export const bootstrapWebclient = async (
           const value = (await rpcConn.call('yours.read', { limit: 1 })).household;
           if (!value) throw new Error('Household delivery is unavailable on this server');
           return value;
-        }, save: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
+        }, save: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
+        // §15.7 amendment — a Home Assistant connection's to-do lists, offered by name.
+        homeAssistantLists: input => rpcConn.call('yours.household_lists', input) },
         quietHoursGetCaller,
         quietHoursSetCaller: switchWorkTracker.track(quietHoursSetCaller),
         mailChatDoorGetCaller,
@@ -13278,6 +13404,7 @@ export const bootstrapWebclient = async (
     navigateHashInPlace(activeHash); appShell.setActiveRoute(activeRoute, ['backup']);
   }
   let mountedRouteHandle: RecoveryContextProbe & RunPageContextProvider & {
+    whenRunReviewReturnReady?: () => Promise<void>;
     update?: () => void;
     dispose: () => void;
     hasUnsavedChanges?: () => boolean;
@@ -13288,6 +13415,7 @@ export const bootstrapWebclient = async (
     navigateDeepLink?: (hash: string) => boolean;
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } = mountRoute(activeRoute);
+  let cancelRunReviewReturnFocus = (): void => {};
 
   // D-282 slice C — fill the drawer's app seats once the shell is up.
   //
@@ -14682,7 +14810,7 @@ export const bootstrapWebclient = async (
           if (state !== 'connected') return;
           void runPassportFetchVerify({
             conn: rpcConn.call,
-            localStore: options.localStore,
+            localStore,
             pinnedServerPublicKey: pair.serverPublicKey,
             ...(certPinWatcher !== null
               ? { certPinWatcher }
@@ -14972,11 +15100,20 @@ export const bootstrapWebclient = async (
         // has a shell lifetime so it can guard/settle independently of Chat,
         // then closes after an accepted content transition.
         globalRunPalette?.close();
+        const previousHash = activeHash;
+        cancelRunReviewReturnFocus();
         mountedRouteHandle.dispose();
         activeRoute = next;
         activeHash = hash;
         appShell.setActiveRoute(next, parseShellRoute(hash).segments);
         mountedRouteHandle = mountRoute(next, chatFile, workPrompt, assetDraft);
+        const arrivalHandle = mountedRouteHandle;
+        cancelRunReviewReturnFocus = doc === undefined ? () => {} : focusRunReviewReturn({
+          document: doc, root: appShell.contentRoot, fromHash: previousHash, toHash: hash,
+          whenLoaded: () => arrivalHandle.whenRunReviewReturnReady?.()
+            ?? arrivalHandle.whenLoaded?.() ?? Promise.resolve(),
+          isCurrent: () => !disposed && mountedRouteHandle === arrivalHandle && activeHash === hash,
+        });
         finishPendingRecoveryReturnAction(hash);
       })
     : (): void => undefined;
@@ -15105,6 +15242,7 @@ export const bootstrapWebclient = async (
       cancelRecoveryIntentContinuationExpiry();
       cancelRecoveryIntentExpiryHandoff();
       recoveryIntentOrientation?.dispose();
+      cancelRunReviewReturnFocus();
       mountedRouteHandle.dispose();
       foundationalOAuthContinuity.dispose();
       detachCredentialRotationServerUpdateGuide();

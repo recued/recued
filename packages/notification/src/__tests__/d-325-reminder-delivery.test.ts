@@ -1,13 +1,13 @@
 import { createInMemoryCollection } from '@recued/storage';
 import { PREAPPROVAL_NOTIFICATION_HANDLER } from '@recued/contracts';
-import type { InteractiveTransport, OutboundPrompt, TransportSendResult } from '@recued/transport';
+import type { InteractiveTransport, OutboundMessage, OutboundPrompt, Transport, TransportSendResult } from '@recued/transport';
 import { createTelegramTransport } from '@recued/transport';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createAskDeliveryStore, createAskStore, createNotificationBlock, createNotificationSettingsStore,
-  createRemoteChannel, createUiChannel, createEmailChannel, emailReplyText,
+  createRemoteChannel, createUiChannel, createEmailChannel, emailReplyText, receivesOnly,
   type AskDeliveryDestination, type AskDeliveryEnvelope, type AskDeliveryInput, type AskDeliveryRecord,
   type AskDeliveryStore, type Channel, type NotificationSettings, type PendingAsk,
   type OutboundEmail,
@@ -184,7 +184,7 @@ describe('D-325 durable reminder asks', () => {
       .toEqual([{ reason: 'already_closed', text: 'Driving licence: done', via: 'email', group_id: plan.group_id }]);
   });
 
-  it('answers a typed reply only where the reminder was shown as text, for the owner and a household member alike', () => {
+  it('answers a typed reply only where the reminder was shown as text, and never in the household group', () => {
     // ⛔ A button delivery prints no "1 = Done" hint, so text that merely looks like
     // an option — the owner's "1" to an assistant's question, a member's "Done!" in
     // the family group — must stay ordinary conversation.
@@ -197,7 +197,7 @@ describe('D-325 durable reminder asks', () => {
       parseInboundChoice: () => null, parseCallbackConversationId: () => null,
     };
     const family: AskDeliveryDestination = { id: 'family-telegram', channel: 'telegram', connection_name: 'private',
-      connection_enrolled_at: 100, recipient: 'family-chat', audience: 'household', allowed_senders: ['member'] };
+      connection_enrolled_at: 100, recipient: 'family-chat', audience: 'household' };
     const remote = createRemoteChannel({ transport, resolveCredential: async () => null });
     const show = (destination: AskDeliveryDestination, presentation: 'buttons' | 'text', group: string) => remote.restoreAskDelivery!({
       group_id: group, attempt_id: `${group}-attempt`, destination, repeat: false, provider_message_id: 'message-1', presentation,
@@ -509,5 +509,129 @@ describe('an emailed reminder names its ask in the subject', () => {
     await expect(block.askBundle(bare('emailed', [emailDestination]))).rejects.toThrow('Invalid reminder delivery envelope');
     // A saved app-only payload is resent as it was stored.
     await expect(block.askBundle(bare('app-only', [{ id: 'ui', channel: 'ui' }]))).resolves.toEqual({ ask_ids: expect.any(Array) });
+  });
+});
+
+describe('D-325 §15.7 (2026-10-24) — a reminder is a notification, never an approval', () => {
+  // As the app enrols them: a Telegram connection names no principal (only Teams resolves one, D-238).
+  const unnamed: AskDeliveryDestination = { id: 'owner-telegram', channel: 'telegram', connection_name: 'private',
+    connection_enrolled_at: 100, recipient: 'private-chat' };
+  const family: AskDeliveryDestination = { id: 'household-telegram', channel: 'telegram', connection_name: 'family',
+    connection_enrolled_at: 300, recipient: '-100200300', audience: 'household' };
+  const plan = (group_id: string, destinations: AskDeliveryDestination[]): AskDeliveryInput => ({ group_id, destinations,
+    asks: [{ ask_id: `ask-${group_id}`, options, handler: { kind: 'reminder.occurrence', payload: {} },
+      message: { title: 'Boiler service', text: 'The boiler service is due on 12 Nov.', link_url: 'https://recued.example/#yours/occurrences' } }] });
+  /** Each connection's credential as it is stored: neither names a principal, except
+   *  that the family group's may carry one by hand, which must not matter. */
+  const telegram = (familyPrincipal?: string) => {
+    const posts: OutboundMessage[] = []; const prompts: OutboundPrompt[] = []; const edits: string[] = [];
+    const transport: InteractiveTransport = {
+      vendor: 'telegram', send: async message => { posts.push(structuredClone(message)); return { ok: true, vendor_message_id: `post-${posts.length}` }; },
+      parseInbound: () => null, parseConversationId: () => null,
+      sendPrompt: async prompt => { prompts.push(structuredClone(prompt)); return { ok: true, vendor_message_id: `prompt-${prompts.length}` }; },
+      updatePrompt: async prompt => { edits.push(prompt.vendor_message_id); return { ok: true }; },
+      closePrompt: async prompt => { edits.push(prompt.vendor_message_id); return { ok: true }; },
+      parseInboundChoice: payload => payload as ReturnType<InteractiveTransport['parseInboundChoice']>,
+      parseCallbackConversationId: payload => (payload as { recipient?: string }).recipient ?? null,
+    };
+    const channel = () => createRemoteChannel({ transport, resolveCredential: async destination => destination?.connection_name === 'family'
+      ? { token: 'family-token', recipient: '-100200300', connection_name: 'family', connection_enrolled_at: 300,
+        ...(familyPrincipal ? { expected_sender: familyPrincipal } : {}) }
+      : { token: 'owner-token', recipient: 'private-chat', connection_name: 'private', connection_enrolled_at: 100 } });
+    return { channel, posts, prompts, edits };
+  };
+  const press = (remote: Channel & { parseInboundReply: (payload: unknown, connection?: { name: string; enrolled_at: number }) => unknown },
+    ask_id: string, recipient: string, from: string, connection: { name: string; enrolled_at: number }) =>
+    remote.parseInboundReply({ correlation_id: ask_id, option_id: 'done', from, recipient, vendor_message_id: 'prompt-1' }, connection) as Parameters<NotificationBlock['submitAnswer']>[0];
+
+  it('answers the owner from their own chat with no principal named, as the owner, and nobody from the household group', async () => {
+    const f = fixture(); const t = telegram('family-admin'); const remote = t.channel(); const block = f.boot(remote);
+    const bundle = plan('no-principal', [unnamed, family, { id: 'ui', channel: 'ui' }]);
+    await block.askBundle(bundle);
+    // The owner gets buttons; the household gets the reminder as a message, without its owner-only link.
+    expect(t.prompts.map(prompt => [prompt.recipient, prompt.options.map(option => option.id)])).toEqual([['private-chat', ['done', 'later', 'not_needed', 'stop']]]);
+    expect(t.posts.map(post => post.recipient)).toEqual(['-100200300']);
+    expect(t.posts[0]!.text).toContain('The boiler service is due on 12 Nov.');
+    expect(t.posts[0]!.text).not.toContain('https://');
+    const ask_id = bundle.asks[0]!.ask_id;
+    // ⛔ Nobody in the family group answers: not a member, not even the owner.
+    for (const from of ['member', 'family-admin']) {
+      expect(await block.submitAnswer(press(remote, ask_id, '-100200300', from, { name: 'family', enrolled_at: 300 }))).toBe('ignored');
+    }
+    // A chat other than the owner's own is not the owner's.
+    expect(await block.submitAnswer(press(remote, ask_id, 'someone-elses-chat', 'owner-account', { name: 'private', enrolled_at: 100 }))).toBe('ignored');
+    expect(f.handled).not.toHaveBeenCalled();
+    expect(await block.submitAnswer(press(remote, ask_id, 'private-chat', 'owner-account', { name: 'private', enrolled_at: 100 }))).toBe('answered');
+    expect(f.handled).toHaveBeenCalledTimes(1);
+    expect((await f.askStore.get(ask_id))?.owner_answer).toBe(true);
+    // The owner's buttons close; the household's message has none, so nothing is edited there.
+    expect(t.edits).toEqual(['prompt-1']);
+    expect((await f.deliveryStore.get(bundle.group_id))!.withdrawals.every(job => job.acknowledged_at !== undefined)).toBe(true);
+  });
+
+  it('refuses a press on a household copy stored with the member list it once had', async () => {
+    const f = fixture(); const t = telegram(); const remote = t.channel(); const block = f.boot(remote);
+    // Sent before 2026-10-24: the group's copy named an answerer and its members.
+    const legacy = { ...family, expected_sender: 'owner-account', allowed_senders: ['owner-account', 'member'] } as AskDeliveryDestination;
+    const bundle = plan('legacy', [legacy, { id: 'ui', channel: 'ui' }]);
+    await block.askBundle(bundle);
+    expect(t.posts).toHaveLength(1);
+    for (const from of ['member', 'owner-account']) {
+      expect(await block.submitAnswer(press(remote, bundle.asks[0]!.ask_id, '-100200300', from, { name: 'family', enrolled_at: 300 }))).toBe('ignored');
+    }
+    expect(f.handled).not.toHaveBeenCalled();
+  });
+
+  it('posts to a conversation others may be in without buttons and takes no answer from it, unless only the owner is there', async () => {
+    // With no principal, Recued cannot tell the owner from others in a Slack channel, on
+    // Discord, or on Teams. Only a private conversation answers without one.
+    const shapes: Array<[AskDeliveryDestination, boolean]> = [
+      [unnamed, false], [family, true], [{ id: 'a', channel: 'telegram', recipient: '-1001' }, true],
+      [{ id: 'b', channel: 'whatsapp', recipient: '447700900000' }, false], [{ id: 'c', channel: 'slack', recipient: 'D0123' }, false],
+      [{ id: 'd', channel: 'slack', recipient: 'C0123' }, true], [{ id: 'e', channel: 'discord', recipient: '1234' }, true],
+      [{ id: 'f', channel: 'teams', recipient: '19:chat' }, true], [{ id: 'g', channel: 'teams', recipient: '19:chat', expected_sender: 'owner-object-id' }, false],
+      [{ id: 'h', channel: 'ui' }, false], [emailDestination, false],
+    ];
+    expect(shapes.map(([destination]) => receivesOnly(destination))).toEqual(shapes.map(([, only]) => only));
+    for (const [recipient, shared] of [['C0123', true], ['D0123', false]] as const) {
+      const posts: OutboundMessage[] = []; const prompts: OutboundPrompt[] = [];
+      const transport: InteractiveTransport = { vendor: 'slack', parseInbound: () => null, parseConversationId: () => null,
+        send: async message => { posts.push(structuredClone(message)); return { ok: true, vendor_message_id: `post-${posts.length}` }; },
+        sendPrompt: async prompt => { prompts.push(structuredClone(prompt)); return { ok: true, vendor_message_id: `prompt-${prompts.length}` }; },
+        updatePrompt: async () => ({ ok: true }), closePrompt: async () => ({ ok: true }),
+        parseInboundChoice: payload => payload as ReturnType<InteractiveTransport['parseInboundChoice']>,
+        parseCallbackConversationId: payload => (payload as { recipient?: string }).recipient ?? null };
+      const remote = createRemoteChannel({ transport, resolveCredential: async () => ({ token: 'slack-token', recipient,
+        connection_name: 'work', connection_enrolled_at: 100 }) });
+      const f = fixture(); const block = f.boot(remote);
+      const bundle = plan(`slack-${recipient}`, [{ id: 'owner-slack', channel: 'slack', connection_name: 'work', connection_enrolled_at: 100, recipient },
+        { id: 'ui', channel: 'ui' }]);
+      await block.askBundle(bundle);
+      // In a channel the reminder is a message, still with its link to Recued; a direct message keeps its buttons.
+      expect([posts.length, prompts.length], recipient).toEqual(shared ? [1, 0] : [0, 1]);
+      if (shared) expect(posts[0]!.text).toContain('https://recued.example/#yours/occurrences');
+      // ⛔ A press from the channel, as on a post an older build made there with buttons, answers nothing.
+      expect(await block.submitAnswer(press(remote, bundle.asks[0]!.ask_id, recipient, 'U-owner', { name: 'work', enrolled_at: 100 })), recipient)
+        .toBe(shared ? 'ignored' : 'answered');
+    }
+  });
+
+  it('⛔ leaves a classic ask on a chat with no principal unanswerable by typing, while a reminder shown as text there answers', async () => {
+    // D-238 holds for approvals: with no known approver, nobody may answer by typing.
+    const posts: OutboundMessage[] = [];
+    const transport: Transport = { vendor: 'telegram', send: async message => { posts.push(message); return { ok: true }; },
+      parseInbound: payload => payload as { text: string; from: string },
+      parseConversationId: payload => (payload as { recipient: string }).recipient };
+    // A channel with no buttons, as D-238's Teams is: answered by typing or by link.
+    const remote = createRemoteChannel({ transport, capability: 'landing-page', resolveCredential: async () => ({ token: 'owner-token',
+      recipient: 'private-chat', connection_name: 'private', connection_enrolled_at: 100 }) });
+    await remote.deliverAsk('approval-1', { title: 'Send the invoice?', text: 'Approve to send it.' }, [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }]);
+    const typed = (text: string) => remote.parseInboundReply({ recipient: 'private-chat', from: 'colleague', text }, { name: 'private', enrolled_at: 100 });
+    expect(typed('Approve')).toBeNull();
+    remote.restoreAskDelivery!({ group_id: 'shown-as-text', attempt_id: 'shown-as-text-1', destination: unnamed, repeat: false,
+      provider_message_id: '', presentation: 'text', asks: [{ ask_id: 'reminder-1', message: { text: 'Boiler service is due.' }, options,
+        handler_kind: 'reminder.occurrence', handler_payload: {}, fanout_channels: ['telegram'], created_at: 1 }] }, []);
+    expect(typed('Done')).toMatchObject({ ask_id: 'reminder-1', option: 'done' });
+    expect(typed('Approve')).toBeNull();
   });
 });

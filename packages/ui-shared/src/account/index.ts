@@ -73,5 +73,6 @@ export {
   type PairListEntryKind,
   type DevicesPageRow,
   type DevicesPageState,
+  DEVICE_NAME_MAX_CHARS,
   renderDevicesPage,
 } from './devices-page.js';

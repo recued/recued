@@ -444,7 +444,7 @@ const STYLES = `
   color: var(--fg-muted);
 }
 .startup-failure-triage button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .startup-failure-triage-status {
@@ -491,7 +491,7 @@ const STYLES = `
 }
 .startup-failure-diagnostic:focus-visible,
 .startup-failure-diagnostic pre:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .startup-failure-diagnostic-status {

@@ -516,6 +516,9 @@ export const KIND_POLICY_PANEL_STYLES = `
 [${KIND_POLICY_PANEL_ATTR}] [${KIND_POLICY_READ_STATUS_ATTR}] {
   margin: 0;
 }
+[${KIND_POLICY_PANEL_ATTR}] a {
+  color: var(--accent);
+}
 [${KIND_POLICY_PANEL_ATTR}] .kp-lede,
 [${KIND_POLICY_PANEL_ATTR}] .kp-note {
   margin: 0;

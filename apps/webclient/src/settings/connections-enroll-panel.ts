@@ -785,6 +785,7 @@ export interface ConnectionsEnrollPanelMount {
 type ConnectionsEnrollAction =
   | 'connections-review-direct-authentication'
   | 'connections-manage-authentication'
+  | 'connections-choose-auth'
   | 'connections-manage-row-authentication'
   | 'connections-authentication-choice'
   | 'connections-switch-authentication'
@@ -2072,7 +2073,7 @@ export const mountConnectionsEnrollPanel = (
     if (directImpact && state.dialog.directAuthenticationReview) {
       const review = state.dialog.directAuthenticationReview;
       directImpact.innerHTML = renderManagedOAuthImpact(review.impact);
-      const permissions = doc.createElement('p');
+      const permissions = doc.createElement('p'); permissions.className = 'connections-switch-review-permissions';
       permissions.textContent = 'Required permissions: ' + (review.required_scopes.join(', ') || (review.impact.file_source ? 'No additional named scopes; file metadata was checked separately' : 'No scope list is available'))
         + '. ' + review.warnings.join(' ');
       directImpact.appendChild(permissions);
@@ -4777,7 +4778,7 @@ export const mountConnectionsEnrollPanel = (
     if (typeof host.querySelector !== 'function') return;
     const issue = currentConnectionFormValidationIssue();
     if (issue === undefined) return;
-    const summary = connectionFormValidationSummary(issue);
+    const summary = connectionFormValidationSummary(issue, state.dialog.authenticationSwitch !== null);
     const ready = summary.status === 'ready';
     const announce = connectionFormValidationShouldAnnounce(
       state.dialog,
@@ -7879,7 +7880,7 @@ export const mountConnectionsEnrollPanel = (
     }
   };
 
-  const openEditConnection = (kind: ConnectionKind, name: string): void => {
+  const openEditConnection = (kind: ConnectionKind, name: string, show = true): void => {
     retireDirectAuthenticationReview();
     const view = state.connections.find(
       (connection) => connection.kind === kind && connection.name === name,
@@ -7927,7 +7928,7 @@ export const mountConnectionsEnrollPanel = (
         error: null,
       };
     }
-    render();
+    if (show) render();
     if (state.dialog.kind === 'notification' && state.dialog.subtype === 'email') {
       void hydrateMailOptions();
     }
@@ -8980,6 +8981,14 @@ export const mountConnectionsEnrollPanel = (
         reclaimFocus: doc.activeElement === element,
       });
     },
+    'connections-choose-auth': (dataset) => {
+      const type = dataset.authType;
+      const offered = activeSchema()?.fields.find(field => field.key === 'auth.type')?.options ?? [];
+      if (!type || !offered.includes(type) || state.dialog.stage !== 'form' || state.dialog.values['auth.type'] === type) return;
+      // The card stands in for the auth.type select: the same change path, then focus stays on the card.
+      applyFieldEvent({ tagName: 'SELECT', value: type, dataset: { connField: 'auth.type' } } as unknown as FieldElement, 'change');
+      focusGuideTarget(`[data-action="connections-choose-auth"][data-auth-type="${type}"]`);
+    },
     'connections-manage-authentication': () => {
       void beginAuthenticationSwitch('reauthorize').catch(error => {
         if (disposed) return; state.dialog.error = errMessage(error); render();
@@ -8989,8 +8998,14 @@ export const mountConnectionsEnrollPanel = (
       if (dataset.kind !== 'api' || !dataset.name || hasInFlightWork() || !confirmDiscardConnectionDraft()) return;
       const row = state.connections.find(row => row.kind === 'api' && row.name === dataset.name);
       if (!row || !['oauth2_refresh', 'bearer', 'managed_oauth'].includes(row.auth_type ?? '')) return;
-      openEditConnection('api', row.name);
-      void beginAuthenticationSwitch('reauthorize').catch(error => {
+      // Not rendered yet: a broker editor starts reading its profiles as it
+      // appears, and that read would count as work in flight and stop the
+      // switch, leaving the plain editor open instead of this manager.
+      openEditConnection('api', row.name, false);
+      const started = beginAuthenticationSwitch('reauthorize');
+      // It declined before starting (other work in flight): show the editor, as before.
+      if (!authenticationManagementPreparing) render();
+      void started.catch(error => {
         if (!disposed) { state.dialog.error = errMessage(error); render(); }
       });
     },
@@ -9739,6 +9754,11 @@ export const mountConnectionsEnrollPanel = (
         : null
     ) as FieldElement | null;
     if (el === null || !host.contains(el)) return;
+    applyFieldEvent(el, event.type);
+  };
+  /** One field change, from its own element or from a control standing in for
+   *  it: a sign-in method card sets `auth.type` exactly as its select would. */
+  const applyFieldEvent = (el: FieldElement, eventType: string): void => {
     const key = el.dataset.connField;
     if (selectedSavedOAuthAppIssuer(state.dialog) && (key === 'auth.client_id' || key === 'auth.client_secret')) return;
     if (key === undefined) return;
@@ -9747,7 +9767,7 @@ export const mountConnectionsEnrollPanel = (
     // A `<select>` fires both `input` and `change`; act on `change` so the
     // visibility re-render runs once. Text/secret inputs act on `input`.
     const isSelect = el.tagName === 'SELECT';
-    if ((isSelect ? 'change' : 'input') !== event.type) return;
+    if ((isSelect ? 'change' : 'input') !== eventType) return;
     // Lock values already captured by a submit/OAuth attempt or authoritatively
     // replaced by its result. This prevents a returned token from being paired
     // with different app details—or erasing a base-URL edit made meanwhile.

@@ -55,6 +55,11 @@ import {
   type AccountBindingExchangeClient,
   type FetchLike,
 } from '../account-binding/exchange-client.js';
+import {
+  createHttpAccountBindingReleaseClient,
+  type AccountBindingReleaseClient,
+} from '../account-binding/release-client.js';
+import { resolveAccountBindingReleaseUrl } from '../account-binding/exchange-url.js';
 import { makeAccountBindingHandlers } from '../account-binding-handler.js';
 import {
   createInMemoryServerKeyStore,
@@ -176,7 +181,9 @@ const makeMockExchange = (
   };
 };
 
-const makeHarness = (opts: { exchange?: MockExchange; withAudit?: boolean } = {}) => {
+const makeHarness = (
+  opts: { exchange?: MockExchange; withAudit?: boolean; release?: AccountBindingReleaseClient } = {},
+) => {
   const keyStore = createInMemoryServerKeyStore();
   const identity: Ed25519Keypair = generateEd25519Keypair('server_identity_key');
   const exchange = opts.exchange ?? makeMockExchange();
@@ -195,6 +202,7 @@ const makeHarness = (opts: { exchange?: MockExchange; withAudit?: boolean } = {}
     getServerIdentity: () => identity,
     getKeyStore: () => keyStore,
     exchangeClient: exchange.client,
+    ...(opts.release ? { releaseClient: opts.release } : {}),
     ...(auditLog ? { auditLog } : {}),
     now: () => clock,
   });
@@ -612,6 +620,55 @@ describe('D-175 P5 — unbind + status', () => {
     expect(rows.filter((r) => r.action === 'account_unbind')).toHaveLength(1);
   });
 
+  it('tells recued.com first, with the credential it is about to forget', async () => {
+    const seen: Array<{ request: unknown; stillStored: boolean }> = [];
+    let h!: ReturnType<typeof makeHarness>;
+    h = makeHarness({
+      release: {
+        release: async (request) => {
+          seen.push({ request, stillStored: h.keyStore.loadAccountBinding() !== null });
+          return 'released';
+        },
+      },
+    });
+    await h.manager.bind({ binding_token: tokenFor(ACCT_A) }, ACTOR);
+    const stored = h.keyStore.loadAccountBinding()!;
+
+    expect(await h.manager.unbind(ACTOR)).toMatchObject({ outcome: 'unbound', cloud: 'released' });
+    expect(seen).toEqual([{
+      request: {
+        server_scoped_credential: stored.server_scoped_credential,
+        server_fingerprint: stored.server_fingerprint,
+      },
+      stillStored: true,
+    }]);
+    expect(h.keyStore.loadAccountBinding()).toBeNull();
+  });
+
+  it('says recued.com was not told when nothing could tell it', async () => {
+    const h = makeHarness();
+    await h.manager.bind({ binding_token: tokenFor(ACCT_A) }, ACTOR);
+    expect(await h.manager.unbind(ACTOR)).toMatchObject({ outcome: 'unbound', cloud: 'not_told' });
+    expect(h.keyStore.loadAccountBinding()).toBeNull();
+  });
+
+  it('a bind that lands while recued.com answers is newer than the Disconnect, and stays', async () => {
+    let h!: ReturnType<typeof makeHarness>;
+    h = makeHarness({
+      release: {
+        release: async () => {
+          const current = h.keyStore.loadAccountBinding()!;
+          h.keyStore.saveAccountBinding({ ...current, server_scoped_credential: 'cred-newer' });
+          return 'released';
+        },
+      },
+    });
+    await h.manager.bind({ binding_token: tokenFor(ACCT_A) }, ACTOR);
+
+    await h.manager.unbind(ACTOR);
+    expect(h.keyStore.loadAccountBinding()?.server_scoped_credential).toBe('cred-newer');
+  });
+
   it('status reports unbound → bound and stays secret-free', async () => {
     const h = makeHarness();
     expect(h.manager.status()).toEqual({ status: 'unbound', binding: null });
@@ -813,6 +870,76 @@ describe('D-175 P5 — HTTP exchange client', () => {
     });
   });
 });
+
+describe('D-175 — HTTP release client (Disconnect)', () => {
+  const req = { server_scoped_credential: 'acctcred.v1.p.s', server_fingerprint: 'sha256:ff' };
+  const answering = (status: number, body: unknown): FetchLike => async () => ({
+    status,
+    json: async () => body,
+  });
+
+  it('posts the credential and fingerprint, and reads released / not listed', async () => {
+    let posted: { url: string; body: string | undefined } | undefined;
+    const client = createHttpAccountBindingReleaseClient({
+      getEndpointUrl: () => 'https://auth.example/v1/account/binding/release',
+      fetchImpl: async (url, init) => {
+        posted = { url, body: init?.body };
+        return { status: 200, json: async () => ({ ok: true, outcome: 'unbound' }) };
+      },
+    });
+    expect(await client.release(req)).toBe('released');
+    expect(posted?.url).toBe('https://auth.example/v1/account/binding/release');
+    expect(JSON.parse(posted!.body!)).toEqual(req);
+
+    const gone = createHttpAccountBindingReleaseClient({
+      getEndpointUrl: () => 'https://auth.example/v1/account/binding/release',
+      fetchImpl: answering(200, { ok: true, outcome: 'not_bound' }),
+    });
+    expect(await gone.release(req)).toBe('not_listed');
+  });
+
+  it('anything else is not_told and never a throw: an older Worker, a refusal, a bad body, no URL, no network', async () => {
+    const url = () => 'https://auth.example/v1/account/binding/release';
+    const cases: Array<[string, HttpReleaseOptions]> = [
+      ['older Worker without the route', { getEndpointUrl: url, fetchImpl: answering(404, 'not found') }],
+      ['rotated sign-in', { getEndpointUrl: url, fetchImpl: answering(401, { ok: false, code: 'credential_invalid' }) }],
+      ['2xx that is not a release', { getEndpointUrl: url, fetchImpl: answering(200, { ok: true, outcome: 'maybe' }) }],
+      ['2xx with no body', { getEndpointUrl: url, fetchImpl: answering(200, null) }],
+      ['no endpoint', { getEndpointUrl: () => undefined, fetchImpl: answering(200, { ok: true, outcome: 'unbound' }) }],
+      ['a resolver that throws', { getEndpointUrl: () => { throw new TypeError('Invalid URL'); }, fetchImpl: answering(200, { ok: true, outcome: 'unbound' }) }],
+      ['network error', { getEndpointUrl: url, fetchImpl: async () => { throw new Error('ECONNREFUSED'); } }],
+    ];
+    for (const [label, options] of cases) {
+      expect(await createHttpAccountBindingReleaseClient(options).release(req), label).toBe('not_told');
+    }
+  });
+
+  it('never follows a redirect with the credential, even to the same origin', async () => {
+    // A same-origin redirect is one the provider fetchers DO follow; a body
+    // carrying the credential must not be re-sent anywhere.
+    const calls: Array<{ url: string; redirect: unknown }> = [];
+    const client = createHttpAccountBindingReleaseClient({
+      getEndpointUrl: () => 'https://auth.example/v1/account/binding/release',
+      fetchImpl: (async (url: string, init?: { redirect?: unknown }) => {
+        calls.push({ url, redirect: init?.redirect });
+        return new Response(null, { status: 302, headers: { location: 'https://auth.example/elsewhere' } });
+      }) as unknown as FetchLike,
+    });
+    expect(await client.release(req)).toBe('not_told');
+    expect(calls).toEqual([{ url: 'https://auth.example/v1/account/binding/release', redirect: 'error' }]);
+  });
+
+  it('releases on the same Worker as the exchange, mirror or not', () => {
+    expect(resolveAccountBindingReleaseUrl({ cloudApex: 'recued.com' }))
+      .toBe('https://auth.recued.com/v1/account/binding/release');
+    expect(resolveAccountBindingReleaseUrl({ cloudApex: 'mirror.example' }))
+      .toBe('https://auth.mirror.example/v1/account/binding/release');
+    expect(resolveAccountBindingReleaseUrl({ override: 'https://auth.lab.example/v1/account/binding/exchange' }))
+      .toBe('https://auth.lab.example/v1/account/binding/release');
+  });
+});
+
+type HttpReleaseOptions = Parameters<typeof createHttpAccountBindingReleaseClient>[0];
 
 // ────────────────────────────────────────────────────────────────
 // At-rest storage — the identity-keys file

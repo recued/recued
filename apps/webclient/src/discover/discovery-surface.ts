@@ -249,6 +249,10 @@ export const DISCOVERY_SURFACE_STYLES = `
 [${DISCOVERY_SURFACE_HOST_ATTR}] .discovery-tab:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
+/* A finger's height on a phone. ⛔ 36px. */
+@media (max-width: 640px) {
+  [${DISCOVERY_SURFACE_HOST_ATTR}] .discovery-tab { min-height: 44px; }
+}
 [${DISCOVERY_SURFACE_DISCOVER_ATTR}] {
   max-width: var(--wc-content-max, 1080px); margin: 0 auto; padding: 14px 16px 24px;
 }

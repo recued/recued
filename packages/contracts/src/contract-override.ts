@@ -109,6 +109,9 @@ export interface CatalogOperationView {
    *  (`cli-tool-universe` derives its rows from `Object.entries(operations)`), so
    *  a cli-op grant toggle MUST use THIS, not the qualified `operation_id`. */
   operation_key: string;
+  /** The pack author's description of the operation, shown as its hover text on
+   *  the Contracts page. Absent when the manifest declares none. */
+  description?: string;
   risk_tier: OperationRiskTier;
   /** Author-declared approval, when the op carries one. Absent means the
    * resolver's existing provider/risk fallback remains in force. */
@@ -181,6 +184,7 @@ export const catalogIngredientViews = (
             return {
               operation_id: op.operation_id,
               operation_key,
+              ...(op.description !== undefined ? { description: op.description } : {}),
               risk_tier: op.risk_tier,
               ...(op.approval !== undefined ? { approval: op.approval } : {}),
               groups: [...(op.groups ?? [])],

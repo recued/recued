@@ -63,6 +63,8 @@ export const MEMORY_EDIT_ACTION = 'memory-edit';
 export const MEMORY_DELETE_ACTION = 'memory-delete';
 export const MEMORY_DELETE_CONFIRM_ACTION = 'memory-delete-confirm';
 export const MEMORY_DELETE_CANCEL_ACTION = 'memory-delete-cancel';
+/** D-198 §10 — the owner undoes an AGENT's forget (`memory.restore`). */
+export const MEMORY_RESTORE_ACTION = 'memory-restore';
 export const MEMORY_COMPOSE_SUBMIT_ACTION = 'memory-compose-submit';
 export const MEMORY_COMPOSE_CANCEL_ACTION = 'memory-compose-cancel';
 export const MEMORY_COMPOSE_DISCARD_KEEP_ACTION = 'memory-compose-discard-keep';
@@ -239,6 +241,10 @@ export interface MemoryLensProps {
   openingEditId?: string;
   /** Row-local Edit prefill failure; keeps Edit visible and retryable. */
   editError?: { memoryId: string; message: string };
+  /** D-198 §10 — the agent-forgotten row whose Restore is in flight. */
+  restoringId?: string;
+  /** D-198 §10 — row-local Restore failure; keeps Restore visible and retryable. */
+  restoreError?: { memoryId: string; message: string };
   /** Slice 2 — whether the owner CRUD callers are wired; gates the write
    *  affordances (Add / Edit / Delete). Absent = read-only (no affordances). */
   canWrite?: boolean;
@@ -296,6 +302,23 @@ const memoryActionName = (
   entry: MemoryActionTarget,
 ): string => e(`${label} ${memoryActionSubject(entry)} (${entry.memory_id})`);
 
+/** D-198 §10 — who forgot an entry, and the reason the agent gave. */
+const forgottenNote = (
+  entry: Pick<MemoryListEntry, 'forgotten_by' | 'forgotten_reason'>,
+): string =>
+  `Forgotten by ${entry.forgotten_by}${
+    entry.forgotten_reason !== undefined ? `. Reason: ${entry.forgotten_reason}` : ''}`;
+
+/** D-198 §10 — the line under a live entry an agent's correction touched. */
+const revisionNote = (
+  entry: Pick<MemoryListEntry, 'replaces' | 'replaced_by'>,
+): string =>
+  entry.replaced_by !== undefined
+    ? '<p class="memory-row-revision">Replaced by a newer version</p>'
+    : entry.replaces !== undefined
+      ? '<p class="memory-row-revision">Corrects an earlier entry</p>'
+      : '';
+
 const renderFilterChip = (
   filter: MemoryOriginFilter,
   active: MemoryOriginFilter,
@@ -329,6 +352,8 @@ const renderRowFoot = (
   editError: { memoryId: string; message: string } | undefined,
   canWrite: boolean,
   locked: boolean,
+  restoringId: string | undefined,
+  restoreError: { memoryId: string; message: string } | undefined,
 ): string => {
   const isOwn = entry.origin_actor === 'user_self';
   const isRedacted = entry.redacted === true;
@@ -349,7 +374,21 @@ const renderRowFoot = (
         })
       : '';
   if (isRedacted) {
-    return runLink.length > 0 ? `<div class="memory-row-foot">${runLink}</div>` : '';
+    // D-198 §10 — an entry an AGENT forgot can be restored; the owner's own
+    // redaction cannot (nothing left to act on).
+    const restoring = restoringId === entry.memory_id;
+    const restore = canWrite && entry.forgotten_by !== undefined
+      ? `<button type="button" class="memory-row-btn" ${actionAttr}="${MEMORY_RESTORE_ACTION}" ${idAttr}${restoring
+        ? ' aria-disabled="true" aria-busy="true"'
+        : locked
+          ? ' aria-disabled="true"'
+          : ''} aria-label="${actionName(restoring ? 'Restoring… memory' : 'Restore memory')}">${restoring ? 'Restoring…' : 'Restore'}</button>${
+        restoreError?.memoryId === entry.memory_id
+          ? `<span class="memory-row-restore-error" role="alert">${e(restoreError.message)}</span>`
+          : ''}`
+      : '';
+    const inner = `${runLink}${restore}`;
+    return inner.length > 0 ? `<div class="memory-row-foot">${inner}</div>` : '';
   }
   const openBtn =
     entry.has_body === true
@@ -416,6 +455,8 @@ const renderRow = (
   editError: { memoryId: string; message: string } | undefined,
   canWrite: boolean,
   locked: boolean,
+  restoringId: string | undefined,
+  restoreError: { memoryId: string; message: string } | undefined,
 ): string => {
   const summary = entry.summary ?? '';
   const bodyPreview = entry.body_preview ?? '';
@@ -430,9 +471,9 @@ const renderRow = (
   // A redacted row still displays (transparency, §3) — origin / kind / time
   // stay; its content is replaced with a muted "Redacted" marker.
   const bodyLines = isRedacted
-    ? '<p class="memory-row-redacted">Redacted</p>'
+    ? `<p class="memory-row-redacted">${entry.forgotten_by !== undefined ? e(forgottenNote(entry)) : 'Redacted'}</p>`
     : `${primary ? `<p class="memory-row-title">${e(primary)}</p>` : ''}${
-        secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}`;
+        secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}${revisionNote(entry)}`;
   return `<li class="memory-row${isRedacted ? ' is-redacted' : ''}" data-origin="${e(entry.origin_actor)}">
     <div class="memory-row-head">
       ${renderMemoryOrigin(entry)}
@@ -452,6 +493,8 @@ const renderRow = (
       editError,
       canWrite,
       locked,
+      restoringId,
+      restoreError,
     )}
   </li>`;
 };
@@ -647,11 +690,13 @@ const renderDetail = (
       }
     }
     const content = isRedacted
-      ? '<p class="memory-row-redacted">This memory has been redacted.</p>'
+      ? `<p class="memory-row-redacted">${entry.forgotten_by !== undefined
+        ? `${e(forgottenNote(entry))}.`
+        : 'This memory has been redacted.'}</p>`
       : `${entry.summary !== undefined ? `<p class="memory-detail-summary">${e(entry.summary)}</p>` : ''}${
           entry.body !== undefined
             ? `<pre class="memory-detail-body">${e(entry.body)}</pre>`
-            : '<p class="memory-lens-empty">This entry has no body.</p>'}`;
+            : '<p class="memory-lens-empty">This entry has no body.</p>'}${revisionNote(entry)}`;
     body = `<div class="memory-detail-head">
         ${renderMemoryOrigin(entry)}
         <span class="memory-row-kind">${e(entry.kind)}</span>
@@ -763,6 +808,8 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
           props.editError,
           canWrite,
           listLocked,
+          props.restoringId,
+          props.restoreError,
         ),
       )
       .join('')}</ul>${
@@ -849,8 +896,10 @@ export const MEMORY_LENS_STYLES = `
 .memory-row-confirm { max-width: 100%; min-width: 0; font-size: 0.8125rem; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; overflow-wrap: anywhere; }
 .memory-row-delete-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }
 .memory-row-edit-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }
+.memory-row-restore-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }
 .memory-row.is-redacted { opacity: 0.7; }
 .memory-row-redacted { margin: 0.375rem 0 0; font-size: 0.8125rem; font-style: italic; color: var(--fg-muted); }
+.memory-row-revision { margin: 0.25rem 0 0; font-size: 0.8125rem; color: var(--fg-muted); }
 .memory-compose, .memory-detail { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
 .memory-compose-editor, .memory-import-editor { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
 .memory-compose-title { margin: 0; font-size: 1rem; }
@@ -889,6 +938,10 @@ export const MEMORY_LENS_STYLES = `
 .memory-field-hint, .memory-lens-empty, .memory-lens-loading, .memory-lens-error { overflow-wrap: anywhere; }
 .memory-lens-empty, .memory-lens-loading, .memory-lens-error { color: var(--fg-muted); font-size: 0.875rem; }
 .memory-lens-error { color: var(--danger); }
+@media (max-width: 640px) {
+  /* A finger's height on a phone. ⛔ 36px. */
+  .data-lens-btn { min-height: 44px; }
+}
 @media (max-width: 520px) {
   .memory-lens-controls { align-items: stretch; flex-direction: column; }
   .memory-lens-actions { margin-left: 0; }

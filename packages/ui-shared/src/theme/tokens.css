@@ -68,6 +68,10 @@
   --ok-fg: var(--fg);
   --success: var(--ok);
   --warn: var(--fg);
+  /* The name components actually use (about fifty places). Undefined, every
+   * one fell back to its own literal amber in both themes, 2.8:1 on dark —
+   * against the rule above. Same neutral as --warn. */
+  --warning: var(--warn);
   --warn-soft: var(--surface-sunk);
   --warn-bg: var(--surface-sunk);
   --muted-bg: var(--surface-sunk);

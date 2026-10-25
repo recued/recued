@@ -51,6 +51,7 @@ import {
   type MailChatEnrolFailure,
   type MailChatEnrolledSender,
 } from '@recued/contracts';
+import { EMAIL_CHAT_WORKSPACE_STYLES } from './email-chat-workspace-styles.js';
 
 export const MAIL_CHAT_DOOR_PANEL_ATTR = 'data-recued-mail-chat-door-panel';
 export const MAIL_CHAT_DOOR_STATE_ATTR = 'data-recued-mail-chat-door-state';
@@ -443,13 +444,18 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     }
   };
 
-  const renderOff = (into: HTMLElement): void => {
-    into.appendChild(el('p',
+  const renderOff = (into: HTMLElement, heading: HTMLElement): void => {
+    const mailboxesCard = el('section');
+    mailboxesCard.className = 'mcd-card mcd-mailboxes';
+    mailboxesCard.appendChild(heading);
+    into.appendChild(mailboxesCard);
+    mailboxesCard.appendChild(el('p',
       'Write to Recued by email. You send from your own mailbox to a second one you connect for this, the chat '
       + 'mailbox, and Recued answers from it, in the same thread.'));
 
     // The chat mailbox: one that can send, since the answers go from it.
     const chatLabel = el('label');
+    chatLabel.className = 'mcd-field';
     chatLabel.appendChild(el('span', 'Chat mailbox'));
     const select = doc.createElement('select');
     select.className = 'rx-select';
@@ -476,12 +482,12 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       render();
     });
     chatLabel.appendChild(select);
-    into.appendChild(chatLabel);
-    into.appendChild(hint('Recued answers from this mailbox, so it must be one it can send from. It can be one of '
+    mailboxesCard.appendChild(chatLabel);
+    mailboxesCard.appendChild(hint('Recued answers from this mailbox, so it must be one it can send from. It can be one of '
       + 'your own: tick it under Your mailboxes too, and you write to yourself. Otherwise use a mailbox only for '
       + 'this: its mail stops being treated as yours.'));
     if (mailboxes.length === 0) {
-      into.appendChild(hint('No mailbox is connected yet. Connect the chat mailbox and your own first.'));
+      mailboxesCard.appendChild(hint('No mailbox is connected yet. Connect the chat mailbox and your own first.'));
     }
 
     // The owner's mailboxes: the Sent folders that prove an email is theirs.
@@ -518,19 +524,24 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       owners.appendChild(hint('None picked: once email chat is on, you can add an address Recued does not read '
         + 'instead.'));
     }
-    into.appendChild(owners);
+    mailboxesCard.appendChild(owners);
+
+    const consentCard = el('section');
+    consentCard.className = 'mcd-card mcd-consent';
+    consentCard.appendChild(el('h3', 'Before you turn it on'));
+    into.appendChild(consentCard);
 
     // ⛔ P20 — the owner's word that no one else sends from them.
-    if (pickOwners.size > 0) renderConfirm(into);
+    if (pickOwners.size > 0) renderConfirm(consentCard);
 
     // ⛔ P21 — where the answers are kept, said before it is switched on.
-    renderDisclosure(into);
+    renderDisclosure(consentCard);
 
     const on = button(busy ? 'Checking…' : 'Check and turn on', MAIL_CHAT_DOOR_TURN_ON_ATTR, () => { void turnOn(); },
       'primary');
     on.disabled = busy || !canTurnOn();
-    into.appendChild(on);
-    renderChecks(into);
+    consentCard.appendChild(on);
+    renderChecks(consentCard);
   };
 
   const renderConfirm = (into: HTMLElement): void => {
@@ -607,9 +618,10 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
   /** Step 8 — the addresses Recued does not read: each one's state, and
    *  adding another. */
   const renderEnrolment = (into: HTMLElement, current: MailChatDoorSettings, chat: string): void => {
-    const section = el('div');
+    const section = el('section');
+    section.className = 'mcd-card';
     section.setAttribute(MAIL_CHAT_DOOR_ENROL_ATTR, '');
-    section.appendChild(el('h4', 'Other addresses you write from'));
+    section.appendChild(el('h3', 'Other addresses you write from'));
     section.appendChild(hint('An address Recued does not read, such as a personal Yahoo or iCloud address. Recued '
       + 'knows an email from it is yours by the sender check your chat mailbox’s provider makes, so you confirm it '
       + 'once, by sending a code from it.'));
@@ -666,6 +678,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     editControls.set(MAIL_CHAT_DOOR_ENROL_INPUT_ATTR, input);
     input.addEventListener('input', () => { enrolDraft = input.value; });
     const label = el('label');
+    label.className = 'mcd-field';
     label.appendChild(el('span', 'Add an address'));
     label.appendChild(input);
     section.appendChild(label);
@@ -675,7 +688,11 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     into.appendChild(section);
   };
 
-  const renderOn = (into: HTMLElement, current: MailChatDoorSettings): void => {
+  const renderOn = (into: HTMLElement, current: MailChatDoorSettings, heading: HTMLElement): void => {
+    const rulesCard = el('section');
+    rulesCard.className = 'mcd-card mcd-rules';
+    rulesCard.appendChild(heading);
+    into.appendChild(rulesCard);
     const chat = current.chat_address ?? current.chat_mailbox ?? '';
     // §8.18 — the chat mailbox is one of the owner's own: they write to themselves.
     const oneMailbox = isMailChatOneMailbox(current);
@@ -684,7 +701,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       ...current.owner_mailboxes.map((slug) => (slug === current.chat_mailbox ? 'itself' : addressOf(slug))),
       ...current.enrolled_senders.filter((sender) => sender.state === 'confirmed').map((sender) => sender.address),
     ];
-    into.appendChild(el('p', oneMailbox && owners.length === 1
+    rulesCard.appendChild(el('p', oneMailbox && owners.length === 1
       ? `Email chat is on. Write to yourself at ${chat}.`
       : owners.length > 0
         ? `Email chat is on. Write to ${chat} from ${owners.join(' or ')}.`
@@ -699,7 +716,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
         + 'mailbox within a minute, which a person writing does not do. Emails that arrive while it is paused are '
         + 'not answered. A mail rule, a script or a mail app sending its outbox again can do this: stop it first.'));
       paused.appendChild(button('Resume', MAIL_CHAT_DOOR_RESUME_ATTR, () => { void save({ resume: true }); }, 'primary'));
-      into.appendChild(paused);
+      rulesCard.appendChild(paused);
     }
 
     // The settings.
@@ -717,6 +734,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     prefix.value = prefixDraft?.text ?? current.ask_prefix ?? MAIL_CHAT_ASK_PREFIX_DEFAULT;
     prefix.disabled = busy || !prefixOn.checked;
     prefix.setAttribute(MAIL_CHAT_DOOR_PREFIX_ATTR, '');
+    prefix.setAttribute('aria-label', 'Subject prefix');
     editControls.set(MAIL_CHAT_DOOR_PREFIX_ATTR, prefix);
     const keepPrefixDraft = (): void => { prefixDraft = { enabled: prefixOn.checked, text: prefix.value }; };
     prefix.addEventListener('input', keepPrefixDraft);
@@ -725,12 +743,12 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       prefix.disabled = busy || !prefixOn.checked;
     });
     const prefixLabel = el('label');
-    prefixLabel.className = 'rx-checkbox-row';
+    prefixLabel.className = 'rx-checkbox-row mcd-prefix-row';
     prefixLabel.appendChild(prefixOn);
     prefixLabel.appendChild(el('span', ' Start a conversation only with a subject that begins with '));
     prefixLabel.appendChild(prefix);
-    into.appendChild(prefixLabel);
-    into.appendChild(hint(oneMailbox
+    rulesCard.appendChild(prefixLabel);
+    rulesCard.appendChild(hint(oneMailbox
       ? 'A reply in a conversation needs no prefix. You write to yourself, so the prefix stays on: without it, '
         + 'every email you send yourself would start a conversation.'
       : 'A reply in a conversation needs no prefix. Without one, any email you send the chat mailbox starts a '
@@ -747,11 +765,15 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     editControls.set(MAIL_CHAT_DOOR_STALE_ATTR, stale);
     stale.addEventListener('input', () => { staleDraft = stale.value; });
     const staleLabel = el('label');
+    staleLabel.className = 'mcd-stale-field';
     staleLabel.appendChild(el('span', 'An email is late after'));
-    staleLabel.appendChild(stale);
-    staleLabel.appendChild(el('span', 'minutes'));
-    into.appendChild(staleLabel);
-    into.appendChild(hint('Recued answers an email it reaches that late in one line, and does not act on it. '
+    const duration = el('span');
+    duration.className = 'mcd-duration';
+    duration.appendChild(stale);
+    duration.appendChild(el('span', 'minutes'));
+    staleLabel.appendChild(duration);
+    rulesCard.appendChild(staleLabel);
+    rulesCard.appendChild(hint('Recued answers an email it reaches that late in one line, and does not act on it. '
       + `Now ${durationWords(current.stale_after_minutes)}. This covers Recued being off, or its vault locked, `
       + 'when you wrote.'));
 
@@ -773,15 +795,16 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       }
       void save({ ask_prefix: withPrefix ? text : null, stale_after_minutes: minutes });
     });
-    into.appendChild(saveButton);
-    renderError(into);
+    rulesCard.appendChild(saveButton);
+    renderError(rulesCard);
 
     if (enrolSupported) renderEnrolment(into, current, chat);
 
     // The test round trip.
-    const section = el('div');
+    const section = el('section');
+    section.className = 'mcd-card';
     section.setAttribute(MAIL_CHAT_DOOR_TEST_ATTR, '');
-    section.appendChild(el('h4', 'Test it'));
+    section.appendChild(el('h3', 'Test it'));
     const subject = current.ask_prefix === null ? 'ping' : `${current.ask_prefix} ping`;
     const instruction = el('p');
     instruction.appendChild(el('span', oneMailbox && owners.length === 1
@@ -818,27 +841,37 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
 
     // What arrived lately.
     if (recent.length > 0) {
+      const recentCard = el('section');
+      recentCard.className = 'mcd-card';
       const list = el('ul');
       list.setAttribute(MAIL_CHAT_DOOR_RECENT_ATTR, '');
       for (const item of recent) list.appendChild(el('li', recentWords(item)));
-      into.appendChild(el('h4', 'Recent emails to the chat mailbox'));
-      into.appendChild(list);
+      recentCard.appendChild(el('h3', 'Recent emails to the chat mailbox'));
+      recentCard.appendChild(list);
+      into.appendChild(recentCard);
     }
 
-    into.appendChild(el('p', 'Recued’s answers stay in the chat mailbox’s Sent folder and in your inbox, at those '
+    const offCard = el('section');
+    offCard.className = 'mcd-card mcd-turn-off';
+    offCard.appendChild(el('h3', 'Turn off email chat'));
+    into.appendChild(offCard);
+    offCard.appendChild(el('p', 'Recued’s answers stay in the chat mailbox’s Sent folder and in your inbox, at those '
       + 'mail providers.'));
     if (!confirmingOff) {
-      into.appendChild(button('Turn off email chat', MAIL_CHAT_DOOR_TURN_OFF_ATTR, () => {
+      offCard.appendChild(button('Turn off email chat', MAIL_CHAT_DOOR_TURN_OFF_ATTR, () => {
         confirmingOff = true;
         render();
       }));
     } else {
-      into.appendChild(el('p', (oneMailbox
+      offCard.appendChild(el('p', (oneMailbox
         ? `Turn off email chat? Recued stops answering the emails you write to yourself at ${chat}. `
         : `Turn off email chat? Recued stops answering ${chat}, and its mail is treated as yours again. `)
         + 'To change the mailboxes, turn it off and on again: the addresses you added stay added for this chat '
         + 'mailbox.'));
-      into.appendChild(button('Turn off', MAIL_CHAT_DOOR_TURN_OFF_CONFIRM_ATTR, () => {
+      const actions = el('div');
+      actions.className = 'mcd-row';
+      offCard.appendChild(actions);
+      actions.appendChild(button('Turn off', MAIL_CHAT_DOOR_TURN_OFF_CONFIRM_ATTR, () => {
         void save({ chat_mailbox: null }).then((saved) => {
           if (!saved || disposed) return;
           confirmingOff = false;
@@ -848,7 +881,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
           render();
         });
       }, 'danger'));
-      into.appendChild(button('Keep it on', MAIL_CHAT_DOOR_KEEP_ON_ATTR, () => {
+      actions.appendChild(button('Keep it on', MAIL_CHAT_DOOR_KEEP_ON_ATTR, () => {
         confirmingOff = false;
         render();
       }));
@@ -880,25 +913,27 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     opts.host.setAttribute(MAIL_CHAT_DOOR_STATE_ATTR, state === 'ready' && settings !== null
       ? (settings.chat_mailbox === null ? 'off' : 'on')
       : state);
-    const heading = el('h3', 'Email chat');
+    const heading = el('h3', settings === null ? 'Email chat settings'
+      : settings.chat_mailbox === null ? 'Mailboxes' : 'Conversation rules');
     heading.setAttribute('tabindex', '-1');
-    opts.host.appendChild(heading);
     if (state === 'loading') {
+      opts.host.appendChild(heading);
       const status = el('p', retryOffered ? 'Retrying Email chat settings…' : 'Loading…');
       status.setAttribute('role', 'status');
       opts.host.appendChild(status);
       if (retryOffered) renderReadRetry();
     } else if (settings === null) {
+      opts.host.appendChild(heading);
       const p = el('p', error ?? 'Could not read the email chat settings.');
       p.setAttribute(MAIL_CHAT_DOOR_ERROR_ATTR, '');
       p.setAttribute('role', 'alert');
       opts.host.appendChild(p);
       renderReadRetry();
     } else if (settings.chat_mailbox === null) {
-      renderOff(opts.host);
+      renderOff(opts.host, heading);
       renderError(opts.host);
     } else {
-      renderOn(opts.host, settings);
+      renderOn(opts.host, settings, heading);
     }
     if (ownedRetry) {
       const target = retryNode ?? opts.host.querySelector?.<HTMLElement>(
@@ -1090,4 +1125,4 @@ export const MAIL_CHAT_DOOR_PANEL_STYLES = `
 [${MAIL_CHAT_DOOR_PANEL_ATTR}] button:disabled {
   opacity: 0.55;
 }
-`;
+` + '\n' + EMAIL_CHAT_WORKSPACE_STYLES;

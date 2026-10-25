@@ -466,3 +466,23 @@ describe('durable pending Chat-plans store', () => {
     expect(store.list()).toEqual([]);
   });
 });
+
+describe('D-329 — a held write is answered through its ask', () => {
+  it('lists neither a held snapshot row nor a held live proposal: the approval inbox lists its ask', async () => {
+    const sub = makeFakeSubscriber();
+    const store = createPendingChatPlansStore({
+      subscribe: sub.on,
+      listPending: async () => ({
+        plans: [
+          record('held', { plan: { ...record('held').plan, hold: { run_id: 'run-1' } } }),
+          record('plain'),
+        ],
+      }),
+    });
+    await store.whenLoaded();
+    sub.fire('chat.plan_proposed', proposed('held-live', { held: true }));
+    sub.fire('chat.plan_proposed', proposed('plain-live'));
+    expect(store.list().map((plan) => plan.plan_id)).toEqual(['plain', 'plain-live']);
+    store.dispose();
+  });
+});

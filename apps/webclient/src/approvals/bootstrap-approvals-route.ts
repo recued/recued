@@ -1,7 +1,7 @@
 /** D-174 / R20 — top-level Approvals deep queue: the "waiting on me" yes/no list.
  *
  *  `#approvals` is ONE unified, transient pending-decisions list — D-157
- *  approval gates + D-158 asks interleaved newest-first, with NO gate-vs-ask
+ *  approval gates + D-158 asks interleaved oldest-first, with NO gate-vs-ask
  *  sections (R20 drops the "Approvals vs Asks" taxonomy; it's one "waiting on
  *  me" concept). Rows clear as they resolve. Runs owns resolved/audit history;
  *  this route renders only pending work and links outward for audit/detail.
@@ -24,6 +24,7 @@ import {
   type ChatPlanCardDecision,
 } from '@recued/ui-shared/approval-card';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import { APPROVAL_VIEW_NAV_STYLES, createApprovalViewNav } from './review-layout.js';
 import type {
   ServerApprovalResolveResult,
   ServerApprovalSubscriptionEvent,
@@ -104,6 +105,9 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   /* Inherit the shell's light/dark tokens instead of hard-pinning light
      values, which left inner --bg/--surface-sunk elements dark-on-dark
      in dark mode (visual-UX review). */
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
   padding: 16px;
@@ -112,14 +116,14 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-title {
   margin: 0;
   flex-shrink: 0;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 650;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-refresh {
@@ -131,7 +135,7 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   border-radius: 7px;
   background: var(--surface);
   color: var(--fg);
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 11px;
   font: inherit;
   font-size: 12px;
@@ -145,6 +149,7 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   margin: 0 0 14px;
   font-size: 13px;
   color: var(--muted);
+  line-height: 1.5;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-list-heading {
   position: absolute;
@@ -198,7 +203,7 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-dismiss {
   box-sizing: border-box;
   display: inline-flex;
-  min-height: 36px;
+  min-height: 44px;
   align-items: center;
   justify-content: center;
   border-radius: 7px;
@@ -230,10 +235,86 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   white-space: nowrap;
   border: 0;
 }
-/* R20 — ONE unified list; gate + ask cards interleaved newest-first. */
+/* R20 — ONE unified list; gate + ask cards interleaved oldest-first. */
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-list {
   display: grid;
-  gap: 12px;
+  gap: 16px;
+}
+/* The full inbox gives each shared card the same context / evidence / action
+   hierarchy. Scope these rules to this route so compact consumers keep their
+   presentation and all card handlers retain their existing ownership. */
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card, .rx-ask-card) {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: clamp(14px, 2vw, 22px);
+  border-radius: var(--wc-radius-lg, 10px);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card, .rx-ask-card) > * {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card-title, .rx-ask-card-title) {
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 650;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card-meta, .rx-ask-card-age) {
+  color: var(--muted);
+  opacity: 1;
+  font-size: 12px;
+  line-height: 1.5;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card-input, .rx-ask-card-resource-review) {
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface-subtle);
+  color: var(--fg);
+  font: 12px/1.6 var(--mono, ui-monospace, monospace);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .rx-ask-card-summary {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface-subtle);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .rx-ask-card-summary dt {
+  color: var(--muted);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card-actions, .rx-ask-card-actions) {
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card-btn, .rx-ask-card-btn) {
+  min-height: 44px;
+  padding: 9px 14px;
+  border-radius: var(--wc-radius, 6px);
+  font-size: 13px;
+  font-weight: 600;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card-links a, .rx-ask-card-link) {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--wc-radius, 6px);
+  overflow-wrap: anywhere;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-ask-card-details, .rx-ask-card-body) > summary {
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px 2px;
+  line-height: 1.5;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.rx-approval-card-btn, .rx-ask-card-btn, .rx-ask-card-link):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 /* R17 — the run-scoped deep-link target: a calm accent ring on the one card the
    user came here to resolve. */
@@ -289,6 +370,7 @@ export const APPROVALS_ROUTE_STYLES = [
   PRIMITIVE_STYLES,
   ASKS_PANEL_STYLES,
   APPROVAL_CARD_STYLES,
+  APPROVAL_VIEW_NAV_STYLES,
   APPROVALS_ROUTE_CHROME_STYLES,
 ].join('\n');
 
@@ -438,7 +520,10 @@ const plural = (n: number, word: string): string =>
 const recipeHref = (recipe_id: string): string =>
   serializeShellRoute('recipes', recipe_id);
 
-const runHref = (): string => serializeShellRoute('logs');
+// These legacy gates do not carry an execution anchor. Name the fallback as
+// history and scope it to this recipe; never present it as an exact-run link.
+const runHref = (recipeId: string): string | undefined => recipeId.trim().length === 0
+  ? undefined : serializeShellRoute('logs', 'recipe', recipeId);
 
 const connectionHref = (): string => '#connections';
 
@@ -520,12 +605,7 @@ export const bootstrapApprovalsRoute = (
   heading.setAttribute(APPROVALS_ROUTE_HEADING_ATTR, '');
   heading.textContent = 'Approvals';
   header.appendChild(heading);
-  const reviewedExecutionsLink = doc.createElement('a');
-  reviewedExecutionsLink.href = preapprovalHref();
-  reviewedExecutionsLink.textContent = 'Runs you have looked at';
-  const localChangesLink = doc.createElement('a'); localChangesLink.href = localChangesHref();
-  localChangesLink.textContent = 'Atomic local changes';
-  header.append(reviewedExecutionsLink,localChangesLink);
+  const viewNav = createApprovalViewNav(doc, 'pending');
 
   const refreshButton = doc.createElement('button');
   refreshButton.type = 'button';
@@ -534,6 +614,7 @@ export const bootstrapApprovalsRoute = (
   refreshButton.textContent = 'Refresh';
   header.appendChild(refreshButton);
   routeRoot.appendChild(header);
+  routeRoot.appendChild(viewNav);
 
   const summary = doc.createElement('p');
   summary.className = 'approvals-summary';
@@ -560,7 +641,7 @@ export const bootstrapApprovalsRoute = (
   planResolution.hidden = true;
   routeRoot.appendChild(planResolution);
 
-  // ONE unified list (R20) — gate + ask cards interleaved newest-first.
+  // ONE unified list (R20) — gate + ask cards interleaved oldest-first.
   const listHeadingId = 'recued-approvals-list-heading';
   const listHeading = doc.createElement('h2');
   listHeading.className = 'approvals-list-heading';
@@ -789,7 +870,8 @@ export const bootstrapApprovalsRoute = (
         links: {
           recipeHref: recipeHref(approval.recipe_id),
           connectionHref: connectionHref(),
-          runHref: runHref(),
+          runHref: runHref(approval.recipe_id),
+          runLabel: 'Recipe run history',
         },
         armed: armedDestructive.has(approval.approval_id),
         disabled: stale,
@@ -1166,6 +1248,15 @@ export const bootstrapApprovalsRoute = (
           : row.kind === 'ask'
             ? renderAskRow(row.ask)
             : renderPlanCard(row.plan);
+      for (const child of Array.from(card.children)) {
+        if (
+          child.className === 'rx-approval-card-title'
+          || child.className === 'rx-ask-card-title'
+        ) {
+          child.setAttribute('role', 'heading');
+          child.setAttribute('aria-level', '3');
+        }
+      }
       // R17 — uniform focus hook + highlight for the run-scoped deep link. The
       // attr is set on EVERY card (so `applyFocus` can find the target); the
       // highlight flag only on the match (re-applied each paint while it lives).

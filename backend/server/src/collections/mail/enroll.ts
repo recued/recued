@@ -1,5 +1,6 @@
 import { withCollectionAuthenticationLock } from '../../collection-authentication-locks.js';
 import { purgeBorrowedOAuthCursors } from '../oauth-cursor-cleanup.js';
+import { awaitCaughtUp, RESYNC_WAIT_MS } from '../resync-wait.js';
 import { collectionOAuthBinding, collectionOAuthSourceName } from '../../collection-oauth-sources.js';
 /** D-127 wire-up — `collection.mail.*` enroll rpc handlers.
  *
@@ -116,6 +117,9 @@ export interface MailEnrollDeps {
   /** Read/login-only credential verification seam. Production uses IMAP EXAMINE and SMTP VERIFY. */
   verifyPasswords?: (config: Record<string, unknown>, passwords: { password?: string; smtp_password?: string }) => Promise<void>;
   authenticationChange?: import('../../collection-authentication-service.js').CollectionAuthenticationLifecycle;
+  /** How long `collection.mail.resync` waits for the restarted mailbox to catch
+   *  up (`RESYNC_WAIT_MS`). Tests change it. */
+  resyncWaitMs?: number;
   managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   instances: CollectionInstanceStore;
   /** Account-namespace reader / writer. Used to persist OAuth tokens
@@ -965,6 +969,7 @@ export const handleMailResync = async (
     } catch {
       throw new RpcError('restart_failed', 'The mailbox could not be started again. Try again, or restart the server.', 500);
     }
+    await awaitCaughtUp(lifecycle.caughtUp?.(slug), deps.resyncWaitMs ?? RESYNC_WAIT_MS);
     return { ok: true };
   });
 };

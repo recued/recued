@@ -36,6 +36,7 @@ import {
   type ConnectDeviceFacts,
   type ConnectDevicePlaceCard,
 } from './connect-device.js';
+import { CONNECT_DEVICE_WORKSPACE_STYLES } from './connect-device-workspace-styles.js';
 
 export const CONNECT_DEVICE_PANEL_ATTR = 'data-recued-connect-device-panel';
 export const CONNECT_DEVICE_PLACE_ATTR = 'data-recued-connect-device-place';
@@ -610,7 +611,7 @@ export const mountConnectDevicePanel = (
           const actionWrap = el('span');
           actionWrap.className = 'connect-device-step-action';
           const actionBtn = doc.createElement('button');
-          actionBtn.className = 'connect-device-step-action-button';
+          actionBtn.className = 'rx-btn rx-btn-secondary';
           actionBtn.setAttribute('type', 'button');
           actionBtn.setAttribute(CONNECT_DEVICE_STEP_ACTION_ATTR, action.kind);
           // ⚠ The DIRECTION is on the element, not inferred from the label —
@@ -627,7 +628,9 @@ export const mountConnectDevicePanel = (
           actionBtn.addEventListener('click', () => { flipPortMapping(action.enable); });
           focusTargets.set('router', actionBtn);
           actionWrap.appendChild(actionBtn);
-          actionWrap.appendChild(el('span', ` ${action.note}`));
+          const actionNote = el('span', ` ${action.note}`);
+          actionNote.className = 'connect-device-step-action-note';
+          actionWrap.appendChild(actionNote);
           if (portMappingError !== null) {
             const err = el('span', portMappingError);
             err.className = 'connect-device-step-action-error';
@@ -746,7 +749,7 @@ export const mountConnectDevicePanel = (
       let feedback: HTMLElement | undefined;
       if (canCheckAnything() || checking) {
         const button = doc.createElement('button');
-        button.className = 'connect-device-check';
+        button.className = 'rx-btn rx-btn-secondary';
         button.setAttribute('type', 'button');
         button.setAttribute(CONNECT_DEVICE_CHECK_BTN_ATTR, 'true');
         button.textContent = checking
@@ -978,8 +981,9 @@ export const CONNECT_DEVICE_PANEL_STYLES = `
   color: var(--on-accent, var(--fg));
   background: var(--accent);
 }
+/* Full ink: the muted one on this wash measured 4.15:1 at 11px. */
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-chip-todo {
-  color: var(--fg-muted, var(--fg));
+  color: var(--fg);
   background: var(--accent-weak, transparent);
 }
 /* The actual two-column table: label gutter + value. max-content keeps the
@@ -1001,15 +1005,18 @@ export const CONNECT_DEVICE_PANEL_STYLES = `
   flex-direction: column;
   gap: 6px;
 }
+/* Mark, then text; a step's setting takes a second row under its text. ⛔ As
+   a flex row the setting was a third column, which on a phone squeezed the
+   step's own text to 103px. */
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-steps li {
-  display: flex;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: baseline;
-  gap: 9px;
+  gap: 6px 9px;
   line-height: 1.5;
   color: var(--fg-muted, var(--fg));
 }
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-step-mark {
-  flex: 0 0 auto;
   width: 18px;
   height: 18px;
   display: inline-flex;
@@ -1032,29 +1039,23 @@ export const CONNECT_DEVICE_PANEL_STYLES = `
   color: var(--fg);
   font-weight: 600;
 }
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check {
-  margin-left: 8px;
-  padding: 2px 10px;
-  border: 1px solid var(--border-strong, var(--border));
-  border-radius: 999px;
-  background: var(--surface, var(--bg));
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  cursor: pointer;
-  white-space: nowrap;
+/* The check and the router setting are the page's own buttons, at the app's
+   control height. ⛔ They were 12px pills, 21px and 24px tall: the smallest
+   targets on a page a phone owner reads to get their phone in. The sentence
+   beside each wraps under it when there is no room. */
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check:hover:not([disabled]) {
-  border-color: var(--accent);
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-block > .connect-device-note {
+  flex: 1 1 220px;
 }
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check[disabled] {
-  cursor: default;
-  opacity: 0.6;
-}
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-error,
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-status {
-  display: block;
-  margin-top: 4px;
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-block > :is(
+  .connect-device-check-error, .connect-device-check-status, .connect-device-probe-detail
+) {
+  flex-basis: 100%;
 }
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-status {
   color: var(--fg-muted, var(--fg));
@@ -1069,34 +1070,21 @@ export const CONNECT_DEVICE_PANEL_STYLES = `
 /* D-273 — the one setting on this page. Its own block under the step's text
    rather than inline beside it: the note is a full sentence about opening a
    port on the reader's internet connection, and a sentence that long wrapping
-   around a pill button is how a consequence gets skimmed past. */
+   around a button is how a consequence gets skimmed past. */
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-step-action {
-  display: block;
-  margin-top: 6px;
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
   font-size: 12px;
   color: var(--fg-muted, var(--fg));
 }
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-step-action-button {
-  padding: 2px 10px;
-  border: 1px solid var(--border-strong, var(--border));
-  border-radius: 999px;
-  background: var(--surface, var(--bg));
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  cursor: pointer;
-  white-space: nowrap;
-}
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-step-action-button:hover:not([disabled]) {
-  border-color: var(--accent);
-}
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-step-action-button[disabled] {
-  cursor: default;
-  opacity: 0.6;
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-step-action-note {
+  flex: 1 1 220px;
 }
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-step-action-error {
-  display: block;
-  margin-top: 4px;
+  flex-basis: 100%;
   color: var(--danger, var(--fg));
 }
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-pairing {
@@ -1148,6 +1136,14 @@ export const CONNECT_DEVICE_PANEL_STYLES = `
 }
 [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-url:hover {
   border-color: var(--accent);
+}
+/* A finger's height on a phone. ⛔ 22px. */
+@media (max-width: 640px) {
+  [${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-url {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
 }
 /* The certificate routes sit inside the port that needs one. Indented under a
    left rule so they read as "how to satisfy the row above", not as a fourth
@@ -1201,4 +1197,4 @@ export const CONNECT_DEVICE_PANEL_STYLES = `
   line-height: 1.5;
   color: var(--fg-muted, var(--fg));
 }
-`;
+` + '\n' + CONNECT_DEVICE_WORKSPACE_STYLES;

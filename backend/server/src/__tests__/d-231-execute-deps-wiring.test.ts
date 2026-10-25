@@ -64,6 +64,24 @@ describe('D-231 execute-deps wiring', () => {
     expect(source).toMatch(/\|\s*'userMemoryStore'/);
   });
 
+  it('⛔ D-198 §10 — the redaction overlay reaches the executor along the same seam', () => {
+    // A forgotten entry resolves absent through `data.memory.<id>` only when the
+    // executor holds the overlay. Drop any of these lines and every forgotten
+    // entry is readable again by a recipe holding its id, while the lookup's own
+    // tests stay green: they hand it the overlay themselves.
+    const fs = require('node:fs') as typeof import('node:fs');
+    const read = (path: string) => fs.readFileSync(new URL(path, import.meta.url), 'utf8');
+    expect(read('../execute-handler.ts')).toMatch(
+      /createDataMemoryLookup\(\s*userMemoryStore,\s*deps\.memoryRedactionStore,/,
+    );
+    expect(read('../composition/bin/wire-execute-deps.ts')).toMatch(
+      /memoryRedactionStore: deps\.memoryRedactionStore/,
+    );
+    const root = read('../serve/compose-execution-context.ts');
+    expect(root).toMatch(/memoryRedactionStore: app\.memoryRedactionStore/);
+    expect(root).toMatch(/\|\s*'memoryRedactionStore'/);
+  });
+
   it('the executor accepts the field, so a forward cannot be silently dropped', async () => {
     // Type-level, verified at build: `ExecuteHandlerDeps.userMemoryStore`
     // exists. If it were removed, the spread in wire-execute-deps would fail

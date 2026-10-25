@@ -1,4 +1,6 @@
 export * from './customer-refunds.js';
+// D-329 §3.4 — the write rules an AI's approvals teach.
+export * from './write-approval-rule.js';
 export type { LocalUpdateUndoReview, LocalUpdateUndoDecision, LocalUpdateUndoResult } from './local-update-undo.js';
 export { hasLocalUpdateResources, LOCAL_CHANGE_SET_LIMITS } from './local-change-sets.js';
 export type { LocalChangeSetPrepare, LocalChangeSetUndoPrepare, LocalChangeSetDecision, LocalChangeSetReview, LocalChangeSetInspection } from './local-change-sets.js';
@@ -882,11 +884,22 @@ export * from './kernel-ops.js';
 // ingredient files. Composes with `kernel-ops.ts` (every op's domain must be a
 // registered closed-kind domain).
 export * from './kernel-op-registry.js';
+// D-327 — an agreement's grants, read as its key's tool list.
+export { keyToolNameForGrantEntry, keyChecklistFromAgreementGrants, keyGrantCheckName } from './key-authority.js';
+export {
+  COLLECTION_GUIDE,
+  KERNEL_OP_GUIDE,
+  TIER1_TOOL_GUIDE,
+  grantSwitchText,
+  toolsNeedingSwitch,
+} from './grant-switch-guide.js';
+export type { GrantSwitchText, Tier1ToolGuide, Tier1ToolNeed } from './grant-switch-guide.js';
 // Whether a held kernel write provably changes only Recued's own stores — the
 // approval ask's "in Recued" vs "outside Recued" sentence.
 export {
   kernelWriteStaysInRecued,
   RESERVED_LOCAL_CALENDAR_SLUG,
+  tier1WriteStaysInRecued,
   WRITE_STAYS_IN_RECUED_CLAUSE,
 } from './kernel-write-locality.js';
 
@@ -1187,6 +1200,7 @@ export type {
   ContractGrantKind,
   // D-187 §6 (step 7) — the level-1 door-type axis + the in-place edit rpc request.
   DoorType, AuthorableDoorType, DerivedDoorType, SetContractDoorTypesRequest,
+  KeyAuthority, SetContractLimitsRequest,
   // D-186 Slice C — session-grant live-control surface DTOs.
   SessionGrantView, SessionGrantPermits,
   SessionGrantListRequest, SessionGrantListResponse, SessionGrantRevokeRequest,
@@ -1216,6 +1230,8 @@ export {
   // D-209 Task 3 — the derived (mint-only) partition of DOOR_TYPES + the
   // explicit-membership classifier every owner surface shares.
   DERIVED_DOOR_TYPES, derivedDoorType,
+  // D-327 — an agreement that is its key's whole authority.
+  KEY_AUTHORITIES, isKeyAuthority, isKeyAuthorityContract,
 } from './contract-definition.js';
 // D-177 P2 — the N.4 session-grant match predicate (pure). A session grant is a
 // `contract_definition` row with `grant_kind: 'session'`, consumed at the
@@ -2024,7 +2040,7 @@ export type {
 // D-157 P1 — preflight checkpoint substrate. The resumable state a
 // preflight-gated run is re-instantiated from; contracts ship the
 // shape + guard, `@recued/storage` ships the `CheckpointStore`.
-export { isCheckpoint } from './checkpoint.js';
+export { isCheckpoint, TIER1_HOLD_CATALOG_SLUG } from './checkpoint.js';
 export type {
   Checkpoint,
   PreflightApprovedTarget,
@@ -3250,6 +3266,7 @@ export {
   isWithinQuietHours,
   canArmQuietHours,
   shouldSuppressForQuietHours,
+  quietHoursEndFor,
   mayHoldAskForQuietHours,
   QUIET_HOURS_APPROVAL_IS_NOT_RECOMMENDED,
   resolveQuietHoursOccurrence,
@@ -3363,6 +3380,7 @@ export type {
   CollectionListQuery,
   CollectionSearchQuery,
   CollectionSearchMatch,
+  CollectionSearchDidYouMean,
   CollectionSearchGroup,
   CollectionState,
   CollectionHealth,
@@ -4838,6 +4856,7 @@ export type {
   ScopeSearchPartialFailure,
   ScopeSearchResult,
   ChatContactCandidate,
+  ChatContactRecord,
   ChatDealCandidate,
   ChatAccountCandidate,
   CrmConnectionFreshness,
@@ -5306,6 +5325,8 @@ export type {
   MemoryImportEntry,
   MemoryImportRequest,
   MemoryImportResult,
+  MemoryRestoreRequest,
+  MemoryRestoreResult,
   CollectListPagesOptions,
   ListPage,
   ListPageFields,
@@ -6456,6 +6477,8 @@ export type {
   NotificationSetChannelResult,
   NotificationSetVerificationPhraseResult,
   NotificationSettingsRow,
+  ReminderDestinationIssue,
+  ReminderDestinationIssueReason,
 } from './notifications.js';
 
 // ── D-145 PB11 — Person-Specific Automation primitive ───────────────
@@ -6933,6 +6956,8 @@ export type { MailboxCollection, MailboxSetting } from './mailbox-settings.js';
 /** D-323 — what chat offers to install when nothing installed can do the job. */
 export { INSTALL_OFFER_LIMIT, INSTALL_OFFER_RECIPE_NAMES_LIMIT, installOffersOf } from './install-offers.js';
 export type { InstallOffer } from './install-offers.js';
+export { CHAT_SOURCE_CITATION_LIMIT, chatSourceCitationsOf } from './chat-source-citation.js';
+export type { ChatSourceCitation } from './chat-source-citation.js';
 
 // D-315 — mail facts: the built-in fact types, the template shape, the fact and
 // thing records, and the event vocabulary.
@@ -7039,15 +7064,16 @@ export {
 } from './asset-rule-clock.js';
 export type { AssetRuleClock, AssetReminderPoint } from './asset-rule-clock.js';
 export * from './yours.js';
+export * from './asset-fact-context.js';
 export * from './asset-documents.js';
 export * from './proactive-history.js';
 export type {
   SituationBasis, SituationVerdict, SituationReason, SituationRef, SituationPlace,
-  SituationDimension, SituationWindow, TripDetails, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
+  SituationDimension, SituationWindow, TripDetails, SituationAssetDetails, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
   SituationCluster, SituationResult, SituationState, SituationDismissal,
   SituationSnapshot, SituationRevision, SituationDeliverySettings, SituationDeliveryStatus, ProactiveToday,
 } from './situation.js';
-export { SITUATION_QUERY_SCHEMA, parseSituationQueryInput } from './situation.js';
+export { SITUATION_QUERY_SCHEMA, SITUATION_CONTEXT_MAX_BYTES, SITUATION_TOOL_MAX_ITEMS, parseSituationQueryInput } from './situation.js';
 
 export { isContactAnnualDate, contactExcludedFromProactive } from './contact.js';
 export type { ContactRelationship, ContactPrivacyMark } from './contact.js';
@@ -7063,3 +7089,7 @@ export * from './connection-replacement.js';
 export * from './permission-regression.js';
 
 export * from './automation-rehearsal.js';
+
+export { formatAssetChatQuestion, parseAssetChatQuestion, type ChatAssetQuestionContext } from './chat-asset-question.js';
+
+export * from './common-words.js';

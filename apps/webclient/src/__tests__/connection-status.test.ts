@@ -13,13 +13,19 @@ import { HEARTBEAT_STALE_MS } from '@recued/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
+  WEBCLIENT_FIRST_CONNECT_GRACE_MS,
   WEBCLIENT_HEARTBEAT_STALE_MS,
   WEBCLIENT_OFFLINE_GRACE_MS,
   createWebclientConnectionStatus,
   reconnectSubscriberFromStatus,
   type WebclientConnectionStatus,
 } from '../realtime/connection-status.js';
-import type { WebclientWsState } from '../realtime/ws-client.js';
+import { WEBCLIENT_RPC_DEFAULT_TIMEOUT_MS } from '../realtime/rpc-conn.js';
+import {
+  WEBCLIENT_WS_RECONNECT_JITTER_RATIO,
+  WEBCLIENT_WS_RECONNECT_SCHEDULE_MS,
+  type WebclientWsState,
+} from '../realtime/ws-client.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fakes
@@ -84,6 +90,95 @@ describe('webclient connection-status controller', () => {
   it('exports a sane default grace window', () => {
     expect(WEBCLIENT_OFFLINE_GRACE_MS).toBeGreaterThan(1000);
     expect(WEBCLIENT_OFFLINE_GRACE_MS).toBeLessThan(30_000);
+    // Starting up gets longer than a drop, and a launch against a server that
+    // really is down still fails its calls before their own timeout does.
+    expect(WEBCLIENT_FIRST_CONNECT_GRACE_MS).toBeGreaterThan(WEBCLIENT_OFFLINE_GRACE_MS);
+    expect(WEBCLIENT_FIRST_CONNECT_GRACE_MS).toBeLessThan(WEBCLIENT_RPC_DEFAULT_TIMEOUT_MS);
+  });
+
+  it('the first-connect window lets the ws-client\'s fourth attempt finish', () => {
+    // A failed attempt is retried after each delay in turn, so the fourth
+    // starts once the first three have passed, later still with full jitter.
+    const fourthStartsBy = WEBCLIENT_WS_RECONNECT_SCHEDULE_MS.slice(0, 3)
+      .reduce((sum, ms) => sum + ms, 0) * (1 + WEBCLIENT_WS_RECONNECT_JITTER_RATIO);
+    // 3 s for that attempt's DNS, TLS and upgrade on a slow network. The 6 s
+    // window this replaced at launch ended before the attempt even began.
+    expect(WEBCLIENT_FIRST_CONNECT_GRACE_MS - fourthStartsBy).toBeGreaterThanOrEqual(3_000);
+    expect(WEBCLIENT_OFFLINE_GRACE_MS).toBeLessThan(fourthStartsBy);
+  });
+
+  it('boot waits the first-connect window; a drop after connecting waits the shorter one', () => {
+    const ws = buildFakeWs();
+    const timers = buildFakeTimers();
+    const ctrl = createWebclientConnectionStatus({
+      ws: ws.ws,
+      setTimer: timers.setTimer,
+    });
+    expect(timers.pending().map((t) => t.delayMs)).toEqual([WEBCLIENT_FIRST_CONNECT_GRACE_MS]);
+    ws.fireState('connected');
+    ws.fireState('reconnecting'); // also cancels the heartbeat-stale timer
+    expect(timers.pending().map((t) => t.delayMs)).toEqual([WEBCLIENT_OFFLINE_GRACE_MS]);
+    ctrl.dispose();
+  });
+
+  it('a first connect that fails and retries keeps the first-connect window', () => {
+    const ws = buildFakeWs();
+    const timers = buildFakeTimers();
+    const ctrl = createWebclientConnectionStatus({
+      ws: ws.ws,
+      setTimer: timers.setTimer,
+    });
+    // The ws-client's first attempts fail before anything has connected.
+    ws.fireState('connecting');
+    ws.fireState('reconnecting');
+    ws.fireState('connecting');
+    ws.fireState('reconnecting');
+    expect(ctrl.status()).toBe('connecting');
+    expect(timers.armedTotal()).toBe(1);
+    expect(timers.pending().map((t) => t.delayMs)).toEqual([WEBCLIENT_FIRST_CONNECT_GRACE_MS]);
+    timers.fire();
+    expect(ctrl.status()).toBe('offline');
+    ctrl.dispose();
+  });
+
+  it('a server that was down at boot gets the shorter window once it has connected', () => {
+    const ws = buildFakeWs();
+    const timers = buildFakeTimers();
+    const ctrl = createWebclientConnectionStatus({
+      ws: ws.ws,
+      setTimer: timers.setTimer,
+    });
+    timers.fire(); // the first-connect window runs out
+    expect(ctrl.status()).toBe('offline');
+    ws.fireState('connected');
+    ws.fireState('reconnecting');
+    expect(timers.pending().map((t) => t.delayMs)).toEqual([WEBCLIENT_OFFLINE_GRACE_MS]);
+    ctrl.dispose();
+  });
+
+  it('`offlineGraceMs` alone sets both windows; `firstConnectGraceMs` sets the boot one', () => {
+    const alone = buildFakeTimers();
+    const a = createWebclientConnectionStatus({
+      ws: buildFakeWs().ws,
+      setTimer: alone.setTimer,
+      offlineGraceMs: 50,
+    });
+    expect(alone.pending().map((t) => t.delayMs)).toEqual([50]);
+    a.dispose();
+
+    const ws = buildFakeWs();
+    const both = buildFakeTimers();
+    const b = createWebclientConnectionStatus({
+      ws: ws.ws,
+      setTimer: both.setTimer,
+      offlineGraceMs: 50,
+      firstConnectGraceMs: 400,
+    });
+    expect(both.pending().map((t) => t.delayMs)).toEqual([400]);
+    ws.fireState('connected');
+    ws.fireState('reconnecting');
+    expect(both.pending().map((t) => t.delayMs)).toEqual([50]);
+    b.dispose();
   });
 
   it('boots `connecting` and arms exactly one grace timer', () => {

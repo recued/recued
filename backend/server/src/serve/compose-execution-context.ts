@@ -173,6 +173,7 @@ export interface ComposeExecutionContextOptions {
     | 'checkpointStore'
     | 'mcpActionStore'
     | 'gatedActionStore'
+    | 'writeRuleStore'
     | 'settledRunResults'
     | 'fileStack'
     | 'workEntityStoreRef'
@@ -217,6 +218,7 @@ export interface ComposeExecutionContextOptions {
     | 'sharedStoreRef'
     // D-231 — the owner's curated knowledge behind {{data.memory.*}}.
     | 'userMemoryStore'
+    | 'memoryRedactionStore'
     | 'contactStoreRef'
     | 'crmRecordMirrorStoreRef'
     | 'annotationDeps'
@@ -243,6 +245,7 @@ export interface ComposeExecutionContextOptions {
   > & Partial<Pick<
     AppContext,
     | 'situationAccessRef'
+    | 'internalRegistryRef'
     | 'isVaultUnlocked'
     | 'webhookConsumerStoreRef'
     | 'webhookDeliveryStoreRef'
@@ -374,9 +377,15 @@ export const composeExecutionContext = async (
   // each live handle in boot order so the chat tool getters keep the
   // same late-bound behavior they had in serve-entry.
   lateBound.publishCollectionRegistry(collection.collectionRegistry);
+  const factContext = storage.workEntityStoreRef && storage.db
+    ? (await import('../situations/asset-fact-context.js')).createAssetFactContextReader({ work: storage.workEntityStoreRef,
+        snapshot: read => storage.db!.transaction(read)(),
+        writers: (await import('../situations/asset-fact-context.js')).assetContextWriters(storage.db),
+        ...(collection.spheres ? { referenceSphere: ref => collection.spheres!.resolve(ref).sphere } : {}) }) : undefined;
   const situationAccess = app.contractStoreRef && collection.querySituation
     ? (await import('../situations/access.js')).createSituationAccess({ contracts: app.contractStoreRef, query: collection.querySituation,
         ...(collection.spheres ? { spheres: collection.spheres } : {}),
+        ...(factContext ? { factContext } : {}),
         ...(collection.episodeRuntime ? { memoryAllowed: cluster => collection.episodeRuntime!.memoryAllowed(cluster) } : {}),
         ...(collection.situationStore ? { measure: (name, value, labels) => { collection.situationStore!.measure(name, value, labels, Date.now()); } } : {}), isVaultUnlocked: app.isVaultUnlocked ?? (() => false) }) : undefined;
   if (app.situationAccessRef) app.situationAccessRef.current = situationAccess;
@@ -755,6 +764,8 @@ export const composeExecutionContext = async (
     // D-137 — the late-bound chat sink for a run that settles after its turn.
     // Read through the refs bag, so it resolves whenever chat published it.
     getRunSettledSink: () => lateBound.getRunSettledSink(),
+    // D-329 — the registry a held Tier-1 tool call resumes through.
+    tier1Registry: () => app.internalRegistryRef,
     // The page that started a held run reads its result from here once the
     // approval lets it finish (`execution.get`).
     settledRunResults: storage.settledRunResults,
@@ -778,6 +789,8 @@ export const composeExecutionContext = async (
     sharedStore: app.sharedStoreRef,
     // D-231 — `{{data.memory.*}}`; undefined on db-less paths.
     userMemoryStore: app.userMemoryStore,
+    // D-198 §10 — so a forgotten memory resolves absent to recipes too.
+    memoryRedactionStore: app.memoryRedactionStore,
     db: storage.db,
     enrichmentStore: app.enrichmentStoreRef,
     commitStore: storage.commitStore,
@@ -785,6 +798,7 @@ export const composeExecutionContext = async (
     checkpointStore: storage.checkpointStore,
     mcpActionStore: storage.mcpActionStore,
     gatedActionStore: storage.gatedActionStore,
+    writeRules: storage.writeRuleStore,
     annotationStore: app.annotationStoreRef,
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path R1
     // pre-pass builds the merged convention-family vendor registry (built-ins +

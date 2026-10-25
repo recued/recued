@@ -1007,11 +1007,12 @@ describe('completed actions — a write must not be re-performed after a fold', 
     tool_name, tier: 1, args, status, started_at: 0, completed_at: 1,
   });
 
-  it('🔑 records memory.write, whose classification is `unknown` not `write`', () => {
-    // ⛔ THE TRAP. `TIER1_CLASSIFICATIONS['memory.write'] === 'unknown'` (D-198
-    //   §3 opts it out of plan-approval), so a `=== 'write'` predicate misses
-    //   the ONE tool whose re-execution produced the measured failure.
-    expect(TIER1_CLASSIFICATIONS['memory.write']).not.toBe('write');
+  it('🔑 records memory.write, whichever way it is classified', () => {
+    // ⛔ THE TRAP this guarded. `memory.write` was `unknown` until D-329 (D-198 §3 opted it
+    //   out of plan-approval), so a `=== 'write'` predicate missed the ONE tool whose
+    //   re-execution produced the measured failure. It is `write` now; the record must not
+    //   have depended on that either way.
+    expect(TIER1_CLASSIFICATIONS['memory.write']).toBe('write');
     const records = completedActionRecords([
       call('memory.write', 'ok', { summary: 'Quarterly rig surcharge is 252 units' }),
     ]);

@@ -4129,7 +4129,7 @@ const MANIFESTS = [
   {
     slug: 'asset-create', name: 'Create asset', author: 'recued', kind: 'storage', version: 1,
     category: 'action', risk_tier: 'write', tags: ['kernel', 'asset', 'work-entity'],
-    description: 'Create a durable asset with explicit extracted provenance. Rules proposed by a recipe remain disabled until the owner confirms them. Classes are presets, identifying numbers are optional. Return the asset id; reading its fields requires separate read grants.',
+    description: 'Create a durable asset with explicit extracted provenance. `class_id` names its type: call work.type first for the dates, readings and observations that type keeps. Any other field is refused, and so are rules and settings, because the type supplies them and its own reminders start at once. On an asset with no type, rules proposed by a recipe remain disabled until the owner confirms them. Identifying numbers are optional. Return the asset id; reading its fields requires separate read grants.',
     input: { name: null, class_id: null, source: null, source_id: null, idempotency_key: null,
       status: null, holder_contact: null, belongs_to: null, audience: null, sphere: null,
       document_number: null, serial_number: null, exact_address: null, dates: null,

@@ -97,7 +97,8 @@ test('the Account popover closes when keyboard focus leaves it', async ({ page, 
   const theme = dialog.getByRole('button', {
     name: 'Theme: System. Click to change.',
   });
-  expect((await theme.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  // A finger's height on a phone. ⛔ It was 36px.
+  expect((await theme.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   await trigger.click();
   await expect(dialog).toBeHidden();
   await trigger.click();
@@ -1661,7 +1662,7 @@ test('Account server profiles own connection status, recovery, and the return on
   ).toHaveCount(2);
   await expect(recovery).toContainText('pick another saved server');
   await expect(currentProfile).toHaveAttribute('data-unreachable', 'true');
-  await expect(currentProfile).toContainText('not reachable');
+  await expect(currentProfile).toContainText('Not reachable — ');
   await expect(dialog).toContainText('Work server');
 
   await page.setViewportSize({ width: 280, height: 653 });
@@ -1742,7 +1743,7 @@ test('Account keeps the surviving profile roster open after forgetting another s
   await office.locator('..').locator(`[${SERVER_PROFILE_REMOVE}]`).click();
 
   const removal = dialog.locator(`[${SERVER_PROFILE_REMOVE_CONFIRM}]`);
-  await expect(removal).toHaveAccessibleName('Remove Office server?');
+  await expect(removal).toHaveAccessibleName('Forget Office server?');
   await expect(removal.getByRole('button', { name: 'Cancel' })).toBeFocused();
   await removal.locator(`[${SERVER_PROFILE_REMOVE_LOCAL}]`).click();
 
@@ -1757,6 +1758,702 @@ test('Account keeps the surviving profile roster open after forgetting another s
   await expect(
     dialog.locator(`[${SERVER_PROFILE_ITEM}][aria-current="true"]`),
   ).toContainText('alice');
+});
+
+test('Add another server with an unsent message asks first, and leaves no Leave-site box', async ({ page }) => {
+  // ⛔ It reloaded at once: the browser's own "Leave site?" box stood in for a
+  // review, and Stay left the tab half-moved onto the new attempt.
+  const nativeDialogs: string[] = [];
+  page.on('dialog', async (dialog) => {
+    nativeDialogs.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_INPUT}]`).fill('Can we move Thursday to 3pm?');
+
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const menu = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  await menu.getByRole('button', { name: 'Add another server…' }).click();
+  const review = menu.getByRole('group', { name: 'Add another server?' });
+  await expect(review).toContainText(
+    'The Chat message you have not sent is only in this tab. Adding a server reloads this tab, and the message is lost.',
+  );
+  await expect(review.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await review.getByRole('button', { name: 'Cancel' }).click();
+  await expect(review).toHaveCount(0);
+  await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue('Can we move Thursday to 3pm?');
+
+  await menu.getByRole('button', { name: 'Add another server…' }).click();
+  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await menu.getByRole('button', { name: 'Add a server' }).click();
+  await navigation;
+  await expect(page.locator('#webclient-pair-code-input-form')).toBeVisible();
+  expect(nativeDialogs).toEqual([]);
+});
+
+test('Escape inside Rename closes the rename, not Account', async ({ page }) => {
+  // ⛔ It closed the whole menu, and the half-typed name went with it.
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const menu = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const current = menu.locator(`[${SERVER_PROFILE_ITEM}][aria-current="true"]`);
+  const rename = current.locator('..').getByRole('button', { name: /^Rename / });
+  await rename.click();
+  const field = menu.getByRole('textbox');
+  await field.fill('Home lab');
+  await page.keyboard.press('Escape');
+
+  await expect(field).toHaveCount(0);
+  await expect(menu).toBeVisible();
+  await expect(rename).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+});
+
+test('A pairing link opened while a server is in use offers to add a server with it', async ({ page }) => {
+  // ⛔ The link's code was mounted over and wiped from the address bar without
+  // a word; the owner who ran `recued pair` for a new server stayed on the old.
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple&code=K7Q2-M9XA#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const menu = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const offer = menu.getByRole('group', { name: 'You opened a pairing link' });
+  await expect(offer).toBeVisible();
+  await expect(offer).toContainText(/This browser is using .+\. The link can add another server here\./);
+  await expect(offer.getByRole('button', { name: 'Add a server with this link' })).toBeFocused();
+  // The code is not left in the address bar while the offer waits.
+  expect(page.url()).not.toContain('K7Q2-M9XA');
+
+  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await offer.getByRole('button', { name: 'Add a server with this link' }).click();
+  await navigation;
+  await expect(page.locator('#webclient-pair-code-input-form')).toBeVisible();
+  await expect(page.locator('#webclient-pair-code-input-code')).toHaveValue('K7Q2-M9XA');
+});
+
+test('A pairing link set aside with Not now leaves the server as it was', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple&code=K7Q2-M9XA#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const menu = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const offer = menu.getByRole('group', { name: 'You opened a pairing link' });
+  await offer.getByRole('button', { name: 'Not now' }).click();
+  await expect(offer).toHaveCount(0);
+  await expect(menu.getByRole('button', { name: 'Add another server…' })).toBeFocused();
+  expect(page.url()).not.toContain('K7Q2-M9XA');
+});
+
+test('Forget on the current server says what is lost and where the tab goes, then goes there', async ({ page }) => {
+  // ⛔ It reloaded bare onto the fallback server: no word about the unsent
+  // message, a "Leave site?" box, and nothing said where the tab had gone.
+  const nativeDialogs: string[] = [];
+  page.on('dialog', async (dialog) => {
+    nativeDialogs.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_INPUT}]`).fill('Can we move Thursday to 3pm?');
+
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const menu = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const alice = menu.locator(`[${SERVER_PROFILE_ITEM}][aria-current="true"]`);
+  await alice.locator('..').locator(`[${SERVER_PROFILE_REMOVE}]`).click();
+  const removal = menu.locator(`[${SERVER_PROFILE_REMOVE_CONFIRM}]`);
+  await expect(removal).toContainText(
+    'The Chat message you have not sent is only in this tab. Forgetting it reloads this tab, and the message is lost.',
+  );
+  await expect(removal).toContainText('This tab then opens Office server.');
+
+  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await removal.locator(`[${SERVER_PROFILE_REMOVE_LOCAL}]`).click();
+  await navigation;
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator(`[${CONNECTION_BANNER}]`)).toContainText('Now using Office server.');
+  expect(nativeDialogs).toEqual([]);
+});
+
+test('Add another server keeps a visible way back to the server that still works', async ({ page, context }) => {
+  // ⛔ The way back used to sit INSIDE the pair form's slot, below the form:
+  // under the fold on arrival, and gone the first time the form redrew.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  await page.locator(`[${ACCOUNT_MENU_POPOVER}]`)
+    .getByRole('button', { name: 'Add another server…' })
+    .click();
+
+  const pairForm = page.locator('#webclient-pair-code-input-form');
+  await expect(pairForm).toBeVisible();
+  const back = page.getByRole('button', {
+    name: '← Back to alice',
+  });
+  await expect(back).toHaveText('← Back to alice');
+  await expect(back).toBeInViewport();
+
+  // A different way to pair redraws the form's whole slot.
+  await page.getByRole('button', { name: 'Make a new one' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Generate a new recovery key' }),
+  ).toBeVisible();
+  await expect(back).toBeInViewport();
+
+  // The attempt is saved, so a new tab opens on the pair form too.
+  const newTab = await context.newPage();
+  await newTab.setViewportSize({ width: 390, height: 844 });
+  await newTab.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await expect(newTab.locator('#webclient-pair-code-input-form')).toBeVisible();
+  await expect(newTab.getByRole('button', {
+    name: '← Back to alice',
+  })).toBeInViewport();
+  await newTab.close();
+
+  await back.click();
+  await page.waitForFunction(() => window.__app?.ready === true
+    && document.querySelector('[data-recued-webclient-shell]') !== null);
+  await expect(pairForm).toHaveCount(0);
+  // Back on alice, and the abandoned attempt left no record behind.
+  const roster = await page.evaluate(() => {
+    const stored = JSON.parse(
+      window.localStorage.getItem('recued.e2e.server-switch-profile-store.v1')
+        ?? '{}',
+    ) as {
+      server_profiles?: Array<{ id: string; label: string }>;
+      active_profile_id?: string;
+    };
+    const profiles = stored.server_profiles ?? [];
+    return {
+      active: profiles.find((p) => p.id === stored.active_profile_id)?.label,
+      labels: profiles.map((p) => p.label),
+    };
+  });
+  expect(roster).toEqual({ active: 'alice', labels: ['alice', 'Office server'] });
+});
+
+test('a server that rejects this browser leaves the other signed in, and its reconnect page can switch there', async ({ page }) => {
+  // ⛔ The reconnect wipe used to null the OTHER server's sign-in too — and
+  // with the shell gone there was no way to reach it anyway.
+  const nativeDialogs: string[] = [];
+  page.on('dialog', async (dialog) => {
+    nativeDialogs.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_INPUT}]`).fill('Can we move Thursday to 3pm?');
+
+  await page.evaluate(() => window.__app.forceReauth());
+  await expect(
+    page.getByRole('heading', { name: 'Reconnect this browser' }),
+  ).toBeVisible();
+  // Read the saved servers here: the harness re-seeds Office on every boot.
+  expect(await page.evaluate(() => {
+    const stored = JSON.parse(
+      window.localStorage.getItem('recued.e2e.server-switch-profile-store.v1')
+        ?? '{}',
+    ) as {
+      server_profiles?: Array<{
+        label: string;
+        server_url: string;
+        webclient_token: { token_id: string } | null;
+      }>;
+    };
+    return (stored.server_profiles ?? []).map((p) => ({
+      label: p.label || '(pending)',
+      signedIn: p.webclient_token !== null,
+    }));
+  })).toEqual([
+    { label: 'Office server', signedIn: true },
+    { label: '(pending)', signedIn: false },
+  ]);
+  const useOffice = page.getByRole('button', { name: 'Use Office server instead' });
+  await expect(useOffice).toBeInViewport();
+
+  // The message is out of sight here, so leaving shows it before losing it.
+  await useOffice.click();
+  const review = page.getByRole('group', { name: 'Switch to Office server?' });
+  await expect(review).toBeFocused();
+  await expect(review).toContainText(
+    'The Chat message you have not sent is only in this tab. Switching loses it. It will never be sent to, or saved on, Office server.',
+  );
+  await expect(review.getByLabel('A Chat message you have not sent'))
+    .toHaveValue('Can we move Thursday to 3pm?');
+  const targets = await review.getByRole('button').evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }));
+  expect(targets).toHaveLength(3);
+  for (const target of targets) {
+    expect(target.width).toBeGreaterThanOrEqual(44);
+    expect(target.height).toBeGreaterThanOrEqual(44);
+  }
+
+  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await review.getByRole('button', { name: 'Switch server' }).click();
+  await navigation;
+  await page.waitForFunction(() => window.__app?.ready === true
+    && document.querySelector('[data-recued-webclient-shell]') !== null);
+
+  expect(nativeDialogs).toEqual([]);
+  await expect(page).toHaveURL(/\?server_profiles=multiple#chat$/);
+  await expect(page.locator(`[${CONNECTION_BANNER}]`))
+    .toContainText('Now using Office server.');
+  // Like every switch, the message stayed behind.
+  await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue('');
+});
+
+test('a reconnect tab holding a message gets the handoff when another tab switches servers', async ({ page, context }) => {
+  // ⛔ It used to follow as if this server had reconnected elsewhere: the
+  // message went along, the new server dropped it without a word, and the
+  // route still named the old server's chat.
+  const nativeDialogs: string[] = [];
+  page.on('dialog', async (dialog) => {
+    nativeDialogs.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?server_profiles=multiple&chat=session#chat/session/chat_1`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_INPUT}]`).fill('Can we move Thursday to 3pm?');
+  await page.evaluate(() => window.__app.forceReauth());
+  await expect(
+    page.getByRole('heading', { name: 'Reconnect this browser' }),
+  ).toBeVisible();
+
+  // Another tab opens on the reconnect's pending record and goes to Office.
+  const other = await context.newPage();
+  await other.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await other.getByRole('button', {
+    name: '← Back to Office server',
+  }).click();
+  await other.waitForFunction(() => window.__app?.ready === true
+    && document.querySelector('[data-recued-webclient-shell]') !== null);
+
+  const handoff = page.getByRole('alertdialog', {
+    name: 'Server changed in another tab',
+  });
+  await expect(handoff).toBeVisible();
+  await expect(handoff).toContainText('Another tab selected Office server');
+  await expect(handoff.getByLabel('A Chat message you have not sent'))
+    .toHaveValue('Can we move Thursday to 3pm?');
+  await expect(handoff.getByRole('button', { name: 'Copy draft' })).toBeVisible();
+
+  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await handoff.getByRole('button', { name: 'Switch, and lose the message' }).click();
+  await navigation;
+  await page.waitForFunction(() => window.__app?.ready === true
+    && document.querySelector('[data-recued-webclient-shell]') !== null);
+
+  expect(nativeDialogs).toEqual([]);
+  // A safe area of Office, not the old server's chat.
+  await expect(page).toHaveURL(/\?server_profiles=multiple&chat=session#chat$/);
+  await expect(page.locator(`[${CHAT_HISTORY_LANDING}]`)).toBeVisible();
+  // The arrival note belongs to the tab that chose the server.
+  await expect(page.locator(`[${CONNECTION_BANNER}]`)).not.toContainText('Now using');
+});
+
+test('Account marks a server this browser can no longer sign in to', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  // What a reconnect from before 2026-10-23 could leave of another server:
+  // its address, with the sign-in wiped.
+  await page.evaluate(() => {
+    const key = 'recued.e2e.server-switch-profile-store.v1';
+    const stored = JSON.parse(window.localStorage.getItem(key) ?? '{}') as {
+      server_profiles?: unknown[];
+    };
+    stored.server_profiles = [...(stored.server_profiles ?? []), {
+      id: 'lab',
+      label: 'Lab server',
+      server_url: 'wss://lab.recued.cloud:8443/ws',
+      webclient_token: null,
+      server_public_key: null,
+      pair_metadata: null,
+      cert_pin_state: null,
+      last_connected_at: null,
+    }];
+    window.localStorage.setItem(key, JSON.stringify(stored));
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const dialog = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const profiles = dialog.locator(`[${SERVER_PROFILE_ITEM}]`);
+  const lab = profiles.filter({ hasText: 'Lab server' });
+  await expect(lab).toContainText('Needs pairing again');
+  await expect(profiles.filter({ hasText: 'Office server' }))
+    .not.toContainText('Needs pairing again');
+
+  await lab.click();
+  await expect(dialog.locator(`[${SERVER_PROFILE_SWITCH_CONFIRM}]`)).toContainText(
+    'This browser has no sign-in for Lab server any more. Switching opens the pairing page for it, with its address filled in.',
+  );
+
+  // ⛔ The switch used to make Lab's address-only record active, and every
+  // start reads that as a pairing cut short: "Another tab is saving your
+  // sign-in" with an empty address box (the real app showed a repair card
+  // whose Clear deleted Lab). It opens a fresh pairing for Lab instead.
+  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await dialog.locator(`[${SERVER_PROFILE_SWITCH_COMMIT}]`).click();
+  await navigation;
+  const pairForm = page.locator('#webclient-pair-code-input-form');
+  await expect(pairForm).toBeVisible();
+  await expect(pairForm.locator('#webclient-pair-code-input-server-url'))
+    .toHaveValue('https://lab.recued.cloud:8443');
+  await expect(page.getByText('Another tab is saving your sign-in')).toHaveCount(0);
+  const back = page.getByRole('button', {
+    name: '← Back to alice',
+  });
+  await expect(back).toBeVisible();
+  // Lab keeps its name; pairing its address re-attaches to that record.
+  const roster = await page.evaluate(() => JSON.parse(
+    window.localStorage.getItem('recued.e2e.server-switch-profile-store.v1') ?? '{}',
+  ) as { server_profiles?: Array<{ id: string; label: string; server_url: string }> });
+  expect(roster.server_profiles?.find((profile) => profile.id === 'lab'))
+    .toMatchObject({ label: 'Lab server', server_url: 'wss://lab.recued.cloud:8443/ws' });
+
+  // Going back lands on alice, with no claim to be using Lab.
+  await back.click();
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator(`[${CONNECTION_BANNER}]`)).not.toContainText('Now using');
+});
+
+test('Account shows a lock for an encrypted server address in place of its scheme', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  // A server on this computer is reached over plain ws://.
+  await page.evaluate(() => {
+    const key = 'recued.e2e.server-switch-profile-store.v1';
+    const stored = JSON.parse(window.localStorage.getItem(key) ?? '{}') as {
+      server_profiles?: unknown[];
+    };
+    stored.server_profiles = [...(stored.server_profiles ?? []), {
+      id: 'local',
+      label: 'This computer',
+      server_url: 'ws://127.0.0.1:7717/ws',
+      webclient_token: {
+        token_id: 'tok-local',
+        ciphertext_b64: 'ciphertext',
+        iv_b64: 'iv',
+        issued_at: 1,
+      },
+      server_public_key: 'local-spki',
+      pair_metadata: null,
+      cert_pin_state: null,
+      last_connected_at: null,
+    }];
+    window.localStorage.setItem(key, JSON.stringify(stored));
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const profiles = page.locator(`[${ACCOUNT_MENU_POPOVER}] [${SERVER_PROFILE_ITEM}]`);
+  const office = profiles.filter({ hasText: 'Office server' });
+  await expect(office.getByRole('img', { name: 'Encrypted connection' })).toBeVisible();
+  await expect(office).toContainText('office.recued.cloud:9443/ws');
+  await expect(office).not.toContainText('wss://');
+  await expect(office.locator('.recued-switcher-url'))
+    .toHaveAttribute('title', 'wss://office.recued.cloud:9443/ws');
+
+  const local = profiles.filter({ hasText: 'This computer' });
+  await expect(local).toContainText('127.0.0.1:7717/ws');
+  await expect(local).not.toContainText('ws://');
+  await expect(local.getByRole('img', { name: 'Encrypted connection' })).toHaveCount(0);
+});
+
+test('Account stays readable when its own theme button pins the other theme', async ({ page }) => {
+  // ⛔ The menu took its dark colours from the OS media query only: Dark
+  // pinned on a light OS left light text on white, Light pinned on a dark OS
+  // left dark text on near-black — right after pressing the button in it.
+  const contrast = () => page.locator(`[${ACCOUNT_MENU_POPOVER}]`).evaluate((node) => {
+    const channels = (css: string): number[] =>
+      (css.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const luminance = (css: string): number => {
+      const [r = 0, g = 0, b = 0] = channels(css).map((v) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const style = getComputedStyle(node);
+    const [light, dark] = [luminance(style.color), luminance(style.backgroundColor)]
+      .sort((a, b) => b - a);
+    return (light! + 0.05) / (dark! + 0.05);
+  });
+  for (const [os, pin] of [['light', 'Dark'], ['dark', 'Light']] as const) {
+    await page.emulateMedia({ colorScheme: os });
+    await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+    const theme = page.locator(`[${ACCOUNT_MENU_POPOVER}]`)
+      .getByRole('button', { name: /^Theme: / });
+    for (let i = 0; i < 3; i += 1) {
+      if ((await theme.getAttribute('aria-label'))?.startsWith(`Theme: ${pin}.`)) break;
+      await theme.click();
+    }
+    await expect(theme).toHaveAttribute('aria-label', `Theme: ${pin}. Click to change.`);
+    expect(await contrast()).toBeGreaterThanOrEqual(7);
+  }
+});
+
+/** WCAG contrast of two computed colours. ⛔ Chrome reports a color-mix()
+ *  result as `color(srgb r g b)` in 0–1. Read as 0–255 that is near-black, so
+ *  every such edge passed 3:1 whatever its colour. */
+const contrastRatio = (fg: string, bg: string): number => {
+  const channels = (css: string): number[] => {
+    const srgb = /^color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)/.exec(css);
+    return srgb !== null
+      ? srgb.slice(1, 4).map((v) => Number(v) * 255)
+      : (css.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+  };
+  const luminance = (css: string): number => {
+    const [r = 0, g = 0, b = 0] = channels(css).map((v) => {
+      const c = v / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [hi, lo] = [luminance(fg), luminance(bg)].sort((a, b) => b - a);
+  return (hi! + 0.05) / (lo! + 0.05);
+};
+
+/** A small label's contrast as drawn: its most common pixel (the ground)
+ *  against the one furthest from it (the ink). A translucent wash over the
+ *  page has no single computed background to read. */
+const drawnContrast = async (target: Locator): Promise<number> => {
+  const png = (await target.screenshot()).toString('base64');
+  return target.page().evaluate(async (data) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${data}`;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const luminance = (r: number, g: number, b: number): number => {
+      const f = (v: number): number => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    const counts = new Map<number, number>();
+    let darkest = 2;
+    let lightest = -1;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const [r, g, b] = [pixels[i]!, pixels[i + 1]!, pixels[i + 2]!];
+      const l = luminance(r, g, b);
+      darkest = Math.min(darkest, l);
+      lightest = Math.max(lightest, l);
+      const key = (r << 16) | (g << 8) | b;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const ground = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+    const groundL = luminance(ground >> 16, (ground >> 8) & 255, ground & 255);
+    const ink = groundL > 0.18 ? darkest : lightest;
+    return (Math.max(ink, groundL) + 0.05) / (Math.min(ink, groundL) + 0.05);
+  }, png);
+};
+
+test('server addresses and pairing fields meet contrast in the light theme', async ({ page }) => {
+  // ⛔ The row address was faded to 62% (4.4:1 for 11px text), the pairing
+  // fields' edges measured 1.3:1, and their focus only tinted that edge.
+  const ratio = contrastRatio;
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const address = page.locator(`[${ACCOUNT_MENU_POPOVER}] .recued-switcher-url`).first();
+  const addressColors = await address.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { color: style.color, opacity: style.opacity };
+  });
+  expect(addressColors.opacity).toBe('1');
+  expect(ratio(addressColors.color, 'rgb(255, 255, 255)')).toBeGreaterThanOrEqual(4.5);
+
+  await page.locator(`[${ACCOUNT_MENU_POPOVER}]`).getByRole('button', { name: 'Add another server…' }).click();
+  const field = page.locator('#webclient-pair-code-input-form input').first();
+  await expect(field).toBeVisible();
+  const edge = await field.evaluate((node) => getComputedStyle(node).borderTopColor);
+  expect(ratio(edge, 'rgb(255, 255, 255)')).toBeGreaterThanOrEqual(3);
+  await field.focus();
+  const ring = await field.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { style: style.outlineStyle, width: style.outlineWidth };
+  });
+  expect(ring).toEqual({ style: 'solid', width: '2px' });
+});
+
+test('Devices, Connect a device and the server rename box read in the light theme', async ({ page }) => {
+  // ⛔ "This device" drew at 4.32:1 and "One thing to set up" at 4.15:1, both
+  // 11px, and the server rename box's edge measured 1.27:1.
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const edge = (field: Locator) => field.evaluate((node) => getComputedStyle(node).borderTopColor);
+
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const menu = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const current = menu.locator(`[${SERVER_PROFILE_ITEM}][aria-current="true"]`);
+  await current.locator('..').locator(`[${SERVER_PROFILE_RENAME}]`).click();
+  const serverName = menu.locator(`[${SERVER_PROFILE_RENAME_INPUT}]`);
+  await expect(serverName).toBeVisible();
+  expect(contrastRatio(await edge(serverName), 'rgb(255, 255, 255)')).toBeGreaterThanOrEqual(3);
+
+  await page.goto(`${HARNESS_URL}?devices=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+  const badge = page.locator('.account-devices-current-badge');
+  await expect(badge).toHaveText('This device');
+  expect(await drawnContrast(badge)).toBeGreaterThanOrEqual(4.5);
+
+  await page.evaluate(() => window.__app.setHash('#settings/server/connect-device'));
+  const todo = page.locator('.connect-device-chip-todo').first();
+  await expect(todo).toBeVisible();
+  expect(await drawnContrast(todo)).toBeGreaterThanOrEqual(4.5);
+});
+
+test('pairing and start-up recovery draw a solid focus ring', async ({ page }) => {
+  // ⛔ Their rings were the accent at 38% (1.76:1 on white), and the recovery
+  // key source buttons drew the browser's default ring.
+  await page.emulateMedia({ colorScheme: 'light' });
+  const ring = (target: Locator) => target.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return {
+      visible: node.matches(':focus-visible'),
+      style: style.outlineStyle,
+      width: style.outlineWidth,
+      color: style.outlineColor,
+    };
+  });
+  const expectSolidRing = async (target: Locator): Promise<void> => {
+    const drawn = await ring(target);
+    expect(drawn.visible).toBe(true);
+    expect({ style: drawn.style, width: drawn.width }).toEqual({ style: 'solid', width: '2px' });
+    expect(contrastRatio(drawn.color, 'rgb(255, 255, 255)')).toBeGreaterThanOrEqual(3);
+  };
+
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  await page.locator(`[${ACCOUNT_MENU_POPOVER}]`).getByRole('button', { name: 'Add another server…' }).click();
+  await page.getByRole('button', { name: 'I have a recovery key' }).focus();
+  await page.keyboard.press('Tab');
+  const makeOne = page.getByRole('button', { name: 'Make a new one' });
+  await expect(makeOne).toBeFocused();
+  await expectSolidRing(makeOne);
+
+  await page.goto(`${HARNESS_URL}?chat=session&journey=credential-corruption&code=PAIR1234#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const repair = page.locator('[data-recued-cold-start-credential-repair-action]');
+  await expect(repair).toBeFocused();
+  await expectSolidRing(repair);
+
+  await page.goto(`${HARNESS_URL}?chat=session&journey=persistent-storage#chat/session/chat_1`);
+  const retry = page.locator('[data-recued-persistent-storage-retry]');
+  await expect(retry).toBeFocused();
+  await expectSolidRing(retry);
+});
+
+test('the connection banner stays readable in dark mode, pinned or from the OS', async ({ page }) => {
+  // ⛔ Its dark shade swapped only the background, so a dark OS read the
+  // light text colour on it: "can't reach the server" at 2.3:1.
+  const contrast = () => page.locator(`[${CONNECTION_BANNER}]`).evaluate((node) => {
+    const luminance = (css: string): number => {
+      const [r = 0, g = 0, b = 0] = (css.match(/[\d.]+/g) ?? [])
+        .slice(0, 3)
+        .map((v) => {
+          const c = Number(v) / 255;
+          return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const style = getComputedStyle(node);
+    const [light, dark] = [luminance(style.color), luminance(style.backgroundColor)]
+      .sort((a, b) => b - a);
+    return (light! + 0.05) / (dark! + 0.05);
+  });
+  for (const [os, pin] of [['dark', null], ['light', 'dark']] as const) {
+    await page.emulateMedia({ colorScheme: os });
+    await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    if (pin !== null) {
+      await page.evaluate((theme) => {
+        document.documentElement.setAttribute('data-theme', theme);
+      }, pin);
+    }
+    await page.evaluate(() => {
+      window.__app.setServerAvailable(false);
+      window.__app.fireState('closed');
+    });
+    await expect(page.locator(`[${CONNECTION_BANNER}]`))
+      .toHaveAttribute('data-state', 'offline');
+    expect(await contrast()).toBeGreaterThanOrEqual(4.5);
+
+    await page.evaluate(() => {
+      window.__app.setServerAvailable(true);
+      window.__app.fireState('connected');
+    });
+    await expect(page.locator(`[${CONNECTION_BANNER}]`))
+      .toHaveAttribute('data-state', 'restored');
+    expect(await contrast()).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test('On a phone the connection banner never covers the Chat box or Send', async ({ page }) => {
+  // ⛔ The shell was a full viewport tall under a banner fixed over its bottom:
+  // offline it covered the Chat box and Send, and "Back online" still hid Send
+  // for its ~4 s. The welcome cards also pushed the box below the fold.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const clearOfBanner = () => page.evaluate(([banner, input, send]) => {
+    const top = document.querySelector(banner)!.getBoundingClientRect().top;
+    return [input, send].every(
+      (selector) => document.querySelector(selector)!.getBoundingClientRect().bottom <= top,
+    );
+  }, [`[${CONNECTION_BANNER}]`, `[${CHAT_INPUT}]`, `[${CHAT_SEND}]`] as const);
+
+  await page.evaluate(() => {
+    window.__app.setServerAvailable(false);
+    window.__app.fireState('closed');
+  });
+  await expect(page.locator(`[${CONNECTION_BANNER}]`)).toHaveAttribute('data-state', 'offline');
+  await expect.poll(clearOfBanner).toBe(true);
+
+  await page.evaluate(() => {
+    window.__app.setServerAvailable(true);
+    window.__app.fireState('connected');
+  });
+  await expect(page.locator(`[${CONNECTION_BANNER}]`)).toHaveAttribute('data-state', 'restored');
+  await expect.poll(clearOfBanner).toBe(true);
+});
+
+test('Account shows a whole rename form on a phone, nothing hidden in a scroll box', async ({ page }) => {
+  // ⛔ The server list scrolled inside its own 216px box: Rename's Save sat
+  // below that fold, and an open confirm cut the row above it in half.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const dialog = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const office = dialog.locator(`[${SERVER_PROFILE_ITEM}]`)
+    .filter({ hasText: 'Office server' });
+  await office.locator('..').locator(`[${SERVER_PROFILE_RENAME}]`).click();
+
+  await expect(dialog.locator(`[${SERVER_PROFILE_RENAME_SAVE}]`)).toBeInViewport();
+  await expect(dialog.locator(`[${SERVER_PROFILE_ITEM}]`).first()).toBeInViewport({ ratio: 1 });
 });
 
 test('a deliberate server switch protects the draft boundary and returns to a clean target area once', async ({ page }) => {
@@ -2164,7 +2861,8 @@ test('a deliberate server switch converges clean and dirty sibling tabs without 
     await expect(handoff).toHaveAccessibleDescription(
       /This tab is still showing.+Another tab selected.+Chat message.+Chats, records, runs and links belong to one server and stay there/,
     );
-    await expect(handoff).toContainText('wss://alice.recued.cloud:8443/ws');
+    await expect(handoff).toContainText('alice (alice.recued.cloud:8443)');
+    await expect(handoff).not.toContainText('wss://');
     await expect(handoff).toContainText('Office server');
     await expect(handoff).toContainText('never move it to another server');
     await expect(dirty.locator(`[${SERVER_SWITCH_CONVERGENCE_DRAFT}]`))

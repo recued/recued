@@ -32,6 +32,12 @@ import type { WsClient } from './ws-server.js';
 export interface ContractGrantRpcDeps {
   /** The unified `contract_grant`-backed grant store. */
   store: ContractGrantEntryStore;
+  /** D-327 — judge a GRANT before it is written, for an agreement that is its
+   *  key's whole authority: the check issuance used to run on a key's checklist
+   *  (door cost bound, Records exposure, kernel ops kept off doors) now runs on
+   *  the agreement row the key reads instead. Throws with the reason to refuse;
+   *  returns for every other contract and row. Absent ⇒ no check (tests). */
+  checkKeyGrant?: (contract_id: string, entry_key: string) => void;
   /** Optional clock injection. Tests pin the boundary; production falls back to
    *  `Date.now()`. */
   now?: () => number;
@@ -99,6 +105,17 @@ export const handleContractGrantWrite = (
       'bad_request',
       `contract.grant.write: granted must be a boolean or null (clear); got ${JSON.stringify(args.granted)}`,
     );
+  }
+
+  if (args.granted === true && deps.checkKeyGrant !== undefined) {
+    try {
+      deps.checkKeyGrant(args.contract_id, args.entry_key);
+    } catch (error) {
+      throw new RpcError(
+        'bad_request',
+        `contract.grant.write: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   const ts = deps.now?.() ?? Date.now();

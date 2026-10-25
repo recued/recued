@@ -20,6 +20,7 @@ import {
   isActor,
   MEMORY_LIST_DEFAULT_PAGE_SIZE,
   MEMORY_LIST_MAX_PAGE_SIZE,
+  OWNER_CONTRACT_ID,
   provenanceAttributionFromSource,
   renderProvenanceAttribution,
   type Actor,
@@ -36,12 +37,15 @@ import {
   type MemoryListRequest,
   type MemoryListResponse,
   type MemoryMutationResult,
+  type MemoryRestoreRequest,
+  type MemoryRestoreResult,
   type MemoryUpdateRequest,
   type ServerRpcRegistry,
 } from '@recued/contracts';
 import type { AuditEntry, AuditLogStore, Collection } from '@recued/storage';
 import type { EventBus } from './events/bus.js';
 import { emitMemoryUser } from './events/emit-sites.js';
+import { liveReplacementOf, restoreAgentForget } from './memory-revision.js';
 import {
   USER_MEMORY_ID_PREFIX,
   type UserMemoryCreateInput,
@@ -60,6 +64,15 @@ import type { WsClient } from './ws-server.js';
 export interface MemoryRedactionRecord {
   memory_id: string;
   redacted_at: number;
+  /** D-198 §10 — present when an AGENT forgot the entry (`memory.forget`): the
+   *  contract it wrote under. Absent on the owner's own redactions. The owner
+   *  can restore an agent's forget (`memory.restore`); never the reverse. */
+  by_contract_id?: string;
+  /** D-198 §10 — the entry the agent asked to forget, when this mark covers an
+   *  earlier version of it. `memory.restore` lifts every mark of one forget. */
+  forget_of?: string;
+  /** D-198 §10 — the agent's stated reason, shown to the owner. */
+  reason?: string;
 }
 
 export interface MemoryRpcDeps {
@@ -235,6 +248,7 @@ const userRowToEntry = (r: UserMemoryRow): MemoryListEntry => {
   if (r.summary !== undefined) entry.summary = r.summary;
   if (r.body_preview !== undefined) entry.body_preview = r.body_preview;
   if (r.reason_code !== undefined) entry.reason_code = r.reason_code;
+  if (r.replaces !== undefined) entry.replaces = r.replaces;
   if (r.event_at !== undefined) entry.event_at = r.event_at;
   if (r.provenance_entity_ids !== undefined && r.provenance_entity_ids.length > 0) {
     entry.links = r.provenance_entity_ids.map((entity_id) => ({
@@ -246,13 +260,42 @@ const userRowToEntry = (r: UserMemoryRow): MemoryListEntry => {
   return entry;
 };
 
-const EMPTY_REDACTED: ReadonlySet<string> = new Set();
+/** Every redaction mark by memory_id (empty when no redaction store is wired). */
+const fetchRedactions = async (
+  deps: MemoryRpcDeps,
+): Promise<ReadonlyMap<string, MemoryRedactionRecord>> => {
+  if (!deps.redactionStore) return new Map();
+  return new Map((await deps.redactionStore.list()).map((r) => [r.memory_id, r]));
+};
 
-/** The set of redacted memory_ids (empty when no redaction store is wired). */
-const fetchRedactedIds = async (deps: MemoryRpcDeps): Promise<ReadonlySet<string>> => {
-  if (!deps.redactionStore) return EMPTY_REDACTED;
-  const records = await deps.redactionStore.list();
-  return new Set(records.map((r) => r.memory_id));
+/** D-198 §10 — who forgot an entry, in the owner's terms. Mirrors the agent
+ *  attribution wording ("an agent, under contract X, asserted this"). */
+const forgottenByLabel = (contract_id: string): string =>
+  contract_id === OWNER_CONTRACT_ID ? 'your chat' : `an agent, under contract ${contract_id}`;
+
+/** D-198 §10 — the owner-facing marks of an agent's revision: `forgotten_by` (+ its
+ *  reason) on an entry an agent forgot, `replaced_by` on a live entry a newer
+ *  version replaced. Shared by the feed and the detail view. */
+const revisionMarks = async (
+  deps: MemoryRpcDeps,
+  memory_id: string,
+  redactions: ReadonlyMap<string, MemoryRedactionRecord>,
+): Promise<Pick<MemoryListEntry, 'forgotten_by' | 'forgotten_reason' | 'replaced_by'>> => {
+  const mark = redactions.get(memory_id);
+  if (mark !== undefined) {
+    if (mark.by_contract_id === undefined) return {};
+    return {
+      forgotten_by: forgottenByLabel(mark.by_contract_id),
+      ...(mark.reason !== undefined ? { forgotten_reason: mark.reason } : {}),
+    };
+  }
+  if (!deps.userMemoryStore || !isUserMemoryId(memory_id)) return {};
+  const next = await liveReplacementOf(
+    deps.userMemoryStore,
+    new Set(redactions.keys()),
+    memory_id,
+  );
+  return next !== undefined ? { replaced_by: next.memory_id } : {};
 };
 
 /** Overlay a redaction (§5): the row still displays (transparency), but with its
@@ -392,10 +435,11 @@ export const handleMemoryList = async (
 
   // Redaction overlay (§5) — applied to the page only; `redactEntry` preserves
   // `memory_id` + effective time, so the cursor is unaffected.
-  const redactedIds = await fetchRedactedIds(deps);
-  const entries = redactedIds.size === 0
-    ? page
-    : page.map((e) => (redactedIds.has(e.memory_id) ? redactEntry(e) : e));
+  const redactions = await fetchRedactions(deps);
+  const entries = await Promise.all(page.map(async (e) => ({
+    ...(redactions.has(e.memory_id) ? redactEntry(e) : e),
+    ...(await revisionMarks(deps, e.memory_id, redactions)),
+  })));
 
   const response: MemoryListResponse = { entries };
   if (collected.length > limit && page.length > 0) {
@@ -493,6 +537,7 @@ export const handleMemoryGet = async (
     if (body !== undefined) res.body = body;
     if (row.reason_code !== undefined) res.reason_code = row.reason_code;
     if (row.event_at !== undefined) res.event_at = row.event_at;
+    if (row.replaces !== undefined) res.replaces = row.replaces;
   } else {
     const audit = await deps.auditLog.get(memory_id);
     if (audit === null) throw new RpcError('not_found', 'memory entry not found', 404);
@@ -513,7 +558,8 @@ export const handleMemoryGet = async (
     // Audit rows carry no user body — only the summary (§5).
   }
 
-  return isRedacted ? redactGetResponse(res) : res;
+  const marks = await revisionMarks(deps, memory_id, await fetchRedactions(deps));
+  return { ...(isRedacted ? redactGetResponse(res) : res), ...marks };
 };
 
 /** `memory.create` — author a NEW `user_self` entry. The origin is stamped
@@ -633,6 +679,29 @@ export const handleMemoryDelete = async (
   return redact();
 };
 
+/** `memory.restore` (D-198 §10) — the owner undoes an AGENT's forget: every
+ *  overlay mark that forget wrote is deleted, and the entry and its earlier
+ *  versions come back exactly as stored (the overlay never changed a row). The
+ *  owner's own redactions carry no `by_contract_id` and are not restorable here. */
+export const handleMemoryRestore = async (
+  deps: MemoryRpcDeps,
+  args: MemoryRestoreRequest,
+): Promise<MemoryRestoreResult> => {
+  const memory_id = args.memory_id;
+  if (typeof memory_id !== 'string' || memory_id.length === 0) {
+    throw new RpcError('bad_request', 'memory.restore requires a memory_id', 400);
+  }
+  if (!deps.redactionStore) {
+    throw new RpcError('not_configured', 'memory.restore requires the redaction store', 501);
+  }
+  const restored = await restoreAgentForget(deps.redactionStore, memory_id);
+  if (restored === 0) {
+    throw new RpcError('not_found', 'no agent forgot that memory', 404);
+  }
+  emitMemoryUser(deps.bus, memory_id);
+  return { memory_id, restored };
+};
+
 /** `memory.import` — bulk restore / ingest into the `user_memory` store (§5).
  *  Origin-split on the dedup key: `user_self` entries merge-by-`memory_id`
  *  (idempotent restore of your own); "other" entries content-dedup and land
@@ -681,7 +750,8 @@ type MemoryRpcMethods =
   | 'memory.create'
   | 'memory.update'
   | 'memory.delete'
-  | 'memory.import';
+  | 'memory.import'
+  | 'memory.restore';
 
 export const makeMemoryRpcHandlers = (
   deps: MemoryRpcDeps | undefined,
@@ -690,7 +760,7 @@ export const makeMemoryRpcHandlers = (
   // Registered-client gate at every slice arrow (enforces the owner-only
   // boundary the no-contract-gate read/write relies on).
   return {
-    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import'],
+    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import', 'memory.restore'],
     handlers: {
       'memory.list': async (args, client) => {
         requireRegisteredClient(client);
@@ -715,6 +785,10 @@ export const makeMemoryRpcHandlers = (
       'memory.import': async (args, client) => {
         requireRegisteredClient(client);
         return handleMemoryImport(deps, args as MemoryImportRequest);
+      },
+      'memory.restore': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleMemoryRestore(deps, args as MemoryRestoreRequest);
       },
     },
   };

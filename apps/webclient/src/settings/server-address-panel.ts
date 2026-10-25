@@ -70,9 +70,11 @@ export const retargetMessage = (outcome: RetargetOutcome): string => {
       // sitting on a silently broken tab with nothing telling them what to do.
       return `Saved. Reload this tab to start using ${outcome.server_url}.`;
     case 'invalid_address':
-      return 'That does not look like a server address. It should start with wss:// or ws://.';
+      return 'That does not look like a server address. It should start with https:// (or wss://).';
     case 'rejected_by_store':
       return 'Another server in this list already uses that address.';
+    case 'sign_in_changed':
+      return 'This server’s sign-in changed while you were editing, so nothing was saved. Try again.';
     case 'token_reseal_failed':
       // ⚠ Says what is still TRUE, because the useful fact is that nothing
       // broke — not the internal reason it stopped.
@@ -174,20 +176,51 @@ export const mountServerAddressPanel = (
       el.setAttribute(SERVER_ADDRESS_ROW_ATTR, row.profile.id);
       el.setAttribute(SERVER_ADDRESS_ROW_STATE_ATTR, row.state);
 
-      const label = doc.createElement('div');
-      label.textContent = `${row.profile.label} — ${row.profile.server_url}`;
-      el.appendChild(label);
+      const name = doc.createElement('h3');
+      name.className = 'server-address-name';
+      name.textContent = row.profile.label;
+      el.appendChild(name);
+
+      const current = doc.createElement('p');
+      current.className = 'server-address-current';
+      const caption = doc.createElement('span');
+      caption.className = 'server-address-caption';
+      caption.textContent = 'Saved address';
+      current.appendChild(caption);
+      const address = doc.createElement('code');
+      address.className = 'server-address-url';
+      address.textContent = row.profile.server_url;
+      current.appendChild(address);
+      el.appendChild(current);
+
+      const actions = doc.createElement('div');
+      actions.className = 'server-address-actions';
 
       if (row.state === 'idle' || row.state === 'saved') {
         const edit = doc.createElement('button');
+        edit.className = 'rx-btn rx-btn-secondary';
         edit.setAttribute(SERVER_ADDRESS_EDIT_BTN_ATTR, '');
         edit.textContent = 'Change address';
-        edit.addEventListener('click', () => beginEdit(row.profile.id));
+        edit.addEventListener('click', (event) => {
+          // Safari does not focus a button on pointer activation. A real
+          // opening owns the editor; a scripted click keeps outside focus.
+          if (event.isTrusted) edit.focus({ preventScroll: true });
+          beginEdit(row.profile.id);
+        });
         remember('edit', edit);
-        el.appendChild(edit);
+        actions.appendChild(edit);
       } else {
+        const field = doc.createElement('label');
+        field.className = 'server-address-field';
+        const fieldLabel = doc.createElement('span');
+        fieldLabel.textContent = 'New server address';
+        field.appendChild(fieldLabel);
         const input = doc.createElement('input') as HTMLInputElement;
         input.setAttribute(SERVER_ADDRESS_INPUT_ATTR, '');
+        input.setAttribute('type', 'text');
+        input.setAttribute('spellcheck', 'false');
+        input.setAttribute('autocapitalize', 'none');
+        input.setAttribute('autocomplete', 'off');
         input.value = row.draft;
         // Re-checking is required after every edit: the proof is bound to the
         // address that was probed, so a changed draft invalidates it.
@@ -203,33 +236,38 @@ export const mountServerAddressPanel = (
         });
         input.disabled = row.state === 'checking' || row.state === 'saving';
         remember('input', input);
-        el.appendChild(input);
+        field.appendChild(input);
+        el.appendChild(field);
 
         if (row.state === 'verified') {
           const save = doc.createElement('button');
+          save.className = 'rx-btn rx-btn-primary';
           save.setAttribute(SERVER_ADDRESS_SAVE_BTN_ATTR, '');
           save.textContent = 'Save';
           save.addEventListener('click', () => { void save_(row.profile.id); });
           remember('save', save);
-          el.appendChild(save);
+          actions.appendChild(save);
         } else {
           const check = doc.createElement('button');
+          check.className = 'rx-btn rx-btn-primary';
           check.setAttribute(SERVER_ADDRESS_CHECK_BTN_ATTR, '');
           check.textContent = 'Check address';
           check.disabled = row.state === 'checking' || row.state === 'saving';
           check.addEventListener('click', () => { void check_(row.profile.id); });
           remember('check', check);
-          el.appendChild(check);
+          actions.appendChild(check);
         }
 
         const cancel = doc.createElement('button');
+        cancel.className = 'rx-btn rx-btn-secondary';
         cancel.setAttribute(SERVER_ADDRESS_CANCEL_BTN_ATTR, '');
         cancel.textContent = 'Cancel';
         cancel.disabled = row.state === 'saving';
         cancel.addEventListener('click', () => cancel_(row.profile.id));
         remember('cancel', cancel);
-        el.appendChild(cancel);
+        actions.appendChild(cancel);
       }
+      el.appendChild(actions);
 
       const status = doc.createElement('p');
       status.setAttribute(SERVER_ADDRESS_STATUS_ATTR, '');
@@ -278,6 +316,8 @@ export const mountServerAddressPanel = (
     row.draft = row.profile.server_url;
     row.status = '';
     render();
+    const input = controls.find(control => control.id === id && control.kind === 'input' && control.node === doc.activeElement);
+    input?.node.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   };
 
   const cancel_ = (id: string): void => {

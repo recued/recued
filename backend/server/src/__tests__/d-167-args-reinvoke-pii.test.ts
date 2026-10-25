@@ -277,7 +277,8 @@ describe('D-167 N.10 — uniform boundary aliases prior_tool_calls data fields',
     const prompt = JSON.stringify({
       user_message: 'hi',
       chat_tail: [],
-      prior_tool_calls: [{ tool_name: 'contact.read', args: { email: 'bob@x.com' } }],
+      // A name, not an address: an address is aliased by its shape (2026-10-24).
+      prior_tool_calls: [{ tool_name: 'contact.search', args: { query: 'Bob Lee' } }],
     });
     const { rawPrompt } = await egress(plan, prompt);
     expect(rawPrompt).toBe(prompt);

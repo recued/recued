@@ -289,6 +289,9 @@ export type PairCodeInputClientErrorCode =
   | 'pair_code_input_server_unknown_error'
   | 'pair_code_input_server_refused'
   | 'pair_code_input_already_paired'
+  /** The address typed is a server this browser already has saved and
+   *  signed in to. Refused before `/auth/pair`, so no code is spent. */
+  | 'pair_code_input_server_already_saved'
   | 'pair_code_input_finalize_interrupted';
 
 /** Server-side errors — `/auth/pair` codes this client holds TAILORED
@@ -331,8 +334,12 @@ export const PAIR_CODE_INPUT_ERROR_COPY: Readonly<Record<PairCodeInputErrorCode,
   pair_code_input_server_unknown_error:
     'Your server sent back something Recued did not expect. Check the address and try again.',
   pair_code_input_server_refused: PAIR_SERVER_REFUSED_COPY,
+  // ⛔ This said to "clear this browser" to pair a different server: that
+  // wipes every saved server and the key that seals their sign-ins.
   pair_code_input_already_paired:
-    'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
+    'Another tab paired this browser while this form was open. Reload the page to use it. To add a different server, choose Add another server in Account & servers: your other servers stay as they are.',
+  pair_code_input_server_already_saved:
+    'This browser already has that server saved and signed in. Go back and choose it in Account & servers instead.',
   pair_code_input_finalize_interrupted:
     'Your server paired this browser, but saving the sign-in here was cut short.',
   // The server half is SPREAD, not restated. Restating it is what let the
@@ -786,6 +793,11 @@ export interface MountPairCodeInputHostOptions {
    *  instead of letting them preflight against the now-populated
    *  webclient_token). */
   onAfterPair?: () => void | Promise<void>;
+  /** The preflight found the browser now on ANOTHER saved server — a sibling
+   *  tab switched it — and this form holds no accepted pairing. Invoked
+   *  outside the lock instead of posting `/auth/pair`; the caller follows
+   *  the switch. (A held pairing is finished instead, under its own server.) */
+  onSwitchedAway?: () => void;
   /** Cross-tab single-flight lock provider — wraps preflight + submit
    *  + onPaired so the `/auth/pair` POST itself is serialised across
    *  tabs. Production wires `globalThis.navigator.locks`; tests
@@ -810,12 +822,21 @@ export interface MountPairCodeInputHostOptions {
    *  + relies on `finalizePairCodeSuccess`'s entrance guard alone
    *  (which still protects the persistence, just not the network
    *  POST). */
-  preflightCheck?: () => Promise<{
+  preflightCheck?: (attempt: { readonly serverUrl: string }) => Promise<{
     alreadyPaired: boolean;
+    /** The address typed is a server this browser already has saved and
+     *  signed in to (`label` names it). Pairing it again would leave a
+     *  second sign-in for this browser on that server, so the host stops
+     *  before `/auth/pair` and says where to find it. */
+    alreadySaved?: { readonly label: string };
     /** A server-success write began but the strict triple is incomplete.
      *  The host aborts a normal submit once, clears any stale one-time code,
      *  and presents the recovery-key takeover before another POST. */
     interrupted?: boolean;
+    /** The complete pair in the store is ANOTHER saved server's: a sibling
+     *  tab switched the browser while this form was open. Never adopted as
+     *  this form's pairing — see `onSwitchedAway`. */
+    switchedAway?: boolean;
   }>;
   /** How long a guided re-pair waits after a sibling transition before its
    * primary action becomes an explicit safe takeover. The default is long
@@ -898,6 +919,10 @@ export interface MountedPairCodeInputHost {
   /** Downgrade to one-tab-only recovery when the optional sibling signal
    * listener cannot be established after mount. */
   disableSiblingTakeoverCoordination(): void;
+  /** True while this tab holds a pairing its server accepted but this
+   *  browser has not saved yet (the next primary action retries the save,
+   *  with no second `/auth/pair`). Following another tab away would lose it. */
+  holdsPairingResponse(): boolean;
 }
 
 /** `enter` = type an existing 24-word key (re-pair / added device —
@@ -1160,14 +1185,20 @@ export const PAIR_CODE_INPUT_STYLES = `
   box-sizing: border-box;
   min-height: 36px;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  /* A field's edge needs 3:1 to be seen as one: --border measured 1.3:1 on
+     white, so these read as text on the page. Mixed from the muted ink, this
+     holds 3:1 in both themes. */
+  border: 1px solid color-mix(in srgb, var(--fg-muted) 75%, var(--surface));
   border-radius: 6px;
   background: var(--surface);
   color: var(--fg);
   font: inherit;
 }
+/* The focus ring the rest of the app draws. ⛔ Focus only tinted the 1px
+   border, which a keyboard user lost track of between the 24 word fields. */
 .pair-code-input-form input:focus {
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
   border-color: var(--accent);
 }
 .pair-code-input-form input[readonly] {
@@ -1189,8 +1220,10 @@ export const PAIR_CODE_INPUT_STYLES = `
   text-decoration: underline;
   cursor: pointer;
 }
+/* The focus ring the rest of this form draws. ⛔ A 38% accent ring measured
+   1.76:1 on white. */
 .pair-code-input-change-server:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .pair-code-input-change-server:disabled {
@@ -1409,7 +1442,7 @@ export const PAIR_CODE_INPUT_STYLES = `
   line-height: 1.5;
 }
 .pair-code-input-recovery-stop:focus {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .pair-code-input-recovery-stop h3,
@@ -1537,6 +1570,11 @@ export const PAIR_CODE_INPUT_STYLES = `
   border-color: var(--accent);
   background: var(--surface-sunk);
 }
+/* ⛔ These had no focus style, so they drew the browser's default ring. */
+.pair-code-input-mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .pair-code-input-mode-btn:disabled {
   opacity: 0.6;
   cursor: default;
@@ -1609,7 +1647,9 @@ export const PAIR_CODE_INPUT_STYLES = `
 @media (max-width: 520px) {
   .pair-code-input-form input,
   .pair-code-input-secondary-btn,
-  .pair-code-input-linkbtn {
+  .pair-code-input-linkbtn,
+  .pair-code-input-mode-btn,
+  .pair-code-input-change-server {
     min-height: 44px;
   }
 }
@@ -3162,6 +3202,7 @@ export const mountPairCodeInputHost = (
     // mode requests, so a second acquire from inside the held lock
     // never resolves).
     let pairSucceeded = false;
+    let switchedAwayBeforeSubmit = false;
     try {
       await withPairFinalizeLock(options.lockProvider ?? null, async () => {
         if (disposed) return;
@@ -3173,10 +3214,12 @@ export const mountPairCodeInputHost = (
         if (options.preflightCheck) {
           let preflight: {
             alreadyPaired: boolean;
+            alreadySaved?: { readonly label: string };
             interrupted?: boolean;
+            switchedAway?: boolean;
           };
           try {
-            preflight = await options.preflightCheck();
+            preflight = await options.preflightCheck({ serverUrl: state.serverUrl });
           } catch (err) {
             if (disposed) return;
             if (finalizeRetry) pendingFocus = 'submit';
@@ -3204,6 +3247,24 @@ export const mountPairCodeInputHost = (
             showInterruptedCredentialTransition();
             pendingFocus = 'archiveKey';
             setState({ submitting: false });
+            return;
+          }
+          if (preflight.switchedAway === true && !finalizeRetry) {
+            // Another tab moved the browser to a different saved server. This
+            // form's code is not spent yet; the page follows that switch
+            // rather than pair over it or adopt it as its own.
+            switchedAwayBeforeSubmit = true;
+            setState({ submitting: false });
+            return;
+          }
+          if (preflight.alreadySaved !== undefined && !finalizeRetry) {
+            setState({
+              submitting: false,
+              error: {
+                copy: `“${preflight.alreadySaved.label}” is already saved in this browser and signed in. Go back and choose it in Account & servers — pairing it again would leave a second sign-in for this browser on that server.`,
+                code: 'pair_code_input_server_already_saved',
+              },
+            });
             return;
           }
           if (preflight.alreadyPaired) {
@@ -3403,6 +3464,10 @@ export const mountPairCodeInputHost = (
       return;
     }
 
+    if (switchedAwayBeforeSubmit && !disposed) {
+      options.onSwitchedAway?.();
+      return;
+    }
     // Outside the lock — queued tabs can now preflight against the
     // freshly-written webclient_token. The post-pair UI teardown +
     // recursive bootstrap restart belong here. Skipped on pair failure
@@ -3536,6 +3601,7 @@ export const mountPairCodeInputHost = (
     showSiblingTakeoverNeedsAttention,
     showSiblingRecoverySuccessorChosen,
     disableSiblingTakeoverCoordination,
+    holdsPairingResponse: () => !disposed && pendingPairResult !== null,
   };
 };
 
@@ -3798,7 +3864,7 @@ const renderForm = (
   } else {
     submitLabel = state.reauthOnly
       ? 'Reconnect this browser'
-      : 'Pair this device';
+      : 'Pair this browser';
   }
   // The status slot keeps a stable id across modes so the focus/sync helpers
   // (and tests) find it. A restore bounce surfaces the orchestrator's copy via
@@ -3959,7 +4025,7 @@ const renderForm = (
           <div class="pair-code-input-recovery-stop-state">
             <strong>Confirmed server origin</strong>
             <code>${e(currentServerOrigin ?? 'Address not known. Check it on the server itself')}</code>
-            <p>This shareable origin omits any path or sign-in details. The rejected recovery words and pairing code were cleared from this form. Work stored on the server was not changed.</p>
+            <p>This shareable origin omits any path or sign-in details. The rejected recovery key and pairing code were cleared from this form. Work stored on the server was not changed.</p>
             <p>${e(pausedWorkCopy)}</p>
           </div>
           <h4>What the server owner can safely check</h4>
@@ -4293,7 +4359,7 @@ const renderForm = (
 
       <div class="pair-code-input-fields"${state.recoveryPaused || replacementServerReviewing ? ' hidden aria-hidden="true"' : ''}>
       <div class="form-row"${state.replacementServerStage !== null && !replacementServerDetails ? ' hidden aria-hidden="true"' : ''}>
-        <label for="${e(PAIR_CODE_INPUT_SERVER_URL_ID)}">Server URL${state.sameOriginResume
+        <label for="${e(PAIR_CODE_INPUT_SERVER_URL_ID)}">Server address${state.sameOriginResume
           ? ' <span class="pair-code-input-optional">(this secure page)</span>'
           : ''}</label>
         <input id="${e(PAIR_CODE_INPUT_SERVER_URL_ID)}"
@@ -4325,22 +4391,18 @@ const renderForm = (
       <div class="form-row"${state.replacementServerStage !== null && !replacementServerDetails ? ' hidden aria-hidden="true"' : ''}>
         <label for="${e(PAIR_CODE_INPUT_CODE_ID)}">
           Pairing code ${isRestore
-            ? '<span class="pair-code-input-optional">(from server terminal)</span>'
+            ? '<span class="pair-code-input-optional">(from your server’s terminal)</span>'
             : replacementServerDetails
-              ? '<span class="pair-code-input-optional">(fresh from current server terminal)</span>'
-              : state.reauthOnly
-                ? '<span class="pair-code-input-optional">(only if your server asks)</span>'
-              : state.sameOriginResume
-                ? state.pairingCode.trim().length > 0
-                  ? '<span class="pair-code-input-optional">(carried over)</span>'
-                  : '<span class="pair-code-input-optional">(only if your server asks)</span>'
-                : '<span class="pair-code-input-optional">(optional — first pair only)</span>'}
+              ? '<span class="pair-code-input-optional">(a new one from your server’s terminal)</span>'
+              : !state.reauthOnly && state.sameOriginResume && state.pairingCode.trim().length > 0
+                ? '<span class="pair-code-input-optional">(carried over)</span>'
+                : '<span class="pair-code-input-optional">(only the first time this server is paired)</span>'}
         </label>
         <input id="${e(PAIR_CODE_INPUT_CODE_ID)}"
           type="text"
           data-${e(PAIR_CODE_INPUT_FIELD_NAME)}="pairing-code"
           value="${e(state.replacementServerStage !== null && !replacementServerDetails ? '' : state.pairingCode)}"
-          placeholder="From server terminal"
+          placeholder="From your server’s terminal"
           autocomplete="off"
           style="text-transform:uppercase; letter-spacing:0.15em; font-family:monospace"
           ${editingDisabled || (state.replacementServerStage !== null && !replacementServerDetails) ? 'disabled' : ''} />

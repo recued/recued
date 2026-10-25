@@ -328,6 +328,23 @@ export type NotificationSetBridgeModeResult =
   | { ok: true; settings: NotificationSettingsRow }
   | { ok: false; reason: 'bridge_unknown'; bridge_id: string };
 
+// ── Reminder destination issues ────────────────────────────────────────
+
+/** D-325 §15.7 amendment — why a channel whose Notify switch is on carries no
+ *  reminder: the owner reminder resolver's reasons (`resolveOwnerReminderDestinations`).
+ *  Declared once, so the notification block's resolution and Settings' words for it
+ *  cannot drift: a reason added here has no words in Settings until someone writes them. */
+export type ReminderDestinationIssueReason =
+  | 'choice_required'
+  | 'connection_missing'
+  | 'adapter_unavailable'
+  | 'configuration_invalid';
+
+export interface ReminderDestinationIssue {
+  channel: NotificationChannelName;
+  reason: ReminderDestinationIssueReason;
+}
+
 // ── Set-channel result (discriminated union) ───────────────────────────
 
 /** D-158 A.6 + D-163 N.5 + R31 — outcome of `notifications.set_channel`
@@ -337,7 +354,10 @@ export type NotificationSetBridgeModeResult =
  *  inline. `approval_unsupported` = an approval-axis patch on a
  *  notify-only channel (`bridge`), which structurally has no reply path. */
 export type NotificationSetChannelResult =
-  | { ok: true; settings: NotificationSettingsRow }
+  /** `reaches_phone` and `reminder_issues` (D-325 §15.7 amendment): whether a reminder
+   *  reaches the owner's phone after this change, and why each channel that is on
+   *  carries none, as `notifications.describe` says them. Absent from an older server. */
+  | { ok: true; settings: NotificationSettingsRow; reaches_phone?: boolean; reminder_issues?: readonly ReminderDestinationIssue[] }
   | { ok: false; reason: 'ui_fixed' }
   | { ok: false; reason: 'not_ready'; channel: NotificationRemoteChannelName }
   | {

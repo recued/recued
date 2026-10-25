@@ -793,7 +793,7 @@ describe('mountPairCodeInputHost — initial render', () => {
       /\.pair-code-input-linkbtn\s*\{[^}]*min-height:\s*36px;/s,
     );
     expect(PAIR_CODE_INPUT_STYLES).toMatch(
-      /@media \(max-width: 520px\)[\s\S]*?\.pair-code-input-secondary-btn,[\s\S]*?\.pair-code-input-linkbtn\s*\{[^}]*min-height:\s*44px;/s,
+      /@media \(max-width: 520px\)[\s\S]*?\.pair-code-input-secondary-btn,[\s\S]*?\.pair-code-input-linkbtn,[\s\S]*?\{[^}]*min-height:\s*44px;/s,
     );
   });
 
@@ -809,6 +809,14 @@ describe('mountPairCodeInputHost — initial render', () => {
     expect(html).toContain(`id="${PAIR_CODE_INPUT_CODE_ID}"`);
     expect(html).toContain(`id="${PAIR_CODE_INPUT_STATUS_ID}"`);
     expect(html).toContain(`id="${PAIR_CODE_INPUT_SUBMIT_ID}"`);
+    // One name for the address, and one answer to "do I need a code?": the
+    // server asks for one only on its first pair. ⛔ "Server URL", and the
+    // code was "(optional — first pair only)" here but "(only if your server
+    // asks)" when signing in again.
+    expect(html).toContain('">Server address</label>');
+    expect(html).toContain('Pairing code <span class="pair-code-input-optional">(only the first time this server is paired)</span>');
+    expect(html).not.toContain('Server URL');
+    expect(html).not.toContain('first pair only');
     // 24 recovery slots — assert all index ids rendered.
     for (let i = 0; i < 24; i++) {
       expect(html).toContain(`id="${PAIR_CODE_INPUT_RECOVERY_PREFIX}-${i}"`);
@@ -822,7 +830,7 @@ describe('mountPairCodeInputHost — initial render', () => {
       onPaired: () => undefined,
     });
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
-    expect(fake.getSubmitBtn()?.textContent).toContain('Pair this device');
+    expect(fake.getSubmitBtn()?.textContent).toContain('Pair this browser');
     expect(fake.getHtml()).toContain(
       'Type the server’s web address and paste the 24-word recovery key to carry on.',
     );
@@ -1199,7 +1207,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       'This shareable origin omits any path or sign-in details.',
     );
     expect(pausedHtml).toContain(
-      'The rejected recovery words and pairing code were cleared from this form.',
+      'The rejected recovery key and pairing code were cleared from this form.',
     );
     expect(pausedHtml).toContain(
       'Your page and the Chat message you had not sent are still here.',
@@ -1822,7 +1830,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(html).toContain('<code>recued pair</code>');
     expect(html).not.toContain(PAIR_CODE_INPUT_RECOVERY_HELP_ATTR);
     expect(html).toContain('value="https://alice.recued.cloud:8443"');
-    expect(html).toContain('(only if your server asks)');
+    expect(html).toContain('(only the first time this server is paired)');
     expect(html).not.toContain('Make a new one');
     expect(html).not.toContain('Restore a backup');
     expect(fake.getSubmitBtn()?.textContent).toContain(
@@ -3148,6 +3156,102 @@ describe('mountPairCodeInputHost — submit flow', () => {
     expect(onAfterPair).toHaveBeenCalledTimes(1);
   });
 
+  // ⛔ Every complete pair counted as this form's: another tab going back to
+  // a saved server was adopted as "finished pairing", and a held response
+  // was dropped for it.
+  it('stops before posting when another tab switched the browser to another server', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'must-not-be-used' });
+    const onPaired = vi.fn();
+    const onAfterPair = vi.fn();
+    const onSwitchedAway = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      fetch: fetchFake,
+      preflightCheck: async () => ({ alreadyPaired: false, switchedAway: true }),
+      onPaired,
+      onAfterPair,
+      onSwitchedAway,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(0);
+    expect(onPaired).not.toHaveBeenCalled();
+    expect(onAfterPair).not.toHaveBeenCalled();
+    expect(onSwitchedAway).toHaveBeenCalledOnce();
+    handle.dispose();
+  });
+
+  // ⛔ Adding a server already saved paired it again: a second device entry
+  // on that server, with the old sign-in still live there.
+  it('stops before posting when the address is a server already saved and signed in', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'must-not-be-used' });
+    const onPaired = vi.fn();
+    const preflightCheck = vi.fn(async () => ({
+      alreadyPaired: false,
+      alreadySaved: { label: 'Office server' },
+    }));
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      preflightCheck,
+      onPaired,
+    });
+    handle.setFieldValue('serverUrl', 'https://office.recued.cloud:9443');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.setFieldValue('pairingCode', 'ONE-TIME');
+
+    await handle.submit();
+
+    expect(preflightCheck).toHaveBeenCalledWith({ serverUrl: 'https://office.recued.cloud:9443' });
+    expect(fetchFake.calls).toHaveLength(0);
+    expect(onPaired).not.toHaveBeenCalled();
+    expect(fake.getStatus()?.dataset.error).toBe('pair_code_input_server_already_saved');
+    expect(fake.getStatus()?.textContent).toContain(
+      '“Office server” is already saved in this browser and signed in.',
+    );
+    handle.dispose();
+  });
+
+  it('still saves a pairing it holds when the browser switched away meanwhile', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'held-bearer' });
+    let switchedAway = false;
+    const onPaired = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first local save stopped'))
+      .mockResolvedValueOnce(undefined);
+    const onAfterPair = vi.fn(async () => undefined);
+    const onSwitchedAway = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      preflightCheck: async () => ({ alreadyPaired: false, ...(switchedAway ? { switchedAway: true } : {}) }),
+      onPaired,
+      onAfterPair,
+      onSwitchedAway,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    expect(handle.holdsPairingResponse()).toBe(false);
+    await handle.submit();
+    expect(handle.holdsPairingResponse()).toBe(true);
+    switchedAway = true;
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(onPaired).toHaveBeenCalledTimes(2);
+    expect(onPaired.mock.calls[1]?.[0]).toEqual(onPaired.mock.calls[0]?.[0]);
+    expect(onSwitchedAway).not.toHaveBeenCalled();
+    expect(onAfterPair).toHaveBeenCalledOnce();
+  });
+
   it('stops a racing sibling POST once, clears its code, then takes over by recovery key', async () => {
     const fake = makeFakeSplash();
     const fetchFake = buildFakeFetch(200, { token: 'takeover-bearer' });
@@ -3207,7 +3311,7 @@ describe('mountPairCodeInputHost — submit flow', () => {
     expect(fake.getHtml()).toContain('data-local-finalize-restarted');
     expect(fake.getHtml()).toContain('Ready for a fresh pairing attempt');
     expect(fake.getHtml()).not.toContain('Another tab is saving your sign-in');
-    expect(fake.getSubmitBtn()?.textContent).toBe('Pair this device');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Pair this browser');
     await handle.submit();
 
     expect(fetchFake.calls).toHaveLength(2);

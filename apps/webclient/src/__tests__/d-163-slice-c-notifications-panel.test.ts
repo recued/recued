@@ -39,6 +39,7 @@ import type {
   NotificationChannelToggleView,
   NotificationSetChannelResult,
   NotificationSetVerificationPhraseResult,
+  ReminderDestinationIssue,
 } from '@recued/contracts';
 
 import {
@@ -48,6 +49,7 @@ import {
   NOTIFICATIONS_LIST_ERROR_ATTR,
   NOTIFICATIONS_PANEL_ATTR,
   NOTIFICATIONS_PANEL_STATE_ATTR,
+  NOTIFICATIONS_PHONE_CALLOUT_ATTR,
   NOTIFICATIONS_PHRASE_INPUT_ATTR,
   NOTIFICATIONS_PHRASE_SAVE_ATTR,
   NOTIFICATIONS_RETRY_BTN_ATTR,
@@ -197,6 +199,9 @@ const findAxisToggle = (
 /** Whole-subtree text, for "this row does not say X" assertions. */
 const allText = (root: FakeElement): string =>
   root.textContent + root.children.map(allText).join(' ');
+/** The text as a browser's `textContent` reads it: nodes joined with nothing between. */
+const flatText = (root: FakeElement): string =>
+  root.textContent + root.children.map(flatText).join('');
 
 const findRowByChannel = (
   root: FakeElement,
@@ -533,6 +538,73 @@ describe('mountNotificationsPanel', () => {
     expect(updated?.notification).toBe(true);
     expect(panel.getTogglingAxes().has('slack::notification')).toBe(false);
     expect(panel.getRowError('slack')).toBeUndefined();
+  });
+
+  it('D-325 §15.7 amendment — leads with a callout when nothing reaches the phone, says why a channel that is on carries no reminder, and goes once one does', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const off = { notification: false, approval: false, messenger: false };
+    // The server's word rides on the switch's confirmation, as production says it:
+    // Slack on carries no reminder here (its connection is a shared channel), email does.
+    const setChannel = vi.fn(async (args: { channel: NotificationChannelName; patch: Partial<NotificationChannelModeRow> }) => ({
+      ok: true, reaches_phone: args.channel === 'email' && args.patch.notification === true,
+      reminder_issues: args.channel === 'slack' && args.patch.notification === true ? [{ channel: 'slack', reason: 'configuration_invalid' }] : [],
+      settings: { ui: true, bridge: false, slack: { ...off, notification: args.patch.notification ?? false }, telegram: off, whatsapp: off, discord: off, teams: off, email: off },
+    }) satisfies NotificationSetChannelResult);
+    const panel = mountNotificationsPanel({ host: host as unknown as HTMLElement, document: doc as unknown as Document,
+      runDescribe: async () => ({ rows: [uiRow, bridgeReadyRow, slackReadyRow, telegramNotReadyRow, { ...emailNotReadyRow, ready: true }],
+        reaches_phone: false, reminder_issues: [] }),
+      runSetChannel: setChannel });
+    await panel.whenLoaded();
+    const callout = findByAttr(host, NOTIFICATIONS_PHONE_CALLOUT_ATTR);
+    expect(callout).not.toBeNull();
+    expect(flatText(callout!)).toBe('Nothing reaches your phone yet. Reminders wait in Recued until you open it. Turn on a channel below, or add one in Connections.');
+    expect(callout!.children.find(child => child.tagName === 'A')?.getAttribute('href')).toBe('#connections');
+    // It leads the card, ahead of every channel row.
+    const card = callout!.parent!;
+    expect(card.children.indexOf(callout!)).toBeLessThan(card.children.findIndex(child => child.className === 'notif-list'));
+    // ⛔ Slack is on now, so "turn on a channel" would be wrong: it says why Slack carries none.
+    await panel.clickAxis('slack', 'notification');
+    expect(flatText(findByAttr(host, NOTIFICATIONS_PHONE_CALLOUT_ATTR)!)).toBe('Reminders don’t reach your phone yet. Slack is on, but its connection'
+      + ' isn’t set to reach only you: check it in Connections.');
+    await panel.clickAxis('email', 'notification');
+    expect(findByAttr(host, NOTIFICATIONS_PHONE_CALLOUT_ATTR)).toBeNull();
+  });
+
+  it('D-325 §15.7 amendment — words every reason, points at its fix, and stays quiet when the server does not say', async () => {
+    const say = async (reaches: boolean | undefined, rows: ReadonlyArray<NotificationChannelToggleView>,
+      reminder_issues?: ReadonlyArray<{ channel: NotificationChannelName; reason: string }>) => {
+      const host = makeFakeElement('div');
+      const panel = mountNotificationsPanel({ host: host as unknown as HTMLElement, document: makeFakeDocument() as unknown as Document,
+        runDescribe: async () => ({ rows, ...(reaches === undefined ? {} : { reaches_phone: reaches }),
+          ...(reminder_issues ? { reminder_issues: reminder_issues as ReadonlyArray<ReminderDestinationIssue> } : {}) }),
+        runSetChannel: async () => ({ ok: false, reason: 'ui_fixed' }) });
+      await panel.whenLoaded();
+      const callout = findByAttr(host, NOTIFICATIONS_PHONE_CALLOUT_ATTR);
+      return callout ? { text: flatText(callout), links: callout.children.filter(child => child.tagName === 'A').length } : null;
+    };
+    expect((await say(false, [uiRow, { ...bridgeReadyRow, notification: true }], []))?.text)
+      .toContain('Reminders reach only Recued and your computer’s notifications.');
+    // An older server says neither, and a phone that is reached needs no callout.
+    expect(await say(undefined, [uiRow, bridgeReadyRow])).toBeNull();
+    expect(await say(true, [uiRow, bridgeReadyRow], [{ channel: 'telegram', reason: 'principal_missing' }])).toBeNull();
+    const telegram = (reason: string) => say(false, [uiRow, bridgeReadyRow], [{ channel: 'telegram', reason }]);
+    expect(await telegram('choice_required')).toEqual({ links: 0,
+      text: 'Reminders don’t reach your phone yet. Telegram is on, but you have more than one Telegram connection: choose one on its row below.' });
+    expect(await telegram('connection_missing')).toEqual({ links: 0,
+      text: 'Reminders don’t reach your phone yet. Telegram is on, but the connection chosen for it is gone: choose another on its row below.' });
+    expect(await telegram('configuration_invalid')).toEqual({ links: 1,
+      text: 'Reminders don’t reach your phone yet. Telegram is on, but its connection isn’t set to reach only you: check it in Connections.' });
+    // No fix for these here, so another channel is offered; a newer server's reason still reads.
+    expect(await telegram('adapter_unavailable')).toEqual({ links: 1, text: 'Reminders don’t reach your phone yet. Telegram is on, but this server'
+      + ' can’t send through Telegram right now. Another channel can carry them: turn one on below, or add one in Connections.' });
+    expect(await telegram('rate_limited')).toEqual({ links: 1, text: 'Reminders don’t reach your phone yet. Telegram is on, but Recued can’t'
+      + ' send reminders through it yet. Another channel can carry them: turn one on below, or add one in Connections.' });
+    // Every reason with its own fix: each says where, and nothing more is offered.
+    const both = await say(false, [uiRow], [{ channel: 'telegram', reason: 'choice_required' }, { channel: 'email', reason: 'configuration_invalid' }]);
+    expect(both?.text).not.toContain('Another channel');
+    expect(both?.text).toBe('Reminders don’t reach your phone yet. Telegram is on, but you have more than one Telegram connection: choose one on'
+      + ' its row below. Email is on, but its connection isn’t set to reach only you: check it in Connections.');
   });
 
   it('gives matrix switches and verification controls stable contextual names', async () => {

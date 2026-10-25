@@ -134,6 +134,38 @@ describe('D-325 evidence-led episodes and measured recall', () => {
     expect(f.runtime.traces()).toHaveLength(1); expect(JSON.stringify(f.runtime.traces())).not.toContain('You have checked in');
     f.proposals.setSource('mail:personal', false); expect(await f.runtime.ownerEpisodes()).toEqual([]);
   });
+  it('joins a check-in to the stay it names, read from email, and an arrival to the trip in the country it names', async () => {
+    const report = (f: ReturnType<typeof fixture>, id: string, text: string, day: string) => {
+      const body_inline = `You have ${text} on ${day}.`;
+      f.rawMail.upsert({ record_id: id, source_id: id, received_at: Date.parse(day), modified_at: Date.parse(day),
+        hot_fields: { from: 'travel@example.test', subject: 'Confirmation', direction: 'inbound' }, body_inline, size_bytes: Buffer.byteLength(body_inline) });
+    };
+    const reservation = (f: ReturnType<typeof fixture>, id: string, provider: string) => f.facts.saveThing({ thing_id: id, type: 'reservation', identity_keys: [`reservation:${id}`],
+      variables: { kind: 'lodging', provider, confirmation_code: id, starts_at: '2025-07-10', ends_at: '2025-07-14', state: 'confirmed' }, passes: {}, variable_email_at: {},
+      last_email_at: f.now(), missing: [], complete: true, created_at: f.now(), updated_at: f.now() });
+    // The reservation names the hotel in full, the check-in in short: one held in the other is the stay.
+    const stay = fixture(); reservation(stay, 'okura', 'Hotel Okura Tokyo'); report(stay, 'checkin', 'checked in at Hotel Okura', '2025-07-11');
+    expect(await stay.runtime.ownerEpisodes()).toEqual([expect.objectContaining({ title: 'Hotel Okura Tokyo', assembly_rule: 'plan_trace.v1', class_id: 'checkin',
+      subjects: expect.arrayContaining([{ collection: 'mail_fact', id: 'okura' }]) })]);
+    // A booking made from that reservation stands for it, so the check-in has one plan to join, not two.
+    const booked = fixture(); reservation(booked, 'okura', 'Hotel Okura Tokyo'); report(booked, 'checkin', 'checked in at Hotel Okura', '2025-07-11');
+    const booking = booked.work.writeBooking({ source_id: 'recued.booking', title: 'Hotel Okura Tokyo', slot_start_at: Date.parse('2025-07-10'), slot_end_at: Date.parse('2025-07-14'),
+      source_extension_blob: { kind: 'mail_fact', fact_type: 'reservation', thing_id: 'okura', reservation_kind: 'lodging' } }, booked.now());
+    expect((await booked.runtime.ownerEpisodes()).map(episode => [episode.assembly_rule, episode.subjects[0]]))
+      .toEqual([['plan_trace.v1', { collection: 'booking', id: booking.id }]]);
+    // An arrival joins a trip to the country it names; one that names no country stays its own.
+    const trip = fixture();
+    trip.work.writeBooking({ source_id: 'recued.booking', title: 'JAL 6', slot_start_at: Date.parse('2025-07-10'), slot_end_at: Date.parse('2025-07-20'),
+      source_extension_blob: { trip: { destination_country: 'JP' } } }, trip.now());
+    report(trip, 'landed', 'arrived at Narita Airport, Japan', '2025-07-10'); report(trip, 'later', 'arrived at Shinjuku station', '2025-07-12');
+    expect((await trip.runtime.ownerEpisodes()).map(episode => [episode.title, episode.assembly_rule]).sort())
+      .toEqual([['Arrival confirmation · Shinjuku station', 'trace_only.v1'], ['JAL 6', 'plan_trace.v1']]);
+    // A name this short is a word, not a place: "Cafe" is in many titles.
+    const short = fixture();
+    short.work.writeBooking({ source_id: 'recued.booking', title: 'Cafe Lisboa brunch', slot_start_at: Date.parse('2025-07-10'), slot_end_at: Date.parse('2025-07-11') }, short.now());
+    report(short, 'cafe', 'checked in at Cafe', '2025-07-10');
+    expect((await short.runtime.ownerEpisodes()).map(episode => episode.assembly_rule)).toEqual(['trace_only.v1']);
+  });
   it('requires a matching trace for a plan, excludes cancelled/routine plans, and retains no harvest', async () => {
     const f = fixture(); f.plan('trip'); expect(await f.runtime.ownerEpisodes()).toEqual([]);
     f.purchase('flowers', '2025-10-17', { location: 'Las Vegas' });

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   RecordsContractError,
   type RecordsExecutionBinding,
@@ -974,6 +974,66 @@ describe('D-221 fixed Records store', () => {
     expect(() => store.repairAccounting(OWNER)).toThrow(/audit-detected/);
   });
 
+  it('reads the state getNamespace reports through getNamespaceState, ready, orphaned and incoherent', () => {
+    // Migrating is checked in migration-store.test.ts.
+    const sameAsNamespace = () => expect(store.getNamespaceState(OWNER)).toEqual(store.getNamespace(OWNER)!.state);
+    expect(store.getNamespaceState(OTHER)).toBeNull();
+    expect(store.getNamespaceState(OWNER)).toMatchObject({ state: 'ready', version: 1 });
+    sameAsNamespace();
+    store.orphanNamespace(OWNER);
+    expect(store.getNamespaceState(OWNER)).toMatchObject({ state: 'orphaned', last_version: 1 });
+    sameAsNamespace();
+    db.prepare(`UPDATE ${RECORDS_TABLES.namespaces} SET row_count=1
+      WHERE publisher=? AND pack_slug=?`).run(OWNER.publisher, OWNER.pack_slug);
+    expect(store.auditAccounting(OWNER).coherent).toBe(false);
+    expect(store.getNamespaceState(OWNER)).toMatchObject({ state: 'incoherent', last_known_state: 'orphaned' });
+    sameAsNamespace();
+  });
+
+  it('compiles no SQL for a create, update or delete after the first of each', () => {
+    // Compiling the write path's statements on every call was a quarter of the CPU
+    // a 6,306-operation seed took (2026-10-23).
+    const cycle = (customer: string) => {
+      const created = store.execute({ binding: bindings().create, args: { values: values(customer) }, principal: 'owner' }) as {
+        record: { id: string };
+      };
+      store.execute({
+        binding: bindings().update,
+        args: { id: created.record.id, expected_version: 1, expected_revision: 0, set: { status: 'done' }, unset: [] },
+        principal: 'owner',
+      });
+      store.execute({
+        binding: bindings().delete,
+        args: { id: created.record.id, expected_version: 1, expected_revision: 1 },
+        principal: 'owner',
+      });
+    };
+    cycle('customer-1');
+    const prepare = vi.spyOn(db, 'prepare');
+    cycle('customer-2');
+    cycle('customer-3');
+    expect(prepare).not.toHaveBeenCalled();
+    expect(store.getNamespace(OWNER)!.quota).toMatchObject({ row_count: 0, outbox_count: 9 });
+  });
+
+  it('reads with a namespace schema changed in place, while the other namespace keeps its own', () => {
+    install(store, OTHER);
+    const create = (owner: RecordsPackRef) => (store.execute({
+      binding: bindings(owner).create, args: { values: values('customer-1') }, principal: 'owner',
+    }) as { record: { id: string } }).record.id;
+    const mine = create(OWNER);
+    const theirs = create(OTHER);
+    expect(store.ownerGet(OWNER, 'job', mine)).toMatchObject({ title: 'Launch' });
+    // The same length, so only the text itself says the schema changed.
+    db.prepare(`UPDATE ${RECORDS_TABLES.namespaces} SET schema_json=replace(schema_json,'"title"','"tytle"')
+      WHERE publisher=? AND pack_slug=?`).run(OWNER.publisher, OWNER.pack_slug);
+    const renamed = store.ownerGet(OWNER, 'job', mine)!;
+    expect(renamed).toMatchObject({ tytle: 'Launch' });
+    expect(renamed).not.toHaveProperty('title');
+    expect(store.ownerInspect(OWNER, 'job', mine).record).toMatchObject({ tytle: 'Launch' });
+    expect(store.ownerGet(OTHER, 'job', theirs)).toMatchObject({ title: 'Launch' });
+  });
+
   it('refuses accounting repair when physical relationship proof diverges', () => {
     const parent = store.execute({
       binding: bindings().create,
@@ -1051,6 +1111,26 @@ describe('D-221 fixed Records store', () => {
       store.getNamespace(OWNER)!.quota.payload_bytes
       + store.getNamespace(OTHER)!.quota.payload_bytes,
     );
+  });
+
+  // A write skips counting the rows when no global limit is set: each limit alone must
+  // still be counted against.
+  it.each([
+    ['row_limit', /global Records quota would be exceeded/],
+    ['byte_limit', /global Records quota would be exceeded/],
+    ['outbox_limit', /global Records outbox quota would be exceeded/],
+  ] as const)('enforces a core-wide %s set on its own, the other two unset', (key, refusal) => {
+    store.execute({ binding: bindings().create, args: { values: values('alone-a') }, principal: 'owner' });
+    const used = store.getGlobalQuota();
+    store.setGlobalQuota({
+      [key]: { row_limit: used.row_count, byte_limit: used.payload_bytes, outbox_limit: used.outbox_count }[key],
+    });
+    expect(() => store.execute({
+      binding: bindings().create,
+      args: { values: values('alone-b') },
+      principal: 'owner',
+    })).toThrow(refusal);
+    expect(store.getGlobalQuota()).toMatchObject({ row_count: 1, outbox_count: 1 });
   });
 
   it('orphan-retains by default and exports one generation-pinned friendly snapshot', () => {

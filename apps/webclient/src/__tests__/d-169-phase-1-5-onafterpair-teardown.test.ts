@@ -68,6 +68,12 @@ import {
   type WebclientRecoverySnapshot,
   WebclientUnpairedError,
 } from '../webclient-bootstrap.js';
+import {
+  RETURN_TO_SERVER_ATTR,
+  RETURN_TO_SERVER_BAR_ATTR,
+  RETURN_TO_SERVER_COMMIT_ATTR,
+  RETURN_TO_SERVER_REVIEW_ATTR,
+} from '../shell/return-to-server.js';
 
 type WebclientBootstrapModule = typeof import('../webclient-bootstrap.js');
 
@@ -532,7 +538,10 @@ const makeWebclientHandle = (
     dispose: vi.fn(async () => undefined),
   }) as unknown as WebclientHandle;
 
-const makeMountedPairHandle = (events?: string[]): MountedPairCodeInputHost => ({
+const makeMountedPairHandle = (
+  events?: string[],
+  holdsPairingResponse = false,
+): MountedPairCodeInputHost => ({
   dispose: vi.fn(() => {
     events?.push('codeHandle.dispose');
   }),
@@ -544,6 +553,7 @@ const makeMountedPairHandle = (events?: string[]): MountedPairCodeInputHost => (
   showSiblingTakeoverNeedsAttention: vi.fn(),
   showSiblingRecoverySuccessorChosen: vi.fn(),
   disableSiblingTakeoverCoordination: vi.fn(),
+  holdsPairingResponse: vi.fn(() => holdsPairingResponse),
 });
 
 let nextPairHandleFactory:
@@ -1252,15 +1262,16 @@ describe('D-169 P1.5 NEXT-#1 pair-fallback outcome contract', () => {
   it('signals a partial finalize and keeps sibling forms as explicit takeover paths', async () => {
     const dom = makeFakeDocument();
     const localStore = createInMemoryWebclientLocalStore();
-    const originalEnsureProfile = localStore.ensureProfile.bind(localStore);
+    // A save cut short once its record was chosen. The one-write save cannot
+    // stop there any more, but a browser can still hold such a record from
+    // before it — the sibling handling is what this pins.
+    const originalCommitPair = localStore.commitPair.bind(localStore);
     let interruptWrite = true;
-    localStore.ensureProfile = async (serverUrl): Promise<string> => {
-      const id = await originalEnsureProfile(serverUrl);
-      if (interruptWrite) {
-        interruptWrite = false;
-        throw new Error('simulated tab interruption');
-      }
-      return id;
+    localStore.commitPair = async (serverUrl, fields): Promise<string> => {
+      if (!interruptWrite) return originalCommitPair(serverUrl, fields);
+      interruptWrite = false;
+      await localStore.ensureProfile(serverUrl);
+      throw new Error('simulated tab interruption');
     };
     const tokenStore: WebclientTokenStore = {
       async wrap({ token_id }) {
@@ -1552,7 +1563,9 @@ describe('D-169 P1.5 NEXT-#1 pair-fallback outcome contract', () => {
     expect(mountOptions()[0]?.siblingTakeoverSignalsAvailable).toBe(false);
     await populateCompletePair(localStore);
     const recoveryForm = mountOptions()[0]!;
-    await expect(recoveryForm.preflightCheck?.()).resolves.toEqual({
+    await expect(recoveryForm.preflightCheck?.({
+      serverUrl: 'https://alice.recued.cloud:8443',
+    })).resolves.toEqual({
       alreadyPaired: true,
     });
     await recoveryForm.onAfterPair?.();
@@ -2175,7 +2188,7 @@ describe('D-169 P1.5 NEXT-#1 onAfterPair teardown timing', () => {
   it('confirms a fresh replacement only after its passport identity is durable', async () => {
     const dom = makeFakeDocument();
     const localStore = createInMemoryWebclientLocalStore();
-    const ensureProfile = vi.spyOn(localStore, 'ensureProfile');
+    const commitPair = vi.spyOn(localStore, 'commitPair');
     const setField = vi.spyOn(localStore, 'set');
     const tokenStore: WebclientTokenStore = {
       async wrap({ token_id }) {
@@ -2226,9 +2239,7 @@ describe('D-169 P1.5 NEXT-#1 onAfterPair teardown timing', () => {
         server_handle_at_pair: 'harbor',
       },
     });
-    expect(ensureProfile).toHaveBeenCalledWith(
-      'wss://replacement.recued.cloud:9443/ws',
-    );
+    expect(commitPair.mock.calls[0]?.[0]).toBe('wss://replacement.recued.cloud:9443/ws');
     expect(setField.mock.calls.some(([key]) => key === 'server_url')).toBe(false);
     expect(mockState.bootstrapWebclient.mock.calls[1]?.[0]).toMatchObject({
       initialConnectedReceiptCopy: REPLACEMENT_SERVER_RETURN_RECEIPT_COPY,
@@ -2889,6 +2900,54 @@ describe('guided reauthorization return-to-work journey', () => {
     expect(original.dispose).not.toHaveBeenCalled();
     expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(1);
     expect(mockState.mountPairCodeInputHost).not.toHaveBeenCalled();
+  });
+
+  it('follows its own server to a new address without remounting', async () => {
+    // ⛔ Change address — the same server, the same sign-in — read as a
+    // sign-in replaced elsewhere: every tab on that server remounted at its
+    // next focus, even the one that put its reload off to protect its work.
+    const dom = makeFakeDocument();
+    const { store, sourceId } = await buildMultiProfileStore();
+    const mountedTabs = makePairTabConvergence();
+    const original = makeWebclientHandle();
+    mockState.bootstrapWebclient.mockResolvedValueOnce(original);
+    expect(await runBootstrapWithPairFallback({
+      ...makeDeps(dom, store),
+      credentialTabConvergenceFactory: () => mountedTabs.convergence,
+    })).toEqual({ kind: 'mounted' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+
+    const before = (await store.listProfiles()).find((p) => p.id === sourceId)!;
+    await store.retargetProfile(sourceId, 'wss://alice.example.net/ws', before.webclient_token, before.webclient_token?.token_id ?? null);
+    mountedTabs.emit('credential_state_changed');
+    // A negative needs time for the check to run: let it settle fully.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(original.dispose).not.toHaveBeenCalled();
+    expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(1);
+    expect(mockState.mountPairCodeInputHost).not.toHaveBeenCalled();
+  });
+
+  it('still recovers when the sign-in itself was replaced elsewhere', async () => {
+    const dom = makeFakeDocument();
+    const { store } = await buildMultiProfileStore();
+    const mountedTabs = makePairTabConvergence();
+    const original = makeWebclientHandle();
+    mockState.bootstrapWebclient
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(makeWebclientHandle());
+    expect(await runBootstrapWithPairFallback({
+      ...makeDeps(dom, store),
+      credentialTabConvergenceFactory: () => mountedTabs.convergence,
+    })).toEqual({ kind: 'mounted' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+
+    await store.set('webclient_token', { ...sampleToken(), token_id: 'tok-repaired', issued_at: 9 });
+    mountedTabs.emit('credential_state_changed');
+
+    await vi.waitFor(() => {
+      expect(original.dispose).toHaveBeenCalled();
+    });
   });
 
   it('broadcasts a durable Account profile change and refreshes a sibling roster', async () => {
@@ -3582,6 +3641,7 @@ describe('runBootstrapWithPairFallback: profileStore forwarding', () => {
     listProfiles: async () => [],
     activeProfileId: async () => null,
     ensureProfile: async () => 'p1',
+    commitPair: async () => 'p1',
     switchProfile: async () => undefined,
     retargetProfile: async () => null,
     renameProfile: async () => null,
@@ -3617,5 +3677,800 @@ describe('runBootstrapWithPairFallback: profileStore forwarding', () => {
 
     const passed = mockState.bootstrapWebclient.mock.calls[0]?.[0] as object;
     expect(Object.hasOwn(passed, 'profileStore')).toBe(false);
+  });
+
+  // ⛔ A pairing link opened while this browser already used a server was
+  // mounted over and wiped from the address bar without a word.
+  it('hands an unused pairing link code to the shell it mounts', async () => {
+    const dom = makeFakeDocument();
+    mockState.bootstrapWebclient.mockResolvedValueOnce(makeWebclientHandle());
+
+    await runBootstrapWithPairFallback({
+      ...makeDeps(dom),
+      deeplinkSeed: { pairingCode: ' K7Q2-M9XA ' },
+    });
+
+    expect(mockState.bootstrapWebclient.mock.calls[0]?.[0]).toMatchObject({
+      pairingLinkCode: 'K7Q2-M9XA',
+    });
+  });
+
+  it('hands no code to a reconnect’s shell, nor without one', async () => {
+    const dom = makeFakeDocument();
+    mockState.bootstrapWebclient
+      .mockResolvedValueOnce(makeWebclientHandle())
+      .mockResolvedValueOnce(makeWebclientHandle());
+
+    await runBootstrapWithPairFallback({
+      ...makeDeps(dom),
+      deeplinkSeed: { pairingCode: 'K7Q2-M9XA' },
+      reauthRecovery: { returnHash: '#chat' },
+    });
+    await runBootstrapWithPairFallback(makeDeps(makeFakeDocument()));
+
+    for (const call of mockState.bootstrapWebclient.mock.calls) {
+      expect(Object.hasOwn(call[0] as object, 'pairingLinkCode')).toBe(false);
+    }
+  });
+});
+
+describe('runBootstrapWithPairFallback: the way back from adding a server', () => {
+  interface SplashNode {
+    tagName: string;
+    id: string;
+    textContent: string;
+    disabled: boolean;
+    children: SplashNode[];
+    parentNode: { removeChild(child: SplashNode): SplashNode } | null;
+    readonly firstChild: SplashNode | null;
+    value?: string;
+    setAttribute(name: string, value: string): void;
+    getAttribute(name: string): string | null;
+    hasAttribute(name: string): boolean;
+    removeAttribute(name: string): void;
+    addEventListener(type: string, listener: () => void): void;
+    removeEventListener(): void;
+    focus(): void;
+    click(): void;
+    appendChild(child: SplashNode): SplashNode;
+    insertBefore(child: SplashNode, ref: SplashNode | null): SplashNode;
+    removeChild(child: SplashNode): SplashNode;
+  }
+
+  const node = (tag: string): SplashNode => {
+    const attrs = new Map<string, string>();
+    const listeners = new Map<string, Array<() => void>>();
+    const el: SplashNode = {
+      tagName: tag.toUpperCase(),
+      id: '',
+      textContent: '',
+      disabled: false,
+      children: [],
+      parentNode: null,
+      get firstChild() { return el.children[0] ?? null; },
+      setAttribute: (name, value) => { attrs.set(name, value); },
+      getAttribute: (name) => attrs.get(name) ?? null,
+      hasAttribute: (name) => attrs.has(name),
+      removeAttribute: (name) => { attrs.delete(name); },
+      addEventListener: (type, listener) => {
+        listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+      },
+      removeEventListener: () => undefined,
+      focus: () => undefined,
+      click: () => {
+        if (el.disabled) return;
+        for (const listener of listeners.get('click') ?? []) listener();
+      },
+      appendChild: (child) => el.insertBefore(child, null),
+      insertBefore: (child, ref) => {
+        const at = ref === null ? -1 : el.children.indexOf(ref);
+        if (at < 0) el.children.push(child);
+        else el.children.splice(at, 0, child);
+        child.parentNode = el;
+        return child;
+      },
+      removeChild: (child) => {
+        const at = el.children.indexOf(child);
+        if (at < 0) throw new Error('removeChild: not a child');
+        el.children.splice(at, 1);
+        child.parentNode = null;
+        return child;
+      },
+    };
+    return el;
+  };
+
+  /** The boot HTML's splash: a wrapper holding the brand and the slot the
+   *  pair form owns. The shared fake document's elements carry no attributes
+   *  or listeners, so the bar needs this one. */
+  const makeSplashDom = () => {
+    const slot = makeFakeSplash().splash;
+    const wrapper = node('div');
+    wrapper.id = SPLASH_WRAPPER_ID;
+    const brand = wrapper.appendChild(node('div'));
+    wrapper.appendChild(slot as unknown as SplashNode);
+    const page = node('div');
+    page.appendChild(wrapper);
+    const document = {
+      getElementById: (id: string) => id === SPLASH_MESSAGE_ID
+        ? slot
+        : id === SPLASH_WRAPPER_ID && wrapper.parentNode !== null
+          ? wrapper
+          : null,
+      createElement: (tag: string) => node(tag),
+      head: { querySelector: () => null, appendChild: vi.fn() },
+    } as unknown as Document;
+    const bar = (): SplashNode | undefined => wrapper.children.find(
+      (child) => child !== (slot as unknown as SplashNode)
+        && child.hasAttribute(RETURN_TO_SERVER_BAR_ATTR),
+    );
+    return { document, page, wrapper, brand, slot, bar };
+  };
+
+  /** First node under `root` carrying `attr` (the slot fake has none). */
+  const findNode = (root: SplashNode, attr: string): SplashNode | undefined => {
+    if (typeof root.hasAttribute === 'function' && root.hasAttribute(attr)) {
+      return root;
+    }
+    for (const child of root.children ?? []) {
+      const hit = findNode(child, attr);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  };
+
+  /** A complete, signed-in server record, made active. */
+  const pairServer = async (
+    store: WebclientProfileAwareStore,
+    url: string,
+    label: string,
+    connectedAt: number,
+  ): Promise<string> => {
+    const id = await store.ensureProfile(url);
+    await store.set('server_public_key', `spki-${label}`);
+    await store.set('pair_metadata', {
+      paired_at: 1_700_000_000,
+      server_passport_fingerprint: `fp-${label}`,
+      server_handle_at_pair: label,
+    });
+    await store.set('cert_pin_state', null);
+    await store.set('webclient_token', {
+      token_id: `tok-${label}`,
+      ciphertext_b64: 'ciphertext',
+      iv_b64: 'iv',
+      issued_at: 1_700_000_000,
+    });
+    await store.renameProfile(id, label);
+    await store.noteProfileConnected(id, connectedAt);
+    return id;
+  };
+
+  /** Two working servers with Alice active, as a mounted shell sees them. */
+  const buildTwoServerStore = async () => {
+    const store = createInMemoryWebclientLocalStore();
+    const officeId = await pairServer(
+      store, 'wss://office.recued.cloud:9443/ws', 'Office server', 1_000,
+    );
+    const aliceId = await pairServer(
+      store, 'wss://alice.recued.cloud:8443/ws', 'Alice server', 2_000,
+    );
+    return { store, aliceId, officeId };
+  };
+
+  /** Two working servers, then "Add another server…": a pending profile is
+   *  active, and the boot lands on the pair form. */
+  const buildAddServerStore = async () => {
+    const { store, aliceId } = await buildTwoServerStore();
+    await store.beginNewProfile();
+    return { store, aliceId };
+  };
+
+  const depsFor = (
+    dom: ReturnType<typeof makeSplashDom>,
+    store: WebclientProfileAwareStore,
+    extra: Partial<PairFallbackBootstrapDeps> = {},
+  ): PairFallbackBootstrapDeps => ({
+    ...makeDeps(
+      { root: makeFakeElement('div'), document: dom.document } as unknown as FakeDomFixture,
+      store,
+    ),
+    profileStore: store,
+    pairTabConvergenceFactory: null,
+    ...extra,
+  });
+
+  it('puts the way back first in the splash, outside the slot the form redraws', async () => {
+    // ⛔ The form replaces its slot's whole innerHTML on every state change:
+    // inside that slot, the button vanished the first time the owner chose
+    // "Make a new one", and below the form it was under the fold before that.
+    const dom = makeSplashDom();
+    const { store } = await buildAddServerStore();
+    mockState.bootstrapWebclient
+      .mockRejectedValueOnce(new WebclientUnpairedError('adding a server'));
+
+    await mountUnpairedPairForm(depsFor(dom, store));
+
+    expect(dom.wrapper.children[0]).toBe(dom.bar());
+    expect(dom.wrapper.children.slice(1)).toEqual([dom.brand, dom.slot]);
+    const button = dom.bar()!.children[0]!;
+    expect(button.hasAttribute(RETURN_TO_SERVER_ATTR)).toBe(true);
+    expect(button.textContent).toBe('← Back to Alice server');
+  });
+
+  /** What Account's switch leaves for the next page: the target's id. */
+  const switchMarkerFor = (targetProfileId: string) => {
+    const data = new Map<string, string>([[
+      'recued.webclient.server-switch-continuity.v1',
+      JSON.stringify({ v: 1, target_profile_id: targetProfileId }),
+    ]]);
+    return {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => { data.set(key, value); },
+      removeItem: (key: string) => { data.delete(key); },
+    };
+  };
+
+  it('fills in the address of a saved server a switch sent here to pair again', async () => {
+    // Account → a server with no sign-in → Switch opened a fresh pairing and
+    // named the server. The address comes from this browser's own record of
+    // it, never from the page URL (`pair-deeplink.ts` DD#1).
+    const dom = makeSplashDom();
+    const { store } = await buildTwoServerStore();
+    const labId = await store.ensureProfile('wss://lab.recued.cloud:8443/ws');
+    await store.renameProfile(labId, 'Lab server');
+    await store.beginNewProfile();
+    mockState.bootstrapWebclient
+      .mockRejectedValueOnce(new WebclientUnpairedError('pairing a saved server again'));
+
+    await mountUnpairedPairForm(depsFor(dom, store, {
+      serverSwitchContinuityStorage: switchMarkerFor(labId),
+    }));
+
+    expect(mountOptions()[0]?.seed).toEqual({ serverUrl: 'https://lab.recued.cloud:8443' });
+  });
+
+  it('fills nothing in when the server the switch named still has its sign-in', async () => {
+    const dom = makeSplashDom();
+    const { store, officeId } = await buildTwoServerStore();
+    await store.beginNewProfile();
+    mockState.bootstrapWebclient
+      .mockRejectedValueOnce(new WebclientUnpairedError('adding a server'));
+
+    await mountUnpairedPairForm(depsFor(dom, store, {
+      serverSwitchContinuityStorage: switchMarkerFor(officeId),
+    }));
+
+    expect(mountOptions()[0]?.seed).toBeUndefined();
+  });
+
+  it('retires the way back with the form once pairing succeeds', async () => {
+    // Left behind, it would offer "back" over the new server's startup.
+    const dom = makeSplashDom();
+    const { store } = await buildAddServerStore();
+    mockState.bootstrapWebclient
+      .mockRejectedValueOnce(new WebclientUnpairedError('adding a server'))
+      .mockResolvedValueOnce(makeWebclientHandle());
+    const options = await mountUnpairedPairForm(depsFor(dom, store));
+    expect(dom.bar()).toBeDefined();
+
+    await options.onAfterPair?.();
+
+    expect(pairHandles()[0]?.dispose).toHaveBeenCalledOnce();
+    expect(dom.bar()).toBeUndefined();
+  });
+
+  /** An add form with a live sibling channel, as a second tab sees it. */
+  const reachAddFormWithSibling = async () => {
+    const dom = makeSplashDom();
+    const servers = await buildAddServerStore();
+    const replaceHash = vi.fn();
+    const tabs: Array<ReturnType<typeof makePairTabConvergence>> = [];
+    mockState.bootstrapWebclient
+      .mockRejectedValueOnce(new WebclientUnpairedError('adding a server'));
+    const options = await mountUnpairedPairForm(depsFor(dom, servers.store, {
+      currentHash: () => '#chat/session/chat_1',
+      replaceHash,
+      pairTabConvergenceFactory: () => {
+        const tab = makePairTabConvergence();
+        tabs.push(tab);
+        return tab.convergence;
+      },
+    }));
+    return { dom, options, replaceHash, tabs, ...servers };
+  };
+
+  // ⛔ Every complete pair counted as this form's: another tab pressing
+  // "← Back to Alice server" was adopted here as "Another tab finished
+  // pairing this browser", which never happened.
+  it('follows another tab going back to a saved server; it does not adopt it as finished pairing', async () => {
+    const add = await reachAddFormWithSibling();
+    await add.store.switchProfile(add.aliceId);
+    const reload = vi.fn();
+    vi.stubGlobal('location', { reload });
+    try {
+      add.tabs.at(-1)!.emit();
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+      expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(1);
+      expect(add.replaceHash).toHaveBeenLastCalledWith('#chat');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps a form that holds an accepted pairing when another tab goes back', async () => {
+    // Following would drop it: the code is spent and the server keeps a
+    // sign-in nobody uses.
+    nextPairHandleFactory = () => makeMountedPairHandle(undefined, true);
+    const add = await reachAddFormWithSibling();
+    await add.store.switchProfile(add.aliceId);
+    const reload = vi.fn();
+    vi.stubGlobal('location', { reload });
+    try {
+      add.tabs.at(-1)!.emit();
+      await vi.waitFor(() => {
+        expect(pairHandles()[0]!.holdsPairingResponse).toHaveBeenCalled();
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(reload).not.toHaveBeenCalled();
+      expect(pairHandles()[0]!.dispose).not.toHaveBeenCalled();
+      expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('still adopts another tab finishing THIS add, in place', async () => {
+    const add = await reachAddFormWithSibling();
+    // The other tab's pairing fills this attempt's pending record.
+    await pairServer(add.store, 'wss://lab.recued.cloud:8443/ws', 'Lab server', 3_000);
+    mockState.bootstrapWebclient.mockResolvedValueOnce(makeWebclientHandle());
+    const reload = vi.fn();
+    vi.stubGlobal('location', { reload });
+    try {
+      add.tabs.at(-1)!.emit();
+      await vi.waitFor(() => {
+        expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(2);
+      });
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('the check before posting names another server, not "already paired"', async () => {
+    const add = await reachAddFormWithSibling();
+    expect(await add.options.preflightCheck!({ serverUrl: 'https://lab.recued.cloud:8443' }))
+      .toEqual({ alreadyPaired: false });
+
+    await add.store.switchProfile(add.aliceId);
+
+    expect(await add.options.preflightCheck!({ serverUrl: 'https://lab.recued.cloud:8443' })).toEqual({
+      alreadyPaired: false,
+      switchedAway: true,
+    });
+    const reload = vi.fn();
+    vi.stubGlobal('location', { reload });
+    try {
+      add.options.onSwitchedAway!();
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+      expect(add.replaceHash).toHaveBeenLastCalledWith('#chat');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // ⛔ Adding a server already saved paired it again: a second device entry
+  // on that server beside the old one, whose sign-in stayed live there.
+  it('refuses to pair again a server already saved and signed in, before a code is spent', async () => {
+    const dom = makeSplashDom();
+    const { store } = await buildTwoServerStore();
+    const labId = await store.ensureProfile('wss://lab.recued.cloud:8443/ws');
+    await store.renameProfile(labId, 'Lab server');
+    await store.beginNewProfile();
+    mockState.bootstrapWebclient
+      .mockRejectedValueOnce(new WebclientUnpairedError('adding a server'));
+    const options = await mountUnpairedPairForm(depsFor(dom, store));
+
+    for (const typed of ['https://alice.recued.cloud:8443', 'https://Alice.Recued.Cloud:8443/']) {
+      expect(await options.preflightCheck!({ serverUrl: typed }), typed).toEqual({
+        alreadyPaired: false,
+        alreadySaved: { label: 'Alice server' },
+      });
+    }
+    // Saved without a sign-in ("Needs pairing again"): pairing it is the point.
+    expect(await options.preflightCheck!({ serverUrl: 'https://lab.recued.cloud:8443' }))
+      .toEqual({ alreadyPaired: false });
+    expect(await options.preflightCheck!({ serverUrl: 'https://new.recued.cloud' }))
+      .toEqual({ alreadyPaired: false });
+  });
+
+  it('saves a held pairing under its own server, not over the one another tab switched to', async () => {
+    // Saving checks the ACTIVE record first and refused a complete one as
+    // "already paired": the spent code was lost and Lab's server kept a
+    // sign-in nobody used.
+    const add = await reachAddFormWithSibling();
+    await add.store.switchProfile(add.aliceId);
+    let activeAtSave: string | null | undefined;
+    const get = add.store.get.bind(add.store);
+    vi.spyOn(add.store, 'get').mockImplementation((async (key: string) => {
+      if (key === 'webclient_token' && activeAtSave === undefined) {
+        activeAtSave = await add.store.activeProfileId();
+        throw new Error('stop before the network');
+      }
+      return get(key as never);
+    }) as never);
+
+    await expect(add.options.onPaired({
+      serverUrl: 'https://lab.recued.cloud:8443',
+      token: 'held-bearer',
+      token_id: 'tok-held',
+    } as never)).rejects.toThrow();
+
+    const profiles = await add.store.listProfiles();
+    const lab = profiles.find((p) => p.server_url === 'wss://lab.recued.cloud:8443/ws');
+    expect(lab).toBeDefined();
+    expect(activeAtSave).toBe(lab!.id);
+    expect(profiles.find((p) => p.id === add.aliceId)?.webclient_token?.token_id)
+      .toBe('tok-Alice server');
+  });
+
+  it('waits out a pairing that holds the pair-finalize lock before switching back', async () => {
+    // Saving a sign-in writes field by field into the ACTIVE profile; a switch
+    // landing between two of those writes would put the new server's
+    // credentials on the old one.
+    const dom = makeSplashDom();
+    const { store, aliceId } = await buildAddServerStore();
+    let tail: Promise<unknown> = Promise.resolve();
+    const request = vi.fn(
+      (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
+        const run = tail.then(callback);
+        tail = run.catch(() => undefined);
+        return run;
+      },
+    );
+    const switchProfile = vi.spyOn(store, 'switchProfile');
+    const reload = vi.fn();
+    mockState.bootstrapWebclient
+      .mockRejectedValueOnce(new WebclientUnpairedError('adding a server'));
+    await mountUnpairedPairForm(depsFor(dom, store, {
+      pairLockProvider: { request } as unknown as NonNullable<
+        PairFallbackBootstrapDeps['pairLockProvider']
+      >,
+    }));
+    let finishPairing!: () => void;
+    void request('pair', { mode: 'exclusive' }, () => new Promise<void>(
+      (resolve) => { finishPairing = resolve; },
+    ));
+    vi.stubGlobal('location', { reload });
+    try {
+      const button = dom.bar()!.children[0]!;
+      button.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(switchProfile).not.toHaveBeenCalled();
+      expect(reload).not.toHaveBeenCalled();
+      expect(button.disabled).toBe(true);
+      expect(button.textContent).toBe('Going back to Alice server…');
+
+      finishPairing();
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+      expect(switchProfile).toHaveBeenCalledWith(aliceId);
+      expect(await store.activeProfileId()).toBe(aliceId);
+      // Switching away drops the abandoned attempt rather than leaving a ghost.
+      expect((await store.listProfiles()).map((p) => p.label))
+        .toEqual(['Office server', 'Alice server']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /** Alice mounts, then rejects this browser: "Reconnect this browser". The
+   *  mounted shell hands `snapshot` over as the work to rescue. */
+  const reachReconnectPage = async (
+    dom: ReturnType<typeof makeSplashDom>,
+    store: WebclientProfileAwareStore,
+    snapshot: WebclientRecoverySnapshot,
+    extra: Partial<PairFallbackBootstrapDeps> = {},
+  ): Promise<void> => {
+    mockState.bootstrapWebclient
+      .mockResolvedValueOnce(makeWebclientHandle(snapshot))
+      .mockRejectedValueOnce(new WebclientUnpairedError('access withdrawn'));
+    const deps = depsFor(dom, store, {
+      credentialTabConvergenceFactory: null,
+      ...extra,
+    });
+    expect(await runBootstrapWithPairFallback(deps)).toEqual({ kind: 'mounted' });
+    const mounted = mockState.bootstrapWebclient.mock.calls[0]?.[0] as
+      | { onReauthRequired?: () => void }
+      | undefined;
+    mounted?.onReauthRequired?.();
+    await vi.waitFor(() => {
+      expect(mockState.mountPairCodeInputHost).toHaveBeenCalledOnce();
+    });
+  };
+
+  const sessionStore = () => {
+    const values = new Map<string, string>();
+    return {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+  };
+
+  it('a server that rejects this browser leaves every other saved server signed in', async () => {
+    // ⛔ The reconnect wipe removed `server_url` first: that deleted Alice's
+    // record and made Office active, and the next four removals nulled
+    // OFFICE's sign-in — one server's rejection cost the other its access.
+    const dom = makeSplashDom();
+    const { store, aliceId, officeId } = await buildTwoServerStore();
+
+    await reachReconnectPage(dom, store, { returnHash: '#chat' });
+
+    const profiles = await store.listProfiles();
+    const office = profiles.find((p) => p.id === officeId);
+    expect(office?.webclient_token?.token_id).toBe('tok-Office server');
+    expect(office?.server_public_key).toBe('spki-Office server');
+    expect(office?.pair_metadata).not.toBeNull();
+    expect(profiles.some((p) => p.id === aliceId)).toBe(false);
+    // Alice's place is a fresh pending record, so the boot reads "unpaired"
+    // exactly as a single-server browser always has.
+    const activeId = await store.activeProfileId();
+    expect(profiles.find((p) => p.id === activeId)?.server_url).toBe('');
+    expect(await store.get('webclient_token')).toBeNull();
+  });
+
+  it('leaves a reconnect like a server switch: reviewed, then a safe landing with the guard and marker gone', async () => {
+    const dom = makeSplashDom();
+    const unloadListeners = new Set<unknown>();
+    const view = {
+      addEventListener: vi.fn((type: string, listener: unknown) => {
+        if (type === 'beforeunload') unloadListeners.add(listener);
+      }),
+      removeEventListener: vi.fn((type: string, listener: unknown) => {
+        if (type === 'beforeunload') unloadListeners.delete(listener);
+      }),
+    };
+    (dom.document as unknown as { defaultView: unknown }).defaultView = view;
+    const { store, officeId } = await buildTwoServerStore();
+    const reentry = sessionStore();
+    const replaceHash = vi.fn();
+    const tabs: Array<ReturnType<typeof makePairTabConvergence>> = [];
+    await reachReconnectPage(dom, store, {
+      returnHash: '#chat/session/chat_1',
+      chatDraft: {
+        text: 'Can we move Thursday to 3pm?',
+        protected: true,
+        modelSourceId: null,
+      },
+      chatServer: {
+        serverUrl: 'wss://alice.recued.cloud:8443/ws',
+        serverPublicKey: 'spki-Alice server',
+      },
+    }, {
+      currentHash: () => '#chat/session/chat_1',
+      replaceHash,
+      recoveryReentryStorage: reentry,
+      pairTabConvergenceFactory: () => {
+        const tab = makePairTabConvergence();
+        tabs.push(tab);
+        return tab.convergence;
+      },
+    });
+    // The reconnect page holds the message behind a leave-page guard.
+    expect(unloadListeners.size).toBe(1);
+    expect(reentry.getItem('recued.webclient.recovery-reentry.v1')).toBe('1');
+
+    const button = dom.bar()!.children[0]!;
+    expect(button.textContent).toBe('Use Office server instead');
+    button.click();
+    const review = dom.bar()!.children.find(
+      (child) => child.hasAttribute(RETURN_TO_SERVER_REVIEW_ATTR),
+    )!;
+    expect(review.children[1]?.textContent).toBe(
+      'The Chat message you have not sent is only in this tab. Switching loses it. It will never be sent to, or saved on, Office server.',
+    );
+    const commit = review.children.at(-1)!.children.find(
+      (child) => child.hasAttribute(RETURN_TO_SERVER_COMMIT_ATTR),
+    )!;
+
+    const continuity = sessionStore();
+    let guardsAtReload = -1;
+    const reload = vi.fn(() => { guardsAtReload = unloadListeners.size; });
+    vi.stubGlobal('location', { reload });
+    vi.stubGlobal('sessionStorage', continuity);
+    try {
+      commit.click();
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+      // Released BEFORE reloading, or the browser asks "Leave site?" over a
+      // loss the owner already accepted.
+      expect(guardsAtReload).toBe(0);
+      expect(await store.activeProfileId()).toBe(officeId);
+      expect((await store.listProfiles()).map((p) => p.label))
+        .toEqual(['Office server']);
+      // Alice's session id means nothing on Office.
+      expect(replaceHash).toHaveBeenLastCalledWith('#chat');
+      expect(JSON.parse(
+        continuity.getItem('recued.webclient.server-switch-continuity.v1')!,
+      )).toMatchObject({ target_profile_id: officeId });
+      expect(reentry.getItem('recued.webclient.recovery-reentry.v1')).toBeNull();
+      expect(tabs.at(-1)?.notifyActiveServerProfileChanged).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /** A second reconnect tab: the one that did NOT choose. */
+  const reachSiblingReconnect = async (
+    snapshot: WebclientRecoverySnapshot,
+  ) => {
+    const dom = makeSplashDom();
+    const unloadListeners = new Set<unknown>();
+    (dom.document as unknown as { defaultView: unknown }).defaultView = {
+      addEventListener: (type: string, listener: unknown) => {
+        if (type === 'beforeunload') unloadListeners.add(listener);
+      },
+      removeEventListener: (type: string, listener: unknown) => {
+        if (type === 'beforeunload') unloadListeners.delete(listener);
+      },
+    };
+    const servers = await buildTwoServerStore();
+    const reentry = sessionStore();
+    const replaceHash = vi.fn();
+    const tabs: Array<ReturnType<typeof makePairTabConvergence>> = [];
+    await reachReconnectPage(dom, servers.store, snapshot, {
+      root: dom.page as unknown as HTMLElement,
+      currentHash: () => '#chat/session/chat_1',
+      replaceHash,
+      recoveryReentryStorage: reentry,
+      pairTabConvergenceFactory: () => {
+        const tab = makePairTabConvergence();
+        tabs.push(tab);
+        return tab.convergence;
+      },
+    });
+    return { dom, unloadListeners, reentry, replaceHash, tabs, ...servers };
+  };
+
+  const ALICE_DRAFT: WebclientRecoverySnapshot = {
+    returnHash: '#chat/session/chat_1',
+    chatDraft: {
+      text: 'Can we move Thursday to 3pm?',
+      protected: true,
+      modelSourceId: null,
+    },
+    chatServer: {
+      serverUrl: 'wss://alice.recued.cloud:8443/ws',
+      serverPublicKey: 'spki-Alice server',
+    },
+  };
+
+  it('a reconnect tab holding a message hands it over before following another tab’s switch', async () => {
+    // ⛔ It used to adopt Office as if Alice had reconnected elsewhere: the
+    // message went along, Office's boot dropped it without a word, and the
+    // route named Alice's chat.
+    const sibling = await reachSiblingReconnect(ALICE_DRAFT);
+    await sibling.store.switchProfile(sibling.officeId);
+    const continuity = sessionStore();
+    let guardsAtReload = -1;
+    const reload = vi.fn(() => { guardsAtReload = sibling.unloadListeners.size; });
+    vi.stubGlobal('location', { reload });
+    vi.stubGlobal('sessionStorage', continuity);
+    try {
+      sibling.tabs.at(-1)!.emit();
+      const overlay = await vi.waitFor(() => {
+        const found = findNode(sibling.dom.page, 'data-recued-server-switch-convergence');
+        expect(found).toBeDefined();
+        return found!;
+      });
+      expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(2);
+      expect(reload).not.toHaveBeenCalled();
+      expect(sibling.dom.wrapper.hasAttribute('inert')).toBe(true);
+      expect(findNode(overlay, 'data-recued-server-switch-convergence-draft')?.value)
+        .toBe('Can we move Thursday to 3pm?');
+      expect(findNode(overlay, 'data-recued-server-switch-convergence-copy'))
+        .toBeDefined();
+
+      findNode(overlay, 'data-recued-server-switch-convergence-commit')!.click();
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+      expect(guardsAtReload).toBe(0);
+      expect(sibling.replaceHash).toHaveBeenLastCalledWith('#chat');
+      expect(sibling.reentry.getItem('recued.webclient.recovery-reentry.v1'))
+        .toBeNull();
+      // The arrival note belongs to the tab that chose the server.
+      expect(continuity.getItem('recued.webclient.server-switch-continuity.v1'))
+        .toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a reconnect tab with nothing unsent follows another tab’s switch quietly, to a safe place', async () => {
+    const sibling = await reachSiblingReconnect({
+      returnHash: '#chat/session/chat_1',
+    });
+    await sibling.store.switchProfile(sibling.officeId);
+    const continuity = sessionStore();
+    const reload = vi.fn();
+    vi.stubGlobal('location', { reload });
+    vi.stubGlobal('sessionStorage', continuity);
+    try {
+      sibling.tabs.at(-1)!.emit();
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+      expect(findNode(sibling.dom.page, 'data-recued-server-switch-convergence'))
+        .toBeUndefined();
+      expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(2);
+      expect(sibling.replaceHash).toHaveBeenLastCalledWith('#chat');
+      expect(sibling.reentry.getItem('recued.webclient.recovery-reentry.v1'))
+        .toBeNull();
+      expect(continuity.getItem('recued.webclient.server-switch-continuity.v1'))
+        .toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('another tab reconnecting THIS server is still adopted in place, message and all', async () => {
+    const sibling = await reachSiblingReconnect(ALICE_DRAFT);
+    // The other tab reconnects Alice: its pairing adopts the pending record.
+    await pairServer(
+      sibling.store, 'wss://alice.recued.cloud:8443/ws', 'Alice server', 3_000,
+    );
+    mockState.bootstrapWebclient.mockResolvedValueOnce(makeWebclientHandle());
+
+    sibling.tabs.at(-1)!.emit();
+
+    await vi.waitFor(() => {
+      expect(mockState.bootstrapWebclient).toHaveBeenCalledTimes(3);
+    });
+    expect(findNode(sibling.dom.page, 'data-recued-server-switch-convergence'))
+      .toBeUndefined();
+    const resumed = mockState.bootstrapWebclient.mock.calls[2]?.[0] as
+      | { reauthRecovery?: WebclientRecoverySnapshot }
+      | undefined;
+    expect(resumed?.reauthRecovery?.chatDraft).toEqual(ALICE_DRAFT.chatDraft);
+  });
+
+  it('keeps the reconnect and its message when the other server is gone by the time it is chosen', async () => {
+    // Another tab forgot Office after this page rendered. Switching to an
+    // unknown id changes nothing, so reloading would only throw the message
+    // away on the way back to this same form.
+    const dom = makeSplashDom();
+    const unloadListeners = new Set<unknown>();
+    (dom.document as unknown as { defaultView: unknown }).defaultView = {
+      addEventListener: (type: string, listener: unknown) => {
+        if (type === 'beforeunload') unloadListeners.add(listener);
+      },
+      removeEventListener: (type: string, listener: unknown) => {
+        if (type === 'beforeunload') unloadListeners.delete(listener);
+      },
+    };
+    const { store, officeId } = await buildTwoServerStore();
+    await reachReconnectPage(dom, store, {
+      returnHash: '#chat',
+      chatDraft: { text: 'Thursday?', protected: true, modelSourceId: null },
+    }, { currentHash: () => '#chat', replaceHash: vi.fn() });
+    await store.removeProfile(officeId);
+
+    dom.bar()!.children[0]!.click();
+    const review = dom.bar()!.children.find(
+      (child) => child.hasAttribute(RETURN_TO_SERVER_REVIEW_ATTR),
+    )!;
+    const commit = review.children.at(-1)!.children.find(
+      (child) => child.hasAttribute(RETURN_TO_SERVER_COMMIT_ATTR),
+    )!;
+    const reload = vi.fn();
+    vi.stubGlobal('location', { reload });
+    try {
+      commit.click();
+      await vi.waitFor(() => expect(commit.disabled).toBe(false));
+      expect(reload).not.toHaveBeenCalled();
+      expect(unloadListeners.size).toBe(1);
+      expect(dom.bar()!.children.at(-1)?.textContent).toBe(
+        'Couldn’t switch servers. Your message is still here; try again.',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

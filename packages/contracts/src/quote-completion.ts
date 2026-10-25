@@ -40,10 +40,16 @@ export interface QuoteCompletionSummary {
 export interface QuoteCompletionPrepareResult {
   completion: QuoteCompletionSummary;
   preview_hash: string;
+  /** Review freshness, separate from completion.expires_at. Older servers omit it. */
+  preview_expires_at?: number;
+  preview_server_now?: number;
   customer_preview: string;
 }
 export interface QuoteCompletionPublishInput { completion_id: string;preview_hash: string;remember_link_for_reminders?: boolean }
 export interface QuoteCompletionPublishResult { completion: QuoteCompletionSummary; share_url: string }
+export interface QuoteCompletionResumeResult extends QuoteCompletionPrepareResult {
+  expiry_days: number;
+}
 export interface QuoteCompletionCancelInput { completion_id: string }
 export interface QuoteCompletionListInput {
   signoff_id?: string;
@@ -51,7 +57,11 @@ export interface QuoteCompletionListInput {
   limit?: number;
   cursor?: string;
 }
-export interface QuoteCompletionListResult { completions: QuoteCompletionSummary[]; next_cursor?: string }
+export interface QuoteCompletionListResult {
+  completions: QuoteCompletionSummary[]; next_cursor?: string;
+  /** Server time sampled for this response; absent on older servers. */
+  server_now?: number;
+}
 export interface QuoteCompletionReviewInput {
   completion_id: string;
   expected_plan_hash: string;

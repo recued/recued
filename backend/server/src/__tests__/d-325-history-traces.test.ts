@@ -59,7 +59,7 @@ it('uses prepared photo metadata from a real ready Records namespace and never t
     const episodes = await runtime.ownerEpisodes(); expect(episodes).toHaveLength(1); expect(episodes[0]).toMatchObject({ basis: 'inferred', class_id: 'photos' });
     const read = vi.spyOn(store, 'ownerSearch'); read.mockClear();
     await runtime.source.read({ surface: 'tool', time: { from: Date.parse('2025-10-17'), to: Date.parse('2025-10-18') } }, undefined,
-      { owner: true, grants: { isVerbOpGranted: op => op !== 'core.data.file.get', isCollectionReadGranted: () => true, isTopicReadGranted: () => true } });
+      { owner: true, grants: { isVerbOpGranted: op => op !== 'core.storage.file.get', isCollectionReadGranted: () => true, isTopicReadGranted: () => true } });
     expect(read).not.toHaveBeenCalled(); runtime.forget(); expect(await runtime.ownerEpisodes()).toEqual([]);
   } finally { await runtime.stop(); db.close(); }
 });

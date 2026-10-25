@@ -168,7 +168,7 @@ const STYLES = `
   line-height: 1.2;
 }
 .secure-access-handoff h2:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
 .secure-access-summary {
@@ -244,7 +244,7 @@ const STYLES = `
 }
 .secure-access-handoff input:focus-visible,
 .secure-access-handoff button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .secure-access-actions {
@@ -296,6 +296,8 @@ const STYLES = `
 @media (max-width: 640px) {
   .secure-access-handoff { width: calc(100vw - 24px); }
   .secure-access-choices { grid-template-columns: 1fr; }
+  /* A finger's height, as the buttons are. ⛔ 42px. */
+  .secure-access-handoff input { min-height: 44px; }
 }
 @media (max-width: 360px) {
   #webclient-boot-splash { padding: 10px 0; }

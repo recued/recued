@@ -213,6 +213,12 @@ export const THEME_TOGGLE_STYLES = `
 [${THEME_TOGGLE_ATTR}]:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: var(--wc-ring, 0 0 0 3px var(--accent-weak));
+  box-shadow: var(--wc-ring, 0 0 0 2px var(--surface), 0 0 0 4px var(--accent));
+}
+/* A finger's height on a phone. ⛔ It was 36px there too. */
+@media (max-width: 640px) {
+  [${THEME_TOGGLE_ATTR}] {
+    min-height: 44px;
+  }
 }
 `;

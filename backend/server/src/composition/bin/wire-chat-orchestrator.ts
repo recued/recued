@@ -37,6 +37,7 @@ import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
 import type Database from 'better-sqlite3';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
 import { resolveServerTimeZone } from '@recued/contracts';
+import { createKeyAgreementLookup, type KeyAgreementLookup } from '../../key-agreement.js';
 import { canonicalOpToolsForConnections } from '../../canonical-op-tool-catalog.js';
 import { resolveConnectionVendor } from '../../storage/connection-store.js';
 import {
@@ -153,6 +154,7 @@ import { createConnectionCatalogBindingStore } from '../../storage/connection-ca
 import { createChatConnectionPackCoverage } from '../../chat-connection-pack-coverage.js';
 import type { ContractStore } from '../../storage/contract-store.js';
 import { createContractDefinitionStore } from '../../storage/contract-definition-store.js';
+import { createContractGrantEntryStore } from '../../storage/contract-grant-entry-store.js';
 import { createContractStore } from '../../storage/contract-store.js';
 import { backfillInboundTokenContracts } from '../../storage/inbound-token-contract-backfill.js';
 import type { WorkEntityResolver } from '../../work-entity-resolver.js';
@@ -206,6 +208,8 @@ import {
 } from '../../chat-recall-search-tool.js';
 import type { ChatDispatchContext } from '../../chat-tool-handlers.js';
 import { createPrivateAiCall } from '../../private-ai-call.js';
+import { LINK_TABLE } from '../../storage/annotation-store.js';
+import { localAssetReadVersion } from '../../chat-asset-read-reuse.js';
 import {
   broadcastEmitterFromBus,
   createChatOrchestrator,
@@ -224,7 +228,7 @@ import {
 } from '../../llm-system-prompt.js';
 import type { ChatRpcDeps } from '../../chat-handler.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
-import { buildChatToolRegistryInputs } from '../../chat-tool-handlers.js';
+import { buildChatToolRegistryInputs, buildChatTier1Handlers, type ChatToolHandlerDeps } from '../../chat-tool-handlers.js';
 import type { FileViewResolver } from '../../file-view-resolver.js';
 import { DATA_FILE_RECEIVED_SLUG } from '../../collections/file/file-read-handler.js';
 import { tokenUsageToReport } from '../../chat-token-usage.js';
@@ -251,14 +255,18 @@ import type { PairedInstancesStore } from '../../paired-instances-store.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import { handleExecute } from '../../execute-handler.js';
+import { createHeldChatWrites, createHoldTier1Write, settleChatRun } from '../../chat-held-writes.js';
+import { useWriteRule } from '../../write-rules.js';
 import { recipeConnectionChoices } from '../../recipe-connection-choices.js';
 import type { ScheduleHandlerDeps } from '../../schedule-handler.js';
 import { createInstalledRecipeScheduler } from '../../schedule-installed-recipe.js';
 import {
   buildMcpGrantCatalogLegacyEntries,
   buildRecipeOpCoverage,
+  isMcpWireRegistryTool,
 } from '../../mcp-server.js';
 import { sweepMcpRecipeCallbackRetention } from '../../mcp-recipe-callback.js';
+import { assetTypes } from '../../situations/asset-types.js';
 
 /** Direct + late-bound dependencies the chat composer needs. */
 export interface ComposeChatOrchestratorDeps {
@@ -531,8 +539,22 @@ export const composeChatOrchestrator = (
     }
   }
   const connectionMcpStore = createChatConnectionMcpStore(db);
+  // D-327 — a key bound to an agreement that is its key's whole authority reads
+  // its checklist from that agreement's grant rows. Over the SAME `db` the token
+  // table lives in (the stateless-wrapper reasoning the backfill below gives),
+  // so the reads land in the same preapproval read tracking as the token row.
+  let keyAgreementCache: KeyAgreementLookup | undefined;
+  const keyAgreements = (): KeyAgreementLookup =>
+    keyAgreementCache ??= (() => {
+      const contractStore = createContractStore(db);
+      return createKeyAgreementLookup({
+        definitions: createContractDefinitionStore(contractStore),
+        grants: createContractGrantEntryStore(contractStore),
+      });
+    })();
   let inboundTokenStore: ChatInboundTokenStore;
   inboundTokenStore = createChatInboundTokenStore(db, {
+    resolveKeyChecklist: (contract_id) => keyAgreements().resolveKeyChecklist(contract_id),
     ...(sharedStore
       ? {
           onAuthorityChanged: (token_id: string) =>
@@ -707,7 +729,7 @@ export const composeChatOrchestrator = (
     })(connection_name);
   };
 
-  const chatToolRegistryInputs = buildChatToolRegistryInputs({
+  const chatToolHandlerDeps: ChatToolHandlerDeps = {
     getContactStore,
     getCollectionRegistry,
     ...(deps.readMailBody ? { readMailBody: deps.readMailBody } : {}),
@@ -912,6 +934,8 @@ export const composeChatOrchestrator = (
     ...(getWorkEntityTargetedReadDeps ? { getWorkEntityTargetedReadDeps } : {}),
     ...(deps.getSituationAccess ? { getSituationAccess: deps.getSituationAccess } : {}),
     ...(getWorkEntityCrudDeps ? { getWorkEntityCrudDeps } : {}),
+    // D-325 — the asset types behind `work.type` and an asset's `work.create`.
+    getAssetTypes: () => assetTypes(db),
     ...(getCalendarWriteDeps ? { getCalendarWriteDeps } : {}),
     ...(getWorkEntityEdgeStore ? { getWorkEntityEdgeStore } : {}),
     // D-188 + the D-192 admission seam — a caller-triggered vendor
@@ -927,7 +951,9 @@ export const composeChatOrchestrator = (
     // D-320 audit — and the contract's connection axis, so a door scoped to some
     // connections cannot escalate a read through another (late-bound, as above).
     getContractOverlay: () => getExecuteDeps()?.contractOverlay,
-  });
+  };
+  const chatToolRegistryInputs = buildChatToolRegistryInputs(chatToolHandlerDeps);
+  let assetVersionProbe: ReturnType<typeof buildChatTier1Handlers>['work.read'] | undefined;
 
   // D-182 F2 — op-aware `requires_kinds`. Kernel closed-kind ops resolve inline in
   // `deriveRecipeRequiresKinds`; this resolver covers the rest: canonical →
@@ -1396,6 +1422,30 @@ export const composeChatOrchestrator = (
 
   const executionOrchestrator = withChatSessionBusy(createChatOrchestrator({
     chatStore,
+    revalidateAssetRead: async (id, version, ctx) => {
+      // Same canonical admission and handler as the existing index probes.
+      // Only unqualified, default local owner-asset reads reach this seam.
+      if (!admitTier1('work.read', ctx)) return false;
+      // Keep the canonical before/after scope fence, verb and collection
+      // grants, but remove the targeted-reader capability from this probe.
+      // Even a changed/legacy source can never start a vendor operation here.
+      const handler = assetVersionProbe ??= buildChatTier1Handlers({
+        ...chatToolHandlerDeps, getWorkEntityTargetedReadDeps: () => undefined,
+      })['work.read'];
+      if (!handler) return false;
+      try {
+        const current = await handler({ kind: 'asset', id }, ctx);
+        return localAssetReadVersion(id, current) === version;
+      } catch { return false; }
+    },
+    currentAssetAttachment: (assetId, fileRef) => {
+      // Lazy: minimal compositions may not have the link table. This check
+      // selects source context only; the reader still enforces every grant.
+      try {
+        return db.prepare(`SELECT 1 FROM ${LINK_TABLE} WHERE from_collection='asset' AND from_id=? AND to_collection='file' AND to_id=? AND role='attachment' LIMIT 1`)
+          .get(assetId, fileRef) !== undefined;
+      } catch { return undefined; }
+    },
     // ⚠ Resolved PER TURN, not captured. Under `follows_host` the answer is the
     // host clock, so a laptop that flew overnight anchors on where it woke up.
     serverTimeZone: (): string => resolveServerTimeZone(
@@ -1691,6 +1741,11 @@ export const composeChatOrchestrator = (
     executeAiCall: executeChatAiCall,
     ...(voiceTranscription ? { voiceTranscription } : {}),
     planApprovalStore: planApprovalStoreShared,
+    // D-329 — a Tier-1 write is held as a write raw op is: its checkpoint, the receipt, and
+    // the ask every approval channel shows, under the run id its proposal was stored with.
+    holdTier1Write: createHoldTier1Write(getExecuteDeps),
+    // D-329 §3.4 — a standing write rule the owner accepted stands in for that ask.
+    useWriteRule: (source, tool, args) => useWriteRule(getExecuteDeps()?.writeRules, source, tool, args),
     getResourceReview: () => getExecuteDeps()?.executorConfig.resourceReview,
     validateLocalMutation: (source, tool) => {
       const authority = getExecuteDeps()?.approvalResumeAuthority?.resolve({
@@ -1760,6 +1815,7 @@ export const composeChatOrchestrator = (
     selfSignature,
     planApprovalStore: planApprovalStoreShared,
     inboundTokenStore,
+    keyAgreement: (contract_id) => keyAgreements().keyAgreement(contract_id),
     preflightExternalToolGrant: (toolName) => {
       // D-232 § 20.20 — a KERNEL OP is grantable by its op id, and until now it
       // was not: the registry holds Tier-1 natives, Tier-2 recipes and Tier-3
@@ -2278,8 +2334,10 @@ export const composeChatOrchestrator = (
       // an inbound token; every tool still defaults deny per-token, and a door
       // reaches a recipe only once the owner ticks it. Showing a choice is not
       // making it.
+      // Tier 3 and chat's `recipe.stop` stay off the door (`isMcpWireRegistryTool`):
+      // the wire lists neither, so a grant for one would save a no-op.
       const registryEntries = [
-        ...internalRegistry.list().filter((entry) => entry.tier !== 3 && entry.tier !== 2),
+        ...internalRegistry.list().filter((entry) => entry.tier !== 2 && isMcpWireRegistryTool(entry)),
         ...buildTier2Catalog(
           chatToolRegistryInputs.tier2Source.listRecipes(),
           chatToolRegistryInputs.manifestLookup,
@@ -2323,6 +2381,11 @@ export const composeChatOrchestrator = (
   // Source-scoped late outcomes for previously held owner-chat calls; and the
   // email door's, through its listener (D-318 step 5).
   const chatRunSettledSink = createChatRunSettledSink(chatStore, selfSignature, broadcast);
+  // D-329 — a chat's held Tier-1 write settles onto its card and replies in its chat; its
+  // run has no tool call to close.
+  const settleRun = settleChatRun(createHeldChatWrites({
+    plans: planApprovalStoreShared, chatStore, broadcast, signature: selfSignature,
+  }), chatRunSettledSink);
   const runSettledListeners = new Set<(settled: PreflightRunSettled) => void>();
   return {
     chatStore,
@@ -2330,7 +2393,7 @@ export const composeChatOrchestrator = (
       for (const listener of runSettledListeners) {
         try { listener(settled); } catch (error) { console.error('[chat] run-settled listener failed', error); }
       }
-      return chatRunSettledSink(settled);
+      return settleRun(settled);
     },
     onRunSettled: (listener) => {
       runSettledListeners.add(listener);

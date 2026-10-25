@@ -41,9 +41,12 @@
  */
 
 import { renderMailWorkSourceRecap } from './mail-work-source-recap.js';
+import { priorSourceReads } from './chat-source-citations.js';
 import { finishMailWorkProposal } from './mail-work-proposal-ending.js';
 import { piiEgress } from '@recued/gateway';
 import { parseMailWorkReadRequest, readCurrentMailWork } from './mail-work-fresh-read.js';
+import { assetQuestionForRead, readCurrentAssetQuestion, type CurrentAssetAttachment } from './chat-asset-fresh-read.js';
+import { createAssetReadReuse, ASSET_READ_REUSE_FEEDBACK } from './chat-asset-read-reuse.js';
 import { createMailWorkDiscoveryReader, mailWorkDiscoveryQueries } from './mail-work-discovery-read.js';
 import { MAIL_WORK_BRIEF_GUIDANCE } from './mail-work-investigation-guidance.js';
 import { MAIL_WORK_PLAN_INVESTIGATION as MAIL_WORK_INVESTIGATION_GUIDANCE, MAIL_WORK_PLAN_OUTPUT_SHAPE as MAIL_WORK_OUTPUT_SHAPE,
@@ -54,6 +57,7 @@ import { mailWorkEditTarget, readMailWorkEditTarget, withMailWorkEditTarget, mai
 import { createMailWorkEvidence, parseMailWorkEvidence } from './mail-work-evidence.js';
 
 import { resolveContextSlice, type ContextSliceRequest } from './chat-context-slice.js';
+import { utcOffsetLabel } from './chat-clock.js';
 import { chatToolCallFailureResult, isNonTerminalToolResult, savedChatToolCallId } from './chat-tool-call-context.js';
 import {
   CONTEXT_OMISSION_NOTICE,
@@ -65,6 +69,7 @@ import {
   stripAliasBearing,
   type BriefOutcome,
   briefAsPriorToolCall,
+  withSourceReadBriefGuidance,
   clearSessionBrief,
   markCarryIncomplete,
   isFoldRecallBearing,
@@ -111,6 +116,7 @@ import {
   type ChatModelRoutingLayer,
   type ChatModelSourceId,
   type ChatPickerTarget,
+  type ChatSourceCitation,
   type ChatPriorToolCall,
   type ChatProvenanceRef,
   type ChatTailMessage,
@@ -1183,6 +1189,7 @@ export interface ChatPriorToolPointers {
 interface ChatMainTurnPromptPacket {
   readonly available_tools: ReadonlyArray<ChatMainTurnTool>;
   readonly content: RunChatTurnPromptContent;
+  readonly source_citations?: readonly ChatSourceCitation[];
   readonly prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>;
   /** D-160 O-5 (light slice) — the `correction-learning` middleware's
    *  `before-turn` prompt contributions (flat "recent corrections — …"
@@ -1645,15 +1652,8 @@ export const formatChatCurrentDate = (
     hourCycle: 'h23',
     timeZone: zone,
   }).format(date);
-  // longOffset always renders padded "GMT±HH:MM" (incl. "GMT+00:00" for
-  // UTC); rebrand to the unambiguous "UTC±HH:MM".
-  const offsetPart = new Intl.DateTimeFormat('en-US', {
-    timeZone: zone,
-    timeZoneName: 'longOffset',
-  })
-    .formatToParts(date)
-    .find((p) => p.type === 'timeZoneName')?.value;
-  const offset = offsetPart ? ` (${offsetPart.replace(/^GMT/, 'UTC')})` : '';
+  const offsetPart = utcOffsetLabel(epochMs, zone);
+  const offset = offsetPart ? ` (${offsetPart})` : '';
   return `${weekday} ${ymd} ${hm}${offset}`;
 };
 
@@ -1670,7 +1670,17 @@ export const composeChatMainTurnPromptParts = (
   // see what it already asked. Without this the model cannot observe a fruitless
   // recall, re-derives the same plan after every trim, and re-issues the
   // identical query until the tool-loop cap ends the turn.
-  const prior = withRecallReceipts(packet.prior_tool_calls ?? []);
+  const sourceReads = priorSourceReads(packet.source_citations ?? [], packet.content);
+  const calls = withRecallReceipts(packet.prior_tool_calls ?? []);
+  // Only retained, server-kept source identities qualify. A trimmed file
+  // locator or an owner-written lookalike cannot relax bulk-read guidance.
+  // A write or another operation can invalidate earlier reads. Keep those
+  // broader sequences on their existing policy instead of marking a read done.
+  const sourceReadSequence = calls.every(call =>
+    ['context.brief', 'work.read', 'document.read', 'situation.query'].includes(call.tool_name));
+  const prior = sourceReadSequence && sourceReads?.sources.some(source => source.kind === 'asset')
+    && sourceReads.sources.some(source => source.kind === 'file')
+    ? withSourceReadBriefGuidance(calls) : calls;
   // The stable head, serialized ONCE. Dropping its closing brace yields — by
   // JSON's insertion-order guarantee — a byte-exact prefix of `body`.
   const headJson = JSON.stringify({
@@ -1691,6 +1701,7 @@ export const composeChatMainTurnPromptParts = (
     ...(packet.current_date ? { current_date: packet.current_date } : {}),
     ...(packet.in_flight_context ? { in_flight_context: packet.in_flight_context } : {}),
     user_message: packet.content.user_message,
+    ...(sourceReads ? { prior_source_reads: sourceReads } : {}),
     ...(packet.pending_user_statements
       && packet.pending_user_statements.length > 0
       ? { pending_user_statements: packet.pending_user_statements }
@@ -1849,6 +1860,9 @@ const priorToolCallEntry = (
  *  to `runChatTurn`. Chat-SHAPED (Stage 1b) — Stage 2 adapts this onto
  *  the framework `TurnContext`. */
 export interface RunChatTurnInputs {
+  /** Wired only for ordinary direct-owner Chat. References are not grants. */
+  readonly prefetch_selected_asset?: true;
+  readonly source_citations?: readonly ChatSourceCitation[];
   readonly session_id: string;
   readonly turn_id: string;
   readonly mail_work?: import('@recued/contracts').MailWorkReadRequest;
@@ -2067,6 +2081,9 @@ export interface RunChatTurnDeps {
    *  the Self / peer routing split + its own broadcast / audit
    *  envelope. The turn calls it per tool; it is NOT re-implemented
    *  here. */
+  readonly currentAssetAttachment?: CurrentAssetAttachment;
+  readonly assertActive?: () => void;
+  readonly revalidateAssetRead?: (id: string, version: string, time_zone: string) => Promise<boolean>;
   readonly dispatchTool: OrchestratorDispatch['dispatchTool'];
   /** Optional owner-Chat preview of the settled answer, before the closing
    * brief. Already restored by the AI boundary; never a planning response.
@@ -2267,17 +2284,22 @@ export const runChatTurn = async (
     if (deps.briefStore) deps.briefStore.clear(session_id);
     else clearSessionBrief(session_id);
   };
-  // Current-instant date+time anchor, computed ONCE per turn (stable
-  // across tool-loop rounds) from the injected clock, in the USER's
-  // timezone when the surface supplied one (else server-local).
-  const currentDate = formatChatCurrentDate(
-    now(),
+  // The turn's clock zone, resolved ONCE: the USER's timezone when the surface
+  // supplied one (else the server's, else the host's). `current_date` is stamped
+  // in it and every dispatch carries it (`ChatDispatchContext.time_zone`), so a
+  // time a tool renders and the turn's date cannot be on two clocks.
+  const turnTimeZone = resolveChatTimeZone(
     inputs.time_zone,
     // D-269 — the server's declared zone, so a Slack / Telegram / sweep-initiated
     // turn anchors on the owner's clock instead of the host's. Absent (db-less
     // harness, pre-D-269 wire) ⇒ unchanged behaviour.
     deps.serverTimeZone?.(),
   );
+  // Current-instant date+time anchor, computed ONCE per turn (stable
+  // across tool-loop rounds) from the injected clock.
+  const currentDate = formatChatCurrentDate(now(), turnTimeZone);
+  const dispatchTool: OrchestratorDispatch['dispatchTool'] = (args) =>
+    deps.dispatchTool({ ...args, time_zone: turnTimeZone });
 
   // Inline AI-packet composer. Per D-164 P6.0 (b) the chat
   // orchestrator owns the packet shape directly + calls
@@ -2292,6 +2314,8 @@ export const runChatTurn = async (
    *  the tool calls that call produced. Set inside `tryMainTurn`, read by the
    *  pre-dispatch check in the tool loop. */
   let lastPacketBody = '';
+  // The fitted packet before privacy aliasing, for exact retained-result checks.
+  let lastSourcePacket = '';
   // EXPERIMENT — the previous turn's own working, when the flag is on. Set after
   // every successful main turn; read by the tool-loop continuation below.
   let carriedWorking: string | undefined;
@@ -2727,6 +2751,7 @@ export const runChatTurn = async (
       composeChatMainTurnPromptParts({
         available_tools: inputs.available_tools,
         content: contentForPrompt(),
+        ...(inputs.source_citations ? { source_citations: inputs.source_citations } : {}),
         current_date: currentDate,
         ...(inputs.index_context ? { index_context: inputs.index_context } : {}),
         ...(inputs.prior_tool_pointers
@@ -3149,6 +3174,7 @@ export const runChatTurn = async (
     // grounded on it (measured on bench 98's captures: refused on packet 5,
     // admitted on packet 6, nothing changed but the echo).
     lastPacketBody = `${systemPrompt}\n${groundingCorpusFromPacket(promptParts.body)}`;
+    lastSourcePacket = promptParts.body;
     const aiInput: Record<string, unknown> = {
       // Lever-2 slice 3 — index mode appends the `tools.search` two-stage
       // guidance; full mode / absent is byte-identical to the baseline prompt.
@@ -3347,28 +3373,46 @@ export const runChatTurn = async (
   const freshCalls: ChatPriorToolCall[] = [];
   const readDiscoveredMail = inputs.mail_work === undefined ? undefined : createMailWorkDiscoveryReader();
   let readingNotice = '';
+  const nativeRead = (name: string): boolean => {
+    const entry = deps.registry.getByName(name);
+    return entry?.tier === 1 && entry.classification === 'read';
+  };
+  const assetQuestion = inputs.prefetch_selected_asset && inputs.mail_work === undefined && nativeRead('work.read')
+    ? assetQuestionForRead(inputs.content.user_message) : null;
+  const assetReadReuse = inputs.prefetch_selected_asset && inputs.mail_work === undefined
+    && picker_target === 'self' && dispatchPeerName === null && nativeRead('work.read') && deps.revalidateAssetRead
+    ? createAssetReadReuse((id, version) => deps.revalidateAssetRead!(id, version, turnTimeZone)) : undefined;
+  const read = async (tool_name: 'mail.read' | 'mail.search' | 'work.read' | 'document.read', args: Record<string, unknown>): Promise<ChatDispatchResult> => {
+    const tc: ToolCall = { tool: tool_name, args };
+    const started_at = now();
+    const result = await dispatchTool({
+      session_id, turn_id, tool_name, arg_values: args, picker_target, read_only: true,
+      ...(inputs.execution_source ? { execution_source: inputs.execution_source } : {}),
+      ...(inputs.dispatch_depth !== undefined ? { dispatch_depth: inputs.dispatch_depth } : {}),
+    });
+    const completed_at = now();
+    if (tool_name === 'work.read') assetReadReuse?.remember(args, result);
+    collectProvenance(tool_name, result);
+    const observed = observeToolCall(tc, result, started_at, completed_at);
+    freshCalls.push(observed);
+    mailEvidence?.record(observed);
+    (assistantToolCalls ??= []).push(toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id));
+    const held = isNonTerminalToolResult(result);
+    const heldRunId = held ? runIdOf(result) : undefined;
+    (assistantToolResults ??= []).push({ tool_name, args, ts: completed_at,
+      message_id: savedChatToolCallId(result), ...(held ? {} : { result }),
+      ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}) });
+    return result;
+  };
+  let sourceReadFailure: string | undefined;
+  if (assetQuestion) {
+    sourceReadFailure = await readCurrentAssetQuestion(assetQuestion, read, {
+      canReadDocument: nativeRead('document.read'),
+      ...(deps.currentAssetAttachment ? { currentAttachment: deps.currentAssetAttachment } : {}),
+    });
+  }
   if (inputs.mail_work !== undefined) {
-    assistantToolCalls = [];
-    assistantToolResults = [];
     const request = mailWorkRequest!;
-    const read = async (tool_name: 'mail.read' | 'mail.search', args: Record<string, unknown>): Promise<ChatDispatchResult> => {
-      const tc: ToolCall = { tool: tool_name, args };
-      const started_at = now();
-      const result = await deps.dispatchTool({
-        session_id, turn_id, tool_name, arg_values: args, picker_target, read_only: true,
-        ...(inputs.execution_source ? { execution_source: inputs.execution_source } : {}),
-        ...(inputs.dispatch_depth !== undefined ? { dispatch_depth: inputs.dispatch_depth } : {}),
-      });
-      const completed_at = now();
-      collectProvenance(tool_name, result);
-      const observed = observeToolCall(tc, result, started_at, completed_at);
-      freshCalls.push(observed);
-      mailEvidence?.record(observed);
-      assistantToolCalls!.push(toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id));
-      assistantToolResults!.push({ tool_name, args, result, ts: completed_at,
-        message_id: savedChatToolCallId(result) });
-      return result;
-    };
     const reading = await readCurrentMailWork(request, read);
     if (reading.failure) return {
       assistant_content: reading.failure, tool_calls: assistantToolCalls, tool_results: assistantToolResults,
@@ -3387,7 +3431,11 @@ export const runChatTurn = async (
     carriedBrief === null && freshCalls.length === 0 && mailEvidence === null ? undefined
       : [...(carriedBrief === null ? [] : [briefAsPriorToolCall(carriedBrief)]),
         ...(sourceCarry ? [sourceCarry] : []), ...freshCalls];
-  let initialResult = await tryMainTurn(openingPriorToolCalls);
+  // A failed current read gets a fixed availability response, while the normal
+  // closing fold still captures this turn's owner statements for restart.
+  let initialResult: Awaited<ReturnType<typeof tryMainTurn>> = sourceReadFailure
+    ? { kind: 'ok', output: { response: sourceReadFailure, events: [], tool_calls: [] } }
+    : await tryMainTurn(openingPriorToolCalls);
   totalUsage = aggregateTokenUsageReports(totalUsage, initialResult.usage);
 
   // ⛔⛔ THE SAME GUIDED RETRY THE MID-LOOP REINVOKE GETS, at the site where an
@@ -3560,7 +3608,8 @@ export const runChatTurn = async (
     // probed FIRST because it is the more harmful half — an absence claim wastes
     // the user's time, an invented identifier is acted on.
     if (
-      !emptyOutputUnrecovered
+      !sourceReadFailure
+      && !emptyOutputUnrecovered
       && !isEmptyChatAiOutput(currentAiOutput)
       && inventedValueInReply(currentAiOutput, lastPacketBody)
     ) {
@@ -3574,7 +3623,8 @@ export const runChatTurn = async (
       totalUsage = aggregateTokenUsageReports(totalUsage, inventedRetry.usage);
       if (inventedRetry.kind === 'ok') currentAiOutput = inventedRetry.output;
     } else if (
-      !emptyOutputUnrecovered
+      !sourceReadFailure
+      && !emptyOutputUnrecovered
       && !isEmptyChatAiOutput(currentAiOutput)
       && assertedAbsenceWithoutLooking(currentAiOutput)
     ) {
@@ -3847,6 +3897,7 @@ export const runChatTurn = async (
           readonly result: ChatDispatchResult;
           readonly started_at: number;
           readonly completed_at: number;
+          readonly reused?: true;
         }
         const resolveConcurrencySafe = (toolName: string): boolean => {
           // Seller rollup admission is read-then-record. Keep gateway top-level
@@ -3859,6 +3910,10 @@ export const runChatTurn = async (
           // `dispatchPeerName` is always null now.
           return deps.registry.getByName(toolName)?.concurrency_safe ?? false;
         };
+        const sourceReadBatch = nextToolCalls.every(tc => nativeRead(tc.tool)
+          && ['work.read', 'document.read', 'situation.query'].includes(tc.tool));
+        // A mixed batch may contain a write before or after a concurrent read.
+        if (!sourceReadBatch) assetReadReuse?.clear();
         const dispatchOutput = await dispatchToolCalls<ToolCall, ToolCallExecution>({
           calls: nextToolCalls.map((tc) => ({
             concurrency_safe: resolveConcurrencySafe(tc.tool),
@@ -3956,7 +4011,11 @@ export const runChatTurn = async (
                 completed_at,
               };
             }
-            const result = await deps.dispatchTool({
+            if (sourceReadBatch && tc.tool === 'work.read') {
+              const reused = await assetReadReuse?.reuse(tc.args, lastSourcePacket);
+              if (reused) return { result: reused, started_at, completed_at: now(), reused: true as const };
+            }
+            const result = await dispatchTool({
               session_id,
               turn_id,
               ...(inputs.retry_of_plan_id !== undefined
@@ -3997,13 +4056,18 @@ export const runChatTurn = async (
             if (result.ok === false && result.reason === 'invalid_args') {
               refusedCallCounts.set(identity, (refusedCallCounts.get(identity) ?? 0) + 1);
             }
+            if (sourceReadBatch && tc.tool === 'work.read') assetReadReuse?.remember(tc.args, result);
             return { result, started_at, completed_at };
           },
         });
         // ⚗ Where THIS round's results begin. Retention below must never cut
         //   below it — see `retainForReinvoke`.
+        // Batch dispatch converts thrown errors to tool outcomes, including a
+        // cancelled version probe. Recheck outside that catch before continuing.
+        deps.assertActive?.();
         const roundStart = priorToolCalls.length;
         let toolCallsExecuted = 0;
+        let reusedAssetRead = false;
         const mailSearchResults: ChatDispatchResult[] = [];
         for (let i = 0; i < nextToolCalls.length; i += 1) {
           const tc = nextToolCalls[i]!;
@@ -4024,6 +4088,9 @@ export const runChatTurn = async (
                 started_at: now(),
                 completed_at: now(),
               };
+          // A validation probe is not another executed Chat tool. Keep the
+          // original durable result, provenance and read time.
+          if (execution.reused) { reusedAssetRead = true; continue; }
           if (tc.tool === 'mail.search') mailSearchResults.push(execution.result);
           collectProvenance(tc.tool, execution.result);
           toolCallsAccum.push(toolCallProvenanceEntry(
@@ -4125,7 +4192,7 @@ export const runChatTurn = async (
         await readDiscoveredMail?.(priorToolCalls, mailSearchResults, async args => {
           const tc: ToolCall = { tool: 'mail.read', args };
           const started_at = now();
-          const result = await deps.dispatchTool({ session_id, turn_id, tool_name: tc.tool, arg_values: args,
+          const result = await dispatchTool({ session_id, turn_id, tool_name: tc.tool, arg_values: args,
             picker_target, read_only: true, round_index: roundIndex,
             ...(inputs.execution_source ? { execution_source: inputs.execution_source } : {}),
             ...(inputs.dispatch_depth !== undefined ? { dispatch_depth: inputs.dispatch_depth } : {}),
@@ -4209,6 +4276,7 @@ export const runChatTurn = async (
         // into the earlier round's wire input.
         const reinvokeResult = await tryMainTurn(
           retainForReinvoke(priorToolCalls, roundStart),
+          reusedAssetRead ? ASSET_READ_REUSE_FEEDBACK : undefined,
         );
         totalUsage = aggregateTokenUsageReports(totalUsage, reinvokeResult.usage);
 

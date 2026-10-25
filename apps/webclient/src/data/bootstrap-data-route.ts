@@ -64,6 +64,8 @@ import type {
   MemoryImportResult,
   MemoryListEntry,
   MemoryListRequest,
+  MemoryRestoreRequest,
+  MemoryRestoreResult,
   MemoryListResponse,
   MemoryMutationResult,
   MemoryUpdateRequest,
@@ -246,6 +248,7 @@ import {
   MEMORY_DELETE_ACTION,
   MEMORY_DELETE_CANCEL_ACTION,
   MEMORY_DELETE_CONFIRM_ACTION,
+  MEMORY_RESTORE_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
   MEMORY_DETAIL_HEADING_ATTR,
   MEMORY_EDIT_ACTION,
@@ -305,6 +308,8 @@ import {
   SEARCH_OPEN_RECORD_ACTION,
   SEARCH_OPEN_GROUP_ACTION,
   SEARCH_RETRY_ACTION,
+  SEARCH_DID_YOU_MEAN_ACTION,
+  SEARCH_DID_YOU_MEAN_QUERY_ATTR,
   SEARCH_RECORD_ID_ATTR,
   SEARCH_GROUP_SLUG_ATTR,
   SEARCH_GROUP_PLATFORM_ATTR,
@@ -354,6 +359,7 @@ import type {
   CollectionListQuery,
   CollectionPlatform,
   CollectionRecord,
+  CollectionSearchDidYouMean,
   CollectionSearchGroup,
   Link,
   SharedListEntry,
@@ -792,6 +798,9 @@ export type DataMemoryDeleteCaller = (args: MemoryDeleteRequest) => Promise<Memo
 /** D-198 Slice 3 — bulk import (`memory.import`). Absent → the Import panel
  *  reports a not-wired notice. */
 export type DataMemoryImportCaller = (args: MemoryImportRequest) => Promise<MemoryImportResult>;
+/** D-198 §10 — the owner undoes an AGENT's forget (`memory.restore`). Absent →
+ *  no Restore on agent-forgotten rows. */
+export type DataMemoryRestoreCaller = (args: MemoryRestoreRequest) => Promise<MemoryRestoreResult>;
 
 /** D-198 Slice 5 — the generic collection-explorer reads (schema-driven
  *  list→detail over the adapter-backed collections). All three present → the
@@ -805,7 +814,7 @@ export type DataCollectionListCaller = (
 /** UNIVERSAL SEARCH — one query fanned across every collection, GROUPED. */
 export type DataCollectionSearchAllCaller = (
   args: { query: string; per_group?: number },
-) => Promise<{ groups: CollectionSearchGroup[] }>;
+) => Promise<{ groups: CollectionSearchGroup[]; did_you_mean?: CollectionSearchDidYouMean; absent_words?: string[] }>;
 export type DataCollectionGetCaller = (
   args: { platform: CollectionPlatform; slug: string; record_id: string },
 ) => Promise<{ record: CollectionRecord | null }>;
@@ -986,6 +995,8 @@ export interface BootstrapDataRouteOptions {
   /** D-198 Slice 3 — bulk import (`memory.import`). Present → the Memory lens
    *  shows the Import affordance. */
   memoryImportCaller?: DataMemoryImportCaller;
+  /** D-198 §10 — `memory.restore`, for the Restore on an agent-forgotten row. */
+  memoryRestoreCaller?: DataMemoryRestoreCaller;
   /** D-198 Slice 5 — the collection explorer reads. All three present → the
    *  mail / calendar tabs browse list→detail (from the raw-id drill-down);
    *  absent → the tab shows a not-wired notice. */
@@ -5227,6 +5238,9 @@ export const bootstrapDataRoute = (
   let memoryPendingDeleteId: string | undefined;
   let memoryDeletingId: string | null = null;
   let memoryDeleteError: { memoryId: string; message: string } | null = null;
+  // D-198 §10 — the agent-forgotten row whose Restore is in flight, and its failure.
+  let memoryRestoringId: string | null = null;
+  let memoryRestoreError: { memoryId: string; message: string } | null = null;
   // D-198 Slice 3 — the import panel (paste JSON → memory.import).
   let memoryImport: MemoryImportState = { open: false, text: '', submitting: false };
   let memoryImportBaseline: string | null = null;
@@ -5632,6 +5646,10 @@ export const bootstrapDataRoute = (
   // absent when the search simply has not run.
   let universalSearchQuery = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.query : '';
   let universalSearchGroups: CollectionSearchGroup[] | undefined;
+  /** The server's "did you mean" for the query on screen; cleared with its groups. */
+  let universalSearchDidYouMean: CollectionSearchDidYouMean | undefined;
+  /** The query's words no store holds — the groups match only the others. */
+  let universalSearchAbsentWords: string[] | undefined;
   let universalSearchLoading = false;
   let universalSearchCapabilitiesLoading = false;
   let universalSearchError: string | undefined;
@@ -7032,6 +7050,12 @@ export const bootstrapDataRoute = (
               ...(universalSearchGroups !== undefined
                 ? { groups: universalSearchGroups }
                 : {}),
+              ...(universalSearchDidYouMean !== undefined
+                ? { didYouMean: universalSearchDidYouMean }
+                : {}),
+              ...(universalSearchAbsentWords !== undefined
+                ? { absentWords: universalSearchAbsentWords }
+                : {}),
               ...(universalSearchRecipes.length > 0
                 ? { recipes: universalSearchRecipes }
                 : {}),
@@ -7111,6 +7135,8 @@ export const bootstrapDataRoute = (
             ? { openingEditId: memoryEditOpeningId }
             : {}),
           ...(memoryEditError !== null ? { editError: memoryEditError } : {}),
+          ...(memoryRestoringId !== null ? { restoringId: memoryRestoringId } : {}),
+          ...(memoryRestoreError !== null ? { restoreError: memoryRestoreError } : {}),
           canWrite: memoryCanWrite,
         })
       : body;
@@ -9887,6 +9913,8 @@ export const bootstrapDataRoute = (
     if (universalSearchTimer !== null) clearTimeout(universalSearchTimer);
     universalSearchTimer = null;
     universalSearchGroups = undefined;
+    universalSearchDidYouMean = undefined;
+    universalSearchAbsentWords = undefined;
     universalSearchRecipes = [];
     universalSearchPacks = [];
     universalSearchMarket = [];
@@ -9928,6 +9956,8 @@ export const bootstrapDataRoute = (
     universalSearchLoading = true;
     universalSearchCapabilitiesLoading = true;
     universalSearchGroups = undefined;
+    universalSearchDidYouMean = undefined;
+    universalSearchAbsentWords = undefined;
     universalSearchRecipes = [];
     universalSearchPacks = [];
     universalSearchError = undefined;
@@ -9943,13 +9973,17 @@ export const bootstrapDataRoute = (
     // must neither delay starting the record search nor hide its ready rows.
     const recordSearch = (async (): Promise<void> => {
       try {
-        const { groups } = await caller({ query });
+        const { groups, did_you_mean: didYouMean, absent_words: absentWords } = await caller({ query });
         if (!isCurrent()) return;
         universalSearchGroups = groups;
+        universalSearchDidYouMean = didYouMean;
+        universalSearchAbsentWords = absentWords;
         universalSearchError = undefined;
       } catch (err) {
         if (!isCurrent()) return;
         universalSearchGroups = undefined;
+        universalSearchDidYouMean = undefined;
+        universalSearchAbsentWords = undefined;
         universalSearchError = humanizeRpcError(err);
       } finally {
         if (isCurrent()) {
@@ -10953,6 +10987,35 @@ export const bootstrapDataRoute = (
       memoryDeleteError = { memoryId: memory_id, message: errMessage(err) };
       render();
       focusMemoryDeleteConfirm(memory_id);
+    } finally {
+      opaqueMutationsInFlight -= 1;
+    }
+  };
+
+  /** D-198 §10 — Restore an entry an AGENT forgot. One step: it removes nothing,
+   *  and the owner can forget the entry again from the same row. */
+  const restoreMemory = async (memory_id: string): Promise<void> => {
+    if (memoryRestoringId !== null) return;
+    const restoreCaller = opts.memoryRestoreCaller;
+    if (restoreCaller === undefined) return;
+    memoryRestoringId = memory_id;
+    memoryRestoreError = null;
+    memoryError = undefined;
+    opaqueMutationsInFlight += 1;
+    render();
+    try {
+      await restoreCaller({ memory_id });
+      if (disposed) return;
+      memoryRestoringId = null;
+      pendingLoadPromise = refreshActive();
+      await pendingLoadPromise;
+      if (!disposed) focusMemoryRowAction(MEMORY_DELETE_ACTION, memory_id);
+    } catch (err) {
+      if (disposed) return;
+      memoryRestoringId = null;
+      memoryRestoreError = { memoryId: memory_id, message: errMessage(err) };
+      render();
+      focusMemoryRowAction(MEMORY_RESTORE_ACTION, memory_id);
     } finally {
       opaqueMutationsInFlight -= 1;
     }
@@ -14136,6 +14199,7 @@ export const bootstrapDataRoute = (
       || action === MEMORY_DELETE_ACTION
       || action === MEMORY_DELETE_CONFIRM_ACTION
       || action === MEMORY_DELETE_CANCEL_ACTION
+      || action === MEMORY_RESTORE_ACTION
     ) {
       const memoryId = target.getAttribute(MEMORY_ROW_ID_ATTR);
       if (memoryId === null || memoryId.length === 0) return;
@@ -14143,6 +14207,7 @@ export const bootstrapDataRoute = (
       else if (action === MEMORY_EDIT_ACTION) void openMemoryEdit(memoryId);
       else if (action === MEMORY_DELETE_ACTION) requestMemoryDelete(memoryId);
       else if (action === MEMORY_DELETE_CONFIRM_ACTION) void confirmMemoryDelete(memoryId);
+      else if (action === MEMORY_RESTORE_ACTION) void restoreMemory(memoryId);
       else cancelMemoryDelete();
       return;
     }
@@ -14451,6 +14516,18 @@ export const bootstrapDataRoute = (
     }
     if (action === SEARCH_RETRY_ACTION) {
       void runUniversalSearch();
+      return;
+    }
+    if (action === SEARCH_DID_YOU_MEAN_ACTION) {
+      // Runs the corrected search as if typed: the box takes the new query on
+      // the repaint, and the saved view follows it like any other edit.
+      const corrected = target.getAttribute(SEARCH_DID_YOU_MEAN_QUERY_ATTR);
+      if (corrected !== null && corrected.trim() !== '') {
+        retireUniversalSearch();
+        universalSearchQuery = corrected;
+        opts.onViewChange?.(currentView());
+        void runUniversalSearch();
+      }
       return;
     }
     if (action === 'open-create-contact') {

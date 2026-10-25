@@ -7,7 +7,7 @@ export type BackupStatusRefreshOutcome = 'success' | 'failure' | 'superseded';
 export const createBackupStatusRefresh = (options: {
   host: HTMLElement;
   document: Document;
-  prefix: 'backup-health' | 'backup-integrity';
+  prefix: 'backup-health' | 'backup-integrity' | 'backup-watchdog' | 'unattended' | 'drill';
   now?: () => number;
   onPendingChange?: (pending: boolean) => void;
 }) => {
@@ -19,11 +19,34 @@ export const createBackupStatusRefresh = (options: {
   options.host.appendChild(status);
   let disposed = false, pending = false, waiting = false, failed = false;
   let lastSuccessfulAt: number | undefined;
+  const copy = options.prefix === 'drill' ? {
+    waiting: 'Waiting to refresh recovery receipts after the current action. ',
+    pending: 'Refreshing recovery receipts… ',
+    failed: 'Recovery receipts could not be checked. Reconnect and refresh before starting a test. ',
+    empty: 'No successful recovery receipt refresh yet.',
+    last: 'Last successful recovery receipt refresh: ',
+  } : options.prefix === 'backup-watchdog' ? {
+    waiting: 'Waiting to refresh monitor status after the current action. ',
+    pending: 'Refreshing monitor status… ',
+    failed: 'Latest monitor status refresh failed. ',
+    empty: 'No successful monitor status refresh yet.',
+    last: 'Last successful monitor status refresh: ',
+  } : options.prefix === 'unattended' ? {
+    waiting: 'Waiting to refresh schedule status after the save. ',
+    pending: 'Refreshing schedule status… ',
+    failed: 'Latest schedule status refresh failed. ',
+    empty: 'No successful schedule status refresh yet.',
+    last: 'Last successful schedule status refresh: ',
+  } : {
+    waiting: 'Waiting to refresh status after the save. ',
+    pending: 'Refreshing status… ',
+    failed: 'Latest status refresh failed. ',
+    empty: 'No successful status refresh yet.',
+    last: 'Last successful status refresh: ',
+  };
   const render = (): void => {
-    const progress = waiting ? 'Waiting to refresh status after the save. '
-      : pending ? 'Refreshing status… ' : failed ? 'Latest status refresh failed. ' : '';
-    status.textContent = progress + (lastSuccessfulAt === undefined
-      ? 'No successful status refresh yet.' : 'Last successful status refresh: ');
+    const progress = waiting ? copy.waiting : pending ? copy.pending : failed ? copy.failed : '';
+    status.textContent = progress + (lastSuccessfulAt === undefined ? copy.empty : copy.last);
     if (lastSuccessfulAt !== undefined) {
       const instant = new Date(lastSuccessfulAt);
       if (Number.isFinite(instant.getTime())) {
@@ -45,6 +68,7 @@ export const createBackupStatusRefresh = (options: {
   return {
     start: (): void => begin(false),
     waitForSave: (): void => begin(true),
+    waitForAction: (): void => begin(true),
     finish(outcome: BackupStatusRefreshOutcome): void {
       if (disposed) return;
       pending = false; waiting = false; failed = outcome === 'failure';

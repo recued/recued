@@ -61,6 +61,24 @@ const summaryModes: Array<{ name: string; request: YoursReadRequest }> = [
 ];
 
 describe('bounded asset occurrence reads', () => {
+  it('omits the unused retirement scan from list snapshots and preserves displayed receipts', async () => {
+    const f = fixture(); f.put('a', { sphere: 'personal', dates: { review_on: null }, rules: [rule] });
+    for (const [id, asset_id, subject_kind] of [['asset-task', 'a', 'asset'], ['occasion-task', 'birthday', 'occasion']] as const) {
+      f.work.writeCommitment({ id: `task:${id}`, source_id: 'recued.commitment', direction: 'outbound', statement: id,
+        derivation: 'user_declared', lifecycle_state: 'pending', promised_for_at: at }, at);
+      f.receipt(asset_id, id, { commitment_id: `task:${id}`, subject_kind });
+    }
+    const requests: YoursReadRequest[] = [{}, { include_asset_summaries: true },
+      { asset_sphere: 'personal', include_asset_summaries: true }, { asset_filter: 'missing_facts' },
+      { occasion_id: 'birthday' }, { search: 'no-matching-asset' }, { offset: 999 }];
+    for (const request of requests) for (let round = 0; round < 2; round++) {
+      const read = await f.measure(() => f.service.snapshot(request));
+      expect(read.value).not.toHaveProperty('retirement_impact');
+      expect(read.value.occurrences.map(row => row.id)).toEqual(request.occasion_id ? ['occasion-task'] : ['asset-task', 'occasion-task']);
+      expect(read.sql.filter(listSql)).toHaveLength(2);
+    }
+  });
+
   it('matches individual DTOs and order across batches, aliases, query statistics, absent and quoted ids', async () => {
     const f = fixture(); const ids = Array.from({ length: 1001 }, (_, index) => `asset-${index}`);
     ids.push("asset-'quoted?", 'asset-漢');
@@ -109,7 +127,7 @@ describe('bounded asset occurrence reads', () => {
     expect(read.value.asset_summaries).toEqual(ids.slice(211, 216).map(asset_id => ({ asset_id, open_tasks: 0, active_rules: 1, next_due: null,
       missing: [{ path: 'dates.review_on', reason: 'unknown' }] })));
     expect(read.value.asset_filter).toEqual({ kind: 'missing_facts', unavailable: 0 });
-    expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(3);
+    expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(2);
   });
 
   it('reuses receipts for attention candidates and keeps sphere-only summaries on the returned page', async () => {
@@ -122,10 +140,10 @@ describe('bounded asset occurrence reads', () => {
     })();
     const read = await f.measure(() => f.service.snapshot({ asset_sphere: 'personal', asset_filter: 'missing_facts', search: 'Fixture', offset: 2, limit: 5 }));
     expect(read.value.total_assets).toBe(personal.length); expect(read.value.assets.map(asset => asset.id)).toEqual(personal.slice(2, 7));
-    expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(3);
+    expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(2);
     const page = await f.measure(() => f.service.snapshot({ asset_sphere: 'personal', include_asset_summaries: true, offset: 2, limit: 5 }));
     expect(page.value.assets.map(asset => asset.id)).toEqual(personal.slice(2, 7));
-    expect(occurrenceReads(page.sql)).toEqual([]); expect(page.sql.filter(listSql)).toHaveLength(3);
+    expect(occurrenceReads(page.sql)).toEqual([]); expect(page.sql.filter(listSql)).toHaveLength(2);
     const empty = await f.measure(() => f.service.snapshot({ asset_filter: 'missing_facts', search: 'no-fixture-match' }));
     expect(empty.value.total_assets).toBe(0); expect(occurrenceReads(empty.sql)).toEqual([]);
   });
@@ -162,7 +180,7 @@ describe('bounded asset occurrence reads', () => {
         const summaries = expected.map(asset => summarizeYoursAsset(asset, { work: f.work, occurrences: f.rows.byAsset(asset.id), now: at, timeZone: 'UTC' }));
         const read = await f.measure(() => f.service.snapshot(request));
         expect(read.value.assets).toEqual(expected); expect(read.value.total_assets).toBe(total); expect(read.value.asset_summaries).toEqual(summaries);
-        expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(3);
+        expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(request.asset_id ? 3 : 2);
       }
     }
   });
@@ -183,7 +201,7 @@ describe('bounded asset occurrence reads', () => {
       const read = await f.measure(() => f.service.snapshot({ include_asset_summaries: true, ...(sphere ? { asset_sphere: sphere } : {}) }));
       expect(read.value.assets).toHaveLength(2); expect(read.value.total_assets).toBe(2);
       expect(read.value.asset_summaries?.map(summary => summary.asset_id)).toEqual(['good']); expect(read.value.asset_filter).toBeUndefined();
-      expect(lists).toBe(4); expect(occurrenceReads(read.sql)).toHaveLength(2); expect(occurrenceReads(read.sql).some(batchSql)).toBe(false);
+      expect(lists).toBe(3); expect(occurrenceReads(read.sql)).toHaveLength(2); expect(occurrenceReads(read.sql).some(batchSql)).toBe(false);
       expect(warning).toHaveBeenCalledTimes(1);
     });
   }
@@ -209,7 +227,7 @@ describe('bounded asset occurrence reads', () => {
       expect(result.assets.map(asset => asset.id)).toEqual(request.asset_id ? ['bad'] : ['bad', 'good']);
       expect(result.asset_summaries?.map(summary => summary.asset_id)).toEqual(request.asset_id ? [] : ['good']);
       expect(result.total_assets).toBe(2); expect(result.asset_filter).toBeUndefined();
-      expect(lists).toBe(4); expect(points).toBe(request.asset_id ? 1 : 2); expect(warning).toHaveBeenCalledTimes(1);
+      expect(lists).toBe(request.asset_id ? 4 : 3); expect(points).toBe(request.asset_id ? 1 : 2); expect(warning).toHaveBeenCalledTimes(1);
     }
   });
 
@@ -267,7 +285,7 @@ describe('bounded asset occurrence reads', () => {
         const read = await f.measure(() => f.service.snapshot(mode.request));
         expect(read.value.asset_summaries).toEqual([expected]); expect(occurrenceReads(read.sql)).toEqual([]);
         expect(read.value.occurrences.map(row => row.id)).toEqual(['occ:A', 'occ:a', 'occ:漢', 'occ:\ue000', 'occ:😀']);
-        expect(read.sql.filter(listSql)).toHaveLength(3);
+        expect(read.sql.filter(listSql)).toHaveLength(2);
       }
     }
   });
@@ -321,7 +339,7 @@ describe('bounded asset occurrence reads', () => {
     });
     const read = await f.measure(() => f.service.snapshot({ asset_filter: 'missing_facts', include_asset_summaries: true }));
     expect(read.value.asset_summaries).toEqual([expected]); expect(read.value.asset_filter?.unavailable).toBe(0);
-    expect(lists).toBe(4); expect(occurrenceReads(read.sql)).toHaveLength(1); expect(occurrenceReads(read.sql).every(batchSql)).toBe(true);
+    expect(lists).toBe(3); expect(occurrenceReads(read.sql)).toHaveLength(1); expect(occurrenceReads(read.sql).every(batchSql)).toBe(true);
   });
 
   for (const mode of summaryModes) it(`keeps ${mode.name} summaries through delivery and reads changes next time`, async () => {
@@ -342,20 +360,72 @@ describe('bounded asset occurrence reads', () => {
     } finally { p.release.resolve(); await reading; }
   });
 
-  it('reads retirement receipts freshly after delivery on an asset detail read', async () => {
-    const f = fixture(); f.put('a', { dates: { review_on: null }, rules: [rule] }); const p = f.pause();
-    const reading = f.service.snapshot({ asset_id: 'a', include_asset_summaries: true });
+  it('reads retirement receipts freshly after delivery for the selected asset and its retiring descendants', async () => {
+    const f = fixture();
+    f.put('a', { dates: { review_on: null }, rules: [rule] });
+    f.put('part', { belongs_to: 'a', retirement: 'part' });
+    f.put('nested-part', { belongs_to: 'part', retirement: 'part' });
+    f.put('contract', { belongs_to: 'a', retirement: 'cancel_or_transfer' });
+    f.put('contract-part', { belongs_to: 'contract', retirement: 'part' });
+    f.put('unrelated'); const p = f.pause();
+    const reading = f.measure(() => f.service.snapshot({ asset_id: 'a', include_asset_summaries: true }));
     try {
       await p.entered.promise;
-      f.work.writeCommitment({ id: 'task', source_id: 'recued.commitment', direction: 'outbound', statement: 'New task',
-        derivation: 'user_declared', lifecycle_state: 'pending' }, at);
-      f.receipt('a', 'late', { commitment_id: 'task' });
+      for (const asset_id of ['a', 'part', 'nested-part', 'contract', 'contract-part', 'unrelated']) {
+        const commitment_id = `task:${asset_id}`;
+        f.work.writeCommitment({ id: commitment_id, source_id: 'recued.commitment', direction: 'outbound', statement: 'New task',
+          derivation: 'user_declared', lifecycle_state: 'pending' }, at);
+        f.receipt(asset_id, `late:${asset_id}`, { commitment_id });
+      }
+      f.work.writeCommitment({ id: 'closed', source_id: 'recued.commitment', direction: 'outbound', statement: 'Closed task',
+        derivation: 'user_declared', lifecycle_state: 'fulfilled' }, at);
+      f.receipt('a', 'closed', { commitment_id: 'closed' }); f.receipt('part', 'notice');
       p.release.resolve(); const first = await reading;
-      expect(first.retirement_impact?.open_occurrences).toBe(1); expect(first.occurrences).toEqual([]);
-      expect(first.asset_summaries?.[0]?.open_tasks).toBe(0);
-      const next = await f.service.snapshot({ asset_id: 'a', include_asset_summaries: true });
-      expect(next.asset_summaries?.[0]?.open_tasks).toBe(1);
+      expect(first.value.retirement_impact).toEqual({ parts: 2, contracts: 1, open_occurrences: 3 });
+      expect(first.value.occurrences).toEqual([]); expect(first.value.asset_summaries?.[0]?.open_tasks).toBe(0);
+      expect(first.sql.filter(listSql)).toHaveLength(3);
+      const next = await f.measure(() => f.service.snapshot({ asset_id: 'a', include_asset_summaries: true }));
+      expect(next.value.asset_summaries?.[0]?.open_tasks).toBe(1);
+      expect(next.value.occurrences.map(row => row.id)).toEqual(['late:a']);
+      expect(next.value.retirement_impact).toEqual(first.value.retirement_impact); expect(next.sql.filter(listSql)).toHaveLength(3);
     } finally { p.release.resolve(); await reading; }
+  });
+
+  it('reads retirement closures and removals freshly after destinations load', async () => {
+    const f = fixture(); f.put('a', { dates: { review_on: null }, rules: [rule] });
+    f.put('part', { belongs_to: 'a', retirement: 'part' });
+    for (const [id, asset_id] of [['close', 'a'], ['keep', 'a'], ['remove', 'part']] as const) {
+      const commitment_id = `task:${id}`;
+      f.work.writeCommitment({ id: commitment_id, source_id: 'recued.commitment', direction: 'outbound', statement: id,
+        derivation: 'user_declared', lifecycle_state: 'pending', promised_for_at: at }, at);
+      f.receipt(asset_id, id, { commitment_id });
+    }
+    const p = f.pause(); const reading = f.measure(() => f.service.snapshot({ asset_id: 'a', include_asset_summaries: true }));
+    try {
+      await p.entered.promise;
+      f.work.writeCommitment({ id: 'task:close', source_id: 'recued.commitment', direction: 'outbound', statement: 'close',
+        derivation: 'user_declared', lifecycle_state: 'fulfilled', promised_for_at: at }, at + 1);
+      f.rows.remove('remove'); p.release.resolve(); const first = await reading;
+      expect(first.value.asset_summaries?.[0]?.open_tasks).toBe(2);
+      expect(first.value.occurrences.map(row => row.id)).toEqual(['close', 'keep']);
+      expect(first.value.retirement_impact).toEqual({ parts: 1, contracts: 0, open_occurrences: 1 });
+      expect(first.sql.filter(listSql)).toHaveLength(3);
+      const next = await f.service.snapshot({ asset_id: 'a', include_asset_summaries: true });
+      expect(next.asset_summaries?.[0]?.open_tasks).toBe(1); expect(next.occurrences.map(row => row.id)).toEqual(['keep']);
+      expect(next.retirement_impact).toEqual(first.value.retirement_impact);
+    } finally { p.release.resolve(); await reading; }
+  });
+
+  it('retains retirement impact when the selected asset row is missing', async () => {
+    const f = fixture();
+    f.work.writeCommitment({ id: 'task:missing', source_id: 'recued.commitment', direction: 'outbound', statement: 'Retained task',
+      derivation: 'user_declared', lifecycle_state: 'pending' }, at);
+    f.receipt('missing', 'orphan', { commitment_id: 'task:missing' });
+    const read = await f.measure(() => f.service.snapshot({ asset_id: 'missing' }));
+    expect(read.value.assets).toEqual([]); expect(read.value.total_assets).toBe(0);
+    expect(read.value.occurrences.map(row => row.id)).toEqual(['orphan']);
+    expect(read.value.retirement_impact).toEqual({ parts: 0, contracts: 0, open_occurrences: 1 });
+    expect(read.sql.filter(listSql)).toHaveLength(3);
   });
 
   for (const phase of ['prepare', 'execution'] as const) it(`falls back on a batch ${phase} failure and retains per-asset unavailable counts`, async () => {

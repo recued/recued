@@ -378,8 +378,9 @@ const setupMount = (
 
 const rowFor = (host: FakeElement, _slug: string): FakeElement => {
   // The panel is DETAIL-only now — the delete confirm strip + the body-grant /
-  // overlap disclosure render in the (auto-opened) detail's identity section
-  // (appendPackActions' target), not a list row. Only one pack's detail shows.
+  // overlap disclosure render inside the (auto-opened) detail's identity section,
+  // in its actions group (appendPackActions' target), not a list row. Only one
+  // pack's detail shows.
   const identity = findByAttrValue(host, 'data-recued-packs-detail-section', 'identity');
   expect(identity).not.toBeNull();
   return identity!;
@@ -689,13 +690,16 @@ describe('D-145 Slice J - panel overlap disclosure', () => {
         otherPackSlugs: ['pack-a'],
       },
     ]);
-    const footerIndex = row.children.findIndex(
+    // Order is read among the strip's own siblings: it is drawn where appendPackActions
+    // draws, which the organized detail workspace (`a16c0d770`) put in an actions group.
+    expect(bodyList).not.toBeNull();
+    const strip = bodyList!.parent!;
+    const footerIndex = strip.children.findIndex(
       (child) => child.tagName === 'FOOTER',
     );
-    const bodyListIndex = row.children.indexOf(bodyList!);
-    const overlapIndex = row.children.indexOf(section);
+    const bodyListIndex = strip.children.indexOf(bodyList!);
+    const overlapIndex = strip.children.indexOf(section);
 
-    expect(bodyList).not.toBeNull();
     expect(footerIndex).toBeGreaterThanOrEqual(0);
     expect(bodyListIndex).toBeGreaterThanOrEqual(0);
     expect(overlapIndex).toBeGreaterThan(bodyListIndex);

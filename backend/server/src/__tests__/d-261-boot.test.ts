@@ -20,6 +20,7 @@ import { createContractDefinitionStore } from '../storage/contract-definition-st
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { createChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
 import { fixtureRecipe } from './d-261-fixtures.js';
+import { serverEntry } from './helpers/server-bundle.js';
 
 const root = resolve(import.meta.dirname, '../../../..');
 
@@ -85,9 +86,9 @@ const rpc = <T>(socket: WebSocket, method: string, args: unknown = {}): Promise<
   socket.on('message', receive); socket.send(JSON.stringify({ type: 'rpc', request_id, method, args }));
 });
 const boot = async (dir: string, bearer: string) => {
-  // ⚠ A RESERVED PORT IS NOT A HELD PORT, and this window is ~20s wide — the
-  //   whole spawn + tsx boot. Measured 2026-09-16 while chasing a different
-  //   flake: if anything takes this port in between, the server logs
+  // ⚠ A RESERVED PORT IS NOT A HELD PORT, and this window is the whole spawn +
+  //   boot (~20s under tsx when this was written). Measured 2026-09-16 while chasing a
+  //   different flake: if anything takes this port in between, the server logs
   //   `path listener bind failed … EADDRINUSE` and EXITS CODE 4, which the poll
   //   below reports as "Foreground boot exited" with that line in the trace. So
   //   it is self-diagnosing, which is why it is documented rather than rebuilt.
@@ -119,7 +120,7 @@ const boot = async (dir: string, bearer: string) => {
   // unpackaged takes no lease at all (`unpackaged-update-lease.test.ts`), so the
   // contention above is gone there; `docker-thin` keeps these boots taking one.
   const binDir = join(dir, 'bin'); mkdirSync(binDir, { recursive: true });
-  const child = spawn(process.execPath, ['--import', 'tsx', join(root, 'backend/server/src/bin.ts'), 'serve',
+  const child = spawn(process.execPath, [...await serverEntry(), 'serve',
     '--db', join(dir, 'realm.db'), '--config', join(dir, 'config.toml'), '--port', String(port)], {
     cwd: root, env: { ...process.env, TSX_TSCONFIG_PATH: join(root, 'backend/server/tsconfig.json'),
       RECUED_LLM_API_KEY: '', RECUED_LLM_SLOT2_API_KEY: '', RECUED_BOOT_TRACE: '1',
@@ -192,7 +193,7 @@ interface StdioSession {
 }
 
 const openStdio = async (dir: string, bearer: string): Promise<StdioSession> => {
-  const child = spawn(process.execPath, ['--import', 'tsx', join(root, 'backend/server/src/bin.ts'), '--mcp', '--db', join(dir, 'realm.db')], {
+  const child = spawn(process.execPath, [...await serverEntry(), '--mcp', '--db', join(dir, 'realm.db')], {
     cwd: root, env: { ...process.env, TSX_TSCONFIG_PATH: join(root, 'backend/server/tsconfig.json'), RECUED_MCP_TOKEN: bearer,
       RECUED_LLM_API_KEY: '', RECUED_LLM_SLOT2_API_KEY: '' }, stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -335,8 +336,8 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
   }
 
   // ⛔ THE STDIO PROCESS BOOTS BEFORE THE CLOCK, for the same reason the
-  //   authority fixture above does: spawning `bin.ts --mcp` under tsx is a full
-  //   TypeScript boot whose cost is variable and has nothing to do with the
+  //   authority fixture above does: spawning `--mcp` is a full server boot
+  //   whose cost is variable and has nothing to do with the
   //   reviewed decision. Inside the window it was the flake; outside it, it is
   //   setup. What remains in the budget is ONE stdio round-trip.
   const stdio = state === 'stdio' ? await openStdio(dir, stdioToken!) : null;

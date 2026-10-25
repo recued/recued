@@ -41,6 +41,7 @@ import {
   createSettledRunResults,
   type SettledRunResults,
 } from '../settled-run-results.js';
+import { createWriteRuleStore, type WriteRuleStore } from '../storage/write-rule-store.js';
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
@@ -79,7 +80,11 @@ import {
   type AccountBindingManager,
 } from '../account-binding/manager.js';
 import { createHttpAccountBindingExchangeClient } from '../account-binding/exchange-client.js';
-import { resolveAccountBindingExchangeUrl } from '../account-binding/exchange-url.js';
+import { createHttpAccountBindingReleaseClient } from '../account-binding/release-client.js';
+import {
+  resolveAccountBindingExchangeUrl,
+  resolveAccountBindingReleaseUrl,
+} from '../account-binding/exchange-url.js';
 import {
   buildProvisionedSnapshot,
   createProConvenienceProvisioner,
@@ -266,6 +271,8 @@ export interface StorageContext {
   mcpActionStore: McpActionStore;
   /** Owner-facing, operation-scoped receipts for checkpointed gated steps. */
   gatedActionStore: GatedActionStore;
+  /** D-329 §3.4 — the write rules an AI's approvals teach. */
+  writeRuleStore: WriteRuleStore;
   /** What an owner's page-started run answered once its approval let it
    *  finish — written by the approval resumer, read by `execution.get`.
    *  In memory: a courtesy to an open page, not a record. */
@@ -333,11 +340,13 @@ export const composeStorageContext = async (
   options: ComposeStorageContextOptions,
 ): Promise<StorageContext> => {
   const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey } = options;
+  bootTrace.mark('storage-open-start');
 
   const db = await openApplicationDatabase({
     dbPath, bootTrace, restoreJournalReconciled: options.restoreJournalReconciled === true,
   });
 
+  bootTrace.mark('storage-open-complete');
   bootTrace.mark('shared-setup-start');
 
   const manifests = createManifestRegistry(undefined, db);
@@ -564,6 +573,7 @@ export const composeStorageContext = async (
     // D-212 slice 5 — the server's own boot is where binding this realm to
     // this machine is a decision someone made, so this is the one caller that
     // opts into sealing the keyfile against a platform secret store.
+    bootTrace.mark('identity-boot-start');
     const booted = await bootServerIdentity({
       dbPath,
       machineSealing: true,
@@ -573,6 +583,7 @@ export const composeStorageContext = async (
       ...(runningInContainer() ? { refuseUnsealed: CONTAINER_UNSEALED_REFUSAL } : {}),
     });
     signingIdentityRef = booted;
+    bootTrace.mark('identity-boot-complete');
     if (booted.created) {
       console.error(
         `[identity] server_identity_key + publisher_identity_key generated at ${booted.filePath} (fingerprint=${booted.identity.serverIdentityKey().public_key_fingerprint})`,
@@ -619,6 +630,13 @@ export const composeStorageContext = async (
         resolveAccountBindingExchangeUrl({
           override: process.env.RECUED_ACCOUNT_BINDING_EXCHANGE_URL,
           cloudBaseUrl: readCloudBaseUrl(runtimeConfig),
+        }),
+    }),
+    // Disconnect tells recued.com, on the same Worker as the exchange.
+    releaseClient: createHttpAccountBindingReleaseClient({
+      getEndpointUrl: () =>
+        resolveAccountBindingReleaseUrl({
+          override: process.env.RECUED_ACCOUNT_BINDING_EXCHANGE_URL,
         }),
     }),
     ...(auditLog ? { auditLog } : {}),
@@ -818,6 +836,7 @@ export const composeStorageContext = async (
     },
   );
   const settledRunResults = createSettledRunResults();
+  const writeRuleStore = createWriteRuleStore(db);
   const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
     { limits: preapprovalLimitsFromEnvironment(process.env) });
   const mailWorkStore = createMailWorkStore(db, createPreapprovalCodec(() => getVaultKey?.() ?? null));
@@ -1027,6 +1046,7 @@ export const composeStorageContext = async (
     checkpointStore,
     mcpActionStore,
     gatedActionStore,
+    writeRuleStore,
     settledRunResults,
     workEntityStoreRef,
     s2sPreviewStoreRef,

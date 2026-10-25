@@ -595,3 +595,44 @@ describe('D-137 Trio #D — Codex P1 fold: Tier 3 filtered from MCP wire', () =>
     expect(dispatchCalls).toBe(0);
   });
 });
+
+/** The MCP wire carries one stop tool: `recued_stopRecipe`, the protocol utility
+ *  every authenticated token holds. Chat's `recipe.stop` calls the same
+ *  `stopOwnRun` under the same session scope, so the wire leaves it out of
+ *  `tools/list` and refuses a call to it by name, pointing at the wire's tool. */
+describe('the MCP wire carries one stop tool', () => {
+  const withRunRegistry = (deps: ReturnType<typeof mkDeps>) =>
+    ({ ...deps, inFlightRegistry: {} }) as unknown as ReturnType<typeof mkDeps>;
+
+  it('lists recued_stopRecipe and leaves chat\'s recipe.stop out', async () => {
+    const registry = mkRegistry([
+      mkTool('contact.search', 1),
+      mkTool('recipe.run', 1, 'write'),
+      mkTool('recipe.stop', 1, 'write'),
+    ]);
+    const result = (await _testing.handleToolsList(withRunRegistry(mkDeps({ registry })))) as {
+      tools: Array<{ name: string }>;
+    };
+    const names = result.tools.map((t) => t.name);
+    expect(names).toContain('recued_stopRecipe');
+    expect(names).toContain('recipe.run');
+    expect(names).toContain('contact.search');
+    expect(names).not.toContain('recipe.stop');
+  });
+
+  it('refuses recipe.stop by name and never reaches the registry', async () => {
+    let dispatchCalls = 0;
+    const registry = mkRegistry([mkTool('recipe.stop', 1, 'write')], async () => {
+      dispatchCalls += 1;
+      return { ok: true, result: { status: 'stopped' } };
+    });
+    const res = await _testing.handleToolCall(
+      { name: 'recipe.stop', arguments: { recipe_id: 'recued-core/today' } },
+      withRunRegistry(mkDeps({ registry })),
+    );
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    const errText = (res as { content: Array<{ text: string }> }).content[0].text;
+    expect(errText).toMatch(/not offered on the MCP wire; use recued_stopRecipe/);
+    expect(dispatchCalls).toBe(0);
+  });
+});

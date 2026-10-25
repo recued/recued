@@ -12,6 +12,7 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
+import type { WriteRuleRow, WriteRuleSuggestionRow } from '../write-approval-rule.js';
 import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget, ArchiveUnattendedSettings, ArchiveUnattendedStatus, ArchiveRestoreDrill, ArchiveBackupHealthPolicy, ArchiveBackupIntegrityPolicy, ArchiveBackupIntegrityStatus, ArchiveBackupHealthStatus } from '../archive-remote.js';
 import type { BackupWatchdogDrillStart, BackupWatchdogDrillUpdate, BackupWatchdogSave, BackupWatchdogStatus } from '../backup-watchdog.js';
 import type {
@@ -146,6 +147,7 @@ import type {
   CollectionPlatform,
   CollectionRecord,
   CollectionSearchMatch,
+  CollectionSearchDidYouMean,
   CollectionSearchGroup,
   CollectionSearchQuery,
   CollectionSourceFreshness,
@@ -297,6 +299,7 @@ import type {
   SessionGrantRevokeRequest,
   SessionGrantView,
   SetContractDoorTypesRequest,
+  SetContractLimitsRequest,
 } from '../contract-definition.js';
 import type { DelegationRuleSuggestionRow } from '../delegation-suggestion.js';
 import type { QualityDelegationSuggestionRow } from '../quality-delegation-suggestion.js';
@@ -350,6 +353,8 @@ import type {
   MemoryDeleteResult,
   MemoryImportRequest,
   MemoryImportResult,
+  MemoryRestoreRequest,
+  MemoryRestoreResult,
 } from './memory.js';
 import type {
   ExposurePreset,
@@ -1097,6 +1102,11 @@ export interface ServerPairedDevice {
   /** Unix seconds of the live WS connection's connected_at. Present
    *  only when `connected: true`. */
   connected_at?: number;
+  /** Unix seconds — when this device last connected or left, as far as the
+   *  server saw. Absent until it first does. A browser that cleared its
+   *  storage never comes back, so its date stops: how the owner tells a
+   *  dead entry from a quiet one. */
+  last_seen_at?: number;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2416,6 +2426,14 @@ export type ServerRpcRegistry = {
    *  `instance_revoked` code so the device can self-cleanup, and
    *  marks the durable row revoked so re-pair requires user action. */
   'pair.revoke': RpcMethodSpec<{ instance_id: string }, { ok: true }>;
+  /** The owner's name for a device, replacing the browser-and-system label
+   *  it paired with: two browsers of one kind otherwise read the same in
+   *  Devices, and the wrong one gets revoked. Trimmed, 1–64 characters.
+   *  Refused (`not_found`) for an unknown or revoked device. */
+  'pair.rename': RpcMethodSpec<
+    { instance_id: string; display_name: string },
+    { ok: true; display_name: string }
+  >;
   /** Enroll-or-verify the realm's recovery-key check. First call
    *  on a fresh server stores a check derived from `recoveryKey`;
    *  every subsequent call must supply the same key (server verifies
@@ -3973,9 +3991,13 @@ export type ServerRpcRegistry = {
    *
    *  ⚠ An op with no coverage-admitted run is ABSENT from `operations`, not
    *  present with a zero — a caller cannot accidentally render a confident zero
-   *  for an op the ledger simply never mentioned. */
+   *  for an op the ledger simply never mentioned.
+   *
+   *  D-327 — `contract_id` narrows `count` / `recipes` to the runs made under that
+   *  agreement. `could` is not narrowed: which recipes the agreement allows is the
+   *  caller's to apply, from the same grant rows its page shows. */
   'contract.recipeOpUsage': RpcMethodSpec<
-    { window_days?: number },
+    { window_days?: number; contract_id?: string },
     {
       operations: Array<{
         operation_id: string;
@@ -4091,6 +4113,15 @@ export type ServerRpcRegistry = {
   'collection.contract.setReadSpheres': RpcMethodSpec<{ contract_id: string; read_spheres: import('../assets.js').Sphere[] | null }, ContractDefinitionView>;
   'collection.contract.setDoorTypes': RpcMethodSpec<
     SetContractDoorTypesRequest,
+    ContractDefinitionView
+  >;
+  /** D-327 — replace a standing agreement's limits in place (see
+   *  {@link SetContractLimitsRequest}). `not_found` for anything that is not an
+   *  editable standing agreement; `bad_request` for a bad value, a period with
+   *  no count, or an agreement that is already revoked. Broadcasts
+   *  `contract.contract_definition_changed` (op `update`). Settings-only. */
+  'collection.contract.setLimits': RpcMethodSpec<
+    SetContractLimitsRequest,
     ContractDefinitionView
   >;
 
@@ -4283,6 +4314,40 @@ export type ServerRpcRegistry = {
   'collection.contract.revokeQualityDelegation': RpcMethodSpec<
     { contract_id: string; reason?: string },
     ContractDefinitionView
+  >;
+
+  /** D-329 §3.4 — the write rules an AI's approvals teach: the open suggestions (three
+   *  approvals of one Tier-1 write on one kind of thing, asked by the owner's chats or by
+   *  one AI app, on three occasions within 30 days, none refused). Owner surface only,
+   *  reserved out of MCP with the rest of `collection.contract.`: an AI never sees, accepts
+   *  or dismisses its own suggestion. Reserved `not_configured` with no store. */
+  'collection.contract.listWriteRuleSuggestions': RpcMethodSpec<
+    void,
+    { suggestions: WriteRuleSuggestionRow[] }
+  >;
+  /** D-329 §3.4 — mint the rule an open suggestion names: for `ttl_ms` (at most 30 days) and
+   *  `max_uses` (at most 100), the ceilings when absent; wider rejects `bad_request`. A retry
+   *  returns the rule already minted. Audited reserve-class `write_rule_minted`. */
+  'collection.contract.acceptWriteRuleSuggestion': RpcMethodSpec<
+    { key_hash: string; ttl_ms?: number; max_uses?: number },
+    { rule: WriteRuleRow; suggestion: WriteRuleSuggestionRow }
+  >;
+  /** D-329 §3.4 — never suggest this key again. `bad_request` when it is a live rule (revoke
+   *  the rule instead). Audited `write_rule_dismissed`. */
+  'collection.contract.dismissWriteRuleSuggestion': RpcMethodSpec<
+    { key_hash: string },
+    { key_hash: string }
+  >;
+  /** D-329 §3.4 — the live write rules, newest first. */
+  'collection.contract.listWriteRules': RpcMethodSpec<
+    void,
+    { rules: WriteRuleRow[] }
+  >;
+  /** D-329 §3.4 — end a write rule now; its key never suggests again. Audited
+   *  `write_rule_revoked`. */
+  'collection.contract.revokeWriteRule': RpcMethodSpec<
+    { rule_id: string },
+    { rule: WriteRuleRow }
   >;
 
   // D-187 slice 5 — the per-contract policy-overlay rpc trio
@@ -5282,6 +5347,16 @@ export type ServerRpcRegistry = {
        *  P2b-ii), so the panel can render + edit it as a panel-level
        *  setting alongside the channel matrix. Absent when none is set. */
       verification_phrase?: string;
+      /** D-325 §15.7 amendment — whether a reminder reaches the owner's phone: a
+       *  destination other than the app and the Browser Bridge, Yours'
+       *  `phone_ready` rule. Absent from an older server or when it can't be read. */
+      reaches_phone?: boolean;
+      /** D-325 §15.7 amendment — why each channel whose Notify switch is on
+       *  carries no reminder, so Settings can say which and where to fix it.
+       *  Present exactly when `reaches_phone` is. */
+      reminder_issues?: ReadonlyArray<
+        import('../notifications.js').ReminderDestinationIssue
+      >;
     }
   >;
 
@@ -6389,10 +6464,20 @@ export type ServerRpcRegistry = {
    *
    *  A blank query returns no groups rather than erroring (this fires on
    *  keystrokes). `per_group` defaults to 5 and clamps at 25 — a finding
-   *  surface, not a reading one. One store throwing is skipped, not fatal. */
+   *  surface, not a reading one. One store throwing is skipped, not fatal.
+   *
+   *  `did_you_mean` is present only when a typed word is in no searched store
+   *  and a close word is in one (`CollectionSearchDidYouMean`).
+   *
+   *  `absent_words`: the typed words NO searched store holds. ⛔ A store that
+   *  misses relaxes the query by dropping such a word and answers with the rest,
+   *  so every group here matches only the OTHER words — "Castelanos invoice"
+   *  lists every invoice. Unlabelled, those rows read as answers about the
+   *  dropped word. Absent when nothing was dropped, or when a searched store
+   *  could not check its words. */
   'collection.searchAll': RpcMethodSpec<
     { query: string; per_group?: number; platforms?: CollectionPlatform[] },
-    { groups: CollectionSearchGroup[] }
+    { groups: CollectionSearchGroup[]; did_you_mean?: CollectionSearchDidYouMean; absent_words?: string[] }
   >;
   /** Fetch one record by `record_id`. Returns `{ record: null }` when
    *  the record doesn't exist — `COLLECTION_NOT_FOUND` is reserved for
@@ -6535,8 +6620,10 @@ export type ServerRpcRegistry = {
    *  days since it last synced are listed again, Gmail and Outlook replay what
    *  changed since their cursor, and an IMAP folder reads every message's flags,
    *  which brings in what changed while a connection was down. Resolves once
-   *  the mailbox is live again; the listing runs on in the background. While
-   *  the vault is locked the sync waits for the unlock, as at boot. */
+   *  the mailbox has caught up (its listing and a first poll done, or a read
+   *  failed), so the page that asked shows this read, or after 20 s with the
+   *  listing running on. While the vault is locked the sync waits for the
+   *  unlock, as at boot, and it resolves at once. */
   'collection.mail.resync': RpcMethodSpec<{ slug: string }, { ok: true }>;
 
   /** D-318 step 1 — the email chat door's settings: which connected mailbox is
@@ -6620,6 +6707,8 @@ export type ServerRpcRegistry = {
   'memory.update': RpcMethodSpec<MemoryUpdateRequest, MemoryMutationResult>;
   'memory.delete': RpcMethodSpec<MemoryDeleteRequest, MemoryDeleteResult>;
   'memory.import': RpcMethodSpec<MemoryImportRequest, MemoryImportResult>;
+  // D-198 §10 — the owner undoes an AGENT's forget (owner-trusted, like the rest).
+  'memory.restore': RpcMethodSpec<MemoryRestoreRequest, MemoryRestoreResult>;
 
   // ── triggers.* — event-driven recipe dispatch (§Recipe triggers) ─
   'triggers.list': RpcMethodSpec<void, { triggers: EventTrigger[] }>;
@@ -6878,9 +6967,10 @@ export type ServerRpcRegistry = {
    *  server restart, so its window is read again. Probe failure does NOT
    *  throw — returns the existing caps + flips `auth_state` so the UI can
    *  render an "expired / degraded" pill without losing the cached
-   *  capability shape. Resolves once the calendar is live again; the
-   *  listing runs on in the background. `last_synced_at` moves only when a
-   *  sync succeeds. */
+   *  capability shape. Resolves once the calendar has caught up (its window
+   *  listed and polled once, or a read failed), or after 20 s with the listing
+   *  running on; the `auth_state` it returns is the row's then. `last_synced_at`
+   *  moves only when a sync succeeds. */
   'collection.calendar.resync': RpcMethodSpec<
     { slug: string },
     {
@@ -7543,10 +7633,11 @@ export type ServerRpcRegistry = {
   >;
   // D-171 slice 3 — rebind an EXISTING token's `contract_id` in place (no
   // re-issue; the token value is unchanged so connected clients keep working,
-  // decision 6). The Advanced sub-panel lazily mints a `contract_definition`
-  // (D-166, `collection.contract.mintContract`) when a cap/expiry is turned on,
-  // then binds the live token to it via this rpc; turning the limit off rebinds
-  // to unbound (`contract_id: null`) before revoking the definition. The bound
+  // decision 6). No page calls it since D-327: the retired door panel used it
+  // to move its key onto a freshly minted limits contract, and an agreement's
+  // limits are now edited in place (`collection.contract.setLimits`). It
+  // refuses `null`, and refuses moving a key onto or off an agreement that is
+  // its key's whole authority. The bound
   // contract's revoke / expiry / exhaustion is the live kill-switch (the MCP
   // transport resolves liveness per request → collapses the token's authorization
   // to nothing). Reserved local-UI only via the `chat.inbound_token.` prefix.
@@ -7856,6 +7947,9 @@ export type ServerRpcRegistry = {
   >;
   'reception.approval.targets': RpcMethodSpec<void, import('../approval-workflow.js').ApprovalWorkflowTargetsResult>;
   'reception.signoff.quotes': RpcMethodSpec<void, import('../quote-signoff.js').QuoteSignoffQuotesResult>;
+  'reception.signoff.resume': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffCancelInput, import('../quote-signoff.js').QuoteSignoffResumeResult>;
+  'reception.signoff.link.check': RpcMethodSpec<import('../quote-signoff.js').CustomerRequestLinkCheckInput, import('../quote-signoff.js').CustomerRequestLinkCheckResult>;
+  'reception.signoff.completion.resume': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionCancelInput, import('../quote-completion.js').QuoteCompletionResumeResult>;
   'reception.signoff.prepare': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffPrepareInput,
     import('../quote-signoff.js').QuoteSignoffPrepareResult>;
   'reception.signoff.prepare_addition': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffAdditionPrepareInput,
@@ -8272,8 +8366,13 @@ export type ServerRpcRegistry = {
   'yours.delivery': RpcMethodSpec<void, import('../situation.js').SituationDeliveryStatus>;
   /** D-325 §15.7 — "last time" for Settings → Privacy → Learning, without a snapshot's refreshes. */
   'yours.learning': RpcMethodSpec<void, import('../yours.js').YoursLearningStatus>;
+  /** D-325 §15.7 amendment — the to-do lists a Home Assistant connection offers, read
+   *  live from it, so Settings offers them by name. Owner-only. */
+  'yours.household_lists': RpcMethodSpec<{ connection_name: string; connection_enrolled_at: number },
+    { lists: import('../yours.js').HouseholdHomeAssistantList[] }>;
   'yours.today': RpcMethodSpec<{ now: number; before: number }, import('../situation.js').ProactiveToday>;
   'yours.read': RpcMethodSpec<import('../yours.js').YoursReadRequest, import('../yours.js').YoursSnapshot>;
+  'yours.context': RpcMethodSpec<import('../asset-fact-context.js').AssetFactContextRequest, import('../asset-fact-context.js').AssetFactContext>;
   'yours.sphere': RpcMethodSpec<{ ref: import('../situation.js').SituationRef }, import('../yours.js').YoursSpherePlacement>;
   'yours.spheres': RpcMethodSpec<{ refs: import('../situation.js').SituationRef[] }, { placements: Array<import('../yours.js').YoursSpherePlacement & { ref: import('../situation.js').SituationRef }> }>;
   'yours.change': RpcMethodSpec<import('../yours.js').YoursCommand, import('../yours.js').YoursCommandResult>;
@@ -8442,6 +8541,7 @@ export const SERVER_RPC_METHODS = [
   'server.seller.synchronizeProviderTiers',
   'pair.list',
   'pair.revoke',
+  'pair.rename',
   'pair.registerRecoveryKey',
   // D-169 P0 — bridge capability profile push (closes TR-17). Reserved
   // for local-bridge clients via the `bridge.` MCP_RESERVED_RPC_PREFIXES
@@ -8680,6 +8780,8 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.revokeContract',
   'collection.contract.setDoorTypes',
   'collection.contract.setReadSpheres',
+  // D-327 — an agreement's limits, edited in place (same reserved prefix).
+  'collection.contract.setLimits',
   'collection.contract.listContracts',
   // D-186 Slice C — live-control "Active passes" list + early-revoke (same
   // reserved prefix — owner-only, never MCP; a grant is never agent-visible).
@@ -8697,6 +8799,12 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.dismissQualityDelegationSuggestion',
   'collection.contract.listQualityDelegations',
   'collection.contract.revokeQualityDelegation',
+  // D-329 §3.4 — the write rules an AI's approvals teach (same reserved prefix: owner-only).
+  'collection.contract.listWriteRuleSuggestions',
+  'collection.contract.acceptWriteRuleSuggestion',
+  'collection.contract.dismissWriteRuleSuggestion',
+  'collection.contract.listWriteRules',
+  'collection.contract.revokeWriteRule',
   // D-177 N.11 rule 5 (5.c, slice C) — scoped-grant proposal surface (same
   // reserved prefix — owner-only, never MCP).
   'collection.contract.listScopedGrantSuggestions',
@@ -9003,6 +9111,7 @@ export const SERVER_RPC_METHODS = [
   'memory.update',
   'memory.delete',
   'memory.import',
+  'memory.restore',
   'triggers.list',
   'triggers.create',
   'triggers.update',
@@ -9183,6 +9292,9 @@ export const SERVER_RPC_METHODS = [
   'reception.record.list',
   'reception.record.open',
   'reception.signoff.quotes',
+  'reception.signoff.resume',
+  'reception.signoff.link.check',
+  'reception.signoff.completion.resume',
   'reception.signoff.prepare',
   'reception.signoff.prepare_addition',
   'reception.signoff.publish',
@@ -9323,8 +9435,10 @@ export const SERVER_RPC_METHODS = [
   // D-324 — the owner's reminders, for the Data → Reminders list.
   'yours.delivery',
   'yours.learning',
+  'yours.household_lists',
   'yours.today',
   'yours.read',
+  'yours.context',
   'yours.sphere',
   'yours.spheres',
   'yours.change',

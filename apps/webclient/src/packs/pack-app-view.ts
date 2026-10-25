@@ -1071,6 +1071,7 @@ export const mountPackAppView = (
           heading: null,
           show_run_metrics: false,
           return_label: 'back',
+          run_review_return: { surface: 'packs', packId: opts.pack.slug },
         },
         selectStates,
       );
@@ -1914,7 +1915,7 @@ ${PACK_INSTALL_OFFER_STYLES}
   color: var(--accent); border-bottom-color: var(--accent);
 }
 [${PACK_APP_ATTR}] .pack-app-view-tab:focus-visible {
-  outline: none; box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; box-shadow: var(--wc-ring);
 }
 [${PACK_APP_ATTR}] .pack-app-body { min-height: 60px; }
 [${PACK_APP_ATTR}] .pack-app-note { margin: 0; color: var(--fg-muted); font-size: 13px; }
@@ -1955,7 +1956,7 @@ ${PACK_INSTALL_OFFER_STYLES}
 }
 [${PACK_APP_ATTR}] .pack-app-operation--action { border-left: 3px solid var(--accent); }
 [${PACK_APP_ATTR}] .pack-app-operation:focus-visible {
-  outline: none; box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; box-shadow: var(--wc-ring);
 }
 [${PACK_APP_ATTR}] .pack-app-operation-name { font-size: 13px; font-weight: 650; }
 [${PACK_APP_ATTR}] .pack-app-operation-description {

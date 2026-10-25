@@ -15,6 +15,8 @@ import { runWorkEntityReadTool, runWorkEntitySearchTool, type WorkEntityReadTool
 import { createSituationQuery } from '../situations/query.js';
 import { buildSituationSources, situationSourceAccess } from '../situations/sources.js';
 import { createReminderStore } from '../storage/reminder-store.js';
+import { createContactStore } from '../storage/contact-store.js';
+import { situationPersonName } from '../situations/model-projection.js';
 
 let db: Database.Database;
 beforeEach(() => { db = new Database(':memory:'); ensureWorkEntitySchema(db); }); afterEach(() => db.close());
@@ -61,6 +63,32 @@ describe('D-325 scopes at the other read boundaries', () => {
     const allowed = await runWorkEntityReadTool(f.deps, { kind: 'commitment', id: f.business.id, include_related: true }, ctx);
     expect(JSON.stringify(allowed)).toContain('Business delivery'); expect(JSON.stringify(allowed)).not.toContain('private-person');
   });
+  it('names an asset\'s holder to a scoped door only when the holder is in its spheres', async () => {
+    // An AI app's door reads `work.read` through the chat's own handler, unaliased: the
+    // holder's name is a contact read, so it follows the contact's sphere, not the asset's.
+    const f = await fixture(); const contacts = createContactStore(db);
+    const colleague = contacts.upsertManual({ email: 'cam@example.test', name: 'Cam Colleague' }, 1);
+    const family = contacts.upsertManual({ email: 'fay@example.test', name: 'Fay Family' }, 1);
+    f.spheres.setItem({ collection: 'contact', id: colleague.contact_id! }, 'professional');
+    f.spheres.setItem({ collection: 'contact', id: family.contact_id! }, 'personal');
+    const laptop = (holder: string) => {
+      const row = f.work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'fixture' }, name: 'Laptop', holder_contact: holder });
+      f.spheres.setItem({ collection: 'asset', id: row.id }, 'professional'); return row;
+    };
+    const read = async (id: string) => JSON.stringify(await runWorkEntityReadTool({ ...f.deps, personName: situationPersonName(contacts) }, { kind: 'asset', id }, ctx));
+    expect(await read(laptop(colleague.contact_id!).id)).toContain('"holder_name":"Cam Colleague"');
+    const outside = await read(laptop(family.contact_id!).id);
+    expect(outside).toContain('Laptop'); expect(outside).not.toContain('Fay Family');
+    // A search finds an asset by its holder's name by the same rule: a match would say
+    // who holds it as plainly as the name.
+    const search = async (query: string) => JSON.stringify(await runWorkEntitySearchTool({ ...f.deps, personName: situationPersonName(contacts) },
+      { kind: 'asset', query }, ctx));
+    const cam = await search('Cam laptop'); expect(cam).toContain('"total":1'); expect(cam).toContain('"holder_name":"Cam Colleague"');
+    const fay = await search('Fay laptop'); expect(fay).toContain('"total":0'); expect(fay).not.toContain('Fay Family');
+    const both = await search('laptop'); expect(both).toContain('"total":2'); expect(both).toContain('"holder_name":"Cam Colleague"');
+    expect(both).not.toContain('Fay Family');
+  });
+
   it('refuses a raw calendar read before the dispatcher when it cannot apply item scopes', async () => {
     const f = await fixture(); const calendarList = vi.fn(async () => ({ records: [] }));
     const adapter = createKernelAdapter({ calendarList, assertReadScope: (slug, origin) => assertKernelReadScope(f.access, slug, origin) });
@@ -70,8 +98,10 @@ describe('D-325 scopes at the other read boundaries', () => {
   it('refuses native mail/contact/calendar reads before touching their stores', async () => {
     const f = await fixture(); const getContactStore = vi.fn(); const getCollectionRegistry = vi.fn();
     const handlers = buildChatTier1Handlers({ getSituationAccess: () => f.access, getContactStore, getCollectionRegistry } as unknown as ChatToolHandlerDeps);
-    for (const tool of ['mail.search', 'mail.read', 'contact.search', 'calendar.search']) {
-      const result = await handlers[tool]!({}, ctx); expect(JSON.stringify(result)).toContain('permission refusal');
+    for (const tool of ['mail.search', 'mail.read', 'contact.search', 'contact.read', 'calendar.search']) {
+      // A real target, so an unfenced read would reach the store.
+      const args = tool === 'contact.read' ? { target_id: 'ana@castellanos.test' } : {};
+      const result = await handlers[tool]!(args, ctx); expect(JSON.stringify(result)).toContain('permission refusal');
     }
     expect(getContactStore).not.toHaveBeenCalled(); expect(getCollectionRegistry).not.toHaveBeenCalled();
   });

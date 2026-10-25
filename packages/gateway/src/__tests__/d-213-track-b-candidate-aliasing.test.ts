@@ -93,7 +93,10 @@ describe('D-213 Track B — allocate only candidates present in the packet', () 
       [{ value: 'https://acme.example/private', kind: 'url' }],
       [],
     );
-    expect(result.aliased).toEqual(packet);
+    // The URL in the packet is aliased whole by its shape (2026-10-24, D-167
+    // amendment); the absent one is still never allocated.
+    expect(result.aliased).toEqual({ recall_context: [{ result: 'Read pii.Url1' }] });
+    expect(ledger.byKindRealValue.has('url::https://acme.example/public')).toBe(true);
     expect(
       ledger.byKindRealValue.has('url::https://acme.example/private'),
     ).toBe(false);

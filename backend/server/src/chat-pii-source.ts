@@ -31,7 +31,11 @@ type CoreFieldShape =
   | 'number'
   | 'boolean'
   | 'string_array'
-  | 'contact';
+  | 'contact'
+  | 'situation_ref'
+  | 'situation_refs'
+  | 'situation_dimension'
+  | 'json_object';
 
 const CORE_ENTITY_FIELDS: ReadonlyMap<
   string,
@@ -73,7 +77,61 @@ const CORE_ENTITY_FIELDS: ReadonlyMap<
     ['num_employees', 'number'],
     ['annual_revenue', 'number'],
   ])],
+  // D-325 — one item the chat's situation lookup found (`situations/prefetch.ts`),
+  // with the cluster it came from. Its privacy tags are the `situation_item`
+  // schema's (`canonical-pii-schemas.ts`), which tag its nested refs' ids too: a
+  // contributed record carries no marker of its own. Until this was registered the
+  // bare id was refused here, so no lookup ever reached the model (2026-10-23).
+  ['situation_item', new Map<string, CoreFieldShape>([
+    ['ref', 'situation_ref'],
+    ['kind', 'string'],
+    ['what', 'situation_dimension'],
+    ['when', 'situation_dimension'],
+    ['when_day', 'string'],
+    ['where', 'situation_dimension'],
+    ['who', 'situation_dimension'],
+    ['reasons', 'string_array'],
+    ['basis', 'string'],
+    ['evidence', 'situation_refs'],
+    ['consequence', 'string'],
+    ['sphere', 'string'],
+    ['updated_at', 'number'],
+    // Read-time context: an asset's own fields, and a trip's country and days.
+    ['details', 'json_object'],
+    ['trip', 'json_object'],
+    ['cluster_id', 'string'],
+    ['ambiguous', 'boolean'],
+  ])],
 ]);
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** A situation's source reference (`AssetEvidence`), closed like a core shape. */
+const isSituationRef = (value: unknown): boolean =>
+  isPlainRecord(value)
+  && typeof value.collection === 'string'
+  && typeof value.id === 'string'
+  && Object.entries(value).every(([key, member]) =>
+    key === 'collection'
+    || key === 'id'
+    || (key === 'field' && typeof member === 'string')
+    || (
+      key === 'value'
+      && (member === null || ['string', 'number', 'boolean'].includes(typeof member))
+    ));
+
+const SITUATION_DIMENSION_KEYS = new Set(['value', 'verdict', 'basis', 'evidence']);
+
+/** A situation item's what / when / where / who: a value and how it was judged. */
+const isSituationDimension = (value: unknown): boolean =>
+  isPlainRecord(value)
+  && Object.keys(value).every((key) => SITUATION_DIMENSION_KEYS.has(key))
+  && 'value' in value
+  && typeof value.verdict === 'string'
+  && typeof value.basis === 'string'
+  && Array.isArray(value.evidence)
+  && value.evidence.every(isSituationRef);
 
 const isNamespacedEntity = (entity: string): boolean =>
   entity.includes('/') || entity.includes('.') || entity.includes(':');
@@ -164,6 +222,14 @@ const coreFieldMatches = (
         && value.every((member) => typeof member === 'string');
     case 'contact':
       return coreRecordMatches('contact', value);
+    case 'situation_ref':
+      return isSituationRef(value);
+    case 'situation_refs':
+      return Array.isArray(value) && value.every(isSituationRef);
+    case 'situation_dimension':
+      return isSituationDimension(value);
+    case 'json_object':
+      return isPlainRecord(value);
   }
 };
 

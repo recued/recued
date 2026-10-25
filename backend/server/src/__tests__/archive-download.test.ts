@@ -55,6 +55,10 @@ describe('download-frame codec', () => {
     expect(decodeDownloadStart(JSON.stringify({ type: 'download_start', req_id: 'r' })).ok).toBe(false);
   });
 
+  it.each([{ req_id: 0 }, { req_id: null }, { req_id: {} }, { req_id: [] }])('rejects an invalid error request ID ($req_id) without treating it as omitted', ({ req_id }) => {
+    expect(parseDownloadControlFrame(JSON.stringify({ type: 'download_error', req_id, reason: 'bad_request' }))).toBeNull();
+  });
+
   it('parses server control frames + ignores non-control', () => {
     expect(parseDownloadControlFrame(JSON.stringify({ type: 'download_complete', req_id: 'r', size_bytes: 42 })))
       .toEqual({ type: 'download_complete', req_id: 'r', size_bytes: 42 });

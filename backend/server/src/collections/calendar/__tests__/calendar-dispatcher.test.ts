@@ -178,6 +178,7 @@ const buildHarness = (
       async start() {/* no-op */},
       async stop() {/* no-op */},
     },
+    caughtUp: null,
     upsert: () => {/* no-op */},
     delete: () => false,
     get: () => null,

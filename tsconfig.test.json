@@ -8,7 +8,11 @@
   // type-checks every test file against package SOURCE (via the `paths`
   // aliases inherited from the base), with `noEmit` so it never writes dist.
   //
-  // Run via `npm run typecheck:tests`. Kept green in CI by `npm run ci`.
+  // Run via `npm run typecheck:tests`. Kept green in CI by `npm run ci`. That
+  // script checks this config in parts, the `tsconfig.test.<part>.json` files
+  // beside it, as one program each: `test/typecheck-tests.mjs` says why. In the
+  // source repository a pattern added here fails `scripts/typecheck-tests.test.ts`
+  // until a part takes it.
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,

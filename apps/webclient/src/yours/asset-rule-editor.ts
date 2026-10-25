@@ -6,10 +6,20 @@ export const parseReminderOffsets = (value: string): AssetRule['schedule']['befo
   return { amount: Number(match[1]), unit: `${match[2]!.replace(/s$/u, '')}s` as 'days' | 'weeks' | 'months' };
 }) : [];
 
+export const assetRuleWhenWords = (when: AssetRule['when']): string => {
+  const field = when.field.replaceAll('_', ' ');
+  switch (when.kind) {
+    case 'expiry': return when.offset ? `${when.offset.amount} ${when.offset.unit} before “${field}”` : `On the date in “${field}”`;
+    case 'interval': return `Every ${when.every.amount} ${when.every.unit} after ${field}`;
+    case 'objective': return `As ${field} approaches ${when.target} ${when.unit} (${when.direction === 'rising' ? 'increasing' : 'decreasing'})`;
+    case 'condition': return `When ${field} is ${when.certainty === 'confirmed' ? 'confirmed' : 'possibly'} present`;
+  }
+};
+
 /** Pick from the asset's existing facts. Inactive kinds keep their draft values,
  * but cannot participate in validation or the saved rule. */
 export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: AssetRule | undefined, changed: () => void,
-  options: { classPreset?: boolean; proposal?: boolean; scheduleOnly?: boolean } = {}) => {
+  options: { classPreset?: boolean; proposal?: boolean; scheduleOnly?: boolean; initialField?: { group: 'dates' | 'readings' | 'observations'; field: string } } = {}) => {
   const scheduleRule = options.scheduleOnly ? own : undefined;
   if (options.scheduleOnly && !scheduleRule) throw new Error('A schedule needs an existing rule.');
   const doc = host.ownerDocument;
@@ -35,17 +45,20 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
   };
   const units = [['days', 'days'], ['weeks', 'weeks'], ['months', 'months']] as const;
   if (scheduleRule) node('p', host, 'This proposal changes reminder times only. Edit the rule on the asset to change its deadline or behavior.');
-  const title = input(host, 'Title', 'title', own?.title ?? 'Renew or service'); title.required = true; title.maxLength = 500;
+  const title = input(host, 'Title', 'title', own?.title ?? (options.initialField ? `Check ${options.initialField.field.replaceAll('_', ' ')}` : 'Renew or service')); title.required = true; title.maxLength = 500;
   const when = own?.when;
   const kind = select(host, 'When', 'kind', [['expiry', 'On an asset date'], ['interval', 'An interval after last done'],
     ['objective', 'A reading approaches a target'], ['condition', 'A condition is active']], when?.kind
-      ?? (Object.keys(asset.dates).length ? 'expiry' : Object.keys(asset.readings).length ? 'objective' : Object.keys(asset.observations).length ? 'condition' : 'expiry'));
+      ?? (options.initialField ? options.initialField.group === 'readings' ? 'objective' : options.initialField.group === 'observations' ? 'condition' : 'expiry'
+        : Object.keys(asset.dates).length ? 'expiry' : Object.keys(asset.readings).length ? 'objective' : Object.keys(asset.observations).length ? 'condition' : 'expiry'));
   const fact = select(host, 'Asset date', 'field', [], ''); fact.required = true;
   const hint = node('p', host); hint.className = 'yours-muted'; hint.dataset.yoursRuleFactHint = '';
+  const preview = node('p', host); preview.className = 'yours-rule-preview'; preview.dataset.yoursRulePreview = ''; preview.setAttribute('role', 'status');
   const factLabel = fact.parentElement!;
   const savedFields = new Map<string, string>();
   const category = (kind: string) => kind === 'objective' ? 'readings' : kind === 'condition' ? 'observations' : 'dates';
   if (when) savedFields.set(category(when.kind), when.field);
+  else if (options.initialField) savedFields.set(options.initialField.group, options.initialField.field);
   const readable = (field: string) => field[0]!.toUpperCase() + field.slice(1).replaceAll('_', ' ');
   const groups: Array<{ node: HTMLFieldSetElement; kinds: readonly string[] }> = [];
   const group = (parent: HTMLElement, title: string, ...kinds: string[]) => {
@@ -67,7 +80,7 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
   const onDay = check(host, 'On the day', 'on-day', own?.schedule.on_day ?? true);
   const consequence = select(host, 'Consequence', 'consequence', [['routine', 'Routine'], ['floor', 'Safety, legal or travel']], own?.consequence ?? 'routine');
   const expiry = select(host, 'Expiry', 'expiry', [['strict_expire', 'Lapse on the due day'], ['escalate_overdue', 'Keep overdue'], ['indefinite', 'No expiry']], own?.expiry_policy ?? 'strict_expire');
-  const reaction = select(host, 'Creates', 'reaction', [['action', 'An action to complete'], ['notice', 'A notice with nothing to complete'], ['', 'No occurrence']], own?.reaction.occurrence ?? (own ? '' : 'action'));
+  const reaction = select(host, 'Creates', 'reaction', [['action', 'An action to complete'], ['notice', 'A notice with nothing to complete'], ['', 'Nothing under Due']], own?.reaction.occurrence ?? (own ? '' : 'action'));
   const notify = check(host, 'Notify', 'notify', own?.reaction.notify ?? true);
   const more = node('details', host); more.dataset.yoursRuleMore = ''; node('summary', more, 'More rule options');
   const date = group(more, 'Earlier deadline', 'expiry');
@@ -98,7 +111,7 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
     doc.defaultView?.requestAnimationFrame(() => { if (host.isConnected) host.reportValidity(); revealingInvalid = false; });
   }, true);
   const updateRepeatHint = () => {
-    repeatHint.textContent = reaction.value !== 'action' ? 'Only an action can repeat after its date. Leave Repeat after blank for a notice or no occurrence.'
+    repeatHint.textContent = reaction.value !== 'action' ? 'Only an action can repeat after its date. Leave Repeat after blank for a notice or for nothing under Due.'
       : expiry.value === 'strict_expire' ? 'This rule lapses on the due day, so it will not repeat afterward.' : 'Repeats continue while the action is open.';
   };
   expiry.addEventListener('change', updateRepeatHint); reaction.addEventListener('change', updateRepeatHint); updateRepeatHint();
@@ -150,6 +163,20 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
     for (const control of host.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input,select')) if (!editable.has(control.name)) control.disabled = true;
   }
   const id = own?.id ?? `rule_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
+  const updatePreview = () => {
+    let trigger = 'Choose a fact and complete the rule details';
+    if (fact.value) {
+      if (kind.value === 'objective' && target.value && readingUnit.value) trigger = assetRuleWhenWords({ kind: 'objective', field: fact.value, target: Number(target.value), unit: readingUnit.value,
+        direction: direction.value as 'rising' | 'falling', mode: mode.value as 'usage' | 'condition', lead_days: Number(leadDays.value) });
+      else if (kind.value === 'interval' && every.value) trigger = assetRuleWhenWords({ kind: 'interval', field: fact.value, every: { amount: Number(every.value), unit: everyUnit.value as 'days' | 'weeks' | 'months' } });
+      else if (kind.value === 'condition') trigger = assetRuleWhenWords({ kind: 'condition', field: fact.value, certainty: certainty.value as 'confirmed' | 'conditional' });
+      else if (kind.value === 'expiry') trigger = assetRuleWhenWords({ kind: 'expiry', field: fact.value, ...(offset.value ? { offset: { amount: Number(offset.value), unit: offsetUnit.value as 'days' | 'weeks' | 'months' } } : {}) });
+    }
+    const reminders = [before.value.trim() ? `${before.value.trim()} before` : '', onDay.checked ? 'on the day' : ''].filter(Boolean).join(', ');
+    const repeats = reaction.value === 'action' && expiry.value !== 'strict_expire' && after.value ? ` Then every ${after.value} ${afterUnit.value} while open.` : '';
+    preview.textContent = `${!enabled.checked ? 'Rule disabled. ' : own?.muted ? 'Reminders are muted. ' : ''}${trigger}. ${reaction.value === 'action' ? 'Create a task' : reaction.value === 'notice' ? 'Create a notice' : 'Nothing under Due'}${notify.checked ? ' and notify you' : ''}.${reminders ? ` Remind ${reminders}.` : ' No scheduled reminder.'}${repeats}`;
+  };
+  host.addEventListener('input', updatePreview); host.addEventListener('change', updatePreview); updatePreview();
   return { read(): AssetRule {
     if (!scheduleRule && (!fact.value || !Object.hasOwn(asset[category(kind.value)], fact.value))) throw new Error('Choose an existing asset fact for this rule.');
     const ruleWhen: AssetRule['when'] = kind.value === 'interval' ? { kind: 'interval', field: fact.value, every: { amount: Number(every.value), unit: everyUnit.value as 'days' | 'weeks' | 'months' } }

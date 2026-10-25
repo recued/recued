@@ -96,6 +96,17 @@ export interface MemoryListEntry {
   run_id?: string;
   /** Provenance edges (D-120 `links`), joined where `memory_id` matches. */
   links?: Array<{ entity_id: string; kind: string; ts: number }>;
+  /** D-198 §10 — the earlier entry this one replaced (an agent's correction). */
+  replaces?: string;
+  /** D-198 §10 — the newer entry that replaced this one. Recall skips this entry;
+   *  the owner forgetting the newer one makes this one current again. */
+  replaced_by?: string;
+  /** D-198 §10 — set when an AGENT forgot the entry: who, in the owner's terms
+   *  ("your chat", or the agent's contract). The owner can restore it with
+   *  `memory.restore`. Absent on the owner's own redactions. */
+  forgotten_by?: string;
+  /** D-198 §10 — the reason the agent gave when it forgot the entry. */
+  forgotten_reason?: string;
 }
 
 /** Outbound shape for `memory.list`. `next_cursor` present iff another
@@ -130,6 +141,31 @@ export interface MemoryGetResponse {
   size_bytes?: number;
   redacted?: boolean;
   run_id?: string;
+  /** D-198 §10 — the earlier entry this one replaced (an agent's correction). */
+  replaces?: string;
+  /** D-198 §10 — the newer entry that replaced this one. Recall skips this entry;
+   *  the owner forgetting the newer one makes this one current again. */
+  replaced_by?: string;
+  /** D-198 §10 — set when an AGENT forgot the entry: who, in the owner's terms
+   *  ("your chat", or the agent's contract). The owner can restore it with
+   *  `memory.restore`. Absent on the owner's own redactions. */
+  forgotten_by?: string;
+  /** D-198 §10 — the reason the agent gave when it forgot the entry. */
+  forgotten_reason?: string;
+}
+
+/** Inbound shape for `memory.restore` (D-198 §10) — the owner undoes an AGENT's
+ *  forget. `memory_id` may be the forgotten entry or any earlier version forgotten
+ *  with it; every mark of that one forget is lifted. The owner's own redactions are
+ *  not restorable here. */
+export interface MemoryRestoreRequest {
+  memory_id: string;
+}
+
+/** Result of a `memory.restore` — how many versions came back. */
+export interface MemoryRestoreResult {
+  memory_id: string;
+  restored: number;
 }
 
 /** Inbound shape for `memory.create` — authors a NEW `user_self` memory

@@ -163,6 +163,21 @@ export const isWithinQuietHours = (
   );
 };
 
+/** When a scheduled send set for `minute` (local, minute of day) may go: the
+ *  window's end when `minute` falls inside a window that holds notifications,
+ *  else null, meaning its own time.
+ *
+ *  ⛔ A SEND COMPARED WITH ITS OWN TIME ALONE CAN NEVER COME ROUND. Set for 23:00
+ *  inside 22:00 → 07:00, it is quiet every evening and too early every morning.
+ *  Waiting for the window's end instead sends it at 07:00. An end earlier in the
+ *  day than `minute` is the next morning's, and which day that is stays the
+ *  caller's to place. Mirrors `shouldSuppressForQuietHours`, so the two cannot
+ *  disagree about the window. */
+export const quietHoursEndFor = (policy: QuietHoursPolicy, minute: number): number | null =>
+  policy.enabled && policy.applies_to.includes('notification') && isMinuteWithinWindow(minute, policy.from_minute, policy.to_minute)
+    ? policy.to_minute
+    : null;
+
 /** ⛔⛔ CAN QUIET HOURS ARM AT ALL? The gate is a RESOLVABLE zone, not a DECLARED
  *  one: `follows_host` satisfies it with nothing typed, so a laptop owner never
  *  picks a zone and quiet hours still works. Expressing this as `zone !== null`

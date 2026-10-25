@@ -610,7 +610,7 @@ export const PACKS_SURFACE_STYLES = `
 }
 [${PACKS_SURFACE_HOST_ATTR}] .packs-surface-add-input::placeholder { color: var(--fg-subtle); }
 [${PACKS_SURFACE_HOST_ATTR}] .packs-surface-add-input:focus-visible {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; border-color: var(--accent); box-shadow: var(--wc-ring);
 }
 [${PACKS_SURFACE_ADD_ERROR_ATTR}] {
   margin: 0 0 8px; font-size: 12px; color: var(--danger);
@@ -634,7 +634,7 @@ export const PACKS_SURFACE_STYLES = `
 }
 [${PACKS_SURFACE_HOST_ATTR}] .packs-surface-installed-toggle:focus-visible {
   outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-weak);
+  box-shadow: var(--wc-ring);
 }
 [${PACKS_SURFACE_INSTALLED_ONLY_ERROR_ATTR}] {
   margin: -4px 0 10px; font-size: 12px; color: var(--danger);

@@ -46,12 +46,14 @@ import {
   TLS_CERTS_UPLOAD_FIELD_ATTR,
   TLS_CERTS_UPLOAD_FILE_ATTR,
   TLS_CERTS_UPLOAD_FORM_ATTR,
+  TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR,
   TLS_UPLOAD_ISSUE_COPY,
   extractUploadIssues,
   mountTlsCertificatesPanel,
   type TlsDomainListCaller,
   type TlsDomainRemoveCaller,
   type TlsDomainUploadCaller,
+  type TlsCertificatesUploadFormValues,
 } from '../settings/tls-certificates.js';
 import type {
   HostnameAddRequest,
@@ -454,6 +456,7 @@ const mountCerts = async (args: {
   runList?: TlsDomainListCaller;
   runUpload?: TlsDomainUploadCaller;
   runRemove?: TlsDomainRemoveCaller;
+  onUploaded?: (domain: string, result: Awaited<ReturnType<TlsDomainUploadCaller>>) => void;
 }) => {
   const host = makeFakeElement('div');
   const doc = makeFakeDocument();
@@ -465,6 +468,7 @@ const mountCerts = async (args: {
     runList: args.runList ?? runList,
     runUpload: args.runUpload ?? (unusedCaller as never),
     ...(args.runRemove !== undefined ? { runRemove: args.runRemove } : {}),
+    ...(args.onUploaded !== undefined ? { onUploaded: args.onUploaded } : {}),
     now: () => NOW,
   });
   await mount.whenLoaded();
@@ -636,6 +640,95 @@ describe('Certificates — inventory read recovery', () => {
 });
 
 describe('Certificates — BYO upload panel', () => {
+  it.each([
+    ['domain', ' ', 'You need to give a name.'],
+    ['cert_pem', 'not a certificate', 'Certificate must be a PEM block'],
+    ['private_key_pem', '', 'Private key must be a PEM block'],
+    ['chain_pem', 'not a chain', 'Issuer chain must be a PEM block'],
+  ] as const)('links the local %s error and focuses only after submit', async (field, invalid, copy) => {
+    const runUpload = vi.fn<TlsDomainUploadCaller>();
+    const { host, doc, mount } = await mountCerts({ runUpload });
+    mount.openUpload();
+    const valid: TlsCertificatesUploadFormValues = {
+      domain: 'server.example.com', cert_pem: CERT_PEM, private_key_pem: KEY_PEM, chain_pem: CERT_PEM,
+    };
+    for (const name of Object.keys(valid) as Array<keyof TlsCertificatesUploadFormValues>) {
+      setText(host, TLS_CERTS_UPLOAD_FIELD_ATTR, name, name === field ? invalid : valid[name]);
+    }
+    const inputs = findAllByAttr(host, TLS_CERTS_UPLOAD_FIELD_ATTR);
+    const files = findAllByAttr(host, TLS_CERTS_UPLOAD_FILE_ATTR);
+    const input = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, field)!;
+    input.setAttribute('aria-describedby', 'field-help shared-help');
+    expect(inputs.every(node => node.getAttribute('aria-invalid') === null)).toBe(true);
+    await mount.submitUpload();
+    const error = findByAttrValue(host, TLS_CERTS_ERROR_ATTR)!;
+    const id = error.getAttribute('id')!;
+    expect(error.textContent).toContain(copy);
+    expect(error.getAttribute('role')).toBe('alert');
+    expect(error.parent).toBe(input.parent!.parent);
+    expect(input.parent!.contains(error)).toBe(false); // Keep the label's name unchanged.
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toBe(`field-help shared-help ${id}`);
+    expect(doc.activeElement).toBe(input);
+    for (const sibling of inputs.filter(node => node !== input)) expect(sibling.getAttribute('aria-invalid')).toBeNull();
+    await mount.submitUpload();
+    expect(findByAttrValue(host, TLS_CERTS_ERROR_ATTR)!.getAttribute('id')).toBe(id);
+    expect(input.getAttribute('aria-describedby')).toBe(`field-help shared-help ${id}`);
+    const outside = doc.createElement('button'); outside.focus();
+    await mount.refresh();
+    expect(doc.activeElement).toBe(outside);
+    expect(input.getAttribute('aria-describedby')).toBe(`field-help shared-help ${id}`);
+    input.focus(); input.value = valid[field]; input.fire('input');
+    expect(doc.activeElement).toBe(input);
+    expect(input.getAttribute('aria-invalid')).toBeNull();
+    expect(input.getAttribute('aria-describedby')).toBe('field-help shared-help');
+    expect(findByAttrValue(host, TLS_CERTS_ERROR_ATTR)).toBeNull();
+    expect(mount.getState().upload.error).toBeNull();
+    for (const node of [...inputs, ...files]) expect(host.contains(node)).toBe(true);
+    expect(runUpload).not.toHaveBeenCalled();
+  });
+
+  it.each(['generic', 'issues'] as const)('keeps a later %s server refusal separate from local field errors', async kind => {
+    const error = Object.assign(new Error('Synthetic server refusal'), kind === 'issues'
+      ? { details: { issues: [{ code: 'tls_san_mismatch' }] } } : {});
+    const runUpload = vi.fn<TlsDomainUploadCaller>().mockRejectedValue(error);
+    const { host, doc, mount } = await mountCerts({ runUpload });
+    mount.openUpload(); await mount.submitUpload();
+    mount.setUploadField('domain', 'server.example.com');
+    mount.setUploadField('cert_pem', CERT_PEM); mount.setUploadField('private_key_pem', KEY_PEM);
+    const outside = doc.createElement('button'); outside.focus();
+    await mount.submitUpload();
+    expect(doc.activeElement).toBe(outside);
+    for (const input of findAllByAttr(host, TLS_CERTS_UPLOAD_FIELD_ATTR)) {
+      expect(input.getAttribute('aria-invalid')).toBeNull();
+      expect(input.getAttribute('aria-describedby')).toBeNull();
+    }
+    const message = findByAttrValue(host, kind === 'issues' ? TLS_CERTS_ISSUE_ATTR : TLS_CERTS_ERROR_ATTR)!;
+    expect(message.parent!.className).toBe('tls-certs-upload-feedback');
+    expect(runUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps validation IDs distinct and retires associations on cancel, reopen and disposal', async () => {
+    const first = await mountCerts({}), second = await mountCerts({});
+    first.mount.openUpload(); second.mount.openUpload();
+    await first.mount.submitUpload(); await second.mount.submitUpload();
+    const oldInput = findByAttrValue(first.host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'domain')!;
+    const error = findByAttrValue(first.host, TLS_CERTS_ERROR_ATTR)!;
+    expect(error.getAttribute('id')).not.toBe(findByAttrValue(second.host, TLS_CERTS_ERROR_ATTR)!.getAttribute('id'));
+    first.mount.cancelUpload();
+    expect(oldInput.getAttribute('aria-invalid')).toBeNull();
+    expect(oldInput.getAttribute('aria-describedby')).toBeNull();
+    expect(error.parent).toBeNull();
+    first.mount.openUpload();
+    expect(findByAttrValue(first.host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'domain')!.getAttribute('aria-invalid')).toBeNull();
+    expect(findByAttrValue(first.host, TLS_CERTS_ERROR_ATTR)).toBeNull();
+    const secondInput = findByAttrValue(second.host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'domain')!;
+    second.mount.dispose();
+    expect(secondInput.getAttribute('aria-invalid')).toBeNull();
+    expect(secondInput.getAttribute('aria-describedby')).toBeNull();
+    first.mount.dispose();
+  });
+
   it.each(['domain', 'cert_pem', 'private_key_pem', 'chain_pem'] as const)(
     'keeps the %s control and its sibling fields mounted during consecutive input events',
     async (field) => {
@@ -914,5 +1007,181 @@ describe('extractUploadIssues', () => {
     expect(extractUploadIssues({ details: null })).toEqual([]);
     expect(extractUploadIssues({ details: { issues: 'nope' } })).toEqual([]);
     expect(extractUploadIssues({ details: { issues: [null, 7, 'x'] } })).toEqual([]);
+  });
+});
+
+describe('Certificates — pending upload drafts', () => {
+  type UploadResult = Awaited<ReturnType<TlsDomainUploadCaller>>;
+  const result: UploadResult = { fingerprint: 'synthetic', expires_at: NOW + 60 * DAY, san: ['server.example.com'] };
+  const values: TlsCertificatesUploadFormValues = { domain: 'server.example.com', cert_pem: CERT_PEM, private_key_pem: KEY_PEM, chain_pem: '' };
+  const deferredUpload = () => {
+    let resolve!: (result: UploadResult) => void, reject!: (error: Error) => void;
+    const promise = new Promise<UploadResult>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const fill = (mount: ReturnType<typeof mountTlsCertificatesPanel>, draft = values) => {
+    for (const field of Object.keys(draft) as Array<keyof TlsCertificatesUploadFormValues>) mount.setUploadField(field, draft[field]);
+  };
+
+  for (const outcome of ['success', 'failure'] as const) {
+    it.each(['domain', 'cert_pem', 'private_key_pem', 'chain_pem'] as const)(`keeps a newer %s draft after ${outcome} without another upload`, async field => {
+      const gate = deferredUpload(), runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValue(gate.promise);
+      const runList = vi.fn<TlsDomainListCaller>().mockResolvedValue({ entries: [] }), onUploaded = vi.fn();
+      const { host, doc, mount } = await mountCerts({ runUpload, runList, onUploaded });
+      mount.openUpload(); fill(mount);
+      const form = findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR);
+      const input = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, field)!;
+      const files = findAllByAttr(host, TLS_CERTS_UPLOAD_FILE_ATTR);
+      const pending = mount.submitUpload();
+      const next = field === 'domain' ? 'newer.example.com' : `newer ${field} draft`;
+      input.focus(); input.value = next; input.fire('input');
+      if (outcome === 'success') gate.resolve(result); else gate.reject(new Error('Synthetic upload failure'));
+      await pending;
+      expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBe(form);
+      expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, field)).toBe(input);
+      expect(input.value).toBe(next); expect(doc.activeElement).toBe(input);
+      expect(mount.getState().upload.values).toEqual({ ...values, [field]: next });
+      expect(mount.getState().upload.open).toBe(true); expect(mount.getState().upload.saving).toBe(false);
+      expect(mount.hasUnsavedChanges()).toBe(true); expect(mount.hasInFlightWork()).toBe(false);
+      for (const file of files) expect(host.contains(file)).toBe(true);
+      const status = findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)!;
+      expect(status.textContent).toContain('server.example.com');
+      expect(status.textContent).toContain('Your newer edits still need uploading.');
+      expect(status.getAttribute('role')).toBe('status');
+      if (field === 'domain') expect(status.textContent).not.toContain(next);
+      expect(runUpload).toHaveBeenCalledExactlyOnceWith({ domain: values.domain, cert_pem: values.cert_pem, private_key_pem: values.private_key_pem, source: 'byo_upload' });
+      expect(runList).toHaveBeenCalledTimes(outcome === 'success' ? 2 : 1);
+      if (outcome === 'success') {
+        expect(onUploaded).toHaveBeenCalledExactlyOnceWith(values.domain, result);
+        expect(mount.getState().upload.result).toBe(result);
+      } else {
+        expect(onUploaded).not.toHaveBeenCalled();
+        expect(mount.getState().upload.error).toContain('Synthetic upload failure');
+        mount.setUploadField(field, `${next} corrected`);
+        expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).toBeNull();
+      }
+      mount.dispose();
+    });
+  }
+
+  it.each(['unchanged', 'equal setter', 'reverted edit'] as const)('closes and clears the completed %s draft', async kind => {
+    const gate = deferredUpload(), runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValue(gate.promise);
+    const { host, mount } = await mountCerts({ runUpload }); mount.openUpload(); fill(mount);
+    const pending = mount.submitUpload();
+    if (kind === 'equal setter') mount.setUploadField('private_key_pem', KEY_PEM);
+    if (kind === 'reverted edit') { mount.setUploadField('private_key_pem', 'temporary'); mount.setUploadField('private_key_pem', KEY_PEM); }
+    gate.resolve(result); await pending;
+    expect(mount.getState().upload.open).toBe(false); expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBeNull();
+    expect(mount.getState().upload.values).toEqual({ domain: '', cert_pem: '', private_key_pem: '', chain_pem: '' });
+    expect(mount.hasUnsavedChanges()).toBe(false); expect(mount.hasInFlightWork()).toBe(false);
+    expect(findByAttrValue(host, TLS_CERTS_RESULT_ATTR)).not.toBeNull();
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('preserves a file-only change while the submitted text is unchanged', async () => {
+    const gate = deferredUpload(), runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValue(gate.promise);
+    const { host, mount } = await mountCerts({ runUpload }); mount.openUpload(); fill(mount);
+    const file = findByAttrValue(host, TLS_CERTS_UPLOAD_FILE_ATTR, 'cert_pem')!;
+    Object.assign(file, { files: { length: 1, 0: { name: 'previous.pem' } } });
+    const pending = mount.submitUpload();
+    Object.assign(file, { files: { length: 0 } }); file.fire('change');
+    gate.resolve(result); await pending;
+    expect(mount.getState().upload.values).toEqual(values); expect(mount.getState().upload.open).toBe(true);
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FILE_ATTR, 'cert_pem')).toBe(file);
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).not.toBeNull();
+    expect(runUpload).toHaveBeenCalledTimes(1); mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('ignores a retired form\'s late %s while a newer upload is pending', async outcome => {
+    const first = deferredUpload(), second = deferredUpload();
+    const runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const runList = vi.fn<TlsDomainListCaller>().mockResolvedValue({ entries: [] }), onUploaded = vi.fn();
+    const { host, mount } = await mountCerts({ runUpload, runList, onUploaded });
+    mount.openUpload(); fill(mount); const oldPending = mount.submitUpload();
+    mount.cancelUpload(); mount.openUpload(); const newer = { ...values, domain: 'newer.example.com' }; fill(mount, newer);
+    const form = findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR), newPending = mount.submitUpload();
+    if (outcome === 'success') first.resolve(result); else first.reject(new Error('Retired failure'));
+    await oldPending;
+    expect(mount.getState().upload.values).toEqual(newer); expect(mount.getState().upload.saving).toBe(true);
+    expect(mount.getState().upload.error).toBeNull(); expect(mount.getState().upload.result).toBeNull();
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBe(form);
+    expect(onUploaded).not.toHaveBeenCalled(); expect(runList).toHaveBeenCalledTimes(1);
+    second.resolve(result); await newPending;
+    expect(mount.getState().upload.open).toBe(false); expect(mount.getState().upload.values.private_key_pem).toBe('');
+    expect(onUploaded).toHaveBeenCalledExactlyOnceWith(newer.domain, result);
+    expect(runUpload).toHaveBeenCalledTimes(2); mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('ignores a disposed form\'s late %s', async outcome => {
+    const gate = deferredUpload(), runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValue(gate.promise), onUploaded = vi.fn();
+    const runList = vi.fn<TlsDomainListCaller>().mockResolvedValue({ entries: [] });
+    const { host, mount } = await mountCerts({ runUpload, runList, onUploaded }); mount.openUpload(); fill(mount);
+    const pending = mount.submitUpload(); mount.dispose();
+    if (outcome === 'success') gate.resolve(result); else gate.reject(new Error('Disposed failure'));
+    await pending; expect(host.children).toHaveLength(0); expect(onUploaded).not.toHaveBeenCalled();
+    expect(runList).toHaveBeenCalledTimes(1); expect(mount.hasInFlightWork()).toBe(false);
+  });
+
+  it('requires a live upload form before starting a request', async () => {
+    const runUpload = vi.fn<TlsDomainUploadCaller>(); const { mount } = await mountCerts({ runUpload });
+    fill(mount); await mount.submitUpload(); expect(runUpload).not.toHaveBeenCalled();
+    expect(mount.hasInFlightWork()).toBe(false); mount.dispose();
+  });
+
+  it('keeps newer values and the upload acknowledgment through a failed inventory refresh', async () => {
+    const gate = deferredUpload(), runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValue(gate.promise);
+    const runList = vi.fn<TlsDomainListCaller>().mockResolvedValueOnce({ entries: [] }).mockRejectedValueOnce(new Error('Refresh unavailable')).mockResolvedValueOnce({ entries: [] });
+    const { host, mount } = await mountCerts({ runUpload, runList }); mount.openUpload(); fill(mount);
+    const pending = mount.submitUpload(); mount.setUploadField('private_key_pem', 'newer key'); gate.resolve(result); await pending;
+    const form = findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR);
+    expect(mount.getState().error).toContain('Refresh unavailable'); expect(mount.getState().upload.values.private_key_pem).toBe('newer key');
+    expect(findByAttrValue(host, TLS_CERTS_RESULT_ATTR)).not.toBeNull(); expect(mount.hasUnsavedChanges()).toBe(true);
+    await mount.refresh(); expect(mount.getState().error).toBeNull();
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBe(form); expect(mount.getState().upload.values.private_key_pem).toBe('newer key'); mount.dispose();
+  });
+
+  it('clears the earlier structured failure qualification before a later local validation error', async () => {
+    const gate = deferredUpload(), runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValue(gate.promise);
+    const { host, mount } = await mountCerts({ runUpload }); mount.openUpload(); fill(mount);
+    const pending = mount.submitUpload(); mount.setUploadField('cert_pem', 'newer invalid draft');
+    gate.reject(Object.assign(new Error('Synthetic refusal'), { details: { issues: [{ code: 'tls_san_mismatch' }] } })); await pending;
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).not.toBeNull(); expect(findByAttrValue(host, TLS_CERTS_ISSUE_ATTR)).not.toBeNull();
+    await mount.submitUpload();
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).toBeNull(); expect(findByAttrValue(host, TLS_CERTS_ISSUE_ATTR)).toBeNull();
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'cert_pem')!.getAttribute('aria-invalid')).toBe('true');
+    expect(runUpload).toHaveBeenCalledTimes(1); mount.dispose();
+  });
+});
+
+describe('Certificates — retained draft notices', () => {
+  it.each(['before completion', 'after completion'] as const)('updates the retained completion notice when the draft is cleared %s', async when => {
+    let resolve!: (result: Awaited<ReturnType<TlsDomainUploadCaller>>) => void;
+    const promise = new Promise<Awaited<ReturnType<TlsDomainUploadCaller>>>(yes => { resolve = yes; });
+    const runUpload = vi.fn<TlsDomainUploadCaller>().mockReturnValue(promise);
+    const { host, doc, mount } = await mountCerts({ runUpload });
+    mount.openUpload(); mount.setUploadField('domain', 'server.example.com'); mount.setUploadField('cert_pem', CERT_PEM); mount.setUploadField('private_key_pem', KEY_PEM);
+    const form = findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR), input = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'private_key_pem')!;
+    const clear = () => {
+      for (const field of ['domain', 'cert_pem', 'private_key_pem', 'chain_pem'] as const) mount.setUploadField(field, '');
+    };
+    const pending = mount.submitUpload();
+    if (when === 'before completion') clear(); else mount.setUploadField('private_key_pem', 'newer key');
+    resolve({ fingerprint: 'synthetic', expires_at: NOW + DAY, san: ['server.example.com'] }); await pending;
+    input.focus(); if (when === 'after completion') clear();
+    expect(mount.hasUnsavedChanges()).toBe(false); expect(mount.getState().upload.open).toBe(true);
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).toBeNull();
+    const caption = findByAttrValue(host, TLS_CERTS_RESULT_ATTR)!.children[0]!;
+    expect(caption.textContent).toBe('Certificate installed for server.example.com.');
+    const file = findByAttrValue(host, TLS_CERTS_UPLOAD_FILE_ATTR, 'private_key_pem')!;
+    Object.assign(file, { files: { length: 1, 0: { name: 'empty.pem' } } }); file.fire('change');
+    expect(mount.hasUnsavedChanges()).toBe(true);
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).toBe(caption);
+    expect(caption.textContent).toContain('Your newer edits still need uploading.');
+    Object.assign(file, { files: { length: 0 } }); file.fire('change');
+    expect(mount.hasUnsavedChanges()).toBe(false); expect(findByAttrValue(host, TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR)).toBeNull();
+    expect(caption.textContent).toBe('Certificate installed for server.example.com.');
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBe(form); expect(doc.activeElement).toBe(input);
+    expect(runUpload).toHaveBeenCalledTimes(1); mount.dispose();
   });
 });

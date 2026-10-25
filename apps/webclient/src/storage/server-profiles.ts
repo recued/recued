@@ -152,6 +152,48 @@ export const setActiveField = (
   };
 };
 
+/** Write one field of ONE profile, by id, whether or not it is active. An
+ *  unknown id leaves the roster untouched: a write meant for a server that
+ *  was forgotten in another tab must not land on any other record. */
+export const setProfileField = (
+  roster: ProfileRoster,
+  id: string,
+  key: Exclude<WebclientLocalKey, 'server_url'>,
+  value: WebclientLocalStorage[WebclientLocalKey],
+): ProfileRoster =>
+  roster.profiles.some((p) => p.id === id)
+    ? {
+        ...roster,
+        profiles: roster.profiles.map((p) => (p.id === id ? { ...p, [key]: value } : p)),
+      }
+    : roster;
+
+/** The fields a pairing saves beside its address. */
+export type PairedProfileFields = Pick<
+  WebclientLocalStorage,
+  'server_public_key' | 'pair_metadata' | 'cert_pin_state' | 'webclient_token'
+>;
+
+/** Select (or add) the record for `server_url`, exactly as
+ *  `ensureActiveProfileFor` does, and land a pairing's fields on it — one
+ *  roster value, so no reader ever sees half of it. ⛔ Field by field, a
+ *  record that already had a sign-in (re-adding a saved server) lost it at
+ *  the first write, and a later failure left the server "Needs pairing
+ *  again". */
+export const commitPairToRoster = (
+  roster: ProfileRoster,
+  server_url: string,
+  fields: PairedProfileFields,
+  mintId: () => string,
+): ProfileRoster => {
+  const selected = ensureActiveProfileFor(roster, server_url, mintId);
+  const id = selected.activeId;
+  return {
+    ...selected,
+    profiles: selected.profiles.map((p) => (p.id === id ? { ...p, ...fields } : p)),
+  };
+};
+
 /** Add a profile for `server_url` and make it active, or just activate the
  *  existing one when this browser already knows that URL.
  *
@@ -233,7 +275,27 @@ export const beginPendingProfile = (
   mintId: () => string,
 ): ProfileRoster => {
   const existing = roster.profiles.find(isPendingProfile);
-  if (existing) return { ...roster, activeId: existing.id };
+  if (existing) {
+    // Reused, but emptied. A pending record never legitimately holds a
+    // sign-in field: a pairing gives a record its address before or with
+    // anything else, so whatever this one carries is left over from a write
+    // that went astray. ⛔ Reused as it was, that leftover kept it reading as
+    // an interrupted save: startup repair's Clear (which retires into this
+    // very record) changed nothing, so the repair card came back on every
+    // start, and the add form's first submit was taken for an interrupted
+    // save and its typed code cleared.
+    const emptied: WebclientServerProfile = {
+      ...existing,
+      webclient_token: null,
+      server_public_key: null,
+      pair_metadata: null,
+      cert_pin_state: null,
+    };
+    return {
+      profiles: roster.profiles.map((p) => (p.id === existing.id ? emptied : p)),
+      activeId: existing.id,
+    };
+  }
   const pending = blankProfile(mintId(), '', '');
   return { profiles: [...roster.profiles, pending], activeId: pending.id };
 };
@@ -245,6 +307,18 @@ export const beginPendingProfile = (
  *  deleting a server you are most likely to want the one you were using
  *  before it. An empty roster leaves `activeId: null`, which reads as
  *  unpaired and lands the boot on the pair form. */
+/** The profile that becomes active when the active one, `id`, is removed:
+ *  the most recently connected of the rest (roster order breaks a tie), or
+ *  none. Shared with the forget confirm, which names it before anything is
+ *  removed. */
+export const fallbackAfterRemoving = (
+  profiles: ReadonlyArray<WebclientServerProfile>,
+  id: string,
+): WebclientServerProfile | undefined =>
+  [...profiles.filter((p) => p.id !== id)].sort(
+    (a, b) => (validLastConnectedAt(b) ?? 0) - (validLastConnectedAt(a) ?? 0),
+  )[0];
+
 export const removeProfile = (
   roster: ProfileRoster,
   id: string,
@@ -252,10 +326,7 @@ export const removeProfile = (
   const profiles = roster.profiles.filter((p) => p.id !== id);
   if (profiles.length === roster.profiles.length) return roster;
   if (roster.activeId !== id) return { ...roster, profiles };
-  const fallback = [...profiles].sort(
-    (a, b) => (validLastConnectedAt(b) ?? 0) - (validLastConnectedAt(a) ?? 0),
-  )[0];
-  return { profiles, activeId: fallback?.id ?? null };
+  return { profiles, activeId: fallbackAfterRemoving(roster.profiles, id)?.id ?? null };
 };
 
 /** Rename. Blank / whitespace-only input falls back to the URL-derived
@@ -303,9 +374,16 @@ export const retargetProfile = (
   id: string,
   next_url: string,
   next_token: WebclientServerProfile['webclient_token'],
+  /** When given, the move applies only while the stored token is still this
+   *  one: the caller re-sealed it, and must not put it back over a newer one. */
+  expected_token_id?: string | null,
 ): ProfileRoster => {
   const target = roster.profiles.find((p) => p.id === id);
   if (!target) return roster;
+  if (
+    expected_token_id !== undefined
+    && (target.webclient_token?.token_id ?? null) !== expected_token_id
+  ) return roster;
   const url = next_url.trim();
   if (url.length === 0) return roster;
   if (roster.profiles.some((p) => p.id !== id && p.server_url === url)) return roster;

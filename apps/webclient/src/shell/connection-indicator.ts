@@ -81,12 +81,12 @@ export const CONNECTION_INDICATOR_STYLES = `
 [${CONNECTION_BANNER_ATTR}][data-state="restored"],
 [${CONNECTION_BANNER_ATTR}][data-state="attention"] { display: flex; }
 [${CONNECTION_BANNER_ATTR}][data-state="offline"] {
-  background: var(--recued-danger-surface, #fdeceb);
-  color: var(--recued-danger, #b3261e);
+  background: #fdeceb;
+  color: #b3261e;
 }
 [${CONNECTION_BANNER_ATTR}][data-state="restored"] {
-  background: var(--recued-ok-surface, #e8f5ec);
-  color: var(--recued-ok, #2f6b45);
+  background: #e8f5ec;
+  color: #2f6b45;
 }
 [${CONNECTION_BANNER_ATTR}][data-state="attention"] {
   background: var(--surface-sunk, #fff4e5);
@@ -115,21 +115,35 @@ export const CONNECTION_INDICATOR_STYLES = `
   outline-offset: 2px;
 }
 [${CONNECTION_BANNER_ACTION_ATTR}][hidden] { display: none; }
+/* Dark shades follow the theme the way tokens.css does: a pinned Dark, or
+   the OS's dark when nothing is pinned. ⛔ Not the OS media query alone, and
+   not the background alone: that left the light text colour on the dark
+   background — 2.3:1 offline, 2.1:1 restored — on every dark OS. */
+:root[data-theme="dark"] [${CONNECTION_BANNER_ATTR}][data-state="offline"] {
+  background: #3b1f1d;
+  color: var(--danger, #f87171);
+}
+:root[data-theme="dark"] [${CONNECTION_BANNER_ATTR}][data-state="restored"] {
+  background: #1e3527;
+  color: var(--fg, #e4e4e7);
+}
+:root[data-theme="dark"] [${CONNECTION_BANNER_ATTR}][data-state="attention"] {
+  background: var(--surface-sunk, #242428);
+  color: var(--fg, #e4e4e7);
+}
 @media (prefers-color-scheme: dark) {
-  [${CONNECTION_BANNER_ATTR}][data-state="offline"] {
-    background: var(--recued-danger-surface, #3b1f1d);
+  :root:not([data-theme]) [${CONNECTION_BANNER_ATTR}][data-state="offline"] {
+    background: #3b1f1d;
+    color: var(--danger, #f87171);
   }
-  [${CONNECTION_BANNER_ATTR}][data-state="restored"] {
-    background: var(--recued-ok-surface, #1e3527);
+  :root:not([data-theme]) [${CONNECTION_BANNER_ATTR}][data-state="restored"] {
+    background: #1e3527;
+    color: var(--fg, #e4e4e7);
   }
   :root:not([data-theme]) [${CONNECTION_BANNER_ATTR}][data-state="attention"] {
     background: var(--surface-sunk, #242428);
     color: var(--fg, #e4e4e7);
   }
-}
-:root[data-theme="dark"] [${CONNECTION_BANNER_ATTR}][data-state="attention"] {
-  background: var(--surface-sunk, #242428);
-  color: var(--fg, #e4e4e7);
 }
 @media (max-width: 520px) {
   [${CONNECTION_BANNER_ACTION_ATTR}] {

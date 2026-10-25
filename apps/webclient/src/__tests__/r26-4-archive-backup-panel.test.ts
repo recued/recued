@@ -46,6 +46,8 @@ import {
   ARCHIVE_PASSPORT_JSON_ATTR,
   ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR,
   ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR,
+  ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR,
+  ARCHIVE_BACKUP_ANOTHER_BTN_ATTR,
   ARCHIVE_BACKUP_CANCEL_BTN_ATTR,
   ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR,
   ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR,
@@ -65,6 +67,7 @@ import {
 } from '../settings/archive-backup-panel.js';
 import type { ArchiveImportReceiptController, ArchiveImportReceiptState } from '../settings/archive-import-receipt.js';
 import { PASSPORT_RECOVERY_SUMMARY_ATTR } from '../settings/passport-recovery-summary.js';
+import { BackupFormValidationError } from '../settings/backup-form-validation.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake DOM (recovery-panel test shape + `checked`)
@@ -207,6 +210,8 @@ const textOf = (root: FakeElement): string => {
 
 const KNOWN = generateRecoveryKey().mnemonic;
 const DONE_PATH = '/data/exports/recued-2026-06-25.recued.archive';
+const DOWNLOAD_HANDOFF_NOTE = 'Backup received. Check your browser’s downloads to confirm it was saved.';
+afterEach(() => { vi.useRealTimers(); });
 
 const noopScheduler: ArchivePollScheduler = {
   schedule: () => () => {},
@@ -453,6 +458,23 @@ describe('R26.4 Delta 2b — export', () => {
     h.mount.dispose();
   });
 
+  it('keeps field-level storage validation out of the general banner without repainting or dispatching the key form', async () => {
+    const h = setupMount({ remoteTarget: () => { throw new BackupFormValidationError('Choose a whole number between 1 and 30 backups to keep.'); } });
+    h.mount.clickBackup(); h.mount.setExportMnemonic(KNOWN); const field = findByAttr(h.host, ARCHIVE_BACKUP_MNEMONIC_ATTR)!; field.value = KNOWN;
+    await h.mount.clickStartBackup();
+    expect(h.mount.getView()).toBe('export-entry'); expect(h.mount.getError()).toBeNull(); expect(findByAttr(h.host, ARCHIVE_BACKUP_RESULT_ATTR)).toBeNull();
+    expect(findByAttr(h.host, ARCHIVE_BACKUP_MNEMONIC_ATTR)).toBe(field); expect(field.value).toBe(KNOWN); expect(h.exportLog).toHaveLength(0); h.mount.dispose();
+  });
+
+  it('removes an earlier general target error when inline validation takes ownership', async () => {
+    let handled = false;
+    const h = setupMount({ remoteTarget: () => { if (!handled) throw new Error('Storage choices could not be read.'); throw new BackupFormValidationError('Choose the destination again.'); } });
+    h.mount.clickBackup(); h.mount.setExportMnemonic(KNOWN); const field = findByAttr(h.host, ARCHIVE_BACKUP_MNEMONIC_ATTR)!; field.value = KNOWN;
+    await h.mount.clickStartBackup(); expect(h.mount.getError()).toBe('Storage choices could not be read.'); handled = true;
+    await h.mount.clickStartBackup(); expect(h.mount.getError()).toBeNull(); expect(findByAttr(h.host, ARCHIVE_BACKUP_RESULT_ATTR)).toBeNull();
+    expect(findByAttr(h.host, ARCHIVE_BACKUP_MNEMONIC_ATTR)).toBe(field); expect(field.value).toBe(KNOWN); expect(h.exportLog).toHaveLength(0); h.mount.dispose();
+  });
+
   it('opens a staged remote copy for ordinary preview without importing it', async () => {
     const h = setupMount(); const staged = `recued-upload-${'a'.repeat(32)}.recued.archive`;
     expect(h.mount.openStagedRestore('../server.db')).toBe(false);
@@ -569,8 +591,9 @@ describe('R26.4 Delta 2b — export', () => {
     expect(exportLog[0]?.include_passport).toBe(false);
   });
 
-  it('export-done renders "<filename> · download by <date> · <size>"', async () => {
+  it('export-done renders the filename, exact local deadline with zone, and size', async () => {
     const EXPIRES = Date.UTC(2026, 6, 2, 12, 0, 0); // 2026-07-02
+    vi.useFakeTimers(); vi.setSystemTime(EXPIRES - 60_000);
     const runStatus = statusSequence({
       state: 'done',
       bytes_written: 5 * 1024 * 1024,
@@ -585,13 +608,13 @@ describe('R26.4 Delta 2b — export', () => {
     expect(mount.getView()).toBe('export-done');
     const headline = findByAttr(host, ARCHIVE_BACKUP_PATH_OUT_ATTR);
     const text = headline ? textOf(headline) : '';
-    // basename of DONE_PATH, the +7d expiry date, the human size — all present.
     expect(text).toContain('recued-2026-06-25.recued.archive');
-    expect(text).toContain('download by 2026-07-02');
+    expect(text).toContain(`download by ${formatClientDateTime(EXPIRES)}`);
     expect(text).toContain('5 MB');
     expect(mount.getExportExpiresAt()).toBe(EXPIRES);
     // The full server path stays visible (M1 is server-path only, no download).
     expect(textOf(host)).toContain(DONE_PATH);
+    mount.dispose();
   });
 
   it('a status 404 (archive_job_unknown) is surfaced softly, not as an error', async () => {
@@ -1529,7 +1552,7 @@ describe('M4 browser download', () => {
   /** A capturing archive-download seam — records each call so the test can
    *  drive onDone / onError, mirroring how the real socket would resolve. */
   const captureDownload = () => {
-    const calls: Array<{ name: string; onDone: () => void; onError: (m: string) => void }> = [];
+    const calls: Array<Parameters<ArchiveDownloadFn>[0]> = [];
     const fn: ArchiveDownloadFn = (req) => {
       calls.push(req);
       return () => {};
@@ -1547,7 +1570,191 @@ describe('M4 browser download', () => {
     expect(s.mount.getView()).toBe('export-done');
   };
 
-  it('shows a Download button on export-done + streams on click → done note', async () => {
+  it('distinguishes connecting from received bytes and updates progress without replacing focused controls', async () => {
+    const dl = captureDownload(); const s = setupMount({ archiveDownload: dl.fn,
+      runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 4096, progress_pct: 100 }) });
+    await driveToExportDone(s); const button = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!; button.focus(); button.click();
+    expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)?.textContent).toBe('Connecting…');
+    const progress = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)!;
+    const pending = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!;
+    dl.calls[0]!.onProgress?.(0); expect(pending.textContent).toBe('Downloading…');
+    dl.calls[0]!.onProgress?.(2048); expect(textOf(progress)).toContain('2 KB of 4 KB received · 50%');
+    expect(progress.getAttribute('aria-valuenow')).toBe('50'); expect(s.doc.activeElement).toBe(pending);
+    expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)).toBe(progress);
+    expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)).toBe(pending);
+    dl.calls[0]!.onProgress?.(4096); expect(textOf(progress)).toContain('Waiting for confirmation…'); expect(s.mount.isDownloading()).toBe(true);
+    expect(textOf(s.host)).not.toContain(DOWNLOAD_HANDOFF_NOTE); dl.calls[0]!.onDone();
+    expect(textOf(s.host)).toContain(DOWNLOAD_HANDOFF_NOTE);
+    expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)?.hasAttribute('hidden')).toBe(true); s.mount.dispose();
+  });
+
+  it.each([0, NaN, Infinity, 4096.5])('shows received bytes without a percentage for an unknown or invalid export size (%s)', async total => {
+    const dl = captureDownload(), s = setupMount({ archiveDownload: dl.fn,
+      runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: total, progress_pct: 100 }) });
+    await driveToExportDone(s); s.mount.clickDownload(); dl.calls[0]!.onProgress?.(2048);
+    const progress = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)!;
+    expect(textOf(progress)).toBe('2 KB received'); expect(progress.getAttribute('aria-valuenow')).toBeNull();
+    expect(s.mount.isDownloading()).toBe(true); s.mount.dispose();
+  });
+
+  it('drops the percentage if incoming bytes contradict the export size hint', async () => {
+    const dl = captureDownload(), s = setupMount({ archiveDownload: dl.fn,
+      runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 1024, progress_pct: 100 }) });
+    await driveToExportDone(s); s.mount.clickDownload(); dl.calls[0]!.onProgress?.(1024);
+    const progress = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)!;
+    expect(progress.getAttribute('aria-valuenow')).toBe('100'); dl.calls[0]!.onProgress?.(2048);
+    expect(textOf(progress)).toBe('2 KB received'); expect(progress.getAttribute('aria-valuenow')).toBeNull();
+    expect(textOf(s.host)).not.toContain(DOWNLOAD_HANDOFF_NOTE); s.mount.dispose();
+  });
+
+  it('does not round incomplete bytes to 100 percent or accept invalid or decreasing progress', async () => {
+    const dl = captureDownload(), s = setupMount({ archiveDownload: dl.fn,
+      runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 4096, progress_pct: 100 }) });
+    await driveToExportDone(s); s.mount.clickDownload(); dl.calls[0]!.onProgress?.(4095);
+    const progress = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)!;
+    expect(progress.getAttribute('aria-valuenow')).toBe('99'); const before = textOf(progress);
+    for (const invalid of [-1, 0, 2048, NaN, Infinity, 4095.5]) dl.calls[0]!.onProgress?.(invalid);
+    expect(textOf(progress)).toBe(before); expect(textOf(progress)).not.toContain('Waiting for confirmation'); s.mount.dispose();
+  });
+
+  it.each(['back', 'dispose'] as const)('ignores all late callbacks after %s', async action => {
+    const dl = captureDownload(), s = setupMount({ archiveDownload: dl.fn });
+    await driveToExportDone(s); s.mount.clickDownload(); dl.calls[0]!.onProgress?.(1024);
+    if (action === 'back') findByAttr(s.host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!.click(); else s.mount.dispose();
+    const before = textOf(s.host);
+    dl.calls[0]!.onProgress?.(2048); dl.calls[0]!.onDone(); dl.calls[0]!.onError('late error');
+    expect(textOf(s.host)).toBe(before); expect(s.mount.isDownloading()).toBe(false);
+    expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)).toBeNull(); s.mount.dispose();
+  });
+
+  it('starts a retry from connecting and keeps old callbacks from changing its progress or outcome', async () => {
+    const dl = captureDownload(), s = setupMount({ archiveDownload: dl.fn });
+    await driveToExportDone(s); s.mount.clickDownload(); dl.calls[0]!.onProgress?.(1024); dl.calls[0]!.onError('fixture failure');
+    expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)?.hasAttribute('hidden')).toBe(true);
+    s.mount.clickDownload(); const progress = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)!;
+    expect(textOf(progress)).toBe('Connecting…'); expect(textOf(s.host)).not.toContain('fixture failure');
+    dl.calls[1]!.onProgress?.(0); dl.calls[1]!.onProgress?.(512); const before = textOf(s.host);
+    dl.calls[0]!.onProgress?.(2048); dl.calls[0]!.onDone(); dl.calls[0]!.onError('late error');
+    expect(textOf(s.host)).toBe(before); expect(s.mount.isDownloading()).toBe(true); dl.calls[1]!.onDone();
+    expect(s.mount.isDownloading()).toBe(false); expect(textOf(s.host)).toContain(DOWNLOAD_HANDOFF_NOTE); s.mount.dispose();
+  });
+
+  it('keeps progress, focus, and the original expiry deadline while bytes arrive', async () => {
+    vi.useFakeTimers();
+    try {
+      const dl = captureDownload(), s = setupMount({ archiveDownload: dl.fn,
+        runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 4096, progress_pct: 100, expires_at: Date.now() + 60_000 }) });
+      await driveToExportDone(s); s.mount.clickDownload(); dl.calls[0]!.onProgress?.(0);
+      const progress = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)!, back = findByAttr(s.host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!;
+      back.focus(); await vi.advanceTimersByTimeAsync(45_000); dl.calls[0]!.onProgress?.(2048); await vi.advanceTimersByTimeAsync(15_000);
+      expect(textOf(s.host)).toContain('copy expired'); expect(textOf(progress)).toContain('50%'); expect(s.doc.activeElement).toBe(back);
+      expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_PROGRESS_ATTR)).toBe(progress); expect(s.mount.isDownloading()).toBe(true);
+      dl.calls[0]!.onProgress?.(4096); expect(s.doc.activeElement).toBe(back); dl.calls[0]!.onDone(); s.mount.dispose();
+    } finally { vi.clearAllTimers(); vi.useRealTimers(); }
+  });
+
+  describe('completed export download expiry', () => {
+    afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+    it('retires a ready download at its deadline without another request or replacing its focused button', async () => {
+      vi.useFakeTimers(); const expires = Date.now() + 60_000, dl = captureDownload();
+      const runStatus = vi.fn<ArchiveStatusCaller>(async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: expires }));
+      const s = setupMount({ runStatus, archiveDownload: dl.fn }); await driveToExportDone(s);
+      const button = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!; button.focus();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(findByAttr(s.host, ARCHIVE_BACKUP_PATH_OUT_ATTR)?.textContent).toContain('copy expired');
+      expect(button.getAttribute('aria-disabled')).toBe('true'); expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)).toBe(button);
+      expect(s.doc.activeElement).toBe(button); expect(dl.calls).toHaveLength(0); expect(runStatus).toHaveBeenCalledOnce();
+      s.mount.dispose();
+    });
+
+    it('rechecks the deadline before a stale Download activation in a suspended tab', async () => {
+      vi.useFakeTimers(); const expires = Date.now() + 60_000, dl = captureDownload();
+      const s = setupMount({ archiveDownload: dl.fn, runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: expires }) });
+      await driveToExportDone(s); const button = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!; button.focus();
+      vi.setSystemTime(expires); button.click(); s.mount.clickDownload();
+      expect(dl.calls).toHaveLength(0); expect(button.getAttribute('aria-disabled')).toBe('true'); expect(s.doc.activeElement).toBe(button);
+      expect(findByAttr(s.host, ARCHIVE_BACKUP_PATH_OUT_ATTR)?.textContent).toContain('copy expired'); s.mount.dispose();
+    });
+
+    it.each([-1, 0])('opens fresh key entry, without another export or download, for a copy expiring %sms from now', async offset => {
+      vi.useFakeTimers(); const dl = captureDownload(), expires = Date.now() + offset;
+      const s = setupMount({ archiveDownload: dl.fn, runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: expires }) });
+      await driveToExportDone(s); const old = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!;
+      expect(old.getAttribute('aria-disabled')).toBe('true'); expect(vi.getTimerCount()).toBe(0);
+      const another = findByAttr(s.host, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR)!; expect(another.hasAttribute('hidden')).toBe(false); another.click();
+      const words = findByAttr(s.host, ARCHIVE_BACKUP_MNEMONIC_ATTR)!;
+      expect(s.mount.getView()).toBe('export-entry'); expect(words.value).toBe(''); expect(s.doc.activeElement).toBe(words);
+      old.click(); s.mount.clickDownload(); expect(dl.calls).toHaveLength(0); expect(s.exportLog).toHaveLength(1); expect(s.importLog).toHaveLength(0); s.mount.dispose();
+    });
+
+    it.each(['done', 'error'] as const)('lets a download already in progress report %s after expiry without cancellation or a duplicate request', async outcome => {
+      vi.useFakeTimers(); const expires = Date.now() + 60_000, dl = captureDownload(), cancel = vi.fn();
+      const runStatus = vi.fn<ArchiveStatusCaller>(async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: expires }));
+      const s = setupMount({ runStatus, archiveDownload: req => { dl.fn(req); return cancel; } }); await driveToExportDone(s);
+      findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!.focus(); s.mount.clickDownload();
+      dl.calls[0]!.onProgress?.(0);
+      const pending = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!; await vi.advanceTimersByTimeAsync(60_000);
+      expect(pending.textContent).toBe('Downloading…'); expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)).toBe(pending); expect(s.doc.activeElement).toBe(pending);
+      expect(textOf(s.host)).toContain('download already in progress will continue'); expect(cancel).not.toHaveBeenCalled();
+      const another = findByAttr(s.host, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR)!; expect(another.getAttribute('aria-disabled')).toBe('true'); another.click(); pending.click();
+      expect(s.mount.getView()).toBe('export-done'); expect(dl.calls).toHaveLength(1);
+      if (outcome === 'done') dl.calls[0]!.onDone(); else dl.calls[0]!.onError('fixture connection closed');
+      expect(s.mount.isDownloading()).toBe(false); expect(textOf(s.host)).toContain(outcome === 'done' ? DOWNLOAD_HANDOFF_NOTE : 'Download failed: fixture connection closed');
+      const expired = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!; expect(expired.textContent).toBe('Download expired'); expect(expired.getAttribute('aria-busy')).toBe('false');
+      expect(expired.getAttribute('aria-disabled')).toBe('true'); expect(s.doc.activeElement).toBe(expired); expired.click(); expect(dl.calls).toHaveLength(1);
+      expect(cancel).not.toHaveBeenCalled(); expect(runStatus).toHaveBeenCalledOnce(); expect(s.exportLog).toHaveLength(1); s.mount.dispose();
+    });
+
+    it('keeps the original deadline and completed-download feedback through failure, retry, and completion renders', async () => {
+      vi.useFakeTimers(); const expires = Date.now() + 60_000, dl = captureDownload();
+      const s = setupMount({ archiveDownload: dl.fn, runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: expires }) });
+      await driveToExportDone(s); await vi.advanceTimersByTimeAsync(15_000); s.mount.clickDownload();
+      await vi.advanceTimersByTimeAsync(15_000); dl.calls[0]!.onError('fixture retry'); s.mount.clickDownload(); expect(dl.calls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(15_000); dl.calls[1]!.onDone(); const button = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!; button.focus();
+      await vi.advanceTimersByTimeAsync(15_000); expect(s.mount.getExportExpiresAt()).toBe(expires); expect(button.getAttribute('aria-disabled')).toBe('true');
+      expect(textOf(s.host)).toContain(DOWNLOAD_HANDOFF_NOTE); expect(s.doc.activeElement).toBe(button); expect(vi.getTimerCount()).toBe(0); s.mount.dispose();
+    });
+
+    it.each(['back', 'outside'] as const)('preserves %s focus when the download expires', async target => {
+      vi.useFakeTimers(); const expires = Date.now() + 60_000;
+      const s = setupMount({ archiveDownload: captureDownload().fn, runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: expires }) });
+      await driveToExportDone(s); const focused = target === 'back' ? findByAttr(s.host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)! : s.doc.createElement('button'); focused.focus();
+      await vi.advanceTimersByTimeAsync(60_000); expect(s.doc.activeElement).toBe(focused); expect(findByAttr(s.host, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR)?.hasAttribute('hidden')).toBe(false); s.mount.dispose();
+    });
+
+    it.each(['back', 'dispose'] as const)('cancels the deadline timer and ignores an old download control after %s', async action => {
+      vi.useFakeTimers(); const expires = Date.now() + 60_000, dl = captureDownload();
+      const s = setupMount({ archiveDownload: dl.fn, runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: expires }) });
+      await driveToExportDone(s); const old = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!; expect(vi.getTimerCount()).toBe(1);
+      if (action === 'back') s.mount.clickCancel(); else s.mount.dispose();
+      const before = textOf(s.host); await vi.advanceTimersByTimeAsync(60_000); old.click(); s.mount.clickDownload();
+      expect(textOf(s.host)).toBe(before); expect(dl.calls).toHaveLength(0); expect(vi.getTimerCount()).toBe(0); s.mount.dispose();
+    });
+
+    it.each([undefined, NaN, Infinity, 1e20])('keeps legacy download availability when the deadline is %s', async expires_at => {
+      vi.useFakeTimers(); const dl = captureDownload();
+      const s = setupMount({ archiveDownload: dl.fn, runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at }) });
+      await driveToExportDone(s); expect(s.mount.getExportExpiresAt()).toBeNull(); expect(vi.getTimerCount()).toBe(0);
+      expect(findByAttr(s.host, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR)?.hasAttribute('hidden')).toBe(true); s.mount.clickDownload(); expect(dl.calls).toHaveLength(1); s.mount.dispose();
+    });
+
+    it('keeps historical remote delivery separate when there is no local download copy', async () => {
+      vi.useFakeTimers(); const dl = captureDownload();
+      const s = setupMount({ archiveDownload: dl.fn, runStatus: async () => ({ state: 'done', remote_backup_id: '12345678-1234-4234-8234-123456789abc', bytes_written: 2048, progress_pct: 100, expires_at: Date.now() - 1 }) });
+      await driveToExportDone(s); expect(textOf(s.host)).toContain('Remote delivery was verified'); expect(textOf(s.host)).not.toContain('copy expired');
+      expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)).toBeNull(); expect(findByAttr(s.host, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR)?.hasAttribute('hidden')).toBe(true);
+      expect(vi.getTimerCount()).toBe(0); s.mount.clickDownload(); expect(dl.calls).toHaveLength(0); s.mount.dispose();
+    });
+
+    it('retires an expired server-path-only copy and offers fresh key entry', async () => {
+      vi.useFakeTimers(); const s = setupMount({ runStatus: async () => ({ state: 'done', path: DONE_PATH, bytes_written: 2048, progress_pct: 100, expires_at: Date.now() - 1 }) });
+      await driveToExportDone(s); expect(findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)).toBeNull(); expect(textOf(s.host)).toContain('copy expired');
+      findByAttr(s.host, ARCHIVE_BACKUP_ANOTHER_BTN_ATTR)!.click(); expect(s.mount.getView()).toBe('export-entry'); expect(s.exportLog).toHaveLength(1); s.mount.dispose();
+    });
+  });
+
+  it('shows a Download button on export-done + streams on click → browser save handoff note', async () => {
     const dl = captureDownload();
     const s = setupMount({ archiveDownload: dl.fn });
     await driveToExportDone(s);
@@ -1569,7 +1776,7 @@ describe('M4 browser download', () => {
 
     dl.calls[0].onDone();
     expect(s.mount.isDownloading()).toBe(false);
-    expect(textOf(s.host)).toContain('Downloaded to this device');
+    expect(textOf(s.host)).toContain(DOWNLOAD_HANDOFF_NOTE);
     expect(s.doc.activeElement).toBe(
       findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR),
     );
@@ -1600,11 +1807,11 @@ describe('M4 browser download', () => {
     const s = setupMount({ archiveDownload: dl.fn });
     await driveToExportDone(s);
     findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!.click();
-    // Re-render relabels the focusable owner to "Downloading…"; clicking again
+    // Re-render relabels the focusable owner to "Connecting…"; clicking again
     // is a no-op because the guard lives in startDownload, not the DOM.
     findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!.click();
     expect(dl.calls).toHaveLength(1);
-    expect(textOf(s.host)).toContain('Downloading…');
+    expect(textOf(s.host)).toContain('Connecting…');
   });
 
   it('cancels an in-flight download when leaving the view', async () => {

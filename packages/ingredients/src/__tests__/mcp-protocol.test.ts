@@ -3,6 +3,7 @@ import {
   MCP_ACCEPTED_LEGACY_PROTOCOL_VERSIONS,
   MCP_LEGACY_PROTOCOL_VERSION,
   MCP_MODERN_PROTOCOL_VERSION,
+  MCP_SERVER_LEGACY_PROTOCOL_VERSIONS,
   MCP_SUPPORTED_PROTOCOL_VERSIONS,
   decodeMcpHttpHeaderValue,
   encodeMcpHttpHeaderValue,
@@ -15,6 +16,7 @@ import {
   readMcpRequestProtocolVersion,
   selectMcpDiscoverVersion,
   selectMcpLegacyInitializeVersion,
+  selectMcpServerInitializeVersion,
   unsupportedMcpResultType,
   withModernMcpRequestMeta,
 } from '../mcp-protocol.js';
@@ -24,8 +26,29 @@ describe('Recued MCP protocol policy', () => {
   it('orders the newest implemented era before the explicit legacy fallback', () => {
     expect(MCP_SUPPORTED_PROTOCOL_VERSIONS).toEqual([
       '2026-07-28',
+      '2025-11-25',
+      '2025-06-18',
       '2024-11-05',
     ]);
+  });
+
+  it("settles a legacy initialize on the client's revision, else the newest older one it implements", () => {
+    for (const [proposed, settled] of [
+      ['2025-11-25', '2025-11-25'],
+      ['2025-06-18', '2025-06-18'],
+      // Needs JSON-RPC batches, which this server refuses: answered with the
+      // newest revision OLDER than it, never a newer one it may not know.
+      ['2025-03-26', '2024-11-05'],
+      ['2024-11-05', '2024-11-05'],
+      ['2026-07-28', '2025-11-25'],
+      ['2099-01-01', '2025-11-25'],
+      ['2024-10-07', '2024-11-05'],
+    ] as const) {
+      expect(selectMcpServerInitializeVersion({ protocolVersion: proposed }), proposed).toBe(settled);
+    }
+    for (const params of [{}, { protocolVersion: 20251125 }, { protocolVersion: 'latest' }, null, []]) {
+      expect(selectMcpServerInitializeVersion(params), JSON.stringify(params)).toBe('2024-11-05');
+    }
   });
 
   it('builds the required modern per-request metadata without losing params', () => {
@@ -85,13 +108,17 @@ describe('Recued MCP protocol policy', () => {
     // `MCP_SUPPORTED_PROTOCOL_VERSIONS` is what Recued's OWN server publishes
     // in server/discover and in UnsupportedProtocolVersionError.supported. The
     // wider accept-list exists for talking TO other servers and must never
-    // leak into that claim.
+    // leak into that claim: only the revisions the server implements are in
+    // it, and 2025-03-26, accepted from a peer but not implemented here
+    // (batches), stays out.
     expect([...MCP_SUPPORTED_PROTOCOL_VERSIONS])
-      .toEqual([MCP_MODERN_PROTOCOL_VERSION, MCP_LEGACY_PROTOCOL_VERSION]);
+      .toEqual([MCP_MODERN_PROTOCOL_VERSION, ...MCP_SERVER_LEGACY_PROTOCOL_VERSIONS]);
+    expect(MCP_SERVER_LEGACY_PROTOCOL_VERSIONS).toContain(MCP_LEGACY_PROTOCOL_VERSION);
     for (const version of MCP_ACCEPTED_LEGACY_PROTOCOL_VERSIONS) {
-      if (version === MCP_LEGACY_PROTOCOL_VERSION) continue;
+      if ((MCP_SERVER_LEGACY_PROTOCOL_VERSIONS as readonly string[]).includes(version)) continue;
       expect(MCP_SUPPORTED_PROTOCOL_VERSIONS).not.toContain(version);
     }
+    expect(MCP_SUPPORTED_PROTOCOL_VERSIONS).not.toContain('2025-03-26');
   });
 
   it('round-trips every header value shape through the base64 sentinel', () => {

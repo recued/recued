@@ -25,7 +25,9 @@ test('connections and Add lead the page while the repair summary and administrat
   const add = route(page).getByRole('button', { name: '+ Add Connection', exact: true }); await expect(add).toBeVisible();
   expect((await add.boundingBox())!.y).toBeLessThan(600);
   await expect(route(page).locator('.reconnect-worklist-disclosure')).not.toHaveAttribute('open', '');
-  await expect(route(page).locator('.connections-authentication-settings')).not.toHaveAttribute('open', '');
+  await expect(route(page).locator('[data-recued-connections-advanced]')).toBeVisible();
+  await expect(route(page).locator('[data-recued-connections-tool][open]')).toHaveCount(0);
+  expect((await route(page).locator('[data-recued-connections-advanced]').boundingBox())!.y).toBeGreaterThan((await add.boundingBox())!.y);
   await expect(route(page).getByRole('button', { name: 'Manage OAuth brokers', exact: true })).not.toBeVisible();
   await route(page).getByRole('searchbox', { name: 'Search connections' }).fill('no-such-connection');
   await expect(route(page)).toContainText('No connections match these filters.');
@@ -152,7 +154,7 @@ test('saved app and API editor transitions retain keyboard focus', async ({ page
   await route(page).locator('[data-oauth-app-action="cancel-edit"]').click(); await expect(route(page).getByRole('button', { name: 'Add OAuth app', exact: true })).toBeFocused();
   await route(page).getByRole('button', { name: '+ Add Connection', exact: true }).click(); await expect(route(page).locator('[data-connection-dialog-heading]')).toBeFocused();
   await route(page).locator('[data-action="connections-pick-kind"][data-kind="api"]').click(); await expect(route(page).locator('[data-connection-dialog-heading]')).toBeFocused();
-  await expect(route(page).locator('[data-conn-field="auth.type"]')).toContainText('Recued direct OAuth');
+  await expect(route(page).locator('[data-action="connections-choose-auth"][data-auth-type="oauth2_refresh"]')).toContainText('Recued direct OAuth');
 });
 
 test('cloud sources remain usable when the independent local-folder inventory fails', async ({ page }) => {

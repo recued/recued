@@ -750,6 +750,14 @@ export type ActivityAction =
   | 'chat_message_sent' | 'chat_tool_call'
   | 'chat_plan_proposed' | 'chat_plan_approved' | 'chat_plan_cancelled'
   | 'chat_plan_consumed'
+  // D-329 §3.4 — the write rules an AI's approvals teach. `write_rule_used`: a held
+  // Tier-1 write ran on a standing rule instead of an ask (`target` = the call,
+  // `<session_id>:<turn_id>:<tool>` from a chat, `mcp:<token_id>:<tool>` from an AI app;
+  // `detail` carries `{rule_id, uses_remaining}`). `write_rule_minted` /
+  // `write_rule_dismissed` / `write_rule_revoked`: the owner's decisions on Contracts
+  // (`target` = the rule id, or the key hash). Reserve-class: each stands in for an
+  // approval answer, and "did I approve that?" is a months-later question.
+  | 'write_rule_used' | 'write_rule_minted' | 'write_rule_dismissed' | 'write_rule_revoked'
   | 'chat_export'
   // D-137 W2.2 § A.1.1 — Mary toggled her per-kind chat catalog scope.
   // `target` = `'chat_tool_catalog_scope'` (singleton); `detail`
@@ -1193,6 +1201,11 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'peer_ask_expired',
   'approval_allow',
   'approval_deny',
+  // D-329 §3.4 — a write a standing rule let through, and the owner's rule decisions.
+  'write_rule_used',
+  'write_rule_minted',
+  'write_rule_dismissed',
+  'write_rule_revoked',
   // Phase C: lifecycle events must persist past retention so the
   // ledger of boot / shutdown / restart / crash / drain / crash-loop
   // always survives eviction. These are low-volume but forensically

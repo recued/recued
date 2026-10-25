@@ -34,7 +34,10 @@ import time, so a test that
  *  Spec: D-148 § A.4 (Thin Webclient);
  *  D-169 (P1.5 pair persistence). */
 
-import { hasProtectedChatRecoveryDraft } from '../chat/draft-recovery.js';
+import {
+  hasProtectedChatRecoveryDraft,
+  type ChatRouteRecoveryDraft,
+} from '../chat/draft-recovery.js';
 import {
   bootstrapWebclient,
   WEBCLIENT_SHELL_CONTENT_ATTR,
@@ -53,13 +56,24 @@ import {
   mountReturnToServer,
   RETURN_TO_SERVER_ATTR,
   RETURN_TO_SERVER_STYLES,
+  type MountReturnToServerOptions,
 } from '../shell/return-to-server.js';
+import {
+  peekServerSwitchArrival,
+  requestServerSwitchReload,
+  safeServerSwitchLandingHash,
+  type ServerSwitchContinuityStorage,
+} from '../shell/server-switch-continuity.js';
+import { needsPairingAgain } from '../shell/server-switcher.js';
+import { mountServerSwitchConvergence } from '../shell/server-switch-convergence.js';
+import { defaultProfileLabel } from '../storage/server-profiles.js';
 import { mountRestoreOnboardingSplash } from '../auth/restore-onboarding-splash.js';
 import { startRestoreOnboarding } from '../auth/restore-onboarding-flow.js';
 import { createWebclientPairPassportInvoker } from '../auth/pair-passport-invoker.js';
 import { resolveDeviceDisplayName } from '../auth/device-display-name.js';
 import {
   finalizePairCodeSuccess,
+  normaliseServerUrlToWs,
   PAIR_CODE_SUCCESS_ERROR_COPY,
   resolveBrowserPairFinalizeLockProvider,
   withPairFinalizeLock,
@@ -68,6 +82,7 @@ import {
 import { createBrowserWebclientTransport } from '../realtime/browser-transport.js';
 import {
   WEBCLIENT_LOCAL_KEYS,
+  retireActiveProfile,
   type WebclientLocalStore,
   type WebclientProfileStore,
 } from '../storage/local-store.js';
@@ -85,7 +100,9 @@ import {
 import {
   readCompleteStoredPair,
   readStoredPairState,
+  sameCredentialAtNewAddress,
   sameStoredCredentialGeneration,
+  type CompleteStoredPair,
   type StoredPairVersion,
 } from './stored-pair-state.js';
 import { cleanConsumedPairEntryUrl } from './secure-access-resume.js';
@@ -441,6 +458,10 @@ export interface PairFallbackBootstrapDeps {
   /** Same-tab, constant-only marker for a guided reconnect that must survive
    * loss of its final document. Production resolves sessionStorage. */
   recoveryReentryStorage?: RecoveryReentryStorage | null;
+  /** Where Account's server switch leaves its marker. Read (not consumed)
+   * when a switch to a saved server with no sign-in opened pairing, to fill
+   * that server's address in. Production resolves sessionStorage. */
+  serverSwitchContinuityStorage?: ServerSwitchContinuityStorage | null;
   startupDiagnosticWriter?: (summary: string) => Promise<void>;
   startupDiagnosticNow?: () => Date;
   /** Browser-journey seam for inducing a failure at the application bootstrap
@@ -981,6 +1002,15 @@ const installRecoveryDraftGuard = (
   };
 };
 
+/** Every unsent Chat text a reconnect holds — the open composer's and any
+ *  parked in other chats — for the owner to copy before a switch loses it.
+ *  A reply or an attachment has no text to copy. */
+const unsentChatText = (draft: ChatRouteRecoveryDraft): string =>
+  [draft.text, ...(draft.parkedDrafts ?? []).map((parked) => parked.draft.text)]
+    .map((text) => text.trim())
+    .filter((text) => text.length > 0)
+    .join('\n\n');
+
 /** The persisted address is the canonical WebSocket endpoint used by the live
  * client (`wss://host/ws`), while the pair form POSTs to an HTTP origin. Keep
  * the trusted host/port but present the form's usable spelling so reconnecting
@@ -1338,6 +1368,16 @@ export const runBootstrapWithPairFallback = async (
             state.pair.version,
           )
         ) {
+          if (sameCredentialAtNewAddress(bootstrapPairVersion, state.pair.version)) {
+            // ⛔ Change address moved THIS server, sign-in and all. Read as a
+            // replaced sign-in, every tab on it remounted at its next focus —
+            // including the one that saved the address and put its reload off
+            // to protect unsent work. Nothing was replaced: this tab reads its
+            // server's record by id, so its next reconnect dials the new
+            // address. Take the move as the new baseline and carry on.
+            bootstrapPairVersion = state.pair.version;
+            return;
+          }
           await recoverWithSurfacing('credentials_replaced_elsewhere');
         }
       } catch (err) {
@@ -1389,6 +1429,12 @@ export const runBootstrapWithPairFallback = async (
       /* best-effort — recovery falls back to the unconditional wipe */
     }
     const runWebclientBootstrap = deps.bootstrap ?? bootstrapWebclient;
+    const unusedPairingLinkCode = deps.reauthRecovery === undefined
+      && postPairReceiptCopy === undefined
+      && deps.deeplinkSeed?.pairingCode !== undefined
+      && deps.deeplinkSeed.pairingCode.trim().length > 0
+      ? deps.deeplinkSeed.pairingCode.trim()
+      : undefined;
     const handle = await runWebclientBootstrap({
       root: deps.root,
       localStore: deps.localStore,
@@ -1474,6 +1520,12 @@ export const runBootstrapWithPairFallback = async (
         : {}),
       ...(initialConnectedReceiptCopy !== undefined
         ? { initialConnectedReceiptCopy }
+        : {}),
+      // A pairing link (`?code=`) opened while this browser already uses a
+      // server: the shell offers to add a server with it. ⛔ It was dropped
+      // here without a word — mounted over, then wiped from the address bar.
+      ...(unusedPairingLinkCode !== undefined
+        ? { pairingLinkCode: unusedPairingLinkCode }
         : {}),
       ...(deps.document !== undefined ? { document: deps.document } : {}),
       // D-156 P8 Codex P1 fold — the bootstrap funnels the
@@ -1614,6 +1666,24 @@ export const runBootstrapWithPairFallback = async (
       // to `/auth/pair` as `displayName` (seeds the `paired_instances`
       // row + the issued token's `client_label`).
       const displayName = resolveDeviceDisplayName();
+      // Read before the form mounts, so the way to another server arrives
+      // with the form rather than at some later moment. A failed read must
+      // not take down the pair form: the owner can still pair; they just do
+      // not get the shortcut.
+      let returnRoster: Pick<
+        MountReturnToServerOptions,
+        'profiles' | 'activeId'
+      > | null = null;
+      if (deps.profileStore !== undefined) {
+        try {
+          returnRoster = {
+            profiles: await deps.profileStore.listProfiles(),
+            activeId: await deps.profileStore.activeProfileId(),
+          };
+        } catch (err) {
+          console.error('webclient: return-to-server unavailable', err);
+        }
+      }
       // A current cold-start repair may also carry safe pair-entry context.
       // When a previously trusted server address exists, combine only the CLI
       // code with it; never let even a same-origin arrival replace stored
@@ -1622,13 +1692,27 @@ export const runBootstrapWithPairFallback = async (
       const privateRecoveryReentry =
         deps.reauthRecovery?.safeStopReentry === true
         || deps.reauthRecovery?.replacementServerReentry === true;
+      // Pairing a saved server again: Account's switch to a server with no
+      // sign-in opened this form and named the server. Its address comes from
+      // this browser's own record — never from the page URL, which anyone can
+      // write (`pair-deeplink.ts` DD#1).
+      const pairAgainArrival = deps.reauthRecovery === undefined && returnRoster !== null
+        ? peekServerSwitchArrival(deps.serverSwitchContinuityStorage)
+        : null;
+      const pairAgainProfile = pairAgainArrival === null || returnRoster === null
+        ? undefined
+        : returnRoster.profiles.find((profile) =>
+          profile.id === pairAgainArrival.targetProfileId
+          && profile.id !== returnRoster?.activeId
+          && profile.server_url.length > 0
+          && needsPairingAgain(profile));
+      const trustedServerUrl = deps.reauthRecovery?.serverUrl
+        ?? pairAgainProfile?.server_url;
       const seed = privateRecoveryReentry
         ? undefined
-        : deps.reauthRecovery?.serverUrl !== undefined
+        : trustedServerUrl !== undefined
           ? {
-              serverUrl: pairFormServerUrlFromStored(
-                deps.reauthRecovery.serverUrl,
-              ),
+              serverUrl: pairFormServerUrlFromStored(trustedServerUrl),
               ...(deps.deeplinkSeed?.pairingCode !== undefined
                 ? { pairingCode: deps.deeplinkSeed.pairingCode }
                 : {}),
@@ -1670,6 +1754,9 @@ export const runBootstrapWithPairFallback = async (
       let siblingAdoptionInFlight = false;
       let siblingAdoptionPending = false;
       let siblingPairReadFailureReported = false;
+      // Set while this tab leaves for another server, so a sibling check
+      // cannot adopt or follow underneath that reload.
+      let leavingForAnotherServer = false;
       let pairCompletedInAnotherTab = false;
       let codeHandle: ReturnType<typeof mountPairCodeInputHost>;
       const closePairTabConvergence = (): void => {
@@ -1746,8 +1833,159 @@ export const runBootstrapWithPairFallback = async (
           );
         }
       };
+      const reloadPage = (): void => {
+        const loc = (globalThis as { location?: { reload?: () => void } })
+          .location;
+        loc?.reload?.();
+      };
+      /** The server this reconnect is for, when the page knows it. A held
+       *  Chat message belongs to `chatServer`; the boot drops it on any other. */
+      const reconnectServer: {
+        readonly serverUrl: string;
+        readonly serverPublicKey?: string;
+      } | undefined = deps.reauthRecovery?.chatServer
+        ?? (deps.reauthRecovery?.serverUrl !== undefined
+          ? { serverUrl: deps.reauthRecovery.serverUrl }
+          : undefined);
+      const reconnectsAnotherServer = (pair: CompleteStoredPair): boolean =>
+        reconnectServer !== undefined
+        && (
+          pair.serverUrl !== reconnectServer.serverUrl
+          || (
+            reconnectServer.serverPublicKey !== undefined
+            && pair.serverPublicKey !== reconnectServer.serverPublicKey
+          )
+        );
+      /** The saved server this form was opened for: the record active when
+       *  it mounted (an add attempt's pending record, or the reconnect's), and
+       *  the address it was opened to pair, when it knows one. */
+      const formProfileId = returnRoster?.activeId ?? null;
+      const formServerUrl = reconnectServer?.serverUrl ?? pairAgainProfile?.server_url;
+      /** Whether a complete pair in the store is the one this form was
+       *  opened to make. ⛔ Every complete pair used to count: when another
+       *  tab went back to a saved server (or switched to one in Account), an
+       *  add form took it as its own — "Another tab finished pairing this
+       *  browser", which never happened — and dropped a pairing response it
+       *  was still holding. Another tab's pairing of THIS form's server keeps
+       *  its record (it fills the pending one) or its address. */
+      const isOwnPair = (pair: CompleteStoredPair, activeId: string | null): boolean => {
+        if (reconnectsAnotherServer(pair)) return false;
+        if (formServerUrl !== undefined && pair.serverUrl === formServerUrl) return true;
+        return formProfileId === null || activeId === formProfileId;
+      };
+      const readActiveProfileId = async (): Promise<string | null> =>
+        await deps.profileStore?.activeProfileId() ?? null;
+      /** The name of a saved server at `typedUrl` that still has its
+       *  sign-in, if there is one. ⛔ Adding it again paired it a second
+       *  time: a new device entry on that server beside the old one, whose
+       *  sign-in stayed live there, and the saved one was replaced. */
+      const savedServerAt = async (typedUrl: string): Promise<string | undefined> => {
+        const wsUrl = normaliseServerUrlToWs(typedUrl);
+        if (wsUrl === null || deps.profileStore === undefined) return undefined;
+        const saved = (await deps.profileStore.listProfiles()).find((profile) =>
+          profile.server_url === wsUrl && !needsPairingAgain(profile));
+        if (saved === undefined) return undefined;
+        return saved.label.trim().length > 0
+          ? saved.label
+          : defaultProfileLabel(saved.server_url);
+      };
+      /** Leave this reconnect for the server the browser now uses, the way
+       *  the shell leaves for one: land on a safe area (the old server's
+       *  record ids mean nothing on another), drop the leave-page guard over
+       *  a message the owner already chose to lose, retire the reconnect
+       *  marker so the next boot does not reopen this recovery there, then
+       *  reload. Only the tab that chose the server arms its "Now using"
+       *  arrival and tells the other tabs; a tab that follows does neither. */
+      const leaveReconnectFor = (
+        targetProfileId: string,
+        chosenHere: boolean,
+      ): void => {
+        restoreHash(safeServerSwitchLandingHash(currentHash(deps)), deps);
+        const reloadNow = (): void => {
+          deps.reauthRecovery?.draftGuard?.release();
+          retireRecoveryReentry(deps.recoveryReentryStorage);
+          if (chosenHere) {
+            try {
+              pairTabConvergence?.notifyActiveServerProfileChanged();
+            } catch (err) {
+              // The durable pointer already moved; other tabs still
+              // reconcile on their next focus.
+              console.error('webclient: active server profile signal failed', err);
+            }
+          }
+          reloadPage();
+        };
+        if (chosenHere) {
+          requestServerSwitchReload({ targetProfileId, reload: reloadNow });
+        } else {
+          reloadNow();
+        }
+      };
+      /** Another tab switched servers under this form (a reconnect, or an
+       *  add attempt). With nothing unsent the tab follows quietly, as a clean
+       *  shell does; a held message gets the shell's own handoff first —
+       *  shown, copyable, and never moved. */
+      const followSiblingServerSwitch = async (): Promise<void> => {
+        leavingForAnotherServer = true;
+        let target = {
+          id: '',
+          label: 'the newly selected server',
+          serverUrl: '',
+        };
+        try {
+          const activeId = await deps.profileStore?.activeProfileId() ?? null;
+          const profile = (await deps.profileStore?.listProfiles() ?? [])
+            .find((p) => p.id === activeId);
+          if (profile !== undefined) {
+            target = {
+              id: profile.id,
+              label: profile.label.trim().length > 0
+                ? profile.label
+                : defaultProfileLabel(profile.server_url),
+              serverUrl: profile.server_url,
+            };
+          }
+        } catch {
+          // The copy degrades to its fallback; the durable pointer still
+          // decides where the reload lands.
+        }
+        const draft = deps.reauthRecovery?.chatDraft;
+        const doc = resolveDocument(deps.document);
+        const wrapper = doc?.getElementById(SPLASH_WRAPPER_ID);
+        if (
+          draft === undefined
+          || doc === undefined
+          || wrapper === null
+          || wrapper === undefined
+        ) {
+          leaveReconnectFor(target.id, false);
+          return;
+        }
+        const text = unsentChatText(draft);
+        const sourceUrl = reconnectServer?.serverUrl ?? '';
+        mountServerSwitchConvergence({
+          portal: deps.root,
+          background: wrapper,
+          document: doc,
+          state: {
+            source: {
+              id: 'reconnect',
+              label: sourceUrl.length > 0
+                ? defaultProfileLabel(sourceUrl)
+                : 'the server this tab was reconnecting',
+              serverUrl: sourceUrl,
+            },
+            target,
+            // A reply or an attachment alone has no text to show or copy,
+            // but is still lost — the shell calls that unsaved changes.
+            workState: text.length > 0 ? 'chat_draft' : 'unsaved_changes',
+            ...(text.length > 0 ? { chatDraft: text } : {}),
+          },
+          onContinue: () => leaveReconnectFor(target.id, false),
+        });
+      };
       const adoptSiblingPair = async (): Promise<void> => {
-        if (pairTabConvergenceClosed) return;
+        if (pairTabConvergenceClosed || leavingForAnotherServer) return;
         if (siblingAdoptionInFlight) {
           siblingAdoptionPending = true;
           return;
@@ -1761,6 +1999,8 @@ export const runBootstrapWithPairFallback = async (
           }
         };
         let completePairAvailable = false;
+        let completePair: CompleteStoredPair | null = null;
+        let activeIdAtRead: string | null = null;
         try {
           // Poll/focus can fire while the source tab is between durable
           // writes. Read under the same lock as `/auth/pair` finalization so
@@ -1768,9 +2008,14 @@ export const runBootstrapWithPairFallback = async (
           // transient mix that could retire the form too early.
           const pairState = await withPairFinalizeLock(
             pairLockProvider,
-            () => readStoredPairState(deps.localStore),
+            async () => {
+              const state = await readStoredPairState(deps.localStore);
+              if (state.kind === 'complete') activeIdAtRead = await readActiveProfileId();
+              return state;
+            },
           );
           completePairAvailable = pairState.kind === 'complete';
+          if (pairState.kind === 'complete') completePair = pairState.pair;
           if (pairState.kind === 'partial') {
             // Keep the form and every tab-local route/draft intact, but make
             // the takeover explicit instead of looking like an unrelated
@@ -1790,6 +2035,25 @@ export const runBootstrapWithPairFallback = async (
         }
         if (!completePairAvailable || pairTabConvergenceClosed) {
           finishCheck();
+          return;
+        }
+
+        if (completePair !== null && !isOwnPair(completePair, activeIdAtRead)) {
+          // Another tab switched this browser to a DIFFERENT server — this
+          // form's pairing did not finish elsewhere. Adopting would carry this
+          // page's route and unsent message onto that server, where the
+          // message is dropped without a word and the route names the old
+          // server's records. Follow it as a switch instead —
+          if (codeHandle.holdsPairingResponse()) {
+            // — unless this tab holds a pairing its server already accepted.
+            // Following would drop it: the code is spent and the server keeps a
+            // sign-in nobody uses. The next try saves it under its own server.
+            finishCheck();
+            return;
+          }
+          closePairTabConvergence();
+          finishCheck();
+          await followSiblingServerSwitch();
           return;
         }
 
@@ -1850,55 +2114,86 @@ export const runBootstrapWithPairFallback = async (
         }
       };
 
-      // The way out of an abandoned add-a-server attempt. Appended BESIDE the
-      // pair form rather than inside it, so the pairing component is
-      // untouched; it renders only when the roster holds a server other than
-      // the attempt in progress. Without this the menu's "Add another
-      // server…" would be a trap — see `shell/return-to-server.ts`.
-      if (splashSlot !== null && deps.profileStore !== undefined) {
+      // The way to another saved server: back out of an add-a-server attempt,
+      // or away from a reconnect. Without it the menu's "Add another server…"
+      // would be a trap. It mounts ABOVE the form, outside the slot the form
+      // redraws, and the caller ties it to the form's lifetime — see
+      // `shell/return-to-server.ts` for why both matter.
+      const mountServerReturn = (): { dispose(): void } | null => {
+        const doc = resolveDocument(deps.document);
+        const wrapper = doc?.getElementById(SPLASH_WRAPPER_ID);
         const profileStore = deps.profileStore;
-        void (async () => {
-          try {
-            const roster = await profileStore.listProfiles();
-            // Styles inject once, marker-guarded — the splash has no style
-            // pipeline of its own, and a re-mount must not stack them.
-            const head = deps.document?.head;
-            if (
-              head !== undefined
-              && head.querySelector(`style[${RETURN_TO_SERVER_ATTR}]`) === null
-            ) {
-              const style = deps.document!.createElement('style');
-              style.setAttribute(RETURN_TO_SERVER_ATTR, '');
-              style.textContent = RETURN_TO_SERVER_STYLES;
-              head.appendChild(style);
-            }
-            mountReturnToServer({
-              host: splashSlot,
-              ...(deps.document !== undefined ? { document: deps.document } : {}),
-              profiles: roster,
-              onReturn: (id: string) => {
-                void (async () => {
-                  try {
-                    // Switching away also drops the pending attempt, so an
-                    // abandoned add leaves no ghost behind in the roster.
-                    await profileStore.switchProfile(id);
-                  } catch (err) {
-                    console.error('webclient: return to server failed', err);
-                    return;
-                  }
-                  const loc = (globalThis as { location?: { reload?: () => void } })
-                    .location;
-                  loc?.reload?.();
-                })();
-              },
-            });
-          } catch (err) {
-            // A roster read failure must not take down the pair form — the
-            // owner can still pair; they just do not get the shortcut back.
-            console.error('webclient: return-to-server unavailable', err);
+        const roster = returnRoster;
+        if (
+          doc === undefined
+          || wrapper === null
+          || wrapper === undefined
+          || profileStore === undefined
+          || roster === null
+        ) return null;
+        const reconnecting = deps.reauthRecovery !== undefined;
+        const chatDraft = deps.reauthRecovery?.chatDraft;
+        try {
+          const mount = mountReturnToServer({
+            host: wrapper,
+            document: doc,
+            profiles: roster.profiles,
+            activeId: roster.activeId,
+            ...(reconnecting ? { reconnecting: true } : {}),
+            ...(chatDraft !== undefined
+              ? { unsentChat: { text: unsentChatText(chatDraft) } }
+              : {}),
+            onReturn: async (id: string) => {
+              leavingForAnotherServer = true;
+              try {
+                // Under the pair-finalize lock. Saving a sign-in writes field
+                // by field into whichever profile is ACTIVE, so a switch
+                // landing between two of those writes would put the new
+                // server's credentials on the old one. The lock waits out a
+                // pairing in flight, in this tab or another. Switching away
+                // also drops the pending record, so an abandoned add leaves
+                // no ghost behind.
+                await withPairFinalizeLock(
+                  pairLockProvider,
+                  () => profileStore.switchProfile(id),
+                );
+                if (!reconnecting) {
+                  reloadPage();
+                  return;
+                }
+                // Leaving a reconnect is a server switch like Account's. A
+                // server forgotten in another tab by now leaves the pointer
+                // where it was; reloading would only lose the message.
+                if (await profileStore.activeProfileId() !== id) {
+                  throw new Error('The selected server was not made active.');
+                }
+                leaveReconnectFor(id, true);
+              } catch (err) {
+                leavingForAnotherServer = false;
+                throw err;
+              }
+            },
+          });
+          if (!mount.rendered()) return null;
+          // Styles inject once, marker-guarded — the splash has no style
+          // pipeline of its own, and a re-mount must not stack them.
+          const head = doc.head as HTMLHeadElement | null | undefined;
+          if (
+            head !== null
+            && head !== undefined
+            && head.querySelector(`style[${RETURN_TO_SERVER_ATTR}]`) === null
+          ) {
+            const style = doc.createElement('style');
+            style.setAttribute(RETURN_TO_SERVER_ATTR, '');
+            style.textContent = RETURN_TO_SERVER_STYLES;
+            head.appendChild(style);
           }
-        })();
-      }
+          return mount;
+        } catch (err) {
+          console.error('webclient: return-to-server unavailable', err);
+          return null;
+        }
+      };
 
       const mountPairForm = () => mountPairCodeInputHost({
         ...(seed !== undefined ? { seed } : {}),
@@ -1939,19 +2234,34 @@ export const runBootstrapWithPairFallback = async (
         siblingTakeoverSignalsAvailable:
           pairTabConvergence?.supportsImmediateSignals === true
           && pairTabConvergence.supportsRecoverySuccessorElection,
-        preflightCheck: async () => {
+        preflightCheck: async (attempt) => {
           // Use the same full five-field classifier as cold start. A complete
           // strict triple short-circuits as before; a partial result aborts a
           // racing sibling submit once so the host can clear a potentially
           // consumed code before any second `/auth/pair` POST.
           const pairState = await readStoredPairState(deps.localStore);
-          pairCompletedInAnotherTab = pairState.kind === 'complete';
+          const ownPair = pairState.kind === 'complete'
+            && isOwnPair(pairState.pair, await readActiveProfileId());
+          pairCompletedInAnotherTab = ownPair;
+          const alreadySaved = ownPair ? undefined : await savedServerAt(attempt.serverUrl);
+          if (alreadySaved !== undefined) {
+            return { alreadyPaired: false, alreadySaved: { label: alreadySaved } };
+          }
           return {
-            alreadyPaired: pairCompletedInAnotherTab,
+            alreadyPaired: ownPair,
+            // Another tab switched the browser to a different server: not
+            // this form's pairing, so never adopted as finished.
+            ...(pairState.kind === 'complete' && !ownPair
+              ? { switchedAway: true }
+              : {}),
             ...(pairState.kind === 'partial'
               ? { interrupted: true }
               : {}),
           };
+        },
+        onSwitchedAway: () => {
+          closePairTabConvergence();
+          void followSiblingServerSwitch();
         },
         onPairAccepted: () => {
           // The one-time code has now been consumed. A document loss from this
@@ -1993,6 +2303,17 @@ export const runBootstrapWithPairFallback = async (
             }
           : {}),
         onPaired: async (paired) => {
+          // A pairing response held while another tab switched the browser
+          // to a different server belongs to its own server: select it
+          // first, or the save is refused as "already paired" over the one
+          // now in use and the spent code is lost.
+          if (deps.profileStore !== undefined && formProfileId !== null) {
+            const activeId = await readActiveProfileId();
+            const pairedUrl = normaliseServerUrlToWs(paired.serverUrl);
+            if (activeId !== formProfileId && pairedUrl !== null) {
+              await deps.profileStore.ensureProfile(pairedUrl);
+            }
+          }
           const result = await finalizePairCodeSuccess({
             serverUrl: paired.serverUrl,
             bearer: paired.token,
@@ -2144,6 +2465,7 @@ export const runBootstrapWithPairFallback = async (
                     : {}),
                   tokenStore: deps.tokenStore,
                   instanceId,
+                  displayName,
                   onRestored,
                 }),
               mountSplash: (args) =>
@@ -2191,6 +2513,19 @@ export const runBootstrapWithPairFallback = async (
       } catch (err) {
         closePairTabConvergence();
         throw err;
+      }
+      const serverReturn = mountServerReturn();
+      if (serverReturn !== null) {
+        const pairForm = codeHandle;
+        // One lifetime: every path that retires the form — paired, restore
+        // started, a sibling tab's pair adopted — takes the way out with it.
+        codeHandle = {
+          ...pairForm,
+          dispose: () => {
+            serverReturn.dispose();
+            pairForm.dispose();
+          },
+        };
       }
       if (pairTabConvergence !== null) {
         try {
@@ -2266,9 +2601,41 @@ export const runBootstrapWithPairFallback = async (
   }
 };
 
+/** Remove the rejected server's saved access — and nothing else.
+ *
+ *  ⛔ Not by removing all five fields when a roster exists. Removing
+ *  `server_url` deletes the ACTIVE record and hands the pointer to the most
+ *  recently used other server, so the four removals after it nulled THAT
+ *  server's sign-in: one server rejecting this browser cost another saved
+ *  server its access (found 2026-10-23). The four credential fields go first
+ *  instead — on any store they null the active record only, so the rejected
+ *  bearer is gone even if what follows fails — and then the rejected record
+ *  is swapped for a fresh pending one (`retireActiveProfile`): the same empty,
+ *  unpaired state a single-server browser has always reached. */
+const removeRejectedCredentials = async (
+  deps: PairFallbackBootstrapDeps,
+): Promise<void> => {
+  const profileStore = deps.profileStore;
+  for (const key of WEBCLIENT_LOCAL_KEYS) {
+    if (profileStore !== undefined && key === 'server_url') continue;
+    try {
+      await deps.localStore.remove(key);
+    } catch (err) {
+      console.error('webclient: local-store remove during reauth recovery failed', key, err);
+    }
+  }
+  if (profileStore === undefined) return;
+  try {
+    await retireActiveProfile(profileStore);
+  } catch (err) {
+    console.error('webclient: reauth recovery could not retire the rejected server', err);
+  }
+};
+
 /** D-156 P8 Codex P1 fold — handle the bootstrap's `onReauthRequired`
- *  signal. Dispose the active handle, wipe the 5 IDB fields so the
- *  next hydrate throws `WebclientUnpairedError`, then re-enter the
+ *  signal. Dispose the active handle, remove the rejected server's
+ *  saved access (`removeRejectedCredentials`) so the next hydrate
+ *  throws `WebclientUnpairedError`, then re-enter the
  *  pair-fallback loop. The pair form mounts on top of the freshly-
  *  cleared splash, the user re-pairs, and the natural success-path
  *  re-populates the 5 fields against the rotated server identity.
@@ -2357,15 +2724,9 @@ const recoverFromReauthRequired = async (
       // inspection itself is unavailable.
       console.error('webclient: reauth credential-version read failed', err);
     }
-    for (const key of WEBCLIENT_LOCAL_KEYS) {
-      try {
-        await deps.localStore.remove(key);
-      } catch (err) {
-        console.error('webclient: local-store remove during reauth recovery failed', key, err);
-      }
-    }
-    // Even if the inspection failed, the five fail-safe removals ran. A hint
-    // is safe here because sibling tabs independently verify durable state.
+    await removeRejectedCredentials(deps);
+    // Even if the inspection failed, the fail-safe removals ran. A hint is
+    // safe here because sibling tabs independently verify durable state.
     credentialStateChanged = true;
   });
   if (credentialStateChanged && options.onCredentialsRemoved) {

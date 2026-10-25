@@ -141,8 +141,10 @@ export const createAssetIntake = (deps: AssetIntakeDeps) => {
     },
     progress() {
       const emails_read = deps.mailFacts ? (deps.db.prepare('SELECT count(*) AS n FROM mail_fact_email WHERE read_at IS NOT NULL').get() as { n: number }).n : 0;
-      return { emails_read, receipts_found: deps.proposals.setting('receipts_found', 0), likely_assets: deps.proposals.setting('likely_assets', 0),
-        last_scan_at: deps.proposals.setting<number | null>('last_scan_at', null) };
+      const progress = deps.proposals.settings?.({ receipts_found: 0, likely_assets: 0, last_scan_at: null as number | null })
+        ?? { receipts_found: deps.proposals.setting('receipts_found', 0), likely_assets: deps.proposals.setting('likely_assets', 0),
+          last_scan_at: deps.proposals.setting<number | null>('last_scan_at', null) };
+      return { emails_read, ...progress };
     },
   };
 };

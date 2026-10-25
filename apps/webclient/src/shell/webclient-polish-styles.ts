@@ -54,7 +54,14 @@ export const WEBCLIENT_POLISH_STYLES = `
      Settings form page stays deliberately narrower (forms read poorly at
      full width); Kitchen is owned by another workstream. */
   --wc-content-max: 1160px;
-  --wc-ring: 0 0 0 3px var(--accent-weak);
+  /* Keyboard focus: a gap in the surface colour, then 2px of accent. ⛔ It was
+     the accent at 10% (1.14:1 on white), which a keyboard user lost track of.
+     The gap keeps the ring visible around an accent-filled button. */
+  --wc-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+  /* A field's edge: 3:1 against the surface, the page and a sunk panel in
+     both themes (3.40:1 at worst light, 4.66:1 dark). ⛔ --border-strong
+     measured 1.48:1, so fields read as text. */
+  --wc-field-edge: color-mix(in srgb, var(--fg-muted) 85%, var(--surface));
   --wc-shadow-panel: 0 24px 64px rgba(15, 23, 42, 0.20), 0 2px 8px rgba(15, 23, 42, 0.06);
   /* The form-renderer reads object/union backgrounds from these props
      with a 'transparent' fallback (PALETTE_FALLBACKS pins them to
@@ -79,6 +86,11 @@ export const WEBCLIENT_POLISH_STYLES = `
      accent fills) override this 0,0,1 floor. */
   color: inherit;
 }
+/* A link that sets no colour of its own takes the accent. ⛔ Such links drew
+   the browser's own blue, lavender in dark, which no theme uses. */
+:where([data-recued-webclient-content]) a:where([href]) {
+  color: var(--accent);
+}
 :where([data-recued-webclient-content]) input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
 :where([data-recued-webclient-content]) select,
 :where([data-recued-webclient-content]) textarea {
@@ -87,12 +99,36 @@ export const WEBCLIENT_POLISH_STYLES = `
   font-size: 13px;
   color: var(--fg);
   background: var(--surface);
-  border: 1px solid var(--border-strong);
   border-radius: var(--wc-radius);
   min-height: 40px;
   padding: 8px 11px;
 }
 :where([data-recued-webclient-content]) textarea { resize: vertical; }
+/* A field's border, and on a field the border names mean the field edge.
+   Components draw their fields with var(--border) or var(--border-strong),
+   which everywhere else are meant to be quiet (1.2-1.5:1 on white);
+   re-pointing the names on the field itself reaches every one of them.
+   ⛔ The border sits here, at no specificity, not in the rule above: that
+   rule's :not([type]) parts give it (0,4,1), which outranks a component's
+   class rule — so an input's focus border and its error border (a rejected
+   credential's red edge in Connections) never showed. */
+:where([data-recued-webclient-content]) :where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  select, textarea
+) {
+  border: 1px solid var(--wc-field-edge);
+  --border: var(--wc-field-edge);
+  --border-strong: var(--wc-field-edge);
+  --border-subtle: var(--wc-field-edge);
+  --color-border: var(--wc-field-edge);
+  --rx-divider: var(--wc-field-edge);
+}
+/* A field with no focus style of its own draws the app's ring instead of the
+   browser's default one. */
+:where([data-recued-webclient-content]) :where(input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 /* WebKit's native popup selects discard min-height and padding. Give single
    choices the shared control height; leave listboxes and multiple selects
    free to show their rows. Route-specific heights still override this floor. */
@@ -545,6 +581,111 @@ export const WEBCLIENT_POLISH_STYLES = `
   [data-recued-webclient-shell], [data-recued-webclient-overlay] {
     --wc-control-h: 44px;
     --wc-pad-x: 12px;
+  }
+  /* Every text field and select is a finger's height on a phone. ⛔ The floor
+     above held them at 40px, and its :not() chain outranks the 44px a route
+     asks for (Yours does, on touch). */
+  :where([data-recued-webclient-content]) input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  :where([data-recued-webclient-content]) select,
+  :where([data-recued-webclient-content]) textarea {
+    min-height: var(--wc-control-h);
+  }
+  :where([data-recued-webclient-content]) select {
+    min-width: var(--wc-control-h);
+  }
+
+  /* ── The phone floor, in pages and in what they open ──────────────────
+     Every button, tab, select and text field is 44px tall, in a page or in
+     a dialog the page opens. Dialogs attach to <body>, outside the content
+     area, so the scope is the owner surface itself; the top bar is sized on
+     its own and the drawer's rows keep 40px on purpose.
+     Measured 2026-10-24 in the 330 states the e2e fixtures load and the 967
+     their buttons open: 165 controls under 44px, mostly a route's own
+     24-38px. This outranks a rule of up to three classes; a control that
+     must stay smaller says so with a stronger one.
+     ⛔ Height only. A min-width replaces a flex item's auto minimum, its
+     label's width, which is what lets a scroll rail scroll: a width floor
+     here shrank every tab in Settings' rail to 44px under its own label.
+     Width is raised only where the control is an icon or a word as short
+     as "All". */
+  html[data-recued-owner-surface] :is(button, [role="button"], [role="tab"], select, input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="hidden"], [type="file"])):not([data-recued-webclient-topbar] *, [data-recued-webclient-drawer] *) {
+    min-height: var(--wc-control-h, 44px);
+  }
+  html[data-recued-owner-surface] :is([data-recued-live-control-close], [data-recued-live-control-run-control], .work-entity-dialog-close, .logs-row-open, .ref-picker-clear, .memory-filter-chip, .recipes-chip, .connections-row-actions > .rx-btn) {
+    min-width: 44px;
+  }
+
+  /* Links that act as buttons — never a link inside a sentence, which keeps
+     the sentence's line (WCAG 2.5.5 exempts it). */
+  html[data-recued-owner-surface] [data-recued-automation-route] :is(a:not(p a), .automation-row-title a),
+  html[data-recued-owner-surface] [data-recued-recipes-route] .recipes-inline-link:not(p > .recipes-inline-link) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  html[data-recued-owner-surface] [data-recued-logs-route] :is(.logs-inline-link, .logs-row-links a, .logs-detail-meta a),
+  html[data-recued-owner-surface] [data-recued-seller-page] :is([data-recued-seller-back], [data-recued-seller-collection-item-link]),
+  html[data-recued-owner-surface] [data-recued-account-binding-panel] .account-bind-dashboard-inline,
+  html[data-recued-owner-surface] .memory-row-run-link,
+  html[data-recued-owner-surface] [data-recued-tool-call-link] {
+    min-height: 44px;
+  }
+  html[data-recued-owner-surface] [data-recued-chat-route-mail-notice] a,
+  html[data-recued-owner-surface] a.auth-management-history {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  /* Yours' plain links sit as blocks in its pages, sections and cards. */
+  html[data-recued-owner-surface] [data-recued-yours] :is(.yours-pages, .yours-content, .yours-section, .yours-card, .yours-change-preview) > a:not([class]) {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  html[data-recued-owner-surface] [data-recued-yours] :is(.yours-pages, .yours-actions) > a {
+    min-width: 44px;
+    justify-content: center;
+  }
+  html[data-recued-owner-surface] [data-recued-connections-route] .connections-tool-body .connections-broker-manager > .rx-btn {
+    min-height: 44px;
+  }
+
+  /* Disclosure rows. A summary that keeps the browser's triangle stays a
+     list item, so it grows by padding rather than by becoming a flex row. */
+  html[data-recued-owner-surface] [data-recued-data-route] .data-sources-summary,
+  html[data-recued-owner-surface] .records-explorer summary {
+    min-height: 44px;
+  }
+  html[data-recued-owner-surface] [data-recued-webhooks-panel] details > summary,
+  html[data-recued-owner-surface] [data-oauth-advanced-permissions] > summary {
+    box-sizing: border-box;
+    min-height: 44px;
+    padding-block: 12px;
+  }
+  html[data-recued-owner-surface] [data-recued-chat-route-composer-more] > summary {
+    width: 44px;
+    height: 44px;
+  }
+  html[data-recued-owner-surface] [data-recued-chat-route-session-actions] > summary {
+    width: 44px;
+  }
+
+  /* A checkbox's label is its target. */
+  html[data-recued-owner-surface] [data-recued-exposure-panel] .exposure-cell-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  html[data-recued-owner-surface] .hostnames-checkbox-label,
+  html[data-recued-owner-surface] .oauth-help li label {
+    min-height: 44px;
+  }
+  html[data-recued-owner-surface] label:has(> input[data-contact-privacy-mark]),
+  html[data-recued-owner-surface] .run-modal-actions > label:has(> input[type="checkbox"]),
+  html[data-recued-owner-surface] .form-renderer-row[data-form-row-inline="true"] > .form-renderer-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    margin-inline-end: 16px;
   }
 }
 /* ════════════════════════════════════════════════════════════════

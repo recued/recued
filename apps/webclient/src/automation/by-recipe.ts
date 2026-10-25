@@ -230,6 +230,10 @@ export const BY_RECIPE_STYLES = `
 }
 .automation-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-weak); color: var(--accent); }
 .automation-chip-count { color: var(--fg-muted); margin-left: 2px; }
+/* A finger's height on a phone. ⛔ 32px. */
+@media (max-width: 640px) {
+  .automation-chip { min-height: 44px; }
+}
 .automation-recipe { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; min-width: 0; }
 .automation-recipe-title { margin: 0 0 6px; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
 .automation-recipe-title a { color: inherit; text-decoration: none; }

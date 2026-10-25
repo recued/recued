@@ -22,6 +22,7 @@ import type {
   CollectionSearchMatch,
   CollectionSearchQuery,
 } from '@recued/contracts';
+import type { FtsWordCheck } from '@recued/fts';
 import type { StorageGate } from '@recued/storage-gate';
 
 /** Outcome of a retention pass. Defined here (not in retention.ts)
@@ -105,6 +106,16 @@ export interface Collection {
    *  FTS5 BM25 convention). CAS-stored records are NOT indexed
    *  (documented limit — matches Phase A's shared_store). */
   search(query: CollectionSearchQuery): CollectionSearchMatch[];
+  /** Each plain word of a search checked against this collection's own index:
+   *  present, or the closest word a record here holds (`checkQuerySpelling`).
+   *  The substrate of "did you mean"; it never changes what `search` returns.
+   *
+   *  ⚠ OPTIONAL, AND ITS ABSENCE IS NOT NEUTRAL. A correction is offered only
+   *  when EVERY searched store reports the word absent, so a store that cannot
+   *  check makes the caller offer none — it may be the one holding the word.
+   *  Every collection this server builds forwards it (mail, read-only mail,
+   *  watched folder, inbound file, calendar). */
+  checkSpelling?(query: string): FtsWordCheck[];
 
   // ── Lifecycle + metrics ────────────────────────────────────────
   readonly sync: CollectionSyncAdapter;

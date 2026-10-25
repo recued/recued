@@ -71,6 +71,10 @@ import {
   type ReceptionLookupExpirySweepDeps,
 } from '../../reception-lookup-expiry-sweep.js';
 import type { GatedActionStore } from '../../gated-action-store.js';
+import type { McpActionStore } from '../../mcp-action-store.js';
+import type { PreflightRunSettled } from '../../preflight-resumer.js';
+import { expiredHoldSettlement } from '../../chat-held-writes.js';
+import type { Checkpoint } from '@recued/contracts';
 
 export interface ComposeRetentionPrunersDeps {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -105,6 +109,9 @@ export interface ComposeRetentionPrunersDeps {
   readonly checkpointStore?: CheckpointStore | undefined;
   readonly auditLog?: AuditLogStore | undefined;
   readonly gatedActionStore?: GatedActionStore | undefined;
+  /** D-329 — an expired raw-op hold settles the AI app's action, and the chat's held write. */
+  readonly mcpActionStore?: Pick<McpActionStore, 'finish'> | undefined;
+  readonly chatRunSettledSink?: ((settled: PreflightRunSettled) => void) | undefined;
   /** D-214 closure observer for D-157 approval expiries. */
   readonly executionCaseLifecycle?: ExecutionCaseLifecycle | undefined;
   /** D-240 slice 4 — the reception credential store, for TWO passes:
@@ -366,6 +373,15 @@ export const composeRetentionPruners = (
       ...(deps.gatedActionStore !== undefined
         ? { gatedActionStore: deps.gatedActionStore }
         : {}),
+      ...(deps.mcpActionStore !== undefined ? { mcpActionStore: deps.mcpActionStore } : {}),
+      ...(deps.chatRunSettledSink !== undefined
+        ? {
+            onRawOpExpired: (checkpoint: Checkpoint) => {
+              const settled = expiredHoldSettlement(checkpoint, nowOf());
+              if (settled !== undefined) deps.chatRunSettledSink!(settled);
+            },
+          }
+        : {}),
       ...(block !== undefined
         ? {
             askHooks: {
@@ -439,7 +455,8 @@ export const composeRetentionPruners = (
                   `${n} pending approval${n === 1 ? '' : 's'} passed the staleness `
                   + `window and ${n === 1 ? 'was' : 'were'} withdrawn, so `
                   + `${n === 1 ? 'its run' : 'their runs'} did not complete. `
-                  + 'Re-run the recipe to try again, or raise the window in '
+                  // D-329 — an AI's held write expires here too; its chat says so as well.
+                  + 'Re-run the recipe, or ask the AI again, to try again, or raise the window in '
                   + 'Settings → Recipes (Pending-approval staleness window).',
               });
             } catch {

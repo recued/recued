@@ -212,20 +212,28 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     const reviewed = previewKey === permissionKey() && !previewLoading ? preview : undefined;
     const completedNewAccountNeedsReview = ctx.mode === 'switch' && !existingMode && completedAccountId !== '';
     const scopeItems = (scopes: readonly string[]): string => scopes.length
-      ? `<ul>${scopes.map(scope => `<li><code>${escape(scope)}</code></li>`).join('')}</ul>` : '<p>None.</p>';
+      ? `<ul class="managed-oauth-scope-list">${scopes.map(scope => `<li><code>${escape(scope)}</code></li>`).join('')}</ul>` : '<p>None.</p>';
+    // Inside a connection's editor the form already says what a broker is, and
+    // the broker and integration are chosen once; managing brokers lives in
+    // Advanced, where this same panel runs with `manageProfiles`.
+    const editor = !deps.manageProfiles;
+    const identityFixed = ctx.mode === 'edit' || !!ctx.reauthorize_current;
     const decisionLabel = reviewed ? {
       authorize: 'Authorize a new Nango account', reuse: 'Reuse current authorization',
       reconnect: 'Reconnect the same Nango account', blocked: 'Authorization needs attention',
     }[reviewed.decision] : '';
-    host.innerHTML = `<section class="connections-managed-oauth" aria-label="${deps.manageProfiles ? 'OAuth brokers' : 'Managed OAuth'}" aria-busy="${busy || profilesLoading}">
-      <header class="managed-oauth-heading"><div><h3>${deps.manageProfiles ? 'OAuth brokers' : 'Connect through a broker'}</h3><p>${deps.manageProfiles ? 'Manage the brokers and accounts used by your API connections here.' : 'Use a saved broker to authorize this connection.'}</p></div><span class="managed-oauth-badge">Nango</span></header>
-      <p class="managed-oauth-trust">Your broker stores vendor credentials and handles API traffic. Vendor consent and administrator policies still apply.</p>
-      <div class="managed-oauth-section">
-        ${!setup ? !profilesRead && !profilesLoading ? '<p>Broker profiles could not be loaded. Refresh to try again.</p>' : profiles.length === 0 && !profilesLoading ? `<div class="managed-oauth-empty"><strong>Add your first OAuth broker</strong><p>Use Nango Cloud or your own Nango server. You’ll need its environment API key.</p></div>` : `<label class="managed-oauth-field"><span>Broker profile</span><select data-managed-field="profile"${identityLocked}>${option('', 'Select a broker', ctx.profile_id)}${profiles.map(p => option(p.id, p.label, ctx.profile_id)).join('')}</select></label>` : ''}
-        ${profile && !setup ? `<div class="managed-oauth-profile"><span class="managed-oauth-badge">${profile.base_url === 'https://api.nango.dev' ? 'Nango Cloud' : 'Nango server'}</span><code>${escape(profile.base_url)}</code>${profile.connect_ui_origin ? `<small>Connect UI: <code>${escape(profile.connect_ui_origin)}</code></small>` : ''}<small>API key saved on your Recued server.</small></div>` : ''}
-        ${!setup ? `<div class="managed-oauth-actions">${button('add', 'Add broker', profiles.length ? 'secondary' : 'primary', busy || profilesLoading || !profilesRead)}${profiles.length || !profilesRead ? button('refresh-profiles', 'Refresh brokers') : ''}${profile ? button('edit', 'Edit broker') + button('delete', 'Remove profile', 'danger-text') : ''}</div>` : ''}
-        ${deletingProfile && profile ? `<div class="managed-oauth-danger"><strong>Remove ${escape(profile.label)}?</strong><p>This removes the saved broker key from Recued. Nango accounts remain. Profiles used by saved connections cannot be removed.</p><div class="managed-oauth-actions">${button('confirm-delete-profile', 'Remove profile', 'danger')}${button('cancel-delete-profile', 'Keep profile')}</div></div>` : ''}
-        ${setup ? `<fieldset class="managed-oauth-editor"><legend>${editingProfile ? 'Edit broker profile' : 'Add Nango broker'}</legend>
+    const profilePicker = !setup ? !profilesRead && !profilesLoading ? '<p>Broker profiles could not be loaded. Refresh to try again.</p>' : profiles.length === 0 && !profilesLoading ? `<div class="managed-oauth-empty"><strong>Add your first OAuth broker</strong><p>Use Nango Cloud or your own Nango server. You’ll need its environment API key.</p></div>` : `<label class="managed-oauth-field"><span>${editor ? 'Broker' : 'Broker profile'}</span><select data-managed-field="profile"${identityLocked}>${option('', 'Select a broker', ctx.profile_id)}${profiles.map(p => option(p.id, p.label, ctx.profile_id)).join('')}</select></label>` : '';
+    const profileKind = profile ? `<span class="managed-oauth-badge">${profile.base_url === 'https://api.nango.dev' ? 'Nango Cloud' : 'Nango server'}</span>` : '';
+    const profileDetails = profile && !setup ? editor
+      ? `<p class="managed-oauth-profile-line">${profileKind}<code>${escape(profile.base_url)}</code>${profile.connect_ui_origin ? `<small>Connect UI: <code>${escape(profile.connect_ui_origin)}</code></small>` : ''}<small>API key saved on your Recued server.</small></p>`
+      : `<div class="managed-oauth-profile">${profileKind}<code>${escape(profile.base_url)}</code>${profile.connect_ui_origin ? `<small>Connect UI: <code>${escape(profile.connect_ui_origin)}</code></small>` : ''}<small>API key saved on your Recued server.</small></div>` : '';
+    const profileActions = setup ? '' : editor
+      ? [profilesRead && (!identityFixed || profiles.length === 0) ? button('add', 'Add broker', profiles.length ? 'secondary' : 'primary', busy || profilesLoading) : '',
+        !profilesRead || (profiles.length > 0 && !identityFixed) ? button('refresh-profiles', 'Refresh brokers') : '',
+        profile && !identityFixed ? button('edit', 'Edit broker') : ''].join('')
+      : `${button('add', 'Add broker', profiles.length ? 'secondary' : 'primary', busy || profilesLoading || !profilesRead)}${profiles.length || !profilesRead ? button('refresh-profiles', 'Refresh brokers') : ''}${profile ? button('edit', 'Edit broker') + button('delete', 'Remove profile', 'danger-text') : ''}`;
+    const profileDeletion = deletingProfile && profile ? `<div class="managed-oauth-danger"><strong>Remove ${escape(profile.label)}?</strong><p>This removes the saved broker key from Recued. Nango accounts remain. Profiles used by saved connections cannot be removed.</p><div class="managed-oauth-actions">${button('confirm-delete-profile', 'Remove profile', 'danger')}${button('cancel-delete-profile', 'Keep profile')}</div></div>` : '';
+    const profileSetup = setup ? `<fieldset class="managed-oauth-editor"><legend>${editingProfile ? 'Edit broker profile' : 'Add Nango broker'}</legend>
           <div class="managed-oauth-grid">${inputField('label', 'Profile name', label, 'text', 'A name you can recognize when choosing a broker.', false, 'e.g. Nango Cloud · Personal')}
             ${inputField('server', 'Server URL', server, 'url', editingProfile ? 'Create a new profile to use another server or environment.' : 'Nango Cloud is prefilled. For self-hosting, enter your Nango API URL.', !!editingProfile)}</div>
           <div class="managed-oauth-key">${inputField('key', editingProfile ? 'Environment API key (optional)' : 'Environment API key', apiKey, showKey ? 'text' : 'password', 'Nango → Environment Settings → API Keys. This is your broker key, not a vendor OAuth client secret.', false, editingProfile ? 'Leave blank to keep the saved key' : 'Paste the API key for this Nango environment')}
@@ -234,21 +242,44 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
           ${details('key-help', editingProfile ? 'API key permissions and rotation' : 'API key permissions', `<p>Use a key that can discover integrations, create Connect sessions, list connections and proxy requests. Creating integrations and deleting Nango accounts need their respective permissions.</p>${editingProfile ? '<p>Rotate with a key from the same environment before revoking the old one. Recued checks saved accounts against both keys. For a different environment or a revoked old key, create a new profile and connect its accounts again.</p>' : ''}`)}
           <p class="managed-oauth-note">The key is encrypted on your Recued server. Cloud connection limits depend on your Nango plan.</p>
           <div class="managed-oauth-actions">${button('save-profile', busy ? 'Testing broker…' : 'Test and save broker', 'primary')}${button('close-setup', 'Cancel')}</div>
-        </fieldset>` : ''}
-      </div>
-      ${ctx.profile_id && !setup ? `<div class="managed-oauth-section"><h4>Vendor integration</h4><p class="managed-oauth-note">${deps.manageProfiles ? 'Choose the Nango integration whose accounts you want to manage.' : 'A matching integration is selected automatically when available. Choose one if this broker has several.'}</p>
-        <label class="managed-oauth-field"><span>Integration</span><select data-managed-field="integration"${identityLocked}>${option('', 'Select a configured integration', ctx.integration_id)}${ctx.integration_id && !integrations.some(i => i.id === ctx.integration_id) ? option(ctx.integration_id, `Saved integration: ${ctx.integration_id}`, ctx.integration_id) : ''}${integrations.map(i => option(i.id, `${i.label} · ${i.id}`, ctx.integration_id)).join('')}</select></label>
-        <div class="managed-oauth-actions">${button('refresh', 'Refresh integrations')}${!integrationSetup && (deps.manageProfiles || ctx.mode === 'create') ? button('add-integration', 'Create vendor integration') : ''}</div>
-        ${integrations.length === 0 && !integrationSetup && !ctx.reauthorize_current ? '<p class="managed-oauth-note">No matching integrations found. Create one here or in Nango, then refresh. Use a shared OAuth app when your Nango server offers one.</p>' : ''}
-        ${integrationSetup ? `<fieldset class="managed-oauth-editor"><legend>Create integration in Nango</legend>
+        </fieldset>` : '';
+    const integrationPicker = ctx.profile_id && !setup ? `<label class="managed-oauth-field"><span>Integration</span><select data-managed-field="integration"${identityLocked}>${option('', 'Select a configured integration', ctx.integration_id)}${ctx.integration_id && !integrations.some(i => i.id === ctx.integration_id) ? option(ctx.integration_id, `Saved integration: ${ctx.integration_id}`, ctx.integration_id) : ''}${integrations.map(i => option(i.id, `${i.label} · ${i.id}`, ctx.integration_id)).join('')}</select></label>` : '';
+    const integrationActions = ctx.profile_id && !setup && !(editor && identityFixed)
+      ? `<div class="managed-oauth-actions">${button('refresh', 'Refresh integrations')}${!integrationSetup && (deps.manageProfiles || ctx.mode === 'create') ? button('add-integration', 'Create vendor integration') : ''}</div>` : '';
+    const integrationEmpty = ctx.profile_id && !setup && integrations.length === 0 && !integrationSetup && !ctx.reauthorize_current && !(editor && identityFixed)
+      ? '<p class="managed-oauth-note">No matching integrations found. Create one here or in Nango, then refresh. Use a shared OAuth app when your Nango server offers one.</p>' : '';
+    const integrationEditor = ctx.profile_id && !setup && integrationSetup ? `<fieldset class="managed-oauth-editor"><legend>Create integration in Nango</legend>
           <label class="managed-oauth-field"><span>Vendor</span><select data-managed-field="provider"${locked}>${option('', 'Select an OAuth provider', providerId)}${providers.map(p => option(p.id, `${p.label} (${p.id})`, providerId)).join('')}</select></label>
           <div class="managed-oauth-grid">${inputField('integration-label', 'Name', integrationLabel)}${inputField('integration-id', 'Integration ID', integrationId, 'text', 'A unique ID in this Nango environment.')}</div>
           <label class="managed-oauth-field"><span>OAuth app</span><select data-managed-field="app"${locked}>${option('shared', 'Nango shared app, if available', app)}${option('custom', 'My vendor OAuth app', app)}</select></label>
           ${app === 'custom' ? `${inputField('client-id', 'OAuth client ID', clientId)}${inputField('client-secret', 'OAuth client secret', clientSecret, 'password')}${inputField('app-scopes', 'App scopes', appScopes)}<p class="managed-oauth-note">Configure the redirect URI shown by your Nango server in the vendor app. These app credentials are sent to Nango.</p>` : '<p class="managed-oauth-note">Shared apps are available for selected providers and may have fixed scopes. Your Nango server must offer one; self-hosted deployments may not.</p>'}
           <div class="managed-oauth-actions">${button('create-integration', busy ? 'Creating integration…' : 'Create integration', 'primary', busy || !providerId)}${button('close-integration', 'Cancel')}</div>
-        </fieldset>` : ''}
-      </div>` : ''}
-      ${accountSection ? `<div class="managed-oauth-section"><h4>${deps.manageProfiles ? 'Nango accounts' : 'Account authorization'}</h4>
+        </fieldset>` : '';
+    const brokerSections = editor
+      ? `<div class="managed-oauth-section managed-oauth-identity">
+          <div class="managed-oauth-choice">${profilePicker}${profileDetails}${profileActions ? `<div class="managed-oauth-actions">${profileActions}</div>` : ''}</div>
+          ${integrationPicker ? `<div class="managed-oauth-choice">${integrationPicker}${!identityFixed ? '<p class="managed-oauth-note">Recued picks the matching integration when it can. Choose one if this broker has several.</p>' : ''}${integrationActions}${integrationEmpty}</div>` : ''}
+          ${profileSetup}${integrationEditor}
+        </div>`
+      : `<div class="managed-oauth-section">
+        ${profilePicker}
+        ${profileDetails}
+        ${!setup ? `<div class="managed-oauth-actions">${profileActions}</div>` : ''}
+        ${profileDeletion}
+        ${profileSetup}
+      </div>
+      ${ctx.profile_id && !setup ? `<div class="managed-oauth-section"><h4>Vendor integration</h4><p class="managed-oauth-note">Choose the Nango integration whose accounts you want to manage.</p>
+        ${integrationPicker}
+        ${integrationActions}
+        ${integrationEmpty}
+        ${integrationEditor}
+      </div>` : ''}`;
+    host.innerHTML = `<section class="connections-managed-oauth${editor ? ' managed-oauth-in-editor' : ''}" aria-label="${deps.manageProfiles ? 'OAuth brokers' : 'Broker sign-in'}" aria-busy="${busy || profilesLoading}">
+      ${editor ? '' : `<header class="managed-oauth-heading"><div><h3>OAuth brokers</h3><p>Manage the brokers and accounts used by your API connections here.</p></div><span class="managed-oauth-badge">Nango</span></header>
+      <p class="managed-oauth-trust">Your broker stores vendor credentials and handles API traffic. Vendor consent and administrator policies still apply.</p>`}
+      ${brokerSections}
+      ${accountSection ? `<div class="managed-oauth-section"><h4>${deps.manageProfiles ? 'Nango accounts' : 'Authorization'}</h4>
+        ${editor && ctx.mode === 'edit' && ctx.connection_id ? `<p class="managed-oauth-account-line">Signed in as Nango account <code>${escape(ctx.connection_id)}</code></p>` : ''}
         ${!deps.manageProfiles && ctx.mode !== 'edit' && !ctx.reauthorize_current ? `<label class="managed-oauth-field"><span>Account setup</span><select data-managed-field="account-mode"${locked}>${option('existing', 'Use an existing Nango account', existingMode ? 'existing' : 'new')}${option('new', 'Authorize a new account', existingMode ? 'existing' : 'new')}</select></label>` : ''}
         ${!deps.manageProfiles && ctx.mode !== 'edit' && !ctx.reauthorize_current && !existingMode ? '<p class="managed-oauth-note">A new sign-in creates another Nango connection. Reuse an existing account to share authorization across your connections and packs.</p>' : ''}
         ${existingMode && !ctx.reauthorize_current ? `<label class="managed-oauth-field"><span>Nango account</span><select data-managed-field="account"${locked}>${option('', 'Select an existing account', remoteId)}${remotes.map(r => option(r.id, `${r.label} (${r.id})${r.auth_error ? ' — reauthorization needed' : ''}`, remoteId)).join('')}</select></label>
@@ -260,17 +291,16 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
         ${deps.manageProfiles && remoteId ? details('account-delete', 'Delete this account from Nango', `<div class="managed-oauth-danger"><p>Deletion affects every tool using this account. Remove its Recued connections first. Vendor consent may remain until revoked at the vendor.</p>${usage?.connections.length ? '<p>This account has saved Recued connections. Open them above to review their use before removal.</p>' : ''}${inputField('delete-confirmation', 'Type account ID to confirm deletion', deleteConfirmation, 'text', `Account ID: <code>${escape(remoteId)}</code>`)}${button('delete-account', 'Delete account from Nango', 'danger', deletionDisabled())}</div>`) : ''}
         ${ctx.mode === 'edit' && !ctx.connection_id ? '<p class="managed-oauth-note">Use Manage authentication, then Change authentication method, to choose a broker account while keeping its name. Reauthorization keeps the saved broker and account.</p>' : ''}
         ${ctx.mode === 'edit' && ctx.imported ? '<p class="managed-oauth-note">This account was reused from Nango. Recued checks for saved scope history before changing consent. If that history is unknown, manage consent in Nango with its existing scope profile.</p>' : ''}
-        ${!deps.manageProfiles && ctx.mode === 'edit' && ctx.connection_id ? '<p class="managed-oauth-note">Recued reuses completed scope requests when they cover current needs. Granted permissions remain unknown. New consent preserves scopes needed by other connections. Choose Review sign-in again to check a repair request.</p>' : ''}
+        ${!deps.manageProfiles && ctx.mode === 'edit' && ctx.connection_id ? '<p class="managed-oauth-note">Reauthorize updates the Nango account at once; save afterwards to keep the new authorization in Recued. Earlier consent is reused when it still covers what this connection needs, and permissions other connections rely on are kept. To ask the vendor again, choose Review sign-in again.</p>' : ''}
         ${renderManagedOAuthImpact(completedImpact ?? reviewed?.account_impact, impactLoading, impactError)}
         ${verifiedFlow && readyAuthorization && (completedImpact || impactError) ? button('refresh-impact', 'Refresh account and impact', 'secondary', busy) : ''}
-        ${permissionSection ? `<section class="managed-oauth-preview" aria-label="Permission preview" aria-busy="${previewLoading}"><h4>Permission preview</h4>
-          ${previewLoading ? '<p role="status">Checking the permission request…</p>' : reviewed ? `<strong>${decisionLabel}</strong>
+        ${permissionSection ? `<section class="managed-oauth-preview" aria-label="Permission preview" aria-busy="${previewLoading}"><div class="managed-oauth-preview-head"><h4>Permission preview</h4>${button('refresh-permissions', 'Check again', 'secondary', busy || previewLoading || verifiedFlow !== undefined)}</div>
+          ${previewLoading ? '<p role="status">Checking the permission request…</p>' : reviewed ? `<p class="managed-oauth-decision" data-managed-decision="${escape(reviewed.decision)}"><strong>${decisionLabel}</strong></p>
             ${reviewed.blocked_reason ? `<p role="alert">${escape(reviewed.blocked_reason)}</p>` : ''}
-            ${reviewed.added_scopes === undefined ? '<p>Nango will use its configured scope profile. The exact permission request is unavailable.</p>' : `<h5>New requested permissions</h5>${scopeItems(reviewed.added_scopes)}<h5>Permissions retained beyond this connection’s needs</h5>${scopeItems(reviewed.retained_scopes ?? [])}`}
-            ${details('permission-sources', 'Permission needs and history', `<ul>${reviewed.sources.map(source => `<li><strong>${escape(source.label)}</strong>${scopeItems(source.scopes)}</li>`).join('')}</ul>`)}
-            ${reviewed.requested_scopes === undefined ? '' : details('permission-full', reviewed.decision === 'reuse' ? 'Previously requested scope list' : 'Full requested scope list', scopeItems(reviewed.requested_scopes))}
+            ${reviewed.added_scopes === undefined ? '<p>Nango will use its configured scope profile. The exact permission request is unavailable.</p>' : `<div class="managed-oauth-scopes"><h5>Asks for</h5>${scopeItems(reviewed.added_scopes)}</div><div class="managed-oauth-scopes"><h5>Also kept for other uses</h5>${scopeItems(reviewed.retained_scopes ?? [])}</div>`}
+            ${details('permission-sources', 'Why these permissions', `<ul>${reviewed.sources.map(source => `<li><strong>${escape(source.label)}</strong>${scopeItems(source.scopes)}</li>`).join('')}</ul>`)}
+            ${reviewed.requested_scopes === undefined ? '' : details('permission-full', reviewed.decision === 'reuse' ? 'Earlier request in full' : 'Full request', scopeItems(reviewed.requested_scopes))}
             ${reviewed.warnings.map(warning => `<p class="managed-oauth-note">${escape(warning)}</p>`).join('')}` : `<p${previewError ? ' role="alert"' : ''}>${escape(previewError || 'Review the permission request before continuing.')}</p>`}
-          ${button('refresh-permissions', 'Refresh permission preview', 'secondary', busy || previewLoading || verifiedFlow !== undefined)}
         </section>` : ''}
         <div class="managed-oauth-actions">${!deps.manageProfiles && (ctx.mode !== 'create' || !existingMode) ? button('authorize', reviewed?.decision === 'reuse' ? 'Use current authorization' : forcePreview ? 'Sign in again' : ctx.mode === 'edit' ? 'Reauthorize' : 'Authorize', 'primary', busy || completedNewAccountNeedsReview || verifiedFlow !== undefined || !reviewed || reviewed.decision === 'blocked' || !ctx.profile_id || !ctx.integration_id || (ctx.mode === 'edit' && !ctx.connection_id)) : ''}
           ${!deps.manageProfiles && (ctx.mode === 'edit' && ctx.connection_id || ctx.mode === 'switch' && existingMode && remoteId) ? button('force-reauthorize', forcePreview ? 'Use automatic reuse' : 'Review sign-in again') : ''}
@@ -278,7 +308,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
           ${pending ? button('cancel', 'Cancel authorization', 'secondary', false) : ''}</div>
       </div>` : ''}
       ${busy || profilesLoading || message ? `<p class="managed-oauth-feedback" role="status" tabindex="-1">${escape(profilesLoading ? 'Loading broker profiles…' : busy && !pending ? working || 'Contacting Nango…' : message)}</p>` : ''}${error ? `<p class="managed-oauth-feedback managed-oauth-feedback-error" role="alert" tabindex="-1">${escape(error)}</p>` : ''}
-      ${ctx.profile_id && !setup ? '<p class="managed-oauth-note managed-oauth-footer">Removing a Recued connection keeps its Nango account. Use Manage OAuth brokers to delete unused Nango accounts.</p>' : ''}
+      ${ctx.profile_id && !setup && (!editor || ctx.mode === 'edit') ? `<p class="managed-oauth-note managed-oauth-footer">${editor ? 'Removing this connection keeps its Nango account. Delete unused Nango accounts from Managed sign-in with Nango, under Advanced.' : 'Removing a Recued connection keeps its Nango account. Use Manage OAuth brokers to delete unused Nango accounts.'}</p>` : ''}
       <div data-managed-oauth-help-host></div>
     </section>`;
     const helpProvider = integrationSetup ? providerId : integrations.find(integration => integration.id === ctx.integration_id)?.provider ?? '';

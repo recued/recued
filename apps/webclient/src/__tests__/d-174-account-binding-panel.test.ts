@@ -1,6 +1,7 @@
 /** D-174 — Settings -> Account binding touchpoint. */
 
 import { describe, expect, it, vi } from 'vitest';
+import { RpcError } from '@recued/contracts';
 import type {
   AccountBindResult,
   AccountBindingStatusResponse,
@@ -23,15 +24,18 @@ import {
   ACCOUNT_BINDING_FREE_CLAIM_ATTR,
   ACCOUNT_BINDING_FREE_HANDLE_ATTR,
   ACCOUNT_BINDING_LOADING_ATTR,
+  ACCOUNT_BINDING_OTHER_ACCOUNT_ATTR,
   ACCOUNT_BINDING_PANEL_STATE_ATTR,
   ACCOUNT_BINDING_PANEL_STYLES,
   ACCOUNT_BINDING_PRO_ITEM_ATTR,
   ACCOUNT_BINDING_PRO_LIFECYCLE_ATTR,
   ACCOUNT_BINDING_PRO_SUBSCRIBE_ATTR,
+  ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ATTR,
   ACCOUNT_BINDING_PUBLISHING_LINK_ATTR,
   ACCOUNT_BINDING_RETRY_ATTR,
   ACCOUNT_BINDING_SESSION_ATTR,
   ACCOUNT_BINDING_SIGNOUT_ATTR,
+  ACCOUNT_BINDING_STATUS_CHIP_ATTR,
   ACCOUNT_BINDING_SUMMARY_ATTR,
   ACCOUNT_BINDING_UNBIND_ATTR,
   ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR,
@@ -305,6 +309,11 @@ describe('D-174 account binding panel — status states', () => {
     expect(rendered).toContain('mary.recued.net');
     expect(rendered).not.toContain('server_scoped_credential');
     expect(rendered).not.toContain('binding-token');
+    // The word the card's own Connect and Disconnect use. ⛔ It said "Bound".
+    expect(findByAttr(host, ACCOUNT_BINDING_STATUS_CHIP_ATTR)?.textContent).toBe('Connected');
+    // ⛔ The Pro card named its protocols, "(DDNS)" and "(ACME)".
+    expect(rendered).toContain('a ready-to-use web address and an auto-renewing HTTPS certificate.');
+    expect(rendered).not.toMatch(/DDNS|ACME/);
     mount.dispose();
   });
 });
@@ -496,7 +505,7 @@ describe('D-174 account binding panel — connect flow', () => {
     expect(mount.hasInFlightWork()).toBe(true);
     const confirm = findByAttr(host, ACCOUNT_BINDING_CONFIRM_REBIND_ATTR);
     const cancel = findByAttr(host, ACCOUNT_BINDING_CANCEL_REBIND_ATTR);
-    expect(confirm?.textContent).toBe('Rebinding…');
+    expect(confirm?.textContent).toBe('Moving…');
     expect(confirm?.getAttribute('aria-disabled')).toBe('true');
     expect(confirm?.getAttribute('aria-busy')).toBe('true');
     expect(confirm?.disabled).toBe(false);
@@ -540,6 +549,25 @@ describe('D-174 account binding panel — connect flow', () => {
 });
 
 describe('D-174 account binding panel — unbind and Pro status', () => {
+  // ⛔ Both alert dialogs ignored Escape.
+  it('closes the Disconnect confirmation on Escape, without disconnecting', async () => {
+    const { host, mount, opts } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+    });
+    await mount.whenLoaded();
+    findByAttr(host, ACCOUNT_BINDING_UNBIND_ATTR)?.click();
+    expect(findByAttr(host, ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR)).not.toBeNull();
+
+    const panel = (host as unknown as { children: Array<{ listeners: Map<string, Array<(ev: unknown) => void>> }> }).children[0]!;
+    for (const fn of panel.listeners.get('keydown') ?? []) {
+      fn({ key: 'Escape', isComposing: false, preventDefault: () => {} });
+    }
+
+    expect(findByAttr(host, ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR)).toBeNull();
+    expect(opts.runUnbind).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
   it('reviews Disconnect safely and Cancel does not call account.unbind', async () => {
     const { host, mount, opts } = mountFixture({
       runBindingStatus: vi.fn(async () => bound()),
@@ -615,6 +643,30 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     expect(mount.hasInFlightWork()).toBe(false);
     expect(findByAttr(host, ACCOUNT_BINDING_ACTION_MESSAGE_ATTR)).not.toBeNull();
     expect(textOf(host)).toContain('This server was not hooked up');
+    mount.dispose();
+  });
+
+  // ⛔ It said "no longer hooked up to recued.com" every time, while the
+  // server only forgot its own copy and recued.com kept listing it.
+  it.each([
+    ['released', 'Your server is no longer hooked up to recued.com.'],
+    ['not_listed', 'Your server is no longer hooked up to recued.com.'],
+    ['not_told', 'recued.com was not told, so it still lists this server'],
+    // A server too old to tell recued.com reports nothing — and told nobody.
+    [undefined, 'recued.com was not told, so it still lists this server'],
+  ] as const)('after Disconnect with recued.com %s, says what happened there', async (cloud, words) => {
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runUnbind: vi.fn(async (): Promise<AccountUnbindResult> => ({
+        outcome: 'unbound',
+        previous: summary(),
+        ...(cloud ? { cloud } : {}),
+      })),
+    });
+    await mount.whenLoaded();
+    await mount.unbind();
+
+    expect(findByAttr(host, ACCOUNT_BINDING_ACTION_MESSAGE_ATTR)?.textContent).toContain(words);
     mount.dispose();
   });
 
@@ -752,7 +804,10 @@ describe('R27 account panel — Free-account card', () => {
 
     const freeCard = findByAttr(host, ACCOUNT_BINDING_FREE_CARD_ATTR);
     expect(freeCard).not.toBeNull();
-    expect(textOf(freeCard!)).toContain('Free account');
+    expect(textOf(freeCard!)).toContain('Marketplace');
+    expect(textOf(freeCard!)).toContain(
+      'Every recued.com account includes a name in the Marketplace, so you can share Recipes and Packs.',
+    );
     expect(findByAttr(host, ACCOUNT_BINDING_FREE_HANDLE_ATTR)).not.toBeNull();
     expect(textOf(freeCard!)).toContain('@mary');
     expect(textOf(freeCard!)).toContain('Publishing');
@@ -764,6 +819,21 @@ describe('R27 account panel — Free-account card', () => {
       '.account-bind-dashboard-inline {\n  box-sizing: border-box;\n  min-height: 36px;',
     );
     expect(findByAttr(host, ACCOUNT_BINDING_FREE_CLAIM_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('never tells a Pro owner that the account is free', async () => {
+    // ⛔ It said "Free account" / "Your recued.com account is free" on every
+    // plan, beside the Pro card's "Pro — active".
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runProStatus: vi.fn(async () => proStatus()),
+    });
+    await mount.whenLoaded();
+    const card = textOf(findByAttr(host, ACCOUNT_BINDING_FREE_CARD_ATTR)!);
+    expect(card).not.toContain('Free account');
+    expect(card).not.toContain('is free');
+    expect(textOf(host)).toContain('Pro — active');
     mount.dispose();
   });
 
@@ -1117,5 +1187,167 @@ describe('Pro card — handle anchored to another server', () => {
     // than vanishing; the detail is optional, so it simply drops.
     expect(textOf(host)).toContain('Unknown');
     mount.dispose();
+  });
+});
+
+describe('D-174 account binding panel — a server on another account', () => {
+  const elsewhere = () => bound(summary({ account_id: 'acct-old', publisher_handle: 'legacy' }));
+
+  it('says the server is on another account and offers to move it to the one signed in here', async () => {
+    // ⛔ The card said "Bound" beside "Signed in as …" and another account's
+    // name; the difference surfaced only after pressing Connect.
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => elsewhere()),
+      runReadSession: vi.fn(async () => authedSession()),
+    });
+    await mount.whenLoaded();
+    expect(mount.viewState()).toBe('bound-other-account');
+    expect(findByAttr(host, ACCOUNT_BINDING_STATUS_CHIP_ATTR)?.textContent).toBe('On another account');
+    expect(findByAttr(host, ACCOUNT_BINDING_OTHER_ACCOUNT_ATTR)?.textContent).toBe(
+      'This server is on another recued.com account, not mary@example.com. Moving it takes it off that account.',
+    );
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.textContent).toBe('Move it to mary@example.com');
+    mount.dispose();
+  });
+
+  it('a server on the account signed in here reads as it did', async () => {
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runReadSession: vi.fn(async () => authedSession()),
+    });
+    await mount.whenLoaded();
+    expect(mount.viewState()).toBe('bound-active');
+    expect(findByAttr(host, ACCOUNT_BINDING_OTHER_ACCOUNT_ATTR)).toBeNull();
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.textContent).toBe('Check the connection again');
+    mount.dispose();
+  });
+
+  it('the move confirmation names where the server goes', async () => {
+    // ⛔ "Yes, move it" did not say to which account.
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => elsewhere()),
+      runReadSession: vi.fn(async () => authedSession()),
+      runBind: vi.fn(async (): Promise<AccountBindResult> => ({
+        outcome: 'conflict',
+        current_owner: summary({ account_id: 'acct-old', publisher_handle: 'legacy' }),
+        incoming: { account_id: 'acct-1', publisher_handle: 'mary' },
+      })),
+    });
+    await mount.whenLoaded();
+    await mount.connect();
+    expect(findByAttr(host, ACCOUNT_BINDING_CONFIRM_REBIND_ATTR)?.textContent)
+      .toBe('Yes, move it to mary@example.com');
+    expect(textOf(host)).toContain('acct-old (@legacy)');
+    expect(textOf(host)).toContain('mary@example.com (@mary)');
+    mount.dispose();
+  });
+});
+
+describe('D-174 account binding panel — a failed Connect never shows its code', () => {
+  // ⛔ The server's text was shown as-is: "account binding exchange failed
+  // (account_not_authenticated)".
+  it.each([
+    ['token_expired', 'That took too long, so recued.com stopped waiting. Try again.'],
+    ['account_not_authenticated', 'Your recued.com sign-in has ended. Sign in again, then try again.'],
+    ['exchange_unavailable', 'Your server could not reach recued.com. Check its internet connection, then try again.'],
+    ['internal', 'recued.com had a problem. Try again in a minute.'],
+    ['proof_invalid', 'recued.com did not accept this request. Try again.'],
+    ['a_reason_from_a_newer_server', 'Recued could not connect your server to recued.com. Try again.'],
+  ])('%s', async (reason, copy) => {
+    const { host, mount } = mountFixture({
+      runBind: vi.fn(async (): Promise<AccountBindResult> => {
+        throw new RpcError(
+          'binding_exchange_failed', `account binding exchange failed (${reason})`, 400, 'account.bind', { reason },
+        );
+      }),
+    });
+    await mount.whenLoaded();
+    await mount.connect();
+    expect(findByAttr(host, ACCOUNT_BINDING_ERROR_ATTR, 'action')?.textContent).toBe(copy);
+    expect(textOf(host)).not.toContain(reason);
+    mount.dispose();
+  });
+
+  it('a server still starting says so', async () => {
+    const { host, mount } = mountFixture({
+      runBind: vi.fn(async (): Promise<AccountBindResult> => {
+        throw new RpcError('not_ready', 'server signing identity is not ready yet; retry after boot', 503);
+      }),
+    });
+    await mount.whenLoaded();
+    await mount.connect();
+    expect(findByAttr(host, ACCOUNT_BINDING_ERROR_ATTR, 'action')?.textContent)
+      .toBe('Your server is still starting. Try again in a moment.');
+    mount.dispose();
+  });
+});
+
+describe("D-174 account binding panel — another of the account's servers holds its web address", () => {
+  // recued.com hands the address to whichever of the account's servers
+  // connected last, so connecting this one moves it here.
+  const elsewhere = () => proItem('inactive-elsewhere', { detail: 'handle_on_another_server' });
+  const heldElsewhere = (): ProConvenienceStatusResponse => proStatus({
+    items: { handle: elsewhere(), ddns: elsewhere(), acme: elsewhere() },
+  });
+  const mounted = (runProStatus: MountAccountBindingPanelOptions['runProStatus']) => mountFixture({
+    runBindingStatus: vi.fn(async () => bound()),
+    runReadSession: vi.fn(async () => authedSession()),
+    runProStatus,
+  });
+
+  it('names the button for what it does, and says what moves', async () => {
+    // ⛔ It read "Check the connection again", and on a second server it took
+    // the account's web address and certificate off the first.
+    const { host, mount } = mounted(vi.fn(async () => heldElsewhere()));
+    await mount.whenLoaded();
+    const connect = findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR);
+    expect(connect?.textContent).toBe('Make this your public server');
+    expect(connect?.getAttribute('aria-describedby')).toBe('account-binding-public-server-note');
+    const note = findByAttr(host, ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ATTR);
+    expect(note?.getAttribute('id')).toBe('account-binding-public-server-note');
+    expect(note?.textContent).toBe('Moves mary.recued.net and its certificate here from your other server.');
+    mount.dispose();
+  });
+
+  it('once the fresh read shows the move, says this server holds the address', async () => {
+    const runProStatus = vi.fn<() => Promise<ProConvenienceStatusResponse>>()
+      .mockResolvedValueOnce(heldElsewhere())
+      .mockResolvedValue(proStatus());
+    const { host, mount } = mounted(runProStatus);
+    await mount.whenLoaded();
+    await mount.connect();
+    expect(findByAttr(host, ACCOUNT_BINDING_ACTION_MESSAGE_ATTR)?.textContent)
+      .toBe('This server now holds mary.recued.net and its certificate.');
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.textContent).toBe('Check the connection again');
+    expect(findByAttr(host, ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('claims no move the fresh read does not show', async () => {
+    const { host, mount } = mounted(vi.fn(async () => heldElsewhere()));
+    await mount.whenLoaded();
+    await mount.connect();
+    expect(findByAttr(host, ACCOUNT_BINDING_ACTION_MESSAGE_ATTR)?.textContent)
+      .toBe('Your server is hooked up to this recued.com account.');
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.textContent).toBe('Make this your public server');
+    mount.dispose();
+  });
+
+  it('the server holding the address, and a Free account, keep "Check the connection again"', async () => {
+    const free = proStatus({
+      entitlement: 'not_entitled',
+      items: {
+        handle: proItem('active'),
+        ddns: proItem('inactive-free', { detail: 'free_account' }),
+        acme: proItem('inactive-free', { detail: 'free_account' }),
+      },
+    });
+    for (const status of [proStatus(), free]) {
+      const { host, mount } = mounted(vi.fn(async () => status));
+      await mount.whenLoaded();
+      expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.textContent).toBe('Check the connection again');
+      expect(findByAttr(host, ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ATTR)).toBeNull();
+      mount.dispose();
+    }
   });
 });

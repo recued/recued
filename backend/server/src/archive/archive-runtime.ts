@@ -357,6 +357,10 @@ export interface ArchiveRuntimeDeps {
   getKeys?: () => KeyManager | undefined;
   /** Clock — injected for deterministic tests. */
   now?: () => number;
+  /** The Argon2id cost of the rebind bearer an import mints for its driving client.
+   *  Unset in production (the token store's own default). Tests pass a cheap one:
+   *  pure-JS Argon2 at the production cost is seconds per hash. */
+  argon2_params?: { t: number; m: number; p: number };
 }
 
 /** Derive the 32-byte archive key from a 24-word mnemonic. Throws (with a
@@ -852,7 +856,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       const entropy = deriveArchiveKeyBuffer(recoveryKey);
       try {
         const bundle = serverBundleStore.load();
-        if (!bundle || await classifyRealmOwnership(recoveryKey) !== 'owns') throw new Error('Recovery words do not open this server vault.');
+        if (!bundle || await classifyRealmOwnership(recoveryKey) !== 'owns') throw new Error('This recovery key does not open this server vault.');
         await proveExportRealm(entropy, bundle);
         const salt = randomBytes(32);
         return { key: deriveArchiveBackupRoot(entropy, salt), salt_hex: salt.toString('hex'), realm_fingerprint: fingerprintBundle(bundle) };
@@ -1021,6 +1025,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         rebind = drivingClient
           ? await mintRebindIntoStagedDb(staged.stagingPath, drivingClient, {
               databaseKey: stagedDatabaseKey,
+              ...(deps.argon2_params ? { argon2_params: deps.argon2_params } : {}),
             })
           : undefined;
       } finally {

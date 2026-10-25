@@ -1,5 +1,6 @@
 import { withCollectionAuthenticationLock } from '../../collection-authentication-locks.js';
 import { purgeBorrowedOAuthCursors } from '../oauth-cursor-cleanup.js';
+import { awaitCaughtUp, RESYNC_WAIT_MS } from '../resync-wait.js';
 import { collectionOAuthBinding, collectionOAuthSourceName } from '../../collection-oauth-sources.js';
 /** D-117 Phase 7 — collection.calendar.* enroll rpc handlers.
  *
@@ -104,6 +105,9 @@ const ADAPTER_KINDS: readonly CalendarProviderKind[] = ['gcal', 'graph', 'caldav
 
 export interface CalendarEnrollDeps {
   authenticationChange?: import('../../collection-authentication-service.js').CollectionAuthenticationLifecycle;
+  /** How long `collection.calendar.resync` waits for the restarted calendar to
+   *  catch up (`RESYNC_WAIT_MS`). Tests change it. */
+  resyncWaitMs?: number;
   managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   instances: CollectionInstanceStore;
   adapters: CalendarAdapterRegistry;
@@ -968,7 +972,9 @@ export const handleCalendarResync = async (
     } catch {
       throw new RpcError('restart_failed', 'The calendar could not be started again. Try again, or restart the server.', 500);
     }
-    return { ok: true, caps, auth_state };
+    await awaitCaughtUp(lifecycle.caughtUp?.(slug), deps.resyncWaitMs ?? RESYNC_WAIT_MS);
+    // The read may have refused the credential the probe accepted.
+    return { ok: true, caps, auth_state: deps.instances.get('calendar', slug)?.auth_state ?? auth_state };
   });
 };
 

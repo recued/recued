@@ -44,6 +44,7 @@ const buildEnv = () => {
 const fakeReq = (method: string, url: string, options?: {
   remoteAddress?: string;
   xff?: string;
+  accept?: string;
 }): IncomingMessage => {
   const socket = new Socket();
   Object.defineProperty(socket, 'remoteAddress', {
@@ -55,6 +56,7 @@ const fakeReq = (method: string, url: string, options?: {
   if (options?.xff) {
     (req.headers as Record<string, string>)['x-forwarded-for'] = options.xff;
   }
+  if (options?.accept) req.headers.accept = options.accept;
   return req;
 };
 
@@ -104,6 +106,7 @@ const seedEnabledEndpoint = (
       | 'status_link';
     secret: string;
     revoked?: boolean;
+    expires_at?: number;
   },
 ): void => {
   const packetKind = {
@@ -124,7 +127,7 @@ const seedEnabledEndpoint = (
     bearer_secret_hmac: computeBearerHmac(input.secret, PEPPER),
     created_at: NOW,
     created_by_client_id: 'client-A',
-    expires_at: NOW + 24 * 60 * 60 * 1000,
+    expires_at: input.expires_at ?? NOW + 24 * 60 * 60 * 1000,
     long_lived_acknowledged_at: null,
     metadata: {},
   });
@@ -286,6 +289,43 @@ describe('D-149 P3 § A.18 — token presentation + verify', () => {
       res,
     );
     expect(res.status).toBe(410);
+  });
+
+  it.each(['expired', 'revoked'] as const)('gives browser GET and POST approval visits a neutral HTML page when %s', async state => {
+    const env = buildEnv();
+    try {
+      seedEnabledEndpoint(env.store, { endpoint_id: 'private-approval', kind: 'approval_link', secret: 'private-token',
+        ...(state === 'expired' ? { expires_at: NOW - 1 } : { revoked: true }) });
+      const handler = createReceptionPortHandler({ getStore: () => env.store, getCache: () => env.cache,
+        getRateLimiter: () => env.limiter, getPepper: () => PEPPER, now: () => NOW });
+      for (const method of ['GET', 'POST']) {
+        const res = fakeRes();
+        await handler(fakeReq(method, '/reception/approve/private-approval?t=private-token', { accept: 'text/html,application/xhtml+xml;q=0.9' }), res);
+        expect(res.status).toBe(410);
+        expect(res.getHeader('content-type')).toBe('text/html; charset=utf-8');
+        expect(res.getHeader('cache-control')).toBe('no-store');
+        expect(res.getHeader('referrer-policy')).toBe('no-referrer');
+        expect(res.getHeader('x-frame-options')).toBe('DENY');
+        expect(res.body).toContain('This link is unavailable');
+        expect(res.body).toContain('Ask the business that sent it for a new link.');
+        expect(res.body).toContain("script-src 'none'");
+        expect(res.body).not.toMatch(/private-approval|private-token|<form|<script/);
+      }
+    } finally { env.db.close(); }
+  });
+
+  it.each([undefined, 'application/json', '*/*', 'text/html;q=0,application/json'])('keeps expired approval API responses in JSON for Accept %s', async accept => {
+    const env = buildEnv();
+    try {
+      seedEnabledEndpoint(env.store, { endpoint_id: 'expired-approval', kind: 'approval_link', secret: 'bearer-A', expires_at: NOW - 1 });
+      const handler = createReceptionPortHandler({ getStore: () => env.store, getCache: () => env.cache,
+        getRateLimiter: () => env.limiter, getPepper: () => PEPPER, now: () => NOW });
+      const res = fakeRes();
+      await handler(fakeReq('GET', '/reception/approve/expired-approval?t=bearer-A', { accept }), res);
+      expect(res.status).toBe(410);
+      expect(res.getHeader('content-type')).toMatch(/application\/json/);
+      expect(JSON.parse(res.body)).toEqual({ error: { code: 'gone' } });
+    } finally { env.db.close(); }
   });
 
   it('cross-endpoint token reuse — token for A presented at B fails 401', async () => {

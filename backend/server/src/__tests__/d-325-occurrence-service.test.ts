@@ -47,7 +47,7 @@ describe('D-325 built-in rule occurrences', () => {
     const untrusted = rows.byAsset(other.id)[0]!;
     await dispatchers().commitmentFulfill({ id: untrusted.commitment_id! }); await core.tick();
     // ⛔ The clock used to stop here for good: no receipt, so no question and no next cycle.
-    // It now waits for the owner's actual date, exactly like a household Done.
+    // It now waits for the owner's actual date.
     expect(rows.completion(untrusted.id)).toEqual({ answered_at: time, reading: null, known: false });
     expect(work.readAsset(other.id)!.dates.serviced_on).toBe('2025-01-17');
     await core.confirmCompletion({ occurrence_id: untrusted.id, on: '2026-01-10' });
@@ -125,6 +125,22 @@ describe('D-325 built-in rule occurrences', () => {
     await dispatchers().ownerCommitmentFulfill({ id: occurrence.id }); await core.tick();
     expect(work.readAsset(asset.id)?.rules[0]?.when).toMatchObject({ target: 61_000 });
     expect(work.readCommitment(occurrence.id)?.lifecycle_state).toBe('fulfilled');
+  });
+  it('does not guess a usage service reading from a later odometer when a recipe closes it without one', async () => {
+    // From the Home Assistant tests (2026-10-24): a list no longer closes anything, so a
+    // close Recued didn't see the owner make is the way a service reading goes unknown.
+    const objective = rule({ when: { kind: 'objective', field: 'odometer', unit: 'km', target: 10_000,
+      direction: 'rising', mode: 'usage', lead_days: 14, every: 10_000 } });
+    const asset = put({ name: 'Car', readings: { odometer: { value: 11_000, unit: 'km', as_of: time, evidence: [] } }, rules: [objective] });
+    const core = service(); await core.tick(); const rows = createAssetOccurrenceStore(db); const occurrence = rows.byAsset(asset.id)[0]!;
+    time += 30 * DAY; work.writeAsset({ id: asset.id, source_id: asset.source_id, source, readings: { odometer: { value: 21_000, unit: 'km', as_of: time, evidence: [] } } }, time);
+    await dispatchers().commitmentFulfill({ id: occurrence.commitment_id! }); await core.tick();
+    expect(rows.completion(occurrence.id)).toMatchObject({ reading: null, known: false });
+    expect(work.readAsset(asset.id)!.rules[0]!.when).toMatchObject({ target: 10_000 });
+    await expect(core.confirmCompletion({ occurrence_id: occurrence.id, on: '2026-01-20' })).rejects.toThrow('actual service reading');
+    await core.confirmCompletion({ occurrence_id: occurrence.id, on: '2026-01-20', reading: { value: 12_000, unit: 'km' } });
+    expect(work.readAsset(asset.id)!.rules[0]!.when).toMatchObject({ target: 22_000 });
+    expect(work.readAsset(asset.id)!.readings.odometer!.value).toBe(21_000);
   });
   it('closes a condition on recovery, then opens one fresh cycle when it returns', async () => {
     const observation = (active: boolean) => ({ active, certainty: 'confirmed' as const, source: 'owner', as_of: time, evidence: [] });

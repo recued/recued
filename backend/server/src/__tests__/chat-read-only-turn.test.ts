@@ -84,13 +84,18 @@ describe('chat.send read_only', () => {
     } finally { f.close(); }
   });
 
-  it('without it, the same turn writes memory and creates work with no approval card', async () => {
+  it('without it, the same turn reads, and proposes the memory and the work it would write', async () => {
     const f = fixture();
     try {
       await handleSend(f.deps, { session_id: 's', message: MESSAGE, picker_state: { current: 'self' } });
       await f.settled();
-      expect(f.dispatched).toEqual(expect.arrayContaining(['memory.write', 'work.create', 'mail.read']));
-      expect(f.events.some((event) => event.kind === 'chat.plan_proposed')).toBe(false);
+      expect(f.dispatched).toContain('mail.read');
+      // D-329 — both are writes: each waits for the owner's approval.
+      for (const tool of ['memory.write', 'work.create']) {
+        expect(f.dispatched).not.toContain(tool);
+        expect(f.events.some((event) => event.kind === 'chat.plan_proposed'
+          && (event as { tool?: string }).tool === tool)).toBe(true);
+      }
     } finally { f.close(); }
   });
 

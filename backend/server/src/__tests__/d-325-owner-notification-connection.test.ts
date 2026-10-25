@@ -98,7 +98,7 @@ describe('D-325 — the composed dispatchers send where the owner chose', () => 
         connections.upsert({ ...candidate, auth_ciphertext: await encodeAuthForStorage({ type: 'bearer', token: `${candidate.name}-bot` },
           { kind: 'notification', name: candidate.name }, app.keys!.keyProvider('connection')) });
       }
-      createHouseholdDeliveryStore(storage.db).setTelegram(connections.get('notification', 'family'), ['1000', '1001']);
+      createHouseholdDeliveryStore(storage.db).setTelegram(connections.get('notification', 'family'));
       const settings = createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(storage.db, 'notification_settings'));
       await settings.setChannelMode('telegram', { notification: true, connection: { name: 'private', enrolled_at: 10 } });
       const telegram = collection.channelDispatchers!.telegram;

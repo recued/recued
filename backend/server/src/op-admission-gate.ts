@@ -50,6 +50,7 @@
  *  `handover_grant_slice3_session1_3b_admission_actor.md` (step 4 / 5). */
 
 import {
+  isKeyAuthorityContract,
   opGrantEntry,
   ownerOnlyAdjustedAuthorDefault,
   OWNER_CONTRACT_ID,
@@ -154,6 +155,11 @@ export const usesExplicitOnlyGrantDefaults = (
   if (governingId === PUBLIC_CONTRACT_ID) return true;
   const def = definitionStore.get(governingId);
   if (def?.door_types?.includes('reception') === true) return true;
+  // D-327 — an agreement that is its key's WHOLE authority. Its key reads no
+  // checklist of its own, so the wildcard door's permissive reads (every kernel
+  // read, every read primitive, every raw collection) would reach the key with
+  // nothing in front of them. Only what the owner switched on is allowed.
+  if (isKeyAuthorityContract(def)) return true;
   return def?.grant_kind === 'customer_instance';
 };
 

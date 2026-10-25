@@ -42,6 +42,7 @@ import type {
   AccountBindingProofClaims,
   AccountBindingExchangeRequest,
   AccountBindingSummary,
+  AccountUnbindCloudOutcome,
   AccountUnbindResult,
 } from '@recued/contracts';
 import { canonicalJSONStringify } from '@recued/crypto';
@@ -53,6 +54,7 @@ import {
   type StoredAccountBinding,
 } from '../keys/index.js';
 import type { AccountBindingExchangeClient } from './exchange-client.js';
+import type { AccountBindingReleaseClient } from './release-client.js';
 
 /** Maximum accepted binding-token length. Generous for a JWT-like
  *  token; a guard against an unbounded relay payload. */
@@ -80,6 +82,10 @@ export interface AccountBindingManagerDeps {
   /** The Worker exchange boundary (HTTP in production; a mock in
    *  tests). */
   exchangeClient: AccountBindingExchangeClient;
+  /** Tells recued.com when the server disconnects itself (`unbind`).
+   *  Optional so the dev drives compose without it; absent, an unbind
+   *  reports `cloud: 'not_told'`, which is what happened. */
+  releaseClient?: AccountBindingReleaseClient;
   /** Signed-wrapper audit sink. Optional — absence is a no-op (binding
    *  still works, just without a ledger row). When present, the binding
    *  audit kinds (in `HIGH_ASSURANCE_AUDIT_KINDS`) are auto-signed +
@@ -96,7 +102,8 @@ export interface AccountBindingManager {
     args: { binding_token: string; confirm_rebind?: boolean },
     actor: AccountBindingActor,
   ): Promise<AccountBindResult>;
-  /** Clear the server's account binding. Idempotent. */
+  /** Release the server's binding on recued.com, then clear it here.
+   *  Idempotent. */
   unbind(actor: AccountBindingActor): Promise<AccountUnbindResult>;
   /** Secret-free current binding state. */
   status(): AccountBindingStatusResponse;
@@ -395,14 +402,29 @@ export const createAccountBindingManager = (
       const keyStore = requireKeyStore();
       const current = keyStore.loadAccountBinding();
       if (!current) return { outcome: 'not_bound' };
-      keyStore.clearAccountBinding();
-      if (keyStore.flush) await keyStore.flush();
+      // ⛔ Tell recued.com FIRST, with the credential about to be forgotten.
+      // Forgetting it first left the cloud listing the server, holding its
+      // Pro authority and the handle, with nothing left here that could say
+      // otherwise. Never throws; the copy goes whatever the answer.
+      const cloud: AccountUnbindCloudOutcome = deps.releaseClient
+        ? await deps.releaseClient.release({
+            server_scoped_credential: current.server_scoped_credential,
+            server_fingerprint: current.server_fingerprint,
+          })
+        : 'not_told';
+      // Only the binding that was released: a bind that landed while the
+      // cloud answered is newer than the Disconnect, and stays.
+      if (keyStore.loadAccountBinding()?.server_scoped_credential === current.server_scoped_credential) {
+        keyStore.clearAccountBinding();
+        if (keyStore.flush) await keyStore.flush();
+      }
       await emitAudit('account_unbind', current.server_fingerprint, now(), {
         account_id: current.account_id,
         outcome: 'unbound',
+        cloud,
         ...actorDetail(actor),
       });
-      return { outcome: 'unbound', previous: summarize(current) };
+      return { outcome: 'unbound', previous: summarize(current), cloud };
     },
 
     status() {

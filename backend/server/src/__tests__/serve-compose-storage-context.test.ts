@@ -111,8 +111,10 @@ describe('composeStorageContext', () => {
       const events = parseTraceLines(traceLines);
       expect(events.map((event) => event.phase)).toEqual([
         'trace-start',
+        'storage-open-start',
         'db-open-attempted',
         'db-opened',
+        'storage-open-complete',
         'shared-setup-start',
       ]);
       expect(events.filter((event) => event.phase === 'db-open-attempted')[0])

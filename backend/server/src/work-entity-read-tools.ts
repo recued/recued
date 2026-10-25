@@ -79,6 +79,7 @@ import type {
   WorkEntityKind,
   WorkEntitySourceFreshness,
 } from '@recued/contracts';
+import { mergeSpellingChecks, type FtsSpellingCorrection } from '@recued/fts';
 import {
   isWorkEntitySourceDeclarableKind,
   WORK_ENTITY_LIST_HYDRATION_MAX_ROWS_PER_CYCLE,
@@ -89,7 +90,8 @@ import {
   WORK_ENTITY_KINDS,
 } from '@recued/contracts';
 
-import { workEntitySearchableText } from './work-entity-searchable-text.js';
+import { sourceCitation, sourceCitationHint, sourceReadVersion } from './chat-source-citations.js';
+import { assetSearchableText, workEntitySearchableText } from './work-entity-searchable-text.js';
 import { getByDotPath } from './source-mirror/fetch.js';
 import { runGatedCatalogOperation } from './source-mirror/fetch.js';
 import { resolveConfigArgBindings } from './work-entity-config-args.js';
@@ -122,6 +124,7 @@ import {
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
+import { situationSourceReadOp } from './situations/event-visibility.js';
 import {
   projectWorkEntitySourceRow,
   type ProjectedWorkEntityUpsert,
@@ -230,6 +233,8 @@ export interface WorkEntityReadToolsDeps {
    *  Late-bound like every store getter here; undefined DISCLOSES rather than
    *  returning `[]` (see `relatedFor`). */
   getEdgeStore?: () => Pick<WorkEntityEdgeStore, 'listByOwner'> | undefined;
+  /** A contact's name by its id (`situationPersonName`), for an asset's holder. */
+  personName?: (id: string) => string | undefined;
   now?: () => number;
 }
 
@@ -539,6 +544,9 @@ export interface WorkEntityToolItem extends Partial<Pick<Asset, 'name' | 'class_
   monetary_amount?: string;
   monetary_currency?: string;
   counterparty_contact_id?: string;
+  /** The holder's name beside `holder_contact`, aliased as the same name is
+   *  everywhere (`holderNameFor`). */
+  holder_name?: string;
   long_text?: WorkEntityLongText & {
     truncated?: boolean;
     /** How many characters the LIST clamp removed. Present only with
@@ -750,6 +758,45 @@ const projectItem = (
     }
   }
   return item;
+};
+
+type WorkEntityReadScope = ReturnType<NonNullable<WorkEntityReadToolsDeps['getReadScope']>>;
+
+/** Whether this caller may be told who holds an asset at all: both contact grants.
+ *  Each holder must still be within the contract's reach (`holderNameFor`). */
+const mayNameHolders = (deps: WorkEntityReadToolsDeps, scope: WorkEntityReadScope): boolean => {
+  const verb = situationSourceReadOp('contact');
+  if (!scope || verb === undefined || !deps.personName) return false;
+  const { grants } = scope.context;
+  return grants.isVerbOpGranted(verb) && grants.isCollectionReadGranted('contact');
+};
+
+/** An asset's holder as a model can join them to the person it was asked about.
+ *  `holder_contact` is a contact id: a model told about `pii.Person2` cannot tell
+ *  that the id beside "Ana’s passport" is her. The name rides beside it under a
+ *  `name` tag, and only by the rule `situation.query` names an item's people by:
+ *  both contact grants, and the contact's sphere within the contract's reach. */
+const holderNameFor = (
+  deps: WorkEntityReadToolsDeps,
+  scope: WorkEntityReadScope,
+  id: string,
+): string | undefined => {
+  if (!scope || !mayNameHolders(deps, scope)) return undefined;
+  if (scope.limited && !scope.allows({ collection: 'contact', id })) return undefined;
+  return deps.personName?.(id);
+};
+
+/** A search result names an asset's holder as `work.read` does, so two records
+ *  both named "Passport" say whose each is without a read of each. */
+const withHolderName = (
+  deps: WorkEntityReadToolsDeps,
+  scope: WorkEntityReadScope,
+  row: WorkEntity,
+  item: WorkEntityToolItem,
+): WorkEntityToolItem => {
+  const holder = row._kind === 'asset' ? row.holder_contact : undefined;
+  const name = holder === undefined ? undefined : holderNameFor(deps, scope, holder);
+  return name === undefined ? item : { ...item, holder_name: name };
 };
 
 const qualifiedIdForEntity = (entity: WorkEntity): string =>
@@ -1282,6 +1329,49 @@ const workEntitySearchQueryMissHint = (
   + `or omit \`query\` to list the ${kind}s and pick from them. Do NOT re-send this query `
   + `unchanged, and do not report to the user that they have no ${kind}s.`;
 
+/** Assets the query finds through their holder's name: every word must be in the
+ *  asset's own text or its holder's name, so "Maya Chen passport" finds the asset
+ *  named "Passport" that Maya Chen holds, and "Maya" each asset she holds. The
+ *  index cannot, since it never holds a name (`assetSearchableText`).
+ *
+ *  ⛔ A HOLDER COUNTS ONLY WHERE `holderNameFor` WOULD NAME THEM to this caller.
+ *  Otherwise the search would answer who holds what for a door that may not read
+ *  contacts, or for a contact outside the contract's spheres: a match is as
+ *  telling as the name itself.
+ *
+ *  Judged by the index's own rule (`matchTextsByQuery`), over the newest
+ *  `DISCOVERY_SCAN_CAP` held assets; `truncated` says that list filled it. */
+const assetsFoundByHolder = (
+  deps: WorkEntityReadToolsDeps,
+  resolver: WorkEntityResolver,
+  scope: WorkEntityReadScope,
+  query: string,
+): { rows: WorkEntity[]; truncated: boolean } => {
+  if (!mayNameHolders(deps, scope)) return { rows: [], truncated: false };
+  const held = resolver.listAssetsWithHolder(DISCOVERY_SCAN_CAP);
+  const names = new Map<string, string | undefined>();
+  const named = held.flatMap((row) => {
+    const holder = row._kind === 'asset' ? row.holder_contact : undefined;
+    if (holder === undefined) return [];
+    if (!names.has(holder)) names.set(holder, holderNameFor(deps, scope, holder));
+    const name = names.get(holder);
+    return name === undefined ? [] : [{ row, name }];
+  });
+  const rows = resolver
+    .matchTextsByQuery(named.map(({ row, name }) => assetSearchableText(row, name)), query)
+    .map((i) => named[i]?.row)
+    .filter((row): row is WorkEntity => row !== undefined);
+  return { rows, truncated: held.length >= DISCOVERY_SCAN_CAP };
+};
+
+/** Two answers to one search as one list, each record once, newest-updated
+ *  first as `searchByText` orders its own. */
+const unionNewestFirst = (first: readonly WorkEntity[], second: readonly WorkEntity[]): WorkEntity[] => {
+  const seen = new Set(first.map((row) => row.id));
+  return [...first, ...second.filter((row) => !seen.has(row.id))]
+    .sort((a, b) => b.updated_at - a.updated_at);
+};
+
 /** The same words match records of OTHER kinds, so the search picked the wrong
  *  one. A bare zero there reads as "not on file": measured 2026-10-21 (D-325
  *  qualification bench, qwen3.7-plus, lookup off), "When does my passport
@@ -1290,8 +1380,9 @@ const workEntitySearchQueryMissHint = (
  *  asset.
  *
  *  Counts only, and only what this caller could have listed itself: kinds it may
- *  read, from the local index, never a live (read-through) Source. The caller
- *  skips this for a sphere-limited reader, which is told no counts at all. */
+ *  read, from the local index, never a live (read-through) Source, and an asset
+ *  by its holder's name as that kind's own search finds it. The caller skips this
+ *  for a sphere-limited reader, which is told no counts at all. */
 const CROSS_KIND_PROBE_CAP = 50;
 const otherKindMatches = (
   deps: WorkEntityReadToolsDeps,
@@ -1299,6 +1390,7 @@ const otherKindMatches = (
   kind: WorkEntityKind,
   query: string,
   ctx: ChatDispatchContext,
+  scope: WorkEntityReadScope,
 ): Array<{ kind: WorkEntityKind; count: number; capped: boolean }> => {
   const matches: Array<{ kind: WorkEntityKind; count: number; capped: boolean }> = [];
   for (const other of WORK_ENTITY_KINDS) {
@@ -1306,10 +1398,16 @@ const otherKindMatches = (
     const liveOnly = new Set(resolver.listSources(other)
       .filter((source) => source.sync_posture === 'read_through').map((source) => source.id));
     let rows: WorkEntity[];
-    try { rows = resolver.searchByText(other, query, CROSS_KIND_PROBE_CAP); }
-    catch { continue; }
+    let heldCapped = false;
+    try {
+      rows = resolver.searchByText(other, query, CROSS_KIND_PROBE_CAP);
+      if (other === 'asset') {
+        const byHolder = assetsFoundByHolder(deps, resolver, scope, query);
+        rows = unionNewestFirst(rows, byHolder.rows); heldCapped = byHolder.truncated;
+      }
+    } catch { continue; }
     const count = rows.filter((row) => !liveOnly.has(row.source_id)).length;
-    if (count > 0) matches.push({ kind: other, count, capped: rows.length >= CROSS_KIND_PROBE_CAP });
+    if (count > 0) matches.push({ kind: other, count, capped: rows.length >= CROSS_KIND_PROBE_CAP || heldCapped });
   }
   return matches;
 };
@@ -1319,6 +1417,70 @@ const otherKindsHint = (matches: ReadonlyArray<{ kind: string; count: number; ca
   return `The same words match ${list(matches.map((m) => `${m.capped ? 'at least ' : ''}${m.count} `
     + `${m.kind}${m.count === 1 ? '' : 's'}`), 'and')}: search with kind `
     + `${list(matches.map((m) => `"${m.kind}"`), 'or')}. Do not tell the user it is not on file.`;
+};
+
+/** A word the search held that no record does, and the indexed word closest to
+ *  it, with the readable kinds that hold that word. */
+type WorkSpellingSuggestion = FtsSpellingCorrection & {
+  kinds: Array<{ kind: WorkEntityKind; count: number; capped: boolean }>;
+};
+
+/** "Did you mean" for a search that matched nothing, from the index's own words
+ *  — and only words this caller could have found itself.
+ *
+ *  🔑 A MODEL CANNOT CORRECT A PRIVATE NAME. It fixes "invoce" alone; it cannot
+ *  know the owner's landlord is "Castellanos", not "Castelanos", and the zero
+ *  reads to it as "not on file". The index is the one party holding both
+ *  spellings.
+ *
+ *  ⛔ CONFIRMED AGAINST WHAT THIS CALLER MAY READ. The index spans every kind
+ *  and Source, so a suggestion stands only when records of a kind this caller
+ *  may read hold it, counted from the local index and never a live Source — the
+ *  reach `otherKindMatches` has. Without that, a narrow grant would learn word
+ *  by word what lies outside it. The caller skips this for a sphere-limited
+ *  reader, which is told no counts at all. */
+const spellingSuggestions = (
+  deps: WorkEntityReadToolsDeps,
+  resolver: WorkEntityResolver,
+  rawQuery: string,
+  ctx: ChatDispatchContext,
+): WorkSpellingSuggestion[] => {
+  const suggestions: WorkSpellingSuggestion[] = [];
+  for (const correction of mergeSpellingChecks([resolver.checkSpelling(rawQuery)])) {
+    const kinds: WorkSpellingSuggestion['kinds'] = [];
+    for (const kind of WORK_ENTITY_KINDS) {
+      if (!deps.isCollectionReadGranted(kind, ctx)) continue;
+      const liveOnly = new Set(resolver.listSources(kind)
+        .filter((source) => source.sync_posture === 'read_through').map((source) => source.id));
+      let rows: WorkEntity[];
+      try { rows = resolver.searchByText(kind, correction.word, CROSS_KIND_PROBE_CAP); }
+      catch { continue; }
+      const count = rows.filter((row) => !liveOnly.has(row.source_id)).length;
+      if (count > 0) kinds.push({ kind, count, capped: rows.length >= CROSS_KIND_PROBE_CAP });
+    }
+    if (kinds.length > 0) suggestions.push({ ...correction, kinds });
+  }
+  return suggestions;
+};
+
+/** ⚠ IT NAMES THE KIND, because the record may not be where the model looked:
+ *  "Castellanos" can be an asset while the zero came from a note search. And it
+ *  asks the model to SAY the reading — a silent substitution would answer about
+ *  a record the owner may not have meant, with nothing on screen to catch it. */
+const spellingHint = (suggestions: ReadonlyArray<WorkSpellingSuggestion>): string => {
+  const join = (items: string[], last: string) => items.length < 2 ? items.join('')
+    : `${items.slice(0, -1).join(', ')} ${last} ${items.at(-1)}`;
+  const facts = suggestions.map((s) => `No record holds "${s.typed}", but "${s.word}" is in `
+    + `${join(s.kinds.map((k) => `${k.capped ? 'at least ' : ''}${k.count} ${k.kind}`
+      + `${k.count === 1 ? '' : 's'}`), 'and')}.`);
+  const [only] = suggestions;
+  const retry = suggestions.length === 1 && only !== undefined
+    ? `If that is who or what the owner meant, search again for "${only.word}" with kind `
+      + `${join(only.kinds.map((k) => `"${k.kind}"`), 'or')}, and begin your answer by telling `
+      + `the owner you read "${only.typed}" as "${only.word}": it may be a different name.`
+    : 'If those are who or what the owner meant, search again with them, and begin your answer '
+      + 'by telling the owner how you read their words: they may be different names.';
+  return `${facts.join(' ')} ${retry}`;
 };
 
 /** Match live read-through items against `query` USING THE SAME MATCHER the
@@ -1440,6 +1602,7 @@ export const runWorkEntitySearchTool = async (
   // disabled-row visibility. That rule predates this change and is untouched.
 
   let rows: WorkEntity[];
+  let heldScanCapped = false;
   try {
     if (query !== undefined) {
       // 🔑 THE QUERY IS ANSWERED BY THE INDEX, NOT BY FILTERING A WINDOW.
@@ -1454,6 +1617,11 @@ export const runWorkEntitySearchTool = async (
       // so a bad `source_id` still errors rather than silently narrowing.
       if (source_id !== undefined) resolver.listByKindScoped(kind, source_id, { limit: 1 });
       rows = resolver.searchByText(kind, query, DISCOVERY_SCAN_CAP);
+      // An asset is found by its holder's name as well, which the index never holds.
+      if (kind === 'asset') {
+        const byHolder = assetsFoundByHolder(deps, resolver, scope, query);
+        rows = unionNewestFirst(rows, byHolder.rows); heldScanCapped = byHolder.truncated;
+      }
       if (source_id !== undefined) rows = rows.filter((row) => row.source_id === source_id);
     } else {
       rows = source_id !== undefined
@@ -1472,7 +1640,7 @@ export const runWorkEntitySearchTool = async (
       .filter((source) => source.sync_posture === 'read_through')
       .map((source) => source.id),
   );
-  const scannedToLimit = rows.length >= DISCOVERY_SCAN_CAP;
+  const scannedToLimit = rows.length >= DISCOVERY_SCAN_CAP || heldScanCapped;
   if (scope?.limited && scannedToLimit) return { ok: true, result: { refused: true,
     hint: 'This reader could not complete the scoped query. Narrow to a source or use situation.query. No records or counts were released.' } };
   rows = rows.filter((row) => !readThroughIds.has(row.source_id) && (!scope?.limited || scope.allows({ collection: kind, id: row.id })))
@@ -1591,7 +1759,7 @@ export const runWorkEntitySearchTool = async (
   const longTextClamp = listLongTextClamp(pageCandidates.length);
   let items = pageCandidates.map((candidate) =>
     candidate.kind === 'local'
-      ? projectItem(candidate.row, { clampLongText: longTextClamp })
+      ? withHolderName(deps, scope, candidate.row, projectItem(candidate.row, { clampLongText: longTextClamp }))
       : clampItemLongText(candidate.item, longTextClamp)
   );
 
@@ -1707,7 +1875,13 @@ export const runWorkEntitySearchTool = async (
   // for a source- or `done`-narrowed search or a sphere-limited reader.
   const elsewhere = total === 0 && query !== undefined && source_id === undefined
     && done === undefined && !scope?.limited
-    ? otherKindMatches(deps, resolver, kind, query, ctx)
+    ? otherKindMatches(deps, resolver, kind, query, ctx, scope)
+    : [];
+  // A word no record holds, and the closest one a readable record does — under
+  // the same conditions, and only when the words matched nowhere else.
+  const respelled = total === 0 && query !== undefined && source_id === undefined
+    && done === undefined && !scope?.limited && elsewhere.length === 0
+    ? spellingSuggestions(deps, resolver, rawQuery, ctx)
     : [];
   const rowByLocalId = new Map(page.map((row) => [row.id, row]));
   const qualifyLocalId = (localId: string): string => {
@@ -1742,11 +1916,14 @@ export const runWorkEntitySearchTool = async (
               rawQuery,
               queryCandidatePool,
               scan_truncated,
-            ), ...(elsewhere.length > 0 ? [otherKindsHint(elsewhere)] : [])].join(' '),
+            ), ...(elsewhere.length > 0 ? [otherKindsHint(elsewhere)] : []),
+            ...(respelled.length > 0 ? [spellingHint(respelled)] : [])].join(' '),
           }
         : elsewhere.length > 0
           ? { hint: `no ${kind} matched query "${rawQuery}". ${otherKindsHint(elsewhere)}` }
-          : {}),
+          : respelled.length > 0
+            ? { hint: `no ${kind} matched query "${rawQuery}". ${spellingHint(respelled)}` }
+            : {}),
       ...(scan_truncated ? { scan_truncated } : {}),
       ...(freshness !== null ? { source_freshness: scope?.limited ? freshness.filter(row => page.some(item => item.source_id === row.source_id)) : freshness } : {}),
       ...(scope?.limited ? { hint: 'Only locally verified records in this contract\'s spheres are included. Live-only sources and related records without a verified sphere are withheld.' } : {}),
@@ -1985,6 +2162,9 @@ export const runWorkEntityReadTool = async (
   });
 
   const item = qualifyItem(row, projectItem(row, { clampLongText: false, assetDetail: true }));
+  if (item.holder_contact !== undefined) {
+    const name = holderNameFor(deps, scope, item.holder_contact); if (name !== undefined) item.holder_name = name;
+  }
   const base = {
     entity: item,
     found: true as const,
@@ -1997,7 +2177,12 @@ export const runWorkEntityReadTool = async (
     ...(includeRelated ? scope?.limited ? { related: [], related_unavailable: { reason: 'Related records need their own verified sphere before this contract can read them.' } } : relatedFor(deps, kind, row.id) : {}),
   };
   if (plan.action === 'local' || scope?.limited) {
-    return { ok: true, result: base };
+    // Only a retained asset has a Yours source to open; live vendor detail
+    // must not be attributed to a different local mirror snapshot.
+    const citation = kind === 'asset' ? sourceCitation({ kind: 'asset', asset_id: row.id },
+      'name' in row && typeof row.name === 'string' ? row.name : 'Saved asset', sourceReadVersion(item), now) : undefined;
+    return { ok: true, result: { ...base, ...(citation ? sourceCitationHint(citation) : {}) },
+      ...(citation ? { source_citations: [citation] } : {}) };
   }
 
   // Remote plan — targeted vendor read, degrading to the honest local

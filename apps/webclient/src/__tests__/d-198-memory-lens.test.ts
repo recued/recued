@@ -40,6 +40,7 @@ import {
   MEMORY_LENS_SELECT_ACTION,
   MEMORY_OPEN_ACTION,
   MEMORY_OPEN_RUN_ACTION,
+  MEMORY_RESTORE_ACTION,
   memoryFilterActors,
   renderLensSwitcher,
   renderMemoryLens,
@@ -773,5 +774,64 @@ describe('memory feed pagination', () => {
     // would contradict it.
     const html = renderMemoryLens({ ...baseProps, entries: [], hasMore: true } as never);
     expect(html).not.toContain(MEMORY_MORE_ACTION);
+  });
+});
+
+/** D-198 §10 — an agent's revisions, as the owner sees them. */
+describe('renderMemoryLens — an agent replacing or forgetting its own entries', () => {
+  const forgotten = entry({
+    memory_id: 'umem_7', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 999_000,
+    redacted: true, forgotten_by: 'your chat', forgotten_reason: 'the user asked me to',
+  });
+  const ownerRedacted = entry({
+    memory_id: 'umem_8', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 999_000, redacted: true,
+  });
+
+  it('says who forgot an entry and why, and offers Restore only on an agent forget when writes are wired', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [forgotten, ownerRedacted], canWrite: true });
+    expect(html).toContain('Forgotten by your chat. Reason: the user asked me to');
+    expect(html).toMatch(new RegExp(`${MEMORY_RESTORE_ACTION}[^>]*data-memory-id="umem_7"`));
+    expect(html).not.toMatch(new RegExp(`${MEMORY_RESTORE_ACTION}[^>]*data-memory-id="umem_8"`));
+    expect(html).toContain('<p class="memory-row-redacted">Redacted</p>');
+    expect(renderMemoryLens({ ...baseProps, entries: [forgotten], canWrite: false })).not.toContain(MEMORY_RESTORE_ACTION);
+  });
+
+  it('shows a busy Restore, and a failure on its own row', () => {
+    const busy = renderMemoryLens({ ...baseProps, entries: [forgotten], canWrite: true, restoringId: 'umem_7' });
+    expect(busy).toMatch(/data-memory-id="umem_7" aria-disabled="true" aria-busy="true"[^>]*>Restoring…</);
+    const failed = renderMemoryLens({
+      ...baseProps, entries: [forgotten], canWrite: true,
+      restoreError: { memoryId: 'umem_7', message: 'no agent forgot that memory' },
+    });
+    expect(failed).toContain('role="alert">no agent forgot that memory</span>');
+  });
+
+  it('notes both ends of a replacement', () => {
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [
+        entry({ memory_id: 'umem_6', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 999_500, summary: 'v2', replaces: 'umem_5' }),
+        entry({ memory_id: 'umem_5', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 998_000, summary: 'v1', replaced_by: 'umem_6' }),
+      ],
+    });
+    expect(html).toContain('<p class="memory-row-revision">Corrects an earlier entry</p>');
+    expect(html).toContain('<p class="memory-row-revision">Replaced by a newer version</p>');
+  });
+
+  it("escapes the agent's reason (XSS guard)", () => {
+    const html = renderMemoryLens({
+      ...baseProps, canWrite: true,
+      entries: [entry({ ...forgotten, forgotten_reason: '<img src=x onerror=alert(1)>' })],
+    });
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;img src=x');
+  });
+
+  it('the detail view of an agent-forgotten entry says who forgot it', () => {
+    const detail: MemoryDetailState = {
+      memory_id: 'umem_7', loading: false,
+      entry: { memory_id: 'umem_7', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 999_000, redacted: true, forgotten_by: 'your chat' },
+    };
+    expect(renderMemoryLens({ ...baseProps, entries: [], detail })).toContain('Forgotten by your chat.');
   });
 });

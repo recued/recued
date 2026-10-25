@@ -126,7 +126,7 @@ describe('D-228 slice 6 — DISPATCH denies without a checklist', () => {
       inboundTokenAuthorize: () => false,
     });
     expect(res.isError).toBe(true);
-    expect(res.content[0]?.text).toContain("per-tool checklist");
+    expect(res.content[0]?.text).toContain('not granted to this key');
     expect(res.content[0]?.text).not.toContain('presented no MCP token');
   });
 });
@@ -148,7 +148,7 @@ describe('a Tier-1 primitive is governed by the per-token checklist', () => {
       inboundTokenAuthorize: (n: string) => n !== 'contact.search',
     });
     expect(res.isError).toBe(true);
-    expect(res.content[0]?.text).toContain('per-tool checklist');
+    expect(res.content[0]?.text).toContain('not granted to this key');
   });
 
   /** ⚠ THE PERMITTING WITNESS, and it needs the indirect proof: with no

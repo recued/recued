@@ -10,9 +10,13 @@ import {
   WEBCLIENT_PROFILE_STORE_LOCK_NAME,
   createInMemoryWebclientLocalStore,
   createIndexedDbWebclientLocalStore,
+  pinStoreToActiveProfile,
+  retireActiveProfile,
   type IndexedDbKeyValue,
+  type WebclientLocalStore,
   type WebclientProfileStoreLockProvider,
 } from '../storage/local-store.js';
+import { readStoredPairState } from '../boot/stored-pair-state.js';
 
 const exclusiveLockProvider = (): WebclientProfileStoreLockProvider => {
   let tail: Promise<void> = Promise.resolve();
@@ -396,5 +400,239 @@ describe('D-148 P4 — webclient local-store closed-list', () => {
     await store.retargetProfile(a, 'wss://a.example:4433/ws', null);
     const profiles = await store.listProfiles();
     expect(profiles.find((p) => p.id === b)!.server_url).toBe('wss://b.example/ws');
+  });
+});
+
+describe('commitPair', () => {
+  const OLD = { token_id: 'tok-old', ciphertext_b64: 'c-old', iv_b64: 'iv-old', issued_at: 1 };
+  const NEW = { token_id: 'tok-new', ciphertext_b64: 'c-new', iv_b64: 'iv-new', issued_at: 2 };
+  const pairing = {
+    server_public_key: 'spki-new',
+    pair_metadata: {
+      paired_at: 2,
+      server_passport_fingerprint: 'fp-new',
+      server_handle_at_pair: 'office',
+    },
+    cert_pin_state: null,
+    webclient_token: NEW,
+  };
+
+  it('lands a pairing on its server’s saved record in ONE write, retiring the attempt', async () => {
+    // ⛔ Field by field, re-adding a saved server cleared its working sign-in
+    // first, so any later failure left it "Needs pairing again".
+    const store = createInMemoryWebclientLocalStore();
+    const office = await store.ensureProfile('wss://office.example/ws');
+    await store.set('server_public_key', 'spki-old');
+    await store.set('webclient_token', OLD);
+    await store.beginNewProfile();
+    const reads: Array<unknown> = [];
+    const watched = store as unknown as { set: unknown; remove: unknown };
+    watched.set = async (...args: unknown[]) => { reads.push(['set', ...args]); };
+    watched.remove = async (...args: unknown[]) => { reads.push(['remove', ...args]); };
+
+    expect(await store.commitPair('wss://office.example/ws', pairing)).toBe(office);
+
+    expect(reads).toEqual([]);
+    const profiles = await store.listProfiles();
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({
+      id: office,
+      server_public_key: 'spki-new',
+      webclient_token: NEW,
+    });
+  });
+
+  it('adds a record for a new address, like ensureProfile', async () => {
+    const store = createInMemoryWebclientLocalStore();
+    await store.ensureProfile('wss://office.example/ws');
+    await store.set('webclient_token', OLD);
+    await store.beginNewProfile();
+    const pending = await store.activeProfileId();
+
+    expect(await store.commitPair('wss://lab.example/ws', pairing)).toBe(pending);
+
+    const profiles = await store.listProfiles();
+    expect(profiles.map((p) => p.server_url)).toEqual(['wss://office.example/ws', 'wss://lab.example/ws']);
+    expect(profiles[0]?.webclient_token).toEqual(OLD);
+    expect(profiles[1]?.webclient_token).toEqual(NEW);
+  });
+});
+
+describe('retireActiveProfile', () => {
+  const TOKEN = {
+    token_id: 'tok-office',
+    ciphertext_b64: 'ciphertext',
+    iv_b64: 'iv',
+    issued_at: 1,
+  };
+
+  it('swaps the active server for a pending record and leaves every other server signed in', async () => {
+    // ⛔ Removing the active record instead hands the pointer to another
+    // server: the next boot mounts it, and per-field removals write into it.
+    const store = createInMemoryWebclientLocalStore();
+    const office = await store.ensureProfile('wss://office.example/ws');
+    await store.set('webclient_token', TOKEN);
+    const alice = await store.ensureProfile('wss://alice.example/ws');
+
+    await retireActiveProfile(store);
+
+    const profiles = await store.listProfiles();
+    expect(profiles.find((p) => p.id === office)?.webclient_token).toEqual(TOKEN);
+    expect(profiles.some((p) => p.id === alice)).toBe(false);
+    const activeId = await store.activeProfileId();
+    expect(profiles.find((p) => p.id === activeId)?.server_url).toBe('');
+    expect(await store.get('server_url')).toBeNull();
+  });
+
+  it('empties an attempt that holds leftovers, so it stops reading as an interrupted save', async () => {
+    // ⛔ The pending record was reused as it was: a stray `cert_pin_state` kept
+    // it "partial", so Clear changed nothing and the repair card came back on
+    // every start.
+    const store = createInMemoryWebclientLocalStore();
+    const office = await store.ensureProfile('wss://office.example/ws');
+    await store.set('webclient_token', TOKEN);
+    await store.beginNewProfile();
+    const pending = await store.activeProfileId();
+    await store.set('cert_pin_state', { current_fingerprint: 'stray', current_valid_until: 1 });
+    expect((await readStoredPairState(store)).kind).toBe('partial');
+
+    await retireActiveProfile(store);
+
+    expect(await readStoredPairState(store)).toEqual({ kind: 'empty' });
+    expect(await store.activeProfileId()).toBe(pending);
+    expect((await store.listProfiles()).find((p) => p.id === office)?.webclient_token)
+      .toEqual(TOKEN);
+  });
+
+  it('keeps an attempt that is already pending', async () => {
+    const store = createInMemoryWebclientLocalStore();
+    await store.ensureProfile('wss://office.example/ws');
+    await store.beginNewProfile();
+    const pending = await store.activeProfileId();
+
+    await retireActiveProfile(store);
+
+    expect(await store.activeProfileId()).toBe(pending);
+    expect((await store.listProfiles()).map((p) => p.server_url))
+      .toEqual(['wss://office.example/ws', '']);
+  });
+});
+
+describe('a store pinned to the server a tab started on', () => {
+  const token = (token_id: string) => ({
+    token_id,
+    ciphertext_b64: 'ciphertext',
+    iv_b64: 'iv',
+    issued_at: 1,
+  });
+
+  /** Home is where this tab started; Office is another saved server. */
+  const twoServers = async (officeSignedIn: boolean) => {
+    const store = createInMemoryWebclientLocalStore();
+    const office = await store.ensureProfile('wss://office.example/ws');
+    if (officeSignedIn) await store.set('webclient_token', token('tok-office'));
+    const home = await store.ensureProfile('wss://home.example/ws');
+    await store.set('webclient_token', token('tok-home'));
+    await store.set('server_public_key', 'KEY-HOME');
+    const pinned = await pinStoreToActiveProfile(store);
+    return { store, office, home, pinned };
+  };
+
+  for (const officeSignedIn of [true, false]) {
+    it(`keeps reading its own server after another tab switches (Office ${officeSignedIn ? 'signed in' : 'without a sign-in'})`, async () => {
+      // ⛔ Read through the active pointer, the tab's next reconnect dialed
+      // Office — and with HOME's token when Office had none.
+      const { store, office, pinned } = await twoServers(officeSignedIn);
+      await store.switchProfile(office);
+
+      expect(await pinned.get('server_url')).toBe('wss://home.example/ws');
+      expect((await pinned.get('webclient_token'))?.token_id).toBe('tok-home');
+      expect(await pinned.get('server_public_key')).toBe('KEY-HOME');
+      expect((await pinned.inspect()).server_url).toBe('wss://home.example/ws');
+    });
+  }
+
+  it('writes land on its own server, never on the active one', async () => {
+    // A token rotation or a restore in this tab, after another tab switched.
+    const { store, office, home, pinned } = await twoServers(true);
+    await store.switchProfile(office);
+
+    await pinned.set('webclient_token', token('tok-home-rotated'));
+    await pinned.set('cert_pin_state', { state: 'pinned' } as never);
+
+    const profiles = await store.listProfiles();
+    expect(profiles.find((p) => p.id === home)?.webclient_token?.token_id).toBe('tok-home-rotated');
+    expect(profiles.find((p) => p.id === office)?.webclient_token?.token_id).toBe('tok-office');
+    expect(profiles.find((p) => p.id === office)?.cert_pin_state ?? null).toBeNull();
+    expect(await store.activeProfileId()).toBe(office);
+  });
+
+  it('once its server is forgotten elsewhere, reads nothing and writes nowhere', async () => {
+    const { store, office, home, pinned } = await twoServers(true);
+    await store.removeProfile(home);
+
+    expect(await pinned.get('server_url')).toBeNull();
+    expect(await pinned.get('webclient_token')).toBeNull();
+    await pinned.set('webclient_token', token('tok-stray'));
+    const profiles = await store.listProfiles();
+    expect(profiles.map((p) => p.id)).toEqual([office]);
+    expect(profiles[0]?.webclient_token?.token_id).toBe('tok-office');
+  });
+
+  it('keeps its address: moving it is retargetProfile; removing it removes only that server', async () => {
+    const { store, office, home, pinned } = await twoServers(true);
+    await store.switchProfile(office);
+
+    await pinned.set('server_url', 'wss://home.example/ws'); // same address: nothing to do
+    await expect(pinned.set('server_url', 'wss://elsewhere.example/ws')).rejects.toThrow('retargetProfile');
+    await pinned.remove('server_url');
+
+    expect((await store.listProfiles()).map((p) => p.id)).toEqual([office]);
+    expect(await store.activeProfileId()).toBe(office);
+    expect(home).not.toBe(office);
+  });
+
+  it('clear still wipes the whole browser', async () => {
+    const { store, pinned } = await twoServers(true);
+    await pinned.clear();
+    expect(await store.listProfiles()).toEqual([]);
+  });
+
+  it('a store without a roster has nothing to pin and comes back as it is', async () => {
+    const plain: WebclientLocalStore = {
+      get: async () => null,
+      set: async () => undefined,
+      remove: async () => undefined,
+      inspect: async () => ({
+        server_url: null, webclient_token: null, server_public_key: null, pair_metadata: null, cert_pin_state: null,
+      }),
+      clear: async () => undefined,
+    };
+    expect(await pinStoreToActiveProfile(plain)).toBe(plain);
+  });
+});
+
+describe('moving a saved server to a new address', () => {
+  const token = (token_id: string) => ({
+    token_id,
+    ciphertext_b64: 'ciphertext',
+    iv_b64: 'iv',
+    issued_at: 1,
+  });
+
+  it('applies only while the stored sign-in is still the one the edit read', async () => {
+    const store = createInMemoryWebclientLocalStore();
+    const id = await store.ensureProfile('wss://home.example/ws');
+    await store.set('webclient_token', token('tok-rotated'));
+
+    // The edit read `tok-old`; another tab has rotated it since.
+    expect(await store.retargetProfile(id, 'wss://moved.example/ws', token('tok-old'), 'tok-old'))
+      .toBeNull();
+    const kept = (await store.listProfiles()).find((p) => p.id === id);
+    expect(kept?.server_url).toBe('wss://home.example/ws');
+    expect(kept?.webclient_token?.token_id).toBe('tok-rotated');
+
+    expect(await store.retargetProfile(id, 'wss://moved.example/ws', token('tok-rotated'), 'tok-rotated'))
+      .toBe('wss://moved.example/ws');
   });
 });

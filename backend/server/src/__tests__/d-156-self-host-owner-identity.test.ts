@@ -429,11 +429,14 @@ describe('ws-server live roster — bearer webclient (never registers)', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
-// D-156 P10 — the WS register / replace paths record the verified
-// client-token kind on the durable roster row.
+// The retired WS `register` message can no longer touch the roster.
+// ⛔ It let a connected client rewrite its own row's `user_id` (the owner's
+// Devices list then omitted it, and Revoke refused it as another user's
+// device), revoke any other row with `intent: 'replace'`, and clear an old
+// row's revocation. Rows are written at `/auth/pair` only now.
 // ════════════════════════════════════════════════════════════════
 
-describe('ws-server register path — records the verified client kind (D-156 P10)', () => {
+describe('ws-server — the retired register message changes no Devices row', () => {
   let server: RunningServer | undefined;
   let db: Database.Database;
   let paired: PairedInstancesStore;
@@ -455,6 +458,10 @@ describe('ws-server register path — records the verified client kind (D-156 P1
     });
     bridgeTokenId = issued.token_id;
     bridgeBearer = issued.bearer;
+    paired.addOrRefresh({ instance_id: 'br-live', user_id: SELF_HOST_OWNER_ID, display_name: 'Test bridge', kind: 'bridge' });
+    paired.addOrRefresh({ instance_id: 'old-dev', user_id: SELF_HOST_OWNER_ID, display_name: 'Old', kind: 'webclient' });
+    paired.addOrRefresh({ instance_id: 'gone-dev', user_id: SELF_HOST_OWNER_ID, display_name: 'Gone', kind: 'webclient' });
+    paired.revoke('gone-dev');
 
     server = await startServer(0, {
       executeDeps: { recipeStore, executorConfig: { manifests }, baseVault: {} },
@@ -468,32 +475,35 @@ describe('ws-server register path — records the verified client kind (D-156 P1
     db.close();
   });
 
-  it('register from a bridge token seeds the durable row with kind="bridge"', async () => {
+  const sendRegister = async (frame: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const { ws, opened } = await connect(server!.port, `${bridgeTokenId}.${bridgeBearer}`);
     expect(opened).toBe(true);
-    ws.send(JSON.stringify({ type: 'register', instance_id: 'br-live', user_id: 'u1' }));
-    await wait(40);
-    expect(paired.get('br-live')?.kind).toBe('bridge');
+    const reply = new Promise<Record<string, unknown>>((resolve) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (msg['type'] === 'register_error' || msg['type'] === 'registered') resolve(msg);
+      });
+    });
+    ws.send(JSON.stringify({ type: 'register', ...frame }));
+    const answer = await reply;
     ws.close();
     await wait(20);
+    return answer;
+  };
+
+  it('a reported user_id no longer hides the device from its owner', async () => {
+    const answer = await sendRegister({ instance_id: 'br-live', user_id: 'someone-else' });
+    expect(answer).toMatchObject({ type: 'register_error', code: 'unsupported' });
+    expect(paired.get('br-live')?.user_id).toBe(SELF_HOST_OWNER_ID);
+    expect(paired.listActive(SELF_HOST_OWNER_ID).map((r) => r.instance_id)).toContain('br-live');
   });
 
-  it('replace from a bridge token carries kind="bridge" onto the new row', async () => {
-    // Seed an old row to be replaced (kind irrelevant — the replace upserts new).
-    paired.addOrRefresh({ instance_id: 'old-dev', user_id: 'u1', display_name: 'Old', kind: 'webclient' });
-    const { ws, opened } = await connect(server!.port, `${bridgeTokenId}.${bridgeBearer}`);
-    expect(opened).toBe(true);
-    ws.send(JSON.stringify({
-      type: 'register',
-      intent: 'replace',
-      replace_old: 'old-dev',
-      instance_id: 'new-dev',
-      user_id: 'u1',
-    }));
-    await wait(40);
-    expect(paired.get('new-dev')?.kind).toBe('bridge');
-    expect(paired.get('old-dev')?.revoked_at).not.toBeNull();
-    ws.close();
-    await wait(20);
+  it('replace no longer revokes another device or clears a revocation', async () => {
+    const answer = await sendRegister({
+      intent: 'replace', replace_old: 'old-dev', instance_id: 'gone-dev', user_id: SELF_HOST_OWNER_ID,
+    });
+    expect(answer).toMatchObject({ type: 'register_error', code: 'unsupported' });
+    expect(paired.get('old-dev')?.revoked_at).toBeNull();
+    expect(paired.get('gone-dev')?.revoked_at).not.toBeNull();
   });
 });

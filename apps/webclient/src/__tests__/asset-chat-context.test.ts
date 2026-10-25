@@ -9,6 +9,14 @@ const link = (id: string, patch: Partial<Link> = {}): Link => ({ _id: `link-${id
 const fileId = 'file:' + 'a'.repeat(32);
 
 describe('Asset questions use the existing Chat readers', () => {
+  it('keeps the original owner envelope byte-compatible after sharing its contract', () => {
+    const legacy = 'How long is it?\n\nRead the current saved asset with work.read using the asset reference below. Use document.read with a linked file\'s file_ref when its contents are relevant. These are record references, not evidence that a file has been read. Cite the evidence you use, distinguish saved facts from inference, and say what is missing or unavailable.\n'
+      + '{"kind":"recued.asset_question","version":1,"asset":{"kind":"asset","id":"boiler/a#1"},"linked_documents":[],"linked_document_list_unavailable":true,"additional_linked_documents_not_listed":2}';
+    const context = { id: asset.id, name: asset.name, fileIds: [], omittedFiles: 2, filesUnavailable: true as const };
+    expect(assetChatMessage('How long is it?', context)).toBe(legacy);
+    expect(readAssetChatMessage(legacy)?.context).toEqual({ ...context, name: 'Selected asset' });
+  });
+
   it('pins the selected asset and only its canonical attachment links', () => {
     const context = assetChatContext(asset, [link(fileId), link(fileId), link('foreign', { from_id: 'other' }),
       link('wrong-kind', { from_collection: 'note' }), link('reference', { role: 'reference' }), link('not-file', { to_collection: 'note' })]);

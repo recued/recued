@@ -4,6 +4,8 @@ import type { CollectionSearchGroup } from '@recued/contracts';
 
 import {
   renderUniversalSearch,
+  SEARCH_DID_YOU_MEAN_ACTION,
+  SEARCH_DID_YOU_MEAN_QUERY_ATTR,
   SEARCH_OPEN_RECIPE_ACTION,
   SEARCH_OPEN_PACK_ACTION,
   SEARCH_MARKETPLACE_ACTION,
@@ -348,3 +350,87 @@ describe('the marketplace path (cold start)', () => {
     expect(html).not.toContain('<script>');
   });
 });
+
+describe('did you mean', () => {
+  const dym = {
+    query: 'Castellanos invoice',
+    corrections: [{ typed: 'Castelanos', word: 'Castellanos', records: 2 }],
+  };
+
+  it('offers the corrected query as a button that runs it, the corrected word in bold', () => {
+    const html = renderUniversalSearch({
+      ...base, query: 'Castelanos invoice', groups: [], didYouMean: dym,
+    }, NOW);
+    expect(html).toContain(`data-act="${SEARCH_DID_YOU_MEAN_ACTION}"`);
+    expect(html).toContain(`${SEARCH_DID_YOU_MEAN_QUERY_ATTR}="Castellanos invoice"`);
+    expect(html).toContain('<strong>Castellanos</strong> invoice</button>?');
+  });
+
+  it('shows beside results as well as on an empty page — what is listed still answers what was typed', () => {
+    const withRows = renderUniversalSearch({
+      ...base, query: 'Castelanos invoice', groups: [group('inbox', 'mail', [row()])], didYouMean: dym,
+    }, NOW);
+    expect(withRows).toContain('Did you mean');
+    expect(withRows).toContain('1 in 1 place');
+    const empty = renderUniversalSearch({
+      ...base, query: 'Castelanos invoice', groups: [], didYouMean: dym,
+    }, NOW);
+    expect(empty).toContain('Did you mean');
+    expect(empty).toContain('Nothing on this server matches');
+  });
+
+  it('is absent without a suggestion', () => {
+    expect(renderUniversalSearch({ ...base, query: 'Castellanos', groups: [] }, NOW))
+      .not.toContain('Did you mean');
+  });
+
+  it('⛔ escapes the query, and a corrected word cannot land inside an entity', () => {
+    const html = renderUniversalSearch({
+      ...base, query: 'Tom & anp Jery <b>', groups: [],
+      didYouMean: {
+        query: 'Tom & amp Jerry <b>',
+        corrections: [
+          { typed: 'anp', word: 'amp', records: 1 },
+          { typed: 'Jery', word: 'Jerry', records: 1 },
+        ],
+      },
+    }, NOW);
+    // `amp` is bold where it stands, never inside the `&amp;` the escape made.
+    expect(html).toContain('Tom &amp; <strong>amp</strong> <strong>Jerry</strong> &lt;b&gt;</button>');
+    expect(html).not.toContain('<b>');
+  });
+});
+
+describe('words the stores dropped', () => {
+  it('⛔ says beside the results that they match only the other words', () => {
+    const html = renderUniversalSearch({
+      ...base, query: 'Castelanos invoice', groups: [group('inbox', 'mail', [row()])], absentWords: ['Castelanos'],
+    }, NOW);
+    expect(html).toContain('No record holds “Castelanos”, so these results match only your other words.');
+    // Before the count, which would otherwise read as an answer to the whole query.
+    expect(html.indexOf('No record holds')).toBeLessThan(html.indexOf('1 in 1 place'));
+  });
+
+  it('lists several words, and escapes them', () => {
+    const html = renderUniversalSearch({
+      ...base, query: 'x', groups: [group('inbox', 'mail', [row()])], absentWords: ['Zylberstein', '<b>Kestral'],
+    }, NOW);
+    expect(html).toContain('No record holds “Zylberstein” or “&lt;b&gt;Kestral”, so these results');
+    expect(html).not.toContain('<b>Kestral');
+  });
+
+  it('says nothing on an empty page, which already says nothing matched', () => {
+    const html = renderUniversalSearch({ ...base, query: 'Zylberstein', groups: [], absentWords: ['Zylberstein'] }, NOW);
+    expect(html).not.toContain('No record holds');
+    expect(html).toContain('Nothing on this server matches');
+  });
+
+  it('says nothing beside installed recipes alone — they are matched by another rule', () => {
+    const html = renderUniversalSearch({
+      ...base, query: 'Zylberstein invoice', groups: [],
+      recipes: [{ recipe_id: 'r', name: 'Invoice chaser' }], absentWords: ['Zylberstein'],
+    }, NOW);
+    expect(html).not.toContain('No record holds');
+  });
+});
+

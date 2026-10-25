@@ -207,6 +207,8 @@ describe('D-325 bounded owner learning', () => {
       when: { from: Date.parse(date), to: Date.parse(date) } }, f.now());
     f.at('2025-10-20T12:00Z'); trip('2024-10-24'); trip('2025-10-16'); await f.learning.tick();
     const first = f.proposals.list({ kind: 'occasion', state: 'proposed' }); expect(first).toHaveLength(1);
+    // The day in words, as the owner reads it, never "10-16".
+    expect(first[0]!.explanation).toBe('Two concrete episodes with the same people are about a year apart. Confirm an annual occasion around 16 October?');
     f.at('2026-10-20T12:00Z'); trip('2026-10-18'); await f.learning.tick();
     const open = f.proposals.list({ kind: 'occasion', state: 'proposed' });
     expect(open).toHaveLength(1); expect(open[0]!.id).not.toBe(first[0]!.id);
@@ -214,6 +216,65 @@ describe('D-325 bounded owner learning', () => {
     await f.command({ action: 'proposal.dismiss', id: open[0]!.id, code: 'not_now' });
     f.at('2027-10-20T12:00Z'); trip('2027-10-17'); await f.learning.tick();
     expect(f.proposals.list({ kind: 'occasion', state: 'proposed' })).toEqual([]);
+  });
+  it('asks whether a trip to one country recurs from two bookings a year apart, and the occasion keeps the country readable', async () => {
+    const f = fixture(); f.situations.writeSetting('last_time.choice', 'on');
+    const book = (title: string, from: string, to: string, country: string) => f.work.writeBooking({ source_id: 'recued.booking', title,
+      slot_start_at: Date.parse(from), slot_end_at: Date.parse(to), source_extension_blob: { trip: { destination_country: country } } }, f.now());
+    f.at('2025-08-01T12:00Z');
+    // Two hotels in Japan a year apart, and one trip to France: the country is the shared place.
+    const first = book('Hotel Okura', '2024-07-10', '2024-07-20', 'JP'); const second = book('Kyoto ryokan', '2025-07-12', '2025-07-22', 'JP');
+    book('Paris weekend', '2025-07-02', '2025-07-05', 'FR');
+    await f.learning.tick();
+    const offers = f.proposals.list({ kind: 'occasion', state: 'proposed' });
+    expect(offers.map(row => row.title)).toEqual(['Does this recur? · Trip to Japan']);
+    expect(offers[0]!.explanation).toBe('Two trips to Japan were booked about a year apart. Confirm an annual occasion around 12 July?');
+    expect(offers[0]!.payload).toMatchObject({ occasion: { title: 'Trip to Japan', month_day: '07-12', where: { key: 'country:JP', name: 'Japan' }, class_id: 'trip', people: [] },
+      trip_refs: [{ collection: 'booking', id: first.id }, { collection: 'booking', id: second.id }] });
+    expect(await f.command({ action: 'proposal.accept', ids: [offers[0]!.id] })).toMatchObject({ changed: 1 });
+    // Next July it is upcoming, and egress cannot hide the country: it is the trip's destination.
+    const sources = buildSituationSources({ db: f.db, work: f.work, reminders: createReminderStore(f.db), calendars: () => [], now: f.now, timeZone: () => 'UTC' });
+    const query = createSituationQuery({ sources, sourceForCollection: situationSourceAccess, now: f.now });
+    f.at('2026-07-01T12:00Z');
+    const items = (await query({ time: { from: f.now(), to: f.now() + 30 * 86_400_000 }, surface: 'today' }, { owner: true,
+      grants: { isVerbOpGranted: () => true, isCollectionReadGranted: () => true, isTopicReadGranted: () => true } })).clusters.flatMap(cluster => cluster.items);
+    expect(items.find(item => item.ref.collection === 'occasion')).toMatchObject({ what: { value: 'Trip to Japan' }, trip: { destination_country: 'JP' } });
+  });
+  it('asks about a yearly trip once, as the trip, and not again as the hotel its stays were at', async () => {
+    const titles = async (country?: string) => {
+      const f = fixture(); f.situations.writeSetting('last_time.choice', 'on'); f.at('2025-08-01T12:00Z');
+      for (const [year, from, to] of [[2024, '2024-07-10', '2024-07-20'], [2025, '2025-07-12', '2025-07-22']] as const) {
+        const booking = f.work.writeBooking({ source_id: 'recued.booking', title: 'Hotel Okura', slot_start_at: Date.parse(from), slot_end_at: Date.parse(to),
+          ...(country ? { source_extension_blob: { trip: { destination_country: country } } } : {}) }, f.now());
+        f.history.saveEpisode({ ...f.episode(year), id: `stay-${year}`, title: 'Hotel Okura', class_id: 'checkin', people: [], where: { key: 'label:hotel okura', name: 'Hotel Okura' },
+          subjects: [{ collection: 'booking', id: booking.id }], when: { from: Date.parse(from), to: Date.parse(to) } }, f.now());
+      }
+      await f.learning.tick(); return f.proposals.list({ kind: 'occasion' }).map(row => row.title);
+    };
+    expect(await titles('JP')).toEqual(['Does this recur? · Trip to Japan']);
+    // The control: stays on trips to no known country still recur by their hotel.
+    expect(await titles()).toEqual(['Does this recur? · Hotel Okura']);
+  });
+  it('asks nothing about trips while "last time" is off, for a cancelled or suppressed trip, or again once answered', async () => {
+    const setup = (memory: boolean, latest: 'confirmed' | 'cancelled' = 'confirmed') => {
+      const f = fixture(); if (memory) f.situations.writeSetting('last_time.choice', 'on'); f.at('2025-08-01T12:00Z');
+      const book = (from: string, to: string, lifecycle_state: 'confirmed' | 'cancelled' = 'confirmed') => f.work.writeBooking({ source_id: 'recued.booking', title: 'Japan',
+        slot_start_at: Date.parse(from), slot_end_at: Date.parse(to), lifecycle_state, source_extension_blob: { trip: { destination_country: 'JP' } } }, f.now());
+      book('2024-07-10', '2024-07-20'); book('2025-07-12', '2025-07-22', latest);
+      return { f, book, offered: async () => { await f.learning.tick(); return f.proposals.list({ kind: 'occasion', state: 'proposed' }); },
+        // Any state: an offer made and withdrawn in the same pass was still made.
+        ever: async () => { await f.learning.tick(); return f.proposals.list({ kind: 'occasion' }); } };
+    };
+    expect(await setup(false).ever()).toEqual([]);
+    expect(await setup(true, 'cancelled').ever()).toEqual([]);
+    const suppressed = setup(true);
+    suppressed.f.proposals.saveSuppression({ kind: 'date_range', from: Date.parse('2025-07-01'), to: Date.parse('2025-07-31') }, suppressed.f.now());
+    expect(await suppressed.ever()).toEqual([]);
+    // The control: the same two trips ask once; answered, next year's trip does not ask again.
+    const control = setup(true); const asked = await control.offered(); expect(asked).toHaveLength(1);
+    await control.f.command({ action: 'proposal.dismiss', id: asked[0]!.id, code: 'not_now' });
+    control.f.at('2026-08-01T12:00Z'); control.book('2026-07-11', '2026-07-21');
+    expect(await control.offered()).toEqual([]);
   });
   it('uses three original accepted years for a standing task, gated by consent and current suppressions', async () => {
     const f = fixture(); f.situations.writeSetting('last_time.choice', 'on');

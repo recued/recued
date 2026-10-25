@@ -10,6 +10,22 @@ export const assetPlaceLabels = (asset: Pick<Asset, 'anchors'>): string[] =>
   asset.anchors.flatMap(anchor => anchor.kind === 'place' && typeof anchor.name === 'string' && anchor.name.trim() ? [anchor.name] : []);
 /** A document the travel validity table checks against a trip. */
 export const isTravelDocument = (asset: Pick<Asset, 'class_id' | 'settings'>): boolean => asset.class_id === 'passport' || asset.settings.travel_document === true;
+/** A visa, which a trip check lists for its holder: the built-in class or a pack's
+ * (`travel_visa`), as the Yours form decides. */
+export const isVisa = (asset: Pick<Asset, 'class_id'>): boolean => /(^|_)visa$/u.test(asset.class_id ?? '');
+/** D-325 §15.7 (2026-10-24) — a class's own expiry task (a passport's renewal, a policy's
+ * renewal or notice date, a vehicle's legal check) is done when a later date replaces
+ * its own, never by Done alone. Done kept the old date, so the task closed and its
+ * clock sent nothing more until the owner changed that date. An expiry rule the owner
+ * made, and a retirement's deadline, are one-off: Done closes those, as it does a task
+ * whose asset left use. Dates, rules and settings are an asset's own, so the stored
+ * asset answers this as its effective view would. */
+export const assetRenewal = (asset: Pick<Asset, 'dates' | 'settings' | 'status' | 'deleted_at'>, rule: AssetRule): { field: string; current: string } | null => {
+  if (asset.deleted_at != null || !['active', 'lent'].includes(asset.status) || !rule.enabled
+    || rule.when.kind !== 'expiry' || rule.reaction.occurrence !== 'action') return null;
+  const current = asset.dates[rule.when.field]; const own = asset.settings.class_rule_ids;
+  return typeof current === 'string' && Array.isArray(own) && own.includes(rule.id) ? { field: rule.when.field, current } : null;
+};
 /** One enabled rule's clock as the situation query reads it. A reader without
  * the commitment grant sees the first cycle and never a commitment's lifecycle. */
 export interface AssetRuleTiming {

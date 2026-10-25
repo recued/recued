@@ -57,6 +57,7 @@ interface FakeEl {
   placeholder?: string;
   disabled?: boolean;
   setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
   getAttribute(name: string): string | null;
   appendChild(child: FakeEl): FakeEl;
   addEventListener(kind: string, fn: (event: FakeEvent) => void): void;
@@ -91,6 +92,7 @@ const makeEl = (tag: string, doc?: FakeDoc): FakeEl => {
     listeners: new Map<string, Array<(event: FakeEvent) => void>>(),
     _text: '',
     setAttribute(name: string, value: string) { el.attrs.set(name, value); },
+    removeAttribute(name: string) { el.attrs.delete(name); },
     getAttribute(name: string) { return el.attrs.get(name) ?? null; },
     appendChild(child: FakeEl) { child.parent = el; el.children.push(child); return child; },
     addEventListener(kind: string, fn: (event: FakeEvent) => void) {
@@ -188,6 +190,7 @@ const decisionFor = (preflight: CustomDomainPreflightResult, enrolled: boolean) 
   });
 
 const setup = (opts: {
+  document?: FakeDoc;
   hostname?: string;
   observation?: Partial<CustomDomainDnsObservation>;
   enrolled?: boolean;
@@ -200,7 +203,7 @@ const setup = (opts: {
   writeClipboard?: ((value: string) => Promise<void>) | null;
   nativeWriteClipboard?: (value: string) => Promise<void>;
 } = {}) => {
-  const doc = makeDoc();
+  const doc = opts.document ?? makeDoc();
   if (opts.nativeWriteClipboard) doc.defaultView = { navigator: { clipboard: { writeText: opts.nativeWriteClipboard } } };
   const host = makeEl('div');
   const enrolCalls: unknown[] = [];
@@ -935,4 +938,94 @@ describe('custom-domain Enter checks', () => {
     expect(input.dispatch('keydown', { key: 'Enter' }).defaultPrevented).not.toBe(true);
     expect(caller).not.toHaveBeenCalled();
   });
+});
+
+
+describe('custom-domain validation associations', () => {
+  const required = 'Type the name you want to use.';
+  const validate = (t: ReturnType<typeof setup>) => {
+    const input = firstByAttr(t.host,CUSTOM_DOMAINS_INPUT_ATTR)!; input.focus(); input.dispatch('keydown',{key:'Enter'});
+    return input;
+  };
+  const association = (t: ReturnType<typeof setup>) => {
+    const input = firstByAttr(t.host,CUSTOM_DOMAINS_INPUT_ATTR)!; const error = firstByAttr(t.host,CUSTOM_DOMAINS_ERROR_ATTR)!;
+    const id = error.getAttribute('id')!; expect(id).toMatch(/^custom-domain-validation-\d+$/);
+    expect(input.getAttribute('aria-invalid')).toBe('true'); expect(input.getAttribute('aria-describedby')!.split(/\s+/)).toContain(id);
+    expect(error.textContent).toBe(required); expect(error.getAttribute('role')).toBe('alert'); return {input,error,id};
+  };
+  const clean = (input: FakeEl) => { expect(input.getAttribute('aria-invalid')).toBeNull(); expect(input.getAttribute('aria-describedby')).toBeNull(); };
+  for (const raw of ['', '   ', 'https://']) {
+    it(`describes a known empty-hostname validation without a read: ${JSON.stringify(raw)}`, () => {
+      const read = vi.fn(async () => readinessFor(ALPHA)); const t = setup({runReadiness:read}); t.type(raw); const input = validate(t);
+      association(t); expect(t.doc.activeElement).toBe(input); expect(input.value).toBe(raw); expect(read).not.toHaveBeenCalled(); expect(t.enrolCalls).toEqual([]); t.mount.destroy();
+    });
+  }
+  for (const correction of ['  AlPhA.Example.test  ', ' ', 'https://']) {
+    it(`clears local feedback on an accepted native edit without replacing the input: ${JSON.stringify(correction)}`, () => {
+      const t = setup(); const input = validate(t); association(t); t.type(correction);
+      expect(firstByAttr(t.host,CUSTOM_DOMAINS_INPUT_ATTR)).toBe(input); expect(t.doc.activeElement).toBe(input);
+      expect(input.value).toBe(correction); expect(t.mount.state().hostname).toBe(correction); expect(t.mount.state().error).toBeNull();
+      expect(firstByAttr(t.host,CUSTOM_DOMAINS_ERROR_ATTR)).toBeUndefined(); clean(input); t.mount.destroy();
+    });
+  }
+  it('associates button validation without taking outside focus', () => {
+    const t = setup(); const outside = t.doc.createElement('button'); outside.focus(); t.click(CUSTOM_DOMAINS_CHECK_BTN_ATTR);
+    association(t); expect(t.doc.activeElement).toBe(outside); t.mount.destroy();
+  });
+  it('uses a separate message identity for panels in the same document', () => {
+    const doc = makeDoc(); const first = setup({document:doc}); const second = setup({document:doc}); validate(first); const a = association(first); validate(second); const b = association(second);
+    expect(a.id).not.toBe(b.id); expect(a.input.getAttribute('aria-describedby')).toBe(a.id); expect(b.input.getAttribute('aria-describedby')).toBe(b.id);
+    first.mount.destroy(); expect(b.input.getAttribute('aria-describedby')).toBe(b.id); second.mount.destroy();
+  });
+  it('merges other descriptions once and restores the previous invalid state', () => {
+    const t = setup(); const input = firstByAttr(t.host,CUSTOM_DOMAINS_INPUT_ATTR)!;
+    input.setAttribute('aria-describedby','first-hint second-hint'); input.setAttribute('aria-invalid','grammar'); validate(t); const {id} = association(t);
+    validate(t); expect(association(t).id).toBe(id); expect(input.getAttribute('aria-describedby')).toBe(`first-hint second-hint ${id}`);
+    t.type(ALPHA); expect(input.getAttribute('aria-describedby')).toBe('first-hint second-hint'); expect(input.getAttribute('aria-invalid')).toBe('grammar'); t.mount.destroy();
+  });
+  it('preserves attribute changes made by another owner while feedback is active', () => {
+    const t = setup(); const input = validate(t); const {id} = association(t);
+    input.setAttribute('aria-describedby',`new-hint ${id}`); input.setAttribute('aria-invalid','spelling'); t.type(ALPHA);
+    expect(input.getAttribute('aria-describedby')).toBe('new-hint'); expect(input.getAttribute('aria-invalid')).toBe('spelling'); t.mount.destroy();
+  });
+  it('does not classify a matching DNS error message as local validation', async () => {
+    const t = setup({runReadiness:async () => {throw new Error(required);}}); const input = validate(t); association(t);
+    t.type(ALPHA); t.click(CUSTOM_DOMAINS_CHECK_BTN_ATTR); clean(input); expect(t.mount.state().checking).toBe(true); await t.settle();
+    expect(t.mount.state().error).toBe(required); expect(firstByAttr(t.host,CUSTOM_DOMAINS_ERROR_ATTR)!.getAttribute('id')).toBeNull(); clean(input); t.mount.destroy();
+  });
+  it('does not classify a matching enrollment error as local validation', async () => {
+    const t = setup({hostname:ALPHA,runEnrol:async () => {throw new Error(required);}}); const input = validate(t); association(t);
+    t.type(ALPHA); t.click(CUSTOM_DOMAINS_CHECK_BTN_ATTR); await t.settle(); t.click(CUSTOM_DOMAINS_ADD_BTN_ATTR); await t.settle();
+    expect(t.mount.state().error).toBe(required); clean(input); expect(firstByAttr(t.host,CUSTOM_DOMAINS_ERROR_ATTR)!.getAttribute('id')).toBeNull(); t.mount.destroy();
+  });
+  for (const outcome of ['success','error'] as const) {
+    it(`ignores a stale DNS ${outcome} after local validation takes ownership`, async () => {
+      const deferred = pending<ReturnType<typeof readinessFor>>(); const t = setup({runReadiness:() => deferred.promise});
+      t.type(ALPHA); t.click(CUSTOM_DOMAINS_CHECK_BTN_ATTR); t.type(''); validate(t); const {id,error} = association(t);
+      if (outcome==='success') deferred.resolve(readinessFor(ALPHA)); else deferred.reject(new Error('Stale DNS failure'));
+      await t.settle(); expect(association(t).id).toBe(id); expect(firstByAttr(t.host,CUSTOM_DOMAINS_ERROR_ATTR)).toBe(error); expect(t.mount.state().error).toBe(required); t.mount.destroy();
+    });
+  }
+  it('removes only its association on teardown and ignores retired input events', () => {
+    const t = setup(); const input = firstByAttr(t.host,CUSTOM_DOMAINS_INPUT_ATTR)!; input.setAttribute('aria-describedby','retained-hint'); input.setAttribute('aria-invalid','false');
+    validate(t); association(t); t.mount.destroy(); expect(input.getAttribute('aria-describedby')).toBe('retained-hint'); expect(input.getAttribute('aria-invalid')).toBe('false');
+    const before = t.mount.state(); input.value=ALPHA; input.dispatch('input'); input.dispatch('keydown',{key:'Enter'}); expect(t.mount.state()).toBe(before); t.mount.destroy();
+  });
+});
+
+
+describe('custom-domain validation ownership audit', () => {
+  for (const newer of ['spelling',null] as const) {
+    it(`preserves a newer invalid state across repeated validation: ${JSON.stringify(newer)}`,() => {
+      const t=setup(); const input=firstByAttr(t.host,CUSTOM_DOMAINS_INPUT_ATTR)!;
+      input.setAttribute('aria-invalid','grammar'); input.focus(); input.dispatch('keydown',{key:'Enter'});
+      const id=firstByAttr(t.host,CUSTOM_DOMAINS_ERROR_ATTR)!.getAttribute('id')!;
+      if (newer===null) input.removeAttribute('aria-invalid'); else input.setAttribute('aria-invalid',newer);
+      input.setAttribute('aria-describedby',`new-hint ${id}`);
+      input.dispatch('keydown',{key:'Enter'}); expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(input.getAttribute('aria-describedby')).toBe(`new-hint ${id}`);
+      t.type(ALPHA); expect(input.getAttribute('aria-invalid')).toBe(newer); expect(input.getAttribute('aria-describedby')).toBe('new-hint');
+      expect(t.mount.state().error).toBeNull(); expect(t.doc.activeElement).toBe(input); t.mount.destroy();
+    });
+  }
 });

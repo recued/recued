@@ -68,8 +68,17 @@ export const handleCompletionPrepare = (deps: ReceptionRpcDeps, input: QuoteComp
   const completion = service.prepare(input);
   try {
     const preview = await handleReceptionEndpointPreviewDraft(deps,draft(deps,completion.completion_id),{ instance_id: caller!.instance_id });
-    return { completion,preview_hash: preview.preview_hash,customer_preview: completion.customer_preview };
+    return { completion,preview_hash: preview.preview_hash,customer_preview: completion.customer_preview,
+      preview_expires_at: preview.expires_at,preview_server_now: deps.now() };
   } catch (error) { service.cancel(completion.completion_id); throw error; }
+});
+export const handleCompletionResume = (deps: ReceptionRpcDeps, input: QuoteCompletionCancelInput, caller: Caller) => run(async () => {
+  const service = serviceFor(deps, caller); shape(input, ['completion_id']);
+  const completionId = id(input.completion_id); service.resumeDraft(completionId);
+  const preview = await handleReceptionEndpointPreviewDraft(deps, draft(deps, completionId), { instance_id: caller!.instance_id });
+  const saved = service.resumeDraft(completionId);
+  return { ...saved, preview_hash: preview.preview_hash, customer_preview: saved.completion.customer_preview,
+    preview_expires_at: preview.expires_at,preview_server_now: deps.now() };
 });
 export const handleCompletionPublish = (deps: ReceptionRpcDeps, input: QuoteCompletionPublishInput, caller: Caller) => run(async () => {
   const service = serviceFor(deps,caller); shape(input,['completion_id','preview_hash','remember_link_for_reminders']);
@@ -112,7 +121,8 @@ export const handleCompletionList = (deps: ReceptionRpcDeps, input: QuoteComplet
     entry.review = anchor === null ? 'not_queued' : anchor.commit_status === 'awaiting_approval' ? 'waiting'
       : anchor.commit_status === 'running' || anchor.commit_status === 'pending' ? 'running' : 'closed';
   }
-  // Closed or declined runs stay in history, rather than asking for a second review.
-  if (input?.review_only) result.completions = result.completions.filter(entry => entry.review !== 'closed');
-  return result;
+  // Only an awaiting-approval run needs an owner decision. Other responses
+  // remain visible in All requests while they queue, run or finish.
+  if (input?.review_only) result.completions = result.completions.filter(entry => entry.review === 'waiting');
+  return { ...result,server_now: (deps.now ?? Date.now)() };
 });

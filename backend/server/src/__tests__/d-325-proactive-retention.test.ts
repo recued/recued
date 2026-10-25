@@ -38,7 +38,8 @@ import { createProactiveLearning } from '../situations/learning-runtime.js';
 import { LEARNING_LOOKBACK_MS, RELATION_LOOKBACK_MS, relationKey, relationOfferKey, type ClockLearningSignal } from '../situations/learning.js';
 import { collectProposalMeasures } from '../situations/measures.js';
 import { createOccasionClockService } from '../situations/occasion-clock-service.js';
-import { completionQuestionKey, lastDoneQuestionKey } from '../situations/owner-completion.js';
+import { completionQuestionKey, createOwnerCompletionWriter, lastDoneQuestionKey } from '../situations/owner-completion.js';
+import { createRenewalFulfillGuard } from '../situations/renewal-guard.js';
 import { PROACTIVE_COUNT_RETENTION_MS, PROACTIVE_LOG_RETENTION_MS, createProactiveRetention } from '../situations/proactive-retention.js';
 import { publishProposalEvents } from '../situations/proposal-events.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
@@ -406,7 +407,8 @@ describe('D-325 proactive retention — clock cycles', () => {
   const clocks = () => {
     const db = open(); ensureWorkEntitySchema(db); const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
     let time = NOW; let reminders: AssetReminderService | undefined;
-    const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => time });
+    const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => time,
+      ownerCompletionWrite: createOwnerCompletionWriter(db, work), commitmentFulfillGuard: createRenewalFulfillGuard(db, work) });
     const occurrences = createAssetOccurrenceService({ db, work, dispatchers, timeZone: () => 'UTC', now: () => time,
       withdraw: async id => { reminders?.withdraw(id); }, emitRule: async () => {}, outcome: async () => {} });
     const service = createAssetReminderService({ db, work, dispatchers, occurrences, timeZone: () => 'UTC', isQuiet: () => false, now: () => time });
@@ -431,7 +433,8 @@ describe('D-325 proactive retention — clock cycles', () => {
     const [serviced] = f.rows.byAsset(boiler.id); const [skipped] = f.rows.byAsset(filter.id);
     const firstPlans = f.points.plansForOccurrence(serviced!.id).map(plan => plan.group_id);
     expect(firstPlans).toEqual(f.points.plansForOccurrence(skipped!.id).map(plan => plan.group_id));
-    await f.block.submitAnswer({ ask_id: f.points.control(serviced!.id).current_ask_id!, option: 'done', via: 'ui' });
+    // A reminder offers no Done (§15.7, 2026-10-24): the owner marks the service done in Recued.
+    await f.dispatchers.ownerCommitmentFulfill({ id: serviced!.commitment_id! });
     await f.block.submitAnswer({ ask_id: f.points.control(skipped!.id).current_ask_id!, option: 'not_needed', via: 'ui' });
     await f.service.tick();
     expect(f.rows.completion(serviced!.id)).toMatchObject({ owner_action: true });
@@ -485,7 +488,7 @@ describe('D-325 proactive retention — clock cycles', () => {
   it('keeps a finished cycle while anything still waits on it or it changed within the year, and lets it go once nothing does', () => {
     const f = clocks(); const { car, cycle } = cycles(f);
     createOccasionClockService({ db: f.db, work: f.work, dispatchers: f.dispatchers, timeZone: () => 'UTC' });
-    createHouseholdHomeAssistant({ db: f.db, work: f.work, occurrences: f.occurrences, connections: () => [], credential: async () => null });
+    createHouseholdHomeAssistant({ db: f.db, work: f.work, connections: () => [], credential: async () => null });
     const notices = createReminderStore(f.db); const LATELY = NOW - DAY;
     const plan = (group: string, phase: string, updated: number, ...members: string[]) => {
       f.db.prepare('INSERT INTO occurrence_reminder_plans(group_id,payload,phase,created_at,updated_at) VALUES(?,?,?,?,?)').run(group, '{}', phase, LONG_AGO, updated);

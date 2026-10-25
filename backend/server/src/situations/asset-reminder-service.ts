@@ -14,7 +14,9 @@ import { handleWorkEntityCommitmentClose } from '../work-entity-crud-handler.js'
 import type { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import type { AssetOccurrenceService } from './asset-occurrence-service.js';
 import { assetOccurrenceClock } from './asset-interval-cycle.js';
+import { assetRenewal } from './asset-rule-timing.js';
 import { ruleStatement } from './rule-titles.js';
+import { reachesPhone } from './reminder-destinations.js';
 
 export const ASSET_REMINDER_HANDLER = 'asset-clock-reminder';
 const DAY = 86_400_000;
@@ -154,7 +156,11 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       { id: 'later_month', label: 'A month' }, { id: 'later_custom', label: 'Choose time' },
     ];
     if (mode === 'notice') return [{ id: 'stop_notices', label: 'Stop these' }];
-    return [{ id: 'done', label: 'Done' }, { id: 'later', label: 'Later' },
+    // D-325 §15.7 (2026-10-24) — a reminder is a notification, so it offers no Done:
+    // pressed to clear a passport's first reminder, it closed the renewal with nothing
+    // renewed. A task is marked done in Recued, a renewal by its new date. A reminder
+    // sent before still carries Done; `completeOccurrence` leaves a renewal open.
+    return [{ id: 'later', label: 'Later' },
       { id: 'not_needed', label: item.asset.settings.travel_document === true || ['passport', 'id_card', 'visa', 'driving_licence'].includes(item.asset.class_id ?? '') ? 'Not renewing' : 'Not needed' },
       { id: 'stop_requested', label: 'Stop reminding' }];
   };
@@ -171,7 +177,8 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       : mode === 'question' ? `When was ${item.asset.name} last done? ${item.rule.title}. The date is unknown; no deadline has been assumed. To choose another date, open this item in Yours.`
       : mode === 'confirm_stop' ? `Stop reminders for ${ruleStatement(item.rule, item.asset.name)}? This is a safety, legal or travel clock. Its obligation stays open.`
       : mode === 'later_choice' ? `The next reminder for ${item.rule.title} is in a week. Choose another time, or open the item to set one.`
-      : `${ruleStatement(item.rule, item.asset.name)}. ${fact}.${item.due ? ` Due ${item.due}.` : ' No deadline can be established yet.'}`;
+      : `${ruleStatement(item.rule, item.asset.name)}. ${fact}.${item.due ? ` Due ${item.due}.` : ' No deadline can be established yet.'}${mode !== 'action' ? ''
+        : assetRenewal(item.asset, item.rule) ? ' Once renewed, enter the new date in Recued.' : ' Mark it done in Recued.'}`;
     const base = publicBaseUrl?.();
     return { ask_id, message: { title, text, ...(base ? { link_url: `${base.replace(/\/$/, '')}/${route}` } : {}) },
       ui_link_url: route, options: options(mode, item), handler: { kind: ASSET_REMINDER_HANDLER,
@@ -249,7 +256,7 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
           answer.option === 'later_month' ? 'months' : 'days'));
       }
       deps.measure?.('clock.answer', 1, { outcome: answer.option, class: item.asset.class_id ?? 'unclassified',
-        rule_kind: item.rule.when.kind, channel: actual.answered_via ?? 'unknown', participant: actual.owner_answer === true ? 'owner' : 'household',
+        rule_kind: item.rule.when.kind, channel: actual.answered_via ?? 'unknown',
         point: points.pointForAsk(payload.ask_id)?.point_key.split(':')[0] ?? String(payload.mode ?? 'auxiliary') }, answer.answered_at, `clock-answer:${payload.ask_id}`);
       if (actual.owner_answer === true) deps.ownerResponse?.([{ collection: item.row.subject_kind === 'occasion' ? 'occasion' : 'asset', id: item.row.asset_id },
         ...(item.row.commitment_id ? [{ collection: 'commitment', id: item.row.commitment_id }] : [])], answer.answered_at);
@@ -270,7 +277,7 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
     }
   };
   const offerPhoneChannel = async (destinations: readonly AskDeliveryDestination[]): Promise<void> => {
-    if (!notifier || destinations.some(destination => destination.channel !== 'ui' && destination.channel !== 'bridge')) return;
+    if (!notifier || reachesPhone(destinations)) return;
     let hasClock = deps.additionalSubjects?.hasEnabledClock() === true;
     for (let cursor = ''; !hasClock;) {
       const page = deps.work.walkByAssetId(cursor, 100); if (!page.length) break;

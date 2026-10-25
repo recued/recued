@@ -286,6 +286,8 @@ describe('D-166 contract_definition schema substrate', () => {
         'display_name',
         'scope',
         'door_execution_policy',
+        // D-327 — an agreement that is its key's whole authority.
+        'key_authority',
         'read_spheres',
         // D-187 §6 (step 7) — the level-1 door-type axis.
         'door_types',
@@ -330,6 +332,9 @@ describe('D-166 contract_definition schema substrate', () => {
         scope: 'contract_scope',
         read_spheres: 'enum:personal|professional[]?',
         door_execution_policy: 'door_execution_policy?',
+        // D-327 — optional, so every contract minted before it stays valid and
+        // keeps the older key model.
+        key_authority: 'enum:contract?',
         // D-187 §6 + D-196 — the level-1 door-type axis (optional array-of-enum).
         // D-207 — `reception` joins it. See the derivation ratchet below: this literal is
         // the EXPECTATION, and the schema DERIVES its own from `DOOR_TYPES`.
@@ -518,6 +523,21 @@ describe('D-166 validateContractWrite for nested contract_scope', () => {
     expect(contractDefinitionWriteIssues(contractDefinitionValue({
       door_execution_policy: { max_steps: 64, allow_ai: false },
     }))).toEqual([]);
+  });
+
+  it('accepts an agreement that is its key\'s whole authority (D-327)', () => {
+    expect(contractDefinitionWriteIssues(contractDefinitionValue({
+      key_authority: 'contract',
+    }))).toEqual([]);
+  });
+
+  it('rejects a key authority outside the closed vocabulary (D-327)', () => {
+    expect(contractDefinitionWriteIssues(contractDefinitionValue({
+      key_authority: 'checklist',
+    }))).toContainEqual(expect.objectContaining({
+      code: 'type_mismatch',
+      entry: 'contract_definition.key_authority',
+    }));
   });
 
   it('rejects an incomplete or mistyped door execution policy', () => {

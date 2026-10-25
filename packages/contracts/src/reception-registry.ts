@@ -452,6 +452,9 @@ export type ReceptionComposeProposeResult = ProposedEndpointConfig;
 export const RECEPTION_RPC_METHODS = [
   // Owner-only customer quote sign-off authoring, served by the same slice.
   'reception.signoff.quotes',
+  'reception.signoff.resume',
+  'reception.signoff.link.check',
+  'reception.signoff.completion.resume',
   'reception.signoff.prepare',
   'reception.signoff.prepare_addition',
   'reception.signoff.publish',

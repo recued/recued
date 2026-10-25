@@ -1,4 +1,5 @@
 import type { QuoteSignoffReceipt, QuoteSignoffReceiptEntry, QuoteSignoffState, QuoteCompletionReceiptEntry } from '@recued/contracts';
+import { restoreCustomerWorkspaceControl } from './customer-workspace-focus.js';
 
 const states: Record<QuoteSignoffState, string> = {
   draft: 'Draft', publishing: 'Publishing', waiting: 'Request not released', accepted: 'Reply processed',
@@ -102,13 +103,28 @@ export const mountQuoteSignoffReceipt = (opts: {
   const refresh = button('Refresh receipt'); const close = button('Close receipt');
   const content = doc.createElement('div'); content.setAttribute('data-signoff-receipt-requests', ''); root.appendChild(content);
   let receipt: QuoteSignoffReceipt | null = null; let selected = ''; let generation = 0; let disposed = false;
+  let interaction = 0;
+  const interacted = () => { interaction++; };
+  doc.addEventListener?.('pointerdown',interacted,true); doc.addEventListener?.('keydown',interacted,true); doc.addEventListener?.('focusin',interacted,true);
   let printFrame: HTMLIFrameElement | null = null; let printTimer: ReturnType<typeof setTimeout> | undefined;
   const clearPrint = () => { if (printTimer !== undefined) clearTimeout(printTimer); printTimer = undefined; printFrame?.remove(); printFrame = null; };
   const enabled = () => { download.disabled = receipt === null; print.disabled = receipt === null || printFrame !== null; };
-  const open = async (id: string) => {
+  const finishPrint = (frame: HTMLIFrameElement) => {
+    if (disposed || printFrame !== frame) return;
+    const restore = doc.activeElement === frame || doc.activeElement === doc.body;
+    clearPrint(); enabled();
+    if (restore && root.isConnected && !root.hidden) print.focus({ preventScroll: true });
+  };
+  const open = async (id: string, sourceControl?: HTMLButtonElement) => {
     if (disposed) return;
-    const current = ++generation; selected = id; receipt = null; clearPrint(); enabled();
-    root.hidden = false; content.replaceChildren(); message.textContent = 'Loading receipt…'; refresh.disabled = true; root.focus();
+    const previousActive = doc.activeElement;
+    const refreshInteraction = interaction;
+    const retained = selected === id ? receipt : null;
+    const current = ++generation; selected = id; clearPrint();
+    if (!retained) { receipt = null; content.replaceChildren(); }
+    enabled(); root.hidden = false;
+    message.textContent = retained ? `Refreshing receipt. Showing snapshot captured ${stamp(retained.captured_at)}.` : 'Loading receipt…';
+    refresh.disabled = true; if (!sourceControl) root.focus();
     try {
       const result = await opts.read(id);
       if (disposed || current !== generation) return;
@@ -126,29 +142,43 @@ export const mountQuoteSignoffReceipt = (opts: {
       }
       // Format before enabling either action, so invalid timestamps cannot produce a partial export.
       signoffReceiptHtml(result);
-      receipt = result;
-      message.textContent = `Snapshot captured ${stamp(result.captured_at)}. Customer replies and owner releases are recorded separately.`;
+      const expanded = new Map(retained ? [...content.querySelectorAll<HTMLDetailsElement>('[data-signoff-receipt-terms]')]
+        .map(node => [node.getAttribute('data-signoff-receipt-terms'),node.open] as const) : []);
+      const focusedTerms = [...content.querySelectorAll<HTMLDetailsElement>('[data-signoff-receipt-terms]')]
+        .find(node => node.querySelector('summary') === doc.activeElement)?.getAttribute('data-signoff-receipt-terms');
+      const replacement = doc.createElement('div');
       for (const entry of result.requests) {
-        const article = doc.createElement('article'); content.appendChild(article);
+        const article = doc.createElement('article'); replacement.appendChild(article);
         add('h3', heading(entry), article); lines(entry).forEach(line => add('p', line, article));
-        const details = doc.createElement('details'); details.open = true; article.appendChild(details);
+        const details = doc.createElement('details'); details.setAttribute('data-signoff-receipt-terms',entry.signoff_id);
+        details.open = expanded.get(entry.signoff_id) ?? true; article.appendChild(details);
         add('summary', offerHeading(entry), details); add('pre', entry.customer_preview, details);
       }
       for (const entry of result.completions ?? []) {
-        const article = doc.createElement('article'); content.appendChild(article);
+        const article = doc.createElement('article'); replacement.appendChild(article);
         add('h3','Delivery completion',article); completionLines(entry).forEach(line => add('p',line,article));
         add('pre',entry.customer_preview,article);
       }
+      content.replaceChildren(...Array.from(replacement.childNodes)); receipt = result;
+      if (focusedTerms) [...content.querySelectorAll<HTMLDetailsElement>('[data-signoff-receipt-terms]')]
+        .find(node => node.getAttribute('data-signoff-receipt-terms') === focusedTerms)?.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
+      message.textContent = `Snapshot captured ${stamp(result.captured_at)}. Customer replies and owner releases are recorded separately.`;
     } catch (error) {
-      if (!disposed && current === generation) message.textContent = error instanceof Error ? error.message : 'Could not load this receipt. Try again.';
-    } finally { if (!disposed && current === generation) { refresh.disabled = false; enabled(); } }
+      if (!disposed && current === generation) {
+        const reason = error instanceof Error ? error.message : 'Could not load this receipt. Try again.';
+        message.textContent = retained ? `${reason} Showing snapshot captured ${stamp(retained.captured_at)}. Refresh to check for updates.` : reason;
+      }
+    } finally { if (!disposed && current === generation) {
+      refresh.disabled = false; enabled();
+      if (!root.hidden && refreshInteraction === interaction) restoreCustomerWorkspaceControl(doc,sourceControl ?? null,[],previousActive);
+    } }
   };
   const closeReceipt = () => {
     generation++; receipt = null; clearPrint(); root.hidden = true; content.replaceChildren(); enabled(); opts.returnFocus(selected);
   };
   close.addEventListener('click', closeReceipt);
   root.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); closeReceipt(); } });
-  refresh.addEventListener('click', () => { if (!disposed && !refresh.disabled) void open(selected); });
+  refresh.addEventListener('click', () => { if (!disposed && !refresh.disabled) void open(selected,refresh); });
   download.addEventListener('click', () => {
     if (!receipt || disposed) return;
     try { downloadReceiptHtml(doc, root, `signoff-${receipt.selected_signoff_id}.html`, signoffReceiptHtml(receipt)); }
@@ -164,16 +194,19 @@ export const mountQuoteSignoffReceipt = (opts: {
     frame.addEventListener('load', () => {
       if (disposed || printFrame !== frame) return;
       const view = frame.contentWindow;
-      if (!view) { clearPrint(); enabled(); message.textContent = 'Printing is unavailable in this browser.'; return; }
+      if (!view) { finishPrint(frame); message.textContent = 'Printing is unavailable in this browser.'; return; }
       if (printTimer !== undefined) clearTimeout(printTimer);
       printTimer = undefined;
-      view.addEventListener('afterprint', () => { if (printFrame === frame) { clearPrint(); enabled(); } }, { once: true });
+      view.addEventListener('afterprint', () => finishPrint(frame), { once: true });
       try { view.focus(); view.print(); }
-      catch { clearPrint(); enabled(); message.textContent = 'Could not print. Download the receipt and print it from your browser.'; }
+      catch { finishPrint(frame); message.textContent = 'Could not print. Download the receipt and print it from your browser.'; }
     });
-    printTimer = setTimeout(() => { if (printFrame === frame) { clearPrint(); enabled(); message.textContent = 'The print view could not load. Try again.'; } }, 10_000);
+    printTimer = setTimeout(() => { if (printFrame === frame) { finishPrint(frame); message.textContent = 'The print view could not load. Try again.'; } }, 10_000);
     frame.srcdoc = signoffReceiptHtml(receipt); root.appendChild(frame);
   });
   enabled();
-  return { open, dispose: () => { disposed = true; generation++; clearPrint(); receipt = null; root.remove(); } };
+  return { open, dispose: () => {
+    disposed = true; generation++; clearPrint(); receipt = null;
+    doc.removeEventListener?.('pointerdown',interacted,true); doc.removeEventListener?.('keydown',interacted,true); doc.removeEventListener?.('focusin',interacted,true); root.remove();
+  } };
 };

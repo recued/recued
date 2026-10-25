@@ -35,7 +35,7 @@ export const REF_PICKER_STYLES = `
 .ref-picker-input:focus {
   outline: none;
   border-color: var(--color-accent, var(--accent));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent, var(--accent)) 18%, transparent);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--color-accent, var(--accent));
 }
 
 .ref-picker-clear {

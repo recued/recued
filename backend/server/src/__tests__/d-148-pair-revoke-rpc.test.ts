@@ -679,3 +679,58 @@ describe('D-156 follow-on — handlePairRevoke pair.list_changed broadcast', () 
     expect(paired.isRevoked('ext-bcast')).toBe(true);
   });
 });
+
+// ⛔ Two browsers of one kind read alike in Devices ("Chrome on macOS"), and
+// which one to revoke was a guess; and a dead entry looked like a quiet one.
+describe('pair.list last_seen_at and pair.rename', () => {
+  let db: Database.Database;
+  let paired: PairedInstancesStore;
+  const events: PairListChangedEvent[] = [];
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    paired = createPairedInstancesStore(db);
+    events.length = 0;
+    paired.addOrRefresh({ instance_id: 'laptop', user_id: 'mary', display_name: 'Chrome on macOS', now: 100 });
+    paired.addOrRefresh({ instance_id: 'gone', user_id: 'mary', display_name: 'Chrome on macOS', now: 100 });
+    paired.addOrRefresh({ instance_id: 'theirs', user_id: 'sam', display_name: 'Safari on iOS', now: 100 });
+  });
+
+  const slice = () => makePairHandlers(
+    paired,
+    () => ({ ...stubWsServer(), listConnectedPairedInstances: () => [] }) as unknown as WsServerHandle,
+    undefined,
+    undefined,
+    (event) => { events.push(event); },
+  )!;
+
+  it('lists when each device was last here, and nothing for one not seen yet', async () => {
+    paired.noteSeen('laptop', 1_700_000_000);
+    const { devices } = await slice().handlers['pair.list'](undefined, stubCtx(null, 'mary'));
+    expect(devices.find((d) => d.instance_id === 'laptop')?.last_seen_at).toBe(1_700_000_000);
+    expect(devices.find((d) => d.instance_id === 'gone')).not.toHaveProperty('last_seen_at');
+  });
+
+  it('renames a device, trimmed, and tells every Devices list', async () => {
+    const result = await slice().handlers['pair.rename'](
+      { instance_id: 'laptop', display_name: '  Work\tlaptop  ' },
+      stubCtx(null, 'mary'),
+    );
+    expect(result).toEqual({ ok: true, display_name: 'Work laptop' });
+    expect(paired.get('laptop')?.display_name).toBe('Work laptop');
+    expect(events).toEqual([{ kind: 'pair.list_changed', op: 'renamed' }]);
+  });
+
+  it('refuses an empty or too long name, an unknown or revoked device, and another account’s', async () => {
+    paired.revoke('gone', 200);
+    const rename = (instance_id: string, display_name: string, user = 'mary') =>
+      slice().handlers['pair.rename']({ instance_id, display_name }, stubCtx(null, user));
+    await expect(rename('laptop', '   ')).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(rename('laptop', 'x'.repeat(65))).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(rename('nope', 'Phone')).rejects.toMatchObject({ code: 'not_found' });
+    await expect(rename('gone', 'Phone')).rejects.toMatchObject({ code: 'not_found' });
+    await expect(rename('theirs', 'Mine now')).rejects.toMatchObject({ code: 'forbidden' });
+    expect(paired.get('theirs')?.display_name).toBe('Safari on iOS');
+    expect(events).toEqual([]);
+  });
+});

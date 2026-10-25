@@ -10,9 +10,14 @@ import {
   announceColdStartCredentialCheck,
   inspectColdStartCredentials,
   mountColdStartCredentialRepairHost,
+  profileScopedRepairWipers,
   startColdStartCredentialRepair,
 } from './cold-start-credential-repair.js';
-import { readCompleteStoredPair } from './stored-pair-state.js';
+import {
+  readCompleteStoredPair,
+  readStoredPairState,
+  type StoredPairState,
+} from './stored-pair-state.js';
 import { WebclientReauthRequiredError } from '../realtime/ws-client.js';
 import {
   createInMemoryWebclientLocalStore,
@@ -1422,5 +1427,275 @@ describe('startColdStartCredentialRepair', () => {
     expect(runBootstrap).toHaveBeenCalledTimes(1);
     expect(removeSplash).toHaveBeenCalledWith(dom.document);
     expect(replaceHash).toHaveBeenCalledWith('#connections');
+  });
+});
+
+describe('profileScopedRepairWipers', () => {
+  /** Office signed in; Lab saved with only its address — what a reconnect
+   *  from before 2026-10-23 left of another server — and active. */
+  const officeAndDamagedLab = async () => {
+    const store = createInMemoryWebclientLocalStore();
+    const officeId = await store.ensureProfile('wss://office.recued.cloud:9443/ws');
+    await store.set('server_public_key', 'spki-office');
+    await store.set('pair_metadata', {
+      paired_at: 1_700_000_000,
+      server_passport_fingerprint: 'fp-office',
+      server_handle_at_pair: 'office',
+    });
+    await store.set('webclient_token', TOKEN);
+    const labId = await store.ensureProfile('wss://lab.recued.cloud:8443/ws');
+    return { store, officeId, labId };
+  };
+
+  it('wipes the whole store and the key when the repair would empty the roster anyway', async () => {
+    const store = createInMemoryWebclientLocalStore();
+    await store.ensureProfile('wss://lab.recued.cloud:8443/ws');
+    const clearStore = vi.fn(async () => undefined);
+    const wipeCryptoKeys = vi.fn(async () => undefined);
+    const wipers = profileScopedRepairWipers({
+      profileStore: store,
+      clearStore,
+      wipeCryptoKeys,
+    });
+
+    await wipers.cryptoKeysWiper();
+    await wipers.credentialStoreWiper();
+
+    expect(wipeCryptoKeys).toHaveBeenCalledOnce();
+    expect(clearStore).toHaveBeenCalledOnce();
+  });
+
+  it('swaps only the damaged server for a pending record, keeping the others and the shared key', async () => {
+    const { store, officeId, labId } = await officeAndDamagedLab();
+    const clearStore = vi.fn(async () => undefined);
+    const wipeCryptoKeys = vi.fn(async () => undefined);
+    const wipers = profileScopedRepairWipers({
+      profileStore: store,
+      clearStore,
+      wipeCryptoKeys,
+    });
+
+    await wipers.cryptoKeysWiper();
+    await wipers.credentialStoreWiper();
+
+    // The key seals every server's sign-in; the store holds every server.
+    expect(wipeCryptoKeys).not.toHaveBeenCalled();
+    expect(clearStore).not.toHaveBeenCalled();
+    const profiles = await store.listProfiles();
+    expect(profiles.find((p) => p.id === officeId)?.webclient_token).toEqual(TOKEN);
+    expect(profiles.some((p) => p.id === labId)).toBe(false);
+    expect(await readStoredPairState(store)).toEqual({ kind: 'empty' });
+  });
+
+  it('clears an add attempt that holds leftovers, so the repair card does not come back', async () => {
+    // ⛔ Retiring into the same pending record left its stray field in place:
+    // "Clear incomplete setup" changed nothing and the next start showed the
+    // card again.
+    const store = createInMemoryWebclientLocalStore();
+    const officeId = await store.ensureProfile('wss://office.recued.cloud:9443/ws');
+    await store.set('webclient_token', TOKEN);
+    await store.beginNewProfile();
+    await store.set('cert_pin_state', { current_fingerprint: 'stray', current_valid_until: 1 });
+    const before = await inspectColdStartCredentials({
+      localStore: store,
+      tokenStore: tokenStore(async () => 'unused'),
+    });
+    expect(before.kind).toBe('partial');
+    const wipers = profileScopedRepairWipers({
+      profileStore: store,
+      clearStore: vi.fn(async () => undefined),
+      wipeCryptoKeys: vi.fn(async () => undefined),
+    });
+
+    await wipers.cryptoKeysWiper();
+    await wipers.credentialStoreWiper();
+
+    expect(await readStoredPairState(store)).toEqual({ kind: 'empty' });
+    const after = await inspectColdStartCredentials({
+      localStore: store,
+      tokenStore: tokenStore(async () => 'unused'),
+    });
+    expect(after.kind).not.toBe('partial');
+    expect((await store.listProfiles()).find((p) => p.id === officeId)?.webclient_token)
+      .toEqual(TOKEN);
+  });
+
+  it('lands "Clear incomplete setup and reconnect" on the damaged server’s pair form, not on another server', async () => {
+    // ⛔ Removing the damaged record moved the pointer to Office, so the
+    // handoff mounted Office and the server being repaired was simply gone.
+    const { store } = await officeAndDamagedLab();
+    const health = await inspectColdStartCredentials({
+      localStore: store,
+      tokenStore: tokenStore(async () => 'unused'),
+    });
+    expect(health.kind).toBe('partial');
+    if (health.kind !== 'partial') return;
+    const wipers = profileScopedRepairWipers({
+      profileStore: store,
+      clearStore: () => store.clear(),
+      wipeCryptoKeys: async () => undefined,
+    });
+    let storeAtHandoff: StoredPairState | null = null;
+    const runBootstrap = vi.fn(async (_deps: PairFallbackBootstrapDeps) => {
+      storeAtHandoff = await readStoredPairState(store);
+      return { kind: 'pair-form' as const };
+    });
+    const host = startColdStartCredentialRepair({
+      root: {} as HTMLElement,
+      document: fakeRepairDom().document,
+      localStore: store,
+      profileStore: store,
+      tokenStore: tokenStore(async () => 'unused'),
+      transport: {} as PairFallbackBootstrapDeps['transport'],
+      handleRef: { current: null },
+      cryptoKeysWiper: wipers.cryptoKeysWiper,
+      credentialStoreWiper: wipers.credentialStoreWiper,
+      target: { kind: 'partial', partial: health.partial },
+      returnHash: '#chat',
+      recoveryReentryStorage: null,
+      pairLockProvider: null,
+      runBootstrap,
+    });
+
+    await host.repair();
+
+    expect(runBootstrap).toHaveBeenCalledOnce();
+    // Unpaired, so the boot shows the pair form — with Lab's address in it.
+    expect(storeAtHandoff).toEqual({ kind: 'empty' });
+    expect(runBootstrap.mock.calls[0]?.[0].reauthRecovery?.serverUrl)
+      .toBe('wss://lab.recued.cloud:8443/ws');
+  });
+});
+
+/** ⛔ Any complete pair a sibling tab left counted as this repair's: another
+ *  tab switching the browser to a different saved server read as "Access
+ *  finished saving in another tab", naming the wrong server — and with that
+ *  server not complete, "Clear incomplete setup" ran its clear under it. */
+describe('startColdStartCredentialRepair: another tab switches servers', () => {
+  const LAB_URL = 'wss://lab.recued.cloud:8443/ws';
+
+  /** Office signed in; Lab damaged (address only) and active. */
+  const officeAndDamagedLab = async () => {
+    const store = createInMemoryWebclientLocalStore();
+    const officeId = await store.ensureProfile('wss://office.recued.cloud:9443/ws');
+    await store.set('server_public_key', 'spki-office');
+    await store.set('pair_metadata', {
+      paired_at: 1_700_000_000,
+      server_passport_fingerprint: 'fp-office',
+      server_handle_at_pair: 'office',
+    });
+    await store.set('webclient_token', TOKEN);
+    const labId = await store.ensureProfile(LAB_URL);
+    return { store, officeId, labId };
+  };
+
+  const startOnLab = async () => {
+    const servers = await officeAndDamagedLab();
+    const health = await inspectColdStartCredentials({
+      localStore: servers.store,
+      tokenStore: tokenStore(async () => 'unused'),
+    });
+    if (health.kind !== 'partial') throw new Error(`expected partial, got ${health.kind}`);
+    const listeners = new Set<(hint: PairTabConvergenceHint) => void>();
+    const credentialConvergence = {
+      supportsImmediateSignals: true,
+      supportsRecoverySuccessorElection: false,
+      notifyPairComplete: vi.fn(),
+      notifyCredentialStateChanged: vi.fn(),
+      notifyActiveServerProfileChanged: vi.fn(),
+      notifyPairTransitionStarted: vi.fn(),
+      notifyPairTakeoverStarted: vi.fn(),
+      notifyPairTakeoverNeedsAttention: vi.fn(),
+      notifyPairRecoverySuccessorChosen: vi.fn(),
+      claimPairRecoverySuccessor: vi.fn(async () => null),
+      subscribe: vi.fn((listener: (hint: PairTabConvergenceHint) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }),
+      close: vi.fn(() => listeners.clear()),
+    };
+    const cryptoKeysWiper = vi.fn(async () => undefined);
+    const credentialStoreWiper = vi.fn(async () => undefined);
+    const runBootstrap = vi.fn(async (_deps: PairFallbackBootstrapDeps) => ({
+      kind: 'mounted' as const,
+    }));
+    const reloadPage = vi.fn();
+    const replaceHash = vi.fn();
+    const host = startColdStartCredentialRepair({
+      root: {} as HTMLElement,
+      document: fakeRepairDom().document,
+      localStore: servers.store,
+      profileStore: servers.store,
+      tokenStore: tokenStore(async () => 'unused'),
+      transport: {} as PairFallbackBootstrapDeps['transport'],
+      handleRef: { current: null },
+      cryptoKeysWiper,
+      credentialStoreWiper,
+      credentialConvergence,
+      target: { kind: 'partial', partial: health.partial },
+      targetProfileId: servers.labId,
+      returnHash: '#chat/session/chat_1',
+      recoveryReentryStorage: null,
+      pairLockProvider: null,
+      runBootstrap,
+      removeSplash: vi.fn(),
+      replaceHash,
+      reloadPage,
+    });
+    await Promise.resolve();
+    const emit = (): void => {
+      for (const listener of [...listeners]) listener('reconcile');
+    };
+    return {
+      ...servers, host, emit, cryptoKeysWiper, credentialStoreWiper, runBootstrap, reloadPage, replaceHash,
+    };
+  };
+
+  it('follows another tab to the server it chose, to a safe place, instead of adopting it', async () => {
+    const lab = await startOnLab();
+    await lab.store.switchProfile(lab.officeId);
+
+    lab.emit();
+
+    await vi.waitFor(() => expect(lab.reloadPage).toHaveBeenCalledOnce());
+    expect(lab.runBootstrap).not.toHaveBeenCalled();
+    expect(lab.replaceHash).toHaveBeenLastCalledWith('#chat');
+    expect(lab.cryptoKeysWiper).not.toHaveBeenCalled();
+    expect(lab.credentialStoreWiper).not.toHaveBeenCalled();
+  });
+
+  it('clears nothing when the repair is chosen after another tab switched servers', async () => {
+    const lab = await startOnLab();
+    await lab.store.switchProfile(lab.officeId);
+
+    await lab.host.repair();
+
+    expect(lab.cryptoKeysWiper).not.toHaveBeenCalled();
+    expect(lab.credentialStoreWiper).not.toHaveBeenCalled();
+    expect(lab.reloadPage).toHaveBeenCalledOnce();
+    expect((await lab.store.listProfiles())
+      .find((p) => p.id === lab.officeId)?.webclient_token).toEqual(TOKEN);
+  });
+
+  it('still adopts another tab finishing THIS server, even under a fresh record', async () => {
+    const lab = await startOnLab();
+    // The other tab's repair replaced Lab's record, then paired Lab again.
+    await lab.store.removeProfile(lab.labId);
+    await lab.store.beginNewProfile();
+    await lab.store.ensureProfile(LAB_URL);
+    await lab.store.set('server_public_key', 'spki-lab');
+    await lab.store.set('pair_metadata', {
+      paired_at: 1_700_000_001,
+      server_passport_fingerprint: 'fp-lab',
+      server_handle_at_pair: 'lab',
+    });
+    await lab.store.set('webclient_token', { ...TOKEN, token_id: 'tok-lab' });
+
+    lab.emit();
+
+    await vi.waitFor(() => expect(lab.runBootstrap).toHaveBeenCalledOnce());
+    expect(lab.runBootstrap.mock.calls[0]?.[0].reauthRecovery?.pairCompletedInAnotherTab)
+      .toBe(true);
+    expect(lab.reloadPage).not.toHaveBeenCalled();
   });
 });

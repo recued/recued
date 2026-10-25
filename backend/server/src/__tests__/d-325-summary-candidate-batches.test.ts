@@ -81,7 +81,7 @@ describe('summary batches filled from sphere-selected candidates', () => {
       const read = await f.measure(() => f.service.snapshot({ asset_filter: 'missing_facts', asset_sphere: 'professional', include_asset_summaries: true, offset: 197, limit: 50 }));
       expect(read.value.total_assets).toBe(402); expect(read.value.assets).toEqual(expected.assets); expect(read.value.asset_summaries).toEqual(expected.summaries);
       expect(read.value.asset_filter).toEqual({ kind: 'missing_facts', unavailable: 0 });
-      expect(read.sql.filter(receiptBatch)).toEqual([]); expect(read.sql.filter(receiptList)).toHaveLength(3);
+      expect(read.sql.filter(receiptBatch)).toEqual([]); expect(read.sql.filter(receiptList)).toHaveLength(2);
       expect(histories.mock.calls.map(([requests]) => requests.length)).toEqual([400, 400, 4]);
       expect(histories.mock.calls.flatMap(([requests]) => requests)).toEqual(ids.flatMap(asset_id => ['meter', 'spare'].map(field => ({ asset_id, field }))));
       expect(read.sql.filter(historyStream)).toHaveLength(1); expect(read.sql.filter(historyBatch)).toEqual([]);
@@ -191,6 +191,6 @@ describe('summary batches filled from sphere-selected candidates', () => {
     const f = fixture(); f.seed(1003); const histories = vi.spyOn(f.work, 'assetReadingHistories');
     const read = await f.measure(() => f.service.snapshot({ asset_filter: 'missing_facts', asset_sphere: 'professional', include_asset_summaries: true, offset: 999 }));
     expect(read.value.total_assets).toBe(402); expect(read.value.assets).toEqual([]); expect(read.value.asset_summaries).toEqual([]);
-    expect(read.sql.filter(receiptBatch)).toEqual([]); expect(read.sql.filter(receiptList)).toHaveLength(3); expect(histories.mock.calls.flatMap(([requests]) => requests)).toHaveLength(804);
+    expect(read.sql.filter(receiptBatch)).toEqual([]); expect(read.sql.filter(receiptList)).toHaveLength(2); expect(histories.mock.calls.flatMap(([requests]) => requests)).toHaveLength(804);
   });
 });

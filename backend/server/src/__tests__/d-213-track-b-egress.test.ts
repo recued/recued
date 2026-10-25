@@ -117,7 +117,11 @@ describe('D-213 Track B — X1 egress reharvest integration', () => {
     ).toBe(false);
   });
 
-  it('derives overlap suffixes from raw owner disclosure before direct protection rewrites it', async () => {
+  it('⛔ gives no overlap tail for a name the owner\'s message no longer shows', async () => {
+    // Until 2026-10-24 this asserted `pii.Person1.alice.ada` — in the owner's OWN
+    // message as well as the result: tails were derived from the raw message, so the
+    // name came back spelled out beside the alias that hid it. A tail now carries
+    // only words still readable in the owner's messages as sent (D-224 amendment).
     const plan = makePlan({
       resolver: () => [{ path: 'owner', kind: 'name' }],
       candidateReharvest: {
@@ -153,10 +157,8 @@ describe('D-213 Track B — X1 egress reharvest integration', () => {
       },
     );
 
-    expect(providerPacket.user_message).toBe('pii.Person1.alice.ada');
-    expect(providerPacket.recall_context?.[0]?.result).toBe(
-      'pii.Person1.alice.ada',
-    );
+    expect(providerPacket.user_message).toBe('pii.Person1');
+    expect(providerPacket.recall_context?.[0]?.result).toBe('pii.Person1');
   });
 
   it('does not overwrite Track A recall completeness with candidate-harvest partiality', async () => {

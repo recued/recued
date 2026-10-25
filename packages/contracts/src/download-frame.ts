@@ -101,7 +101,7 @@ export const parseDownloadControlFrame = (raw: string): DownloadControlFrame | n
   if (f.type === 'download_complete' && typeof f.req_id === 'string' && typeof f.size_bytes === 'number') {
     return { type: 'download_complete', req_id: f.req_id, size_bytes: f.size_bytes };
   }
-  if (f.type === 'download_error' && typeof f.reason === 'string') {
+  if (f.type === 'download_error' && typeof f.reason === 'string' && (f.req_id === undefined || typeof f.req_id === 'string')) {
     return {
       type: 'download_error',
       ...(typeof f.req_id === 'string' ? { req_id: f.req_id } : {}),

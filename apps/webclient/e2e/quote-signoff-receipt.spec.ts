@@ -2,6 +2,7 @@ import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
+import { openSignoffRequestDetails } from './helpers/signoff-request.js';
 import type {} from './harness/quote-signoff-harness.js';
 
 const BASE = `${process.env.E2E_SIGNOFF_HARNESS_URL ?? HARNESS_ORIGIN}/quote-signoff-harness.html`;
@@ -20,7 +21,8 @@ const prepare = async (page: Page) => {
   await page.getByLabel('Complete scope shown to the customer').fill('Three drawings. <img src=x onerror=alert(1)>');
   await page.getByLabel('Task to create after your approval').fill('PRIVATE internal task');
   await page.getByLabel('Invoice reference', { exact: true }).fill('INV-101');
-  await page.getByRole('button', { name: 'Preview customer sign-off' }).click();
+  await page.getByRole('button', { name: 'Prepare sign-off preview' }).click();
+  await openSignoffRequestDetails(page.locator('[data-signoff-history] article').first());
   await expect(page.getByRole('button', { name: 'View sign-off receipt' })).toBeVisible();
 };
 

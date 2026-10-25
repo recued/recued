@@ -85,6 +85,7 @@ import {
   COLD_START_CREDENTIAL_SETTLE_MS,
   announceColdStartCredentialCheck,
   inspectColdStartCredentials,
+  profileScopedRepairWipers,
   startColdStartCredentialRepair,
   type ColdStartCredentialHealth,
 } from './boot/cold-start-credential-repair.js';
@@ -571,20 +572,17 @@ const main = async (): Promise<void> => {
     // without making the user clear or re-pair anything here.
     const repairCredentialConvergence =
       createBrowserPairTabConvergence();
+    // The saved server the damage was found on, so the repair can tell
+    // another tab's switch from another tab's repair of this one.
+    const repairProfileId = await localStore.activeProfileId().catch(() => null);
     try {
-      // True when the repair has at most the one profile to remove — the
-      // point at which a whole-store wipe and a profile-scoped one are the
-      // same act. Read BEFORE anything is removed, so both wipers agree.
-      const repairWouldEmptyRoster = async (): Promise<boolean> => {
-        try {
-          return (await localStore.listProfiles()).length <= 1;
-        } catch {
-          // A roster read that fails is itself a broken store; fall back to
-          // the historic whole-store wipe rather than leaving a half-repaired
-          // browser that cannot pair.
-          return true;
-        }
-      };
+      // PROFILE-SCOPED repair wipes: one broken server must not cost the
+      // owner the servers that still work — see `profileScopedRepairWipers`.
+      const repairWipers = profileScopedRepairWipers({
+        profileStore: localStore,
+        clearStore: () => localKeyValue.clear(),
+        wipeCryptoKeys: wipeWebclientCryptoKeyStore,
+      });
       startColdStartCredentialRepair({
         root,
         localStore,
@@ -592,37 +590,14 @@ const main = async (): Promise<void> => {
         tokenStore,
         transport,
         handleRef,
-        // PROFILE-SCOPED repair wipes.
-        //
-        // Cold-start repair fires when the ACTIVE server's stored generation
-        // is partial or unreadable. The unscoped wipes below it are correct
-        // for a browser paired to one server and destructive for a browser
-        // paired to several: `localKeyValue.clear()` takes the whole roster,
-        // and the AES-GCM key is ONE per origin (`TOKEN_KEY_ID`) wrapping
-        // every profile's bearer — so wiping it while other profiles still
-        // hold tokens would leave them undecryptable. One broken server must
-        // not cost the owner the servers that still work.
-        //
-        // So both wipes stay whole-store ONLY when this repair would empty
-        // the roster anyway (the single-server case, i.e. every install that
-        // predates profiles); otherwise the repair drops just the active
-        // profile and leaves the key alone.
-        cryptoKeysWiper: async () => {
-          if (await repairWouldEmptyRoster()) await wipeWebclientCryptoKeyStore();
-        },
-        credentialStoreWiper: async () => {
-          if (await repairWouldEmptyRoster()) {
-            await localKeyValue.clear();
-            return;
-          }
-          const activeId = await localStore.activeProfileId();
-          if (activeId !== null) await localStore.removeProfile(activeId);
-        },
+        cryptoKeysWiper: repairWipers.cryptoKeysWiper,
+        credentialStoreWiper: repairWipers.credentialStoreWiper,
         onCredentialsRemoved: notifySiblingCredentialsRemoved,
         credentialConvergence: repairCredentialConvergence,
         target: credentialHealth.kind === 'unreadable'
           ? { kind: 'unreadable', pair: credentialHealth.pair }
           : { kind: 'partial', partial: credentialHealth.partial },
+        targetProfileId: repairProfileId,
         returnHash: globalThis.location?.hash || '#chat',
         reloadAttempted: startupReloadRecoveryRequested,
         ...(recoveryReentryUnresolved

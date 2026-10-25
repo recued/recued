@@ -1165,7 +1165,7 @@
     "section": "Enroll a connection",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#enroll-a-connection",
-    "body": "Enroll means \"set up and save\". Open **Connections** and pick a\nprovider. Or let a pack do it. A pack that needs a connection walks you\nthrough the setup while it installs.\n\nEach connection is known by its kind and its name. So `acme-hubspot` and\n`personal-hubspot` are two different connections. Each one has its own\ngrants. A grant is a yes you give ahead of time.\n\nYour list and the Add button come first.\nSearch by name, service, or status to find an account.\nThe status bar shows saved sign-in problems.\nOpen it for repair links and reminders to review access.\nOpen **Apps & APIs** for more sign-in tools.\nExpand **Authentication settings** to find apps, brokers and bulk API moves.\n\nRecued direct OAuth is the first sign-in choice.\nYou can also use a broker.\nMail and Calendar can lead you to the app or broker tools.\nWhen done, choose **Return to mailbox setup** for Mail.\nFor Calendar, choose **Return to calendar setup**.\nThis tab keeps the account name and form choices in memory.\nIt does not carry passwords, app secrets or tokens."
+    "body": "Enroll means \"set up and save\". Open **Connections** and pick a\nprovider. Or let a pack do it. A pack that needs a connection walks you\nthrough the setup while it installs.\n\nEach connection is known by its kind and its name. So `acme-hubspot` and\n`personal-hubspot` are two different connections. Each one has its own\ngrants. A grant is a yes you give ahead of time.\n\nYour list and the Add button come first.\nSearch by name, service, or status to find an account.\nThe status bar shows saved sign-in problems.\nOpen it for repair links and reminders to review access.\nOpen **Apps & APIs** for more sign-in tools.\nExpand **Authentication settings** to find apps, brokers and bulk API moves.\n\nA new API connection first asks **How it signs in**.\nChoose **Recued direct OAuth**, **OAuth broker (Nango)** or **API key or token**.\nOther ways are under **Other ways to sign in**.\nMail and Calendar can lead you to the app or broker tools.\nWhen done, choose **Return to mailbox setup** for Mail.\nFor Calendar, choose **Return to calendar setup**.\nThis tab keeps the account name and form choices in memory.\nIt does not carry passwords, app secrets or tokens."
   },
   {
     "id": "guides/connections#repair-a-password-account",
@@ -1205,7 +1205,7 @@
     "section": "Save more than one OAuth app",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#save-more-than-one-oauth-app",
-    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nChoose **Add OAuth app**. Pick Google or Microsoft.\nGive the app a name, such as Work or Personal.\nEnter its Client ID and secret, then choose **Save app**.\nThe secret stays on your server. Recued never shows it again.\n\nYour old Google and Microsoft apps stay as the default apps.\nEach new app has its own name and keys.\nPick a saved app when you connect an API, Mail, or Calendar account.\nThe app choice is separate from the account you sign in to.\n\nUse **Edit** to change an app name or its expiry date.\nUse **Usage and rotate secret** to change its secret.\nLeave the secret blank to keep it.\nMail and Calendar keep using their chosen app for token refresh.\nChanging a default app does not change other named apps.\nSaved API connections keep their own copy of the app keys.\nUse their credential change flow to replace those keys."
+    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nChoose **Add OAuth app**. Pick Google or Microsoft.\nGive the app a name, such as Work or Personal.\nEnter its Client ID and secret, then choose **Save app**.\nThe secret stays on your server. Recued never shows it again.\n\nYour old Google and Microsoft apps stay as the default apps.\nEach new app has its own name and keys.\nPick a saved app when you connect an API, Mail, or Calendar account.\nThe app choice is separate from the account you sign in to.\n\nEach saved app is one row. Open a row to see its buttons.\nWith many apps, search by name, Client ID or account.\nOnly eight show at first. Choose **Show all** for the rest.\n\nUse **Edit** to change an app name or its expiry date.\nUse **Usage and rotate secret** to change its secret.\nLeave the secret blank to keep it.\nMail and Calendar keep using their chosen app for token refresh.\nChanging a default app does not change other named apps.\nSaved API connections keep their own copy of the app keys.\nUse their credential change flow to replace those keys."
   },
   {
     "id": "guides/connections#keep-track-of-a-secret-s-expiry-date",
@@ -1213,7 +1213,15 @@
     "section": "Keep track of a secret's expiry date",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#keep-track-of-a-secret-s-expiry-date",
-    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nChoose **Edit** on the app.\nIf the vendor shows a date for its secret, copy it into **Secret expiry date**.\nLeave it blank if you do not know.\nChoose **Save app**. You do not need to enter the secret again.\n\nReminders show in Apps & APIs from 30 days before the date.\nThey stay visible while the saved apps list is closed.\nThe view updates as your local calendar day changes.\nA passed date does not prove that access has stopped.\nRecued does not look up or test this date.\nNo date recorded means the date is unknown.\n\nChoose **Edit expiry date** to fix or clear it.\nUse **Clear expiry date** to remove the date.\nThis changes the date only.\nChoose **Review usage and rotate secret** to see the app's uses.\nReview the accounts and API copies before you change the secret.\n\nWhen you rotate a secret, enter its new date if known.\nLeave the new date blank if unknown.\nYou can also choose **Clear new expiry date**.\nA successful rotation clears the app's old date and reminder.\nSkipped API copies keep their old secret.\nTheir expiry dates are not tracked here.\nAn expiry reminder does not start sign-in or change access.\n\nYou cannot remove an app while Mail or Calendar uses it.\nYou cannot change its Client ID then, either.\nAdd a new app for a different Client ID.\nMicrosoft Mail and Calendar must use the same app when they share one sign-in.\n\nIf you remove an app while its editor is open in another tab, refresh that tab.\nIts old draft cannot restore the app or replace new keys.\nIf you save app keys in Mail or Calendar and then cancel consent, the app stays saved.\nYou can retry sign-in without entering the secret again."
+    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nOpen the app's row, then choose **Edit**.\nIf the vendor shows a date for its secret, copy it into **Secret expiry date**.\nLeave it blank if you do not know.\nChoose **Save app**. You do not need to enter the secret again.\n\nReminders show in Apps & APIs from 30 days before the date.\nThey stay visible while the saved apps list is closed.\nThe three soonest show first. Open the line below for the rest.\nThe view updates as your local calendar day changes.\nA passed date does not prove that access has stopped.\nRecued does not look up or test this date.\nNo date recorded means the date is unknown.\n\nChoose **Edit expiry date** to fix or clear it.\nUse **Clear expiry date** to remove the date.\nThis changes the date only.\nChoose **Review usage and rotate secret** to see the app's uses.\nReview the accounts and API copies before you change the secret.\n\nWhen you rotate a secret, enter its new date if known.\nLeave the new date blank if unknown.\nYou can also choose **Clear new expiry date**.\nA successful rotation clears the app's old date and reminder.\nSkipped API copies keep their old secret.\nTheir expiry dates are not tracked here.\nAn expiry reminder does not start sign-in or change access."
+  },
+  {
+    "id": "guides/connections#remove-or-change-a-saved-app",
+    "doc": "Connections",
+    "section": "Remove or change a saved app",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#remove-or-change-a-saved-app",
+    "body": "Open the app's row and choose **Remove**, then **Remove app**.\nYou cannot remove an app while Mail or Calendar uses it.\nYou cannot change its Client ID then, either.\nAdd a new app for a different Client ID.\nMicrosoft Mail and Calendar must use the same app when they share one sign-in.\n\nIf you remove an app while its editor is open in another tab, refresh that tab.\nIts old draft cannot restore the app or replace new keys.\nIf you save app keys in Mail or Calendar and then cancel consent, the app stays saved.\nYou can retry sign-in without entering the secret again."
   },
   {
     "id": "guides/connections#see-app-usage-and-rotate-a-secret",
@@ -1221,7 +1229,7 @@
     "section": "See app usage and rotate a secret",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#see-app-usage-and-rotate-a-secret",
-    "body": "This needs Recued 26.10.16 or later.\nIn **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nChoose **Usage and rotate secret** on the app.\nReview its Mail, Calendar and API uses.\nPacks, recipes, schedules and file sources are shown when known.\nMissing usage is marked as unknown.\nUse this view to fix an app whose saved secret is missing too.\n\nMake a new secret for that same app in the vendor console.\nGoogle’s reset stops the old secret at once.\nSome accounts may need a new sign-in.\nSee [Google’s reset guide](https://docs.cloud.google.com/docs/security/data-loss-prevention/revoking-user-access#rotate_oauth_client_id_secrets).\nFor Microsoft, add a new secret and keep the old one while you test.\nSee [Microsoft’s secret guide](https://learn.microsoft.com/en-us/entra/msidweb/authentication/client-secrets#manage-secret-expiration-and-rotation).\nKeep the Client ID the same.\nPaste the new secret into Recued.\nAdd the new secret's expiry date if you know it.\nLeave it blank to clear the old date after the save.\nConfirmed API copies start checked; clear any you want to skip.\nOld copies with an unknown app start unchecked.\nCheck those only after you review them.\nCopies that share one sign-in must stay together.\nMail and Calendar using the app pick up its new secret when they renew."
+    "body": "This needs Recued 26.10.16 or later.\nIn **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nOpen the app's row, then choose **Usage and rotate secret**.\nReview its Mail, Calendar and API uses.\nPacks, recipes, schedules and file sources are shown when known.\nMissing usage is marked as unknown.\nUse this view to fix an app whose saved secret is missing too.\n\nMake a new secret for that same app in the vendor console.\nGoogle’s reset stops the old secret at once.\nSome accounts may need a new sign-in.\nSee [Google’s reset guide](https://docs.cloud.google.com/docs/security/data-loss-prevention/revoking-user-access#rotate_oauth_client_id_secrets).\nFor Microsoft, add a new secret and keep the old one while you test.\nSee [Microsoft’s secret guide](https://learn.microsoft.com/en-us/entra/msidweb/authentication/client-secrets#manage-secret-expiration-and-rotation).\nKeep the Client ID the same.\nPaste the new secret into Recued.\nAdd the new secret's expiry date if you know it.\nLeave it blank to clear the old date after the save.\nConfirmed API copies start checked; clear any you want to skip.\nOld copies with an unknown app start unchecked.\nCheck those only after you review them.\nCopies that share one sign-in must stay together.\nMail and Calendar using the app pick up its new secret when they renew."
   },
   {
     "id": "guides/connections#apply-a-secret-rotation",
@@ -1237,7 +1245,7 @@
     "section": "Verify a new app secret",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#verify-a-new-app-secret",
-    "body": "In **Manage saved apps**, choose **Verify token renewal** on the app.\nYou can also choose it after a saved secret rotation.\nThe first view reads local settings only.\nChoose which saved sign-ins to check, then choose **Run renewal checks**.\nCopies that share one sign-in stay together.\nThe check uses the app secret saved now. It asks the vendor for a new token.\nA token from the cache cannot pass this check.\nRecued saves new tokens for normal use. It requests no new scopes.\n\nOld secret copies and copies with no known app are left unchecked.\nUse **Usage and rotate secret** to review those copies first.\nEach sign-in has its own **Passed**, **Failed**, or **Unconfirmed** result.\nA refused app secret needs an app or secret fix.\nA refused sign-in may need reauthorization.\nA storage or network error leaves the result unconfirmed.\nIf the saved app or sign-in changes, the old result is **Superseded**.\n\nChecks run in the background. You can close the view.\nReopen it to read the latest saved result.\nAfter a lost reply, choose **Refresh renewal status**.\nThis reads saved status and does not retry the token request.\nA server restart leaves unfinished checks unconfirmed. It never resumes them.\nFinished results are kept for up to 90 days and 10,000 checks on this server.\n\nA passed renewal proves only that the vendor issued a token and Recued saved it.\nUse **Verify access** for data reads. Renewal does not prove send or edit access.\nIt does not start sync, run work or mark an old incident recovered."
+    "body": "In **Manage saved apps**, open the app's row and choose **Verify token renewal**.\nYou can also choose it after a saved secret rotation.\nThe first view reads local settings only.\nChoose which saved sign-ins to check, then choose **Run renewal checks**.\nCopies that share one sign-in stay together.\nThe check uses the app secret saved now. It asks the vendor for a new token.\nA token from the cache cannot pass this check.\nRecued saves new tokens for normal use. It requests no new scopes.\n\nOld secret copies and copies with no known app are left unchecked.\nUse **Usage and rotate secret** to review those copies first.\nEach sign-in has its own **Passed**, **Failed**, or **Unconfirmed** result.\nA refused app secret needs an app or secret fix.\nA refused sign-in may need reauthorization.\nA storage or network error leaves the result unconfirmed.\nIf the saved app or sign-in changes, the old result is **Superseded**.\n\nChecks run in the background. You can close the view.\nReopen it to read the latest saved result.\nAfter a lost reply, choose **Refresh renewal status**.\nThis reads saved status and does not retry the token request.\nA server restart leaves unfinished checks unconfirmed. It never resumes them.\nFinished results are kept for up to 90 days and 10,000 checks on this server.\n\nA passed renewal proves only that the vendor issued a token and Recued saved it.\nUse **Verify access** for data reads. Renewal does not prove send or edit access.\nIt does not start sync, run work or mark an old incident recovered."
   },
   {
     "id": "guides/connections#review-token-renewal-history",
@@ -1349,7 +1357,7 @@
     "section": "Review app permissions",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#review-app-permissions",
-    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Permissions and cleanup**.\nThis shows all saved sign-ins, including those through a broker.\nFor one saved app, open **Manage saved apps**.\nChoose **Review permissions** on that app.\n\nRecued lists each app and its separate sign-ins.\nIt shows what Mail, Calendar, Files and installed workflows need.\nPaused schedules still count as uses.\nEach scope is a vendor permission, such as reading a sheet.\nRequired scopes show which features need them.\nOther uses of the same app can protect a scope too.\n\nA removed pack may leave a scope behind.\nCheck scopes marked **No longer required locally**.\nThen choose **Preview cleanup**.\nThe preview shows what to keep and which uses may be affected.\nIt does not remove access or change your saved sign-ins.\nRefresh if a pack or connection changes during your review.\n\nThese are local records, not a fresh vendor check.\nA requested scope does not prove that the vendor granted it.\nUnknown grants or uses stay unknown.\nOther tools may still need a scope that Recued no longer needs."
+    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Permissions and cleanup**.\nThis shows all saved sign-ins, including those through a broker.\nFor one saved app, open **Manage saved apps**.\nOpen that app's row, then choose **Review permissions**.\n\nRecued lists each app and its separate sign-ins.\nIt shows what Mail, Calendar, Files and installed workflows need.\nPaused schedules still count as uses.\nEach scope is a vendor permission, such as reading a sheet.\nRequired scopes show which features need them.\nOther uses of the same app can protect a scope too.\n\nA removed pack may leave a scope behind.\nCheck scopes marked **No longer required locally**.\nThen choose **Preview cleanup**.\nThe preview shows what to keep and which uses may be affected.\nIt does not remove access or change your saved sign-ins.\nRefresh if a pack or connection changes during your review.\n\nThese are local records, not a fresh vendor check.\nA requested scope does not prove that the vendor granted it.\nUnknown grants or uses stay unknown.\nOther tools may still need a scope that Recued no longer needs."
   },
   {
     "id": "guides/connections#finish-google-cleanup",
@@ -1405,7 +1413,7 @@
     "section": "Switch saved apps for several Mail and Calendar accounts",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#switch-saved-apps-for-several-mail-and-calendar-accounts",
-    "body": "Open the **Mail** or **Calendar** list in **Connections**.\nChoose **Bulk switch saved OAuth apps**.\nPick one destination saved app, then select up to 20 native accounts.\nThe list can include both Mail and Calendar for that vendor.\nAccounts already using the chosen app are skipped.\n\nChoose **Review selected accounts**.\nRecued groups collections that share a sign-in.\nThose collections switch together, even if you selected only one.\nRead the account names, kept resource choices, permissions and callback URL.\nChoose **Authorize and verify account** for each group you want to switch.\nSign in to the same vendor account for each group.\nA different or unknown account cannot pass the check.\n\nChoose **Apply verified groups** after reviewing the checks.\nEach group saves in one step. Names, data, selections and sync state stay in place.\nA failed group keeps its saved app. Other verified groups can still switch.\nEarlier successful switches stay applied if a later one fails.\n**Stop remaining switches** lets the current switch finish and stops the rest.\nOpening another account view also stops the rest after the current switch finishes.\nExpired reviews need a fresh sign-in."
+    "body": "Open the **Mail** or **Calendar** list in **Connections**.\nChoose **Switch OAuth app for several accounts**.\nPick one destination saved app, then select up to 20 native accounts.\nThe list can include both Mail and Calendar for that vendor.\nAccounts already using the chosen app are skipped.\n\nChoose **Review selected accounts**.\nRecued groups collections that share a sign-in.\nThose collections switch together, even if you selected only one.\nRead the account names, kept resource choices, permissions and callback URL.\nChoose **Authorize and verify account** for each group you want to switch.\nSign in to the same vendor account for each group.\nA different or unknown account cannot pass the check.\n\nChoose **Apply verified groups** after reviewing the checks.\nEach group saves in one step. Names, data, selections and sync state stay in place.\nA failed group keeps its saved app. Other verified groups can still switch.\nEarlier successful switches stay applied if a later one fails.\n**Stop remaining switches** lets the current switch finish and stops the rest.\nOpening another account view also stops the rest after the current switch finishes.\nExpired reviews need a fresh sign-in."
   },
   {
     "id": "guides/connections#check-bulk-saved-app-switch-results",
@@ -1461,7 +1469,7 @@
     "section": "Review requested permissions",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#review-requested-permissions",
-    "body": "Before you authorize, Recued shows the new scopes and those it will keep.\nThe preview lists the connections and packs that need them.\nOpen the full scope list to see the planned request.\n**Permission needs and history** shows where your scope needs come from.\nIf access can be reused, choose **Use current authorization**. No sign-in\nwindow opens.\n\nIf the request changes after review, choose **Refresh permission preview**\nbefore you continue. The preview shows requested access. It cannot prove\nwhich scopes the vendor granted.\nIf sign-in fails or expires, refresh the preview before you try again.\n\nWith a fixed Microsoft app profile, extra permissions may need an app\nchange in Nango. You may need an admin's consent too. If Nango hides app scopes, Recued\nshows that the exact request is unknown. It keeps the app's scope profile.\nThese app profiles may not request each listed need as a separate scope."
+    "body": "Before you authorize, Recued shows the new scopes and those it will keep.\nThe preview lists the connections and packs that need them.\nOpen the full scope list to see the planned request.\n**Why these permissions** shows where your scope needs come from.\nIf access can be reused, choose **Use current authorization**. No sign-in\nwindow opens.\n\nIf the request changes after review, choose **Check again** in the preview\nbefore you continue. The preview shows requested access. It cannot prove\nwhich scopes the vendor granted.\nIf sign-in fails or expires, refresh the preview before you try again.\n\nWith a fixed Microsoft app profile, extra permissions may need an app\nchange in Nango. You may need an admin's consent too. If Nango hides app scopes, Recued\nshows that the exact request is unknown. It keeps the app's scope profile.\nThese app profiles may not request each listed need as a separate scope."
   },
   {
     "id": "guides/connections#check-access-for-a-pack",
@@ -2101,7 +2109,7 @@
     "section": "Prepare and share a quote",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-jobs#prepare-and-share-a-quote",
-    "body": "1. Add an open quote in Quote Pipeline Records.\n2. Open **Customer work → Sign-offs**.\n3. Open **New customer sign-off** if it is closed. Choose the quote.\n4. Enter your business name and the full scope of work.\n5. Set the task title, invoice reference, VAT, and dates.\n6. Choose **Preview customer sign-off**. Read the full offer.\n7. Choose **Publish sign-off link**, then share that link.\n\nScope means the work and terms you offer.\nThe customer sees all the scope you enter.\nPrivate quote notes stay private.\nCheck the text before you publish it.\n\nThe public page offers **Accept this quote** and **Decline this quote**.\nIt shows that the reply was sent.\nYou still review their reply before you release work.\n\nSee [Prepare a request](customer-signoffs.md#prepare-a-request) for every field and setup step."
+    "body": "1. Add an open quote in Quote Pipeline Records.\n2. Open **Customer work → Sign-offs**.\n3. Open **New customer sign-off** if it is closed. Choose the quote.\n4. Enter your business name and the full scope of work.\n5. Set the task title, invoice reference, VAT, and dates.\n6. Read the replacement notice, then choose **Prepare sign-off preview**.\n   This immediately replaces any earlier active request for the quote.\n   Read the full saved offer.\n7. Choose **Publish sign-off link**, then **Copy link** to share it.\n\nUnfinished form edits ask before you leave. **Discard draft** clears the fields;\nany request already prepared remains in the request history.\nOpen **Details and actions** on a request for its scope, receipts and other actions.\n\nScope means the work and terms you offer.\nThe customer sees all the scope you enter.\nPrivate quote notes stay private.\nCheck the text before you publish it.\n\nThe public page offers **Accept this quote** and **Decline this quote**.\nIt shows that the reply was sent.\nYou still review their reply before you release work.\nIf they decline, open the sign-off request to read **Reason or proposed changes**.\nChoose **Read full reason** for a long reply. These comments stay out of shared receipts.\n\nSee [Prepare a request](customer-signoffs.md#prepare-a-request) for every field and setup step."
   },
   {
     "id": "guides/customer-jobs#review-a-customer-reply",
@@ -2117,7 +2125,7 @@
     "section": "Track work and ask for completion",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-jobs#track-work-and-ask-for-completion",
-    "body": "Open the job's **Overview** and read **Agreed scope**.\nChoose **Open task** to update the task in its editor.\nYou can finish or reopen work without changing its payment state.\n\nTo ask the customer about delivery:\n\n1. Choose **Request completion** in Overview.\n2. Describe the work you delivered.\n3. Choose **Preview completion** and read the customer text.\n4. Choose **Publish completion link**. Share it.\n5. Review the customer's reply in Reception Inbox.\n\nA request alone does not close the task.\nReview acceptance or requested fixes before choosing the next action.\nSee [Completion responses](customer-signoffs.md#review-completion-responses)."
+    "body": "Open the job's **Overview** and read **Agreed scope**.\nChoose **Open task** to update the task in its editor.\nYou can finish or reopen work without changing its payment state.\n\nTo ask the customer about delivery:\n\n1. Choose **Request completion** in Overview.\n2. Describe the work you delivered.\n3. Read the notice, then choose **Prepare completion preview**.\n   This immediately replaces earlier pending completion requests for this agreement.\n   Read the saved customer text. Check the link end time and time left.\n4. Choose **Publish completion link**. Share it.\n5. Review the customer's reply in Reception Inbox.\n\nFor a saved draft on this agreement, choose **Resume completion preview** in Overview.\nPreparing a preview updates the job at once, so this action is ready after you discard local fields.\nIt opens the saved delivery text and keeps its link end time.\nReview it, then publish that same request.\nFinish or discard any delivery edits before resuming another draft.\nLong correction replies show a short summary. Choose **Read full corrections** for the full reply.\nThe reply and agreed scope keep their own open or closed state when the job refreshes.\n\nA request alone does not close the task.\nReview acceptance or requested fixes before choosing the next action.\nSee [Completion responses](customer-signoffs.md#review-completion-responses)."
   },
   {
     "id": "guides/customer-jobs#add-more-work-to-the-same-job",
@@ -2277,7 +2285,15 @@
     "section": "Track customer jobs",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#track-customer-jobs",
-    "body": "These steps need Recued 26.10.16 or later.\nOpen **Reception → Customer work → Jobs** to plan your day.\nNew agreed work stays on the same job row.\nOpen a job to see its work, replies and bills.\nThe job header stays in view as you read.\nUse **Overview**, **Activity**, **Billing**, **Follow-ups** or **Closeout**.\n**Back to jobs** keeps your search, page and place in the list.\nUse **Accounts**, **Receivables** or **Follow-ups** in Customer work for wider views.\nWork marked done can still have unpaid bills.\nPayment does not mark work as done.\nDeclined or cancelled extra work stays in the reply column.\nIt does not change the agreed price or scope.\n\nSearch by their name, quote or bill ref.\nOpen **Filters**, pick a view in **Show jobs**, then choose **Search jobs**.\nFind jobs waiting for a reply, fixes or your review.\nAlso find work with a late bill.\nUse **Newer jobs** and **Older jobs** to browse the list.\nIf a page fails, choose **Refresh jobs** to retry.\nThe last loaded jobs stay visible while you retry.\nRefresh keeps open scope text and focus on the same job action.\n\nUse **Request completion** to draft a note about the work.\nThe latest agreed scope goes with it.\nRead the preview before you share it.\nOpen **Billing**. Use **Record payment** for the bill you were paid for.\nUse **Issue credit**, **Refunds** or **Documents** for that bill.\nCorrections stay beside the entries they change.\nEnter the sum you got, then choose **Run**.\nReview work in **Reception Inbox**.\nUse **View sign-off receipt** to read the saved terms and work reply.\nOnly work you released counts in the agreed price.\nCheck missing or changed records in Records.\nAn unreadable work reply needs review. It is not shown as a wait for the customer.\nA balance moved to a new bill needs review there too."
+    "body": "These steps need Recued 26.10.16 or later.\nOpen **Reception → Customer work → Jobs** to plan your day.\nNew agreed work stays on the same job row.\nOpen a job to see its work, replies and bills.\nThe job header stays in view as you read.\nUse **Overview**, **Activity**, **Billing**, **Follow-ups** or **Closeout**.\n**Back to jobs** keeps your search, page and place in the list.\nSign-off requests show one main action. Choose **Open job** for released work.\nOpen **Details and actions** for scope, receipts, completion, billing, added work,\nor cancellation. Refresh keeps those details open and preserves keyboard focus.\nUse **Accounts**, **Receivables** or **Follow-ups** in Customer work for wider views.\nWork marked done can still have unpaid bills.\nPayment does not mark work as done.\nDeclined or cancelled extra work stays in the reply column.\nIt does not change the agreed price or scope."
+  },
+  {
+    "id": "guides/customer-signoffs#find-and-review-customer-jobs",
+    "doc": "Customer sign-offs",
+    "section": "Find and review customer jobs",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#find-and-review-customer-jobs",
+    "body": "Search by their name, quote or bill ref.\nOpen **Filters**, pick a view in **Show jobs**, then choose **Search jobs**.\nFind jobs waiting for a reply, fixes or your review.\nAlso find work with a late bill.\nUse **Newer jobs** and **Older jobs** to browse the list.\nIf a page fails, choose **Refresh jobs** to retry.\nThe last loaded jobs stay visible while you retry.\nRefresh keeps open scope text and focus on the same job action.\n\nUse **Request completion** to draft a note about the work.\nThe latest agreed scope goes with it.\nRead the preview before you share it.\nOpen **Billing**. Use **Record payment** for the bill you were paid for.\nUse **Issue credit**, **Refunds** or **Documents** for that bill.\nCorrections stay beside the entries they change.\nEnter the sum you got, then choose **Run**.\nReview work in **Reception Inbox**.\nUse **View sign-off receipt** to read the saved terms and work reply.\nOnly work you released counts in the agreed price.\nCheck missing or changed records in Records.\nAn unreadable work reply needs review. It is not shown as a wait for the customer.\nA balance moved to a new bill needs review there too."
   },
   {
     "id": "guides/customer-signoffs#payment-history-and-receipts",
@@ -2429,7 +2445,31 @@
     "section": "Prepare a request",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#prepare-a-request",
-    "body": "The first sign-off tools need Recued 26.10.12 or later.\nThese steps use the layout of Recued 26.10.16 and later.\nUpdate Recued before updating packs.\nIf Billable Hours is already installed, update it before Invoice Book.\n\n1. Install **Quote Pipeline version 2** and **Invoice Book version 5 or later** from Packs.\n2. Add an open quote in Quote Pipeline Records.\n   Set the customer, amount, currency and valid-until date.\n3. Open **Reception → Customer work → Sign-offs**.\n   Open **New customer sign-off** if it is closed. Choose the quote.\n4. Enter your business name and full scope.\n   List what you will do and leave out. Include the terms they must accept.\n   Private quote notes stay private. The scope you enter is shared in full.\n5. Set the task title and a unique invoice reference.\n   Set VAT and dates as shown below.\n6. Set a link life of 1–30 days. Select **Preview customer sign-off**.\n   Check the exact customer text, task and invoice plan.\n7. Select **Publish sign-off link**. Share the returned link yourself.\n\nBefore publishing, you can choose **Save this link for follow-up emails**.\nRecued then keeps an encrypted copy for your reminders.\nLeaving this off keeps the link out of the reminder store.\n\nThe link needs a public server name. See\n[Reachability](../setup/reachability.md).\nOpen `/reception` under **Settings → Server → Exposure** for that address.\nUse Public for an internet address, or LAN for visitors on your network.\nThe preview expires after ten minutes.\nPreview again if the app asks you to.\n\nA new request replaces earlier active requests for that quote.\nThis also replaces an accepted request still waiting for your review."
+    "body": "The first sign-off tools need Recued 26.10.12 or later.\nThese steps use the layout of Recued 26.10.16 and later.\nUpdate Recued before updating packs.\nIf Billable Hours is already installed, update it before Invoice Book.\n\n1. Install **Quote Pipeline version 2** and **Invoice Book version 5 or later** from Packs.\n2. Add an open quote in Quote Pipeline Records.\n   Set the customer, amount, currency and valid-until date.\n3. Open **Reception → Customer work → Sign-offs**.\n   Open **New customer sign-off** if it is closed. Choose the quote.\n4. Enter your business name and full scope.\n   List what you will do and leave out. Include the terms they must accept.\n   Private quote notes stay private. The scope you enter is shared in full.\n5. Set the task title and a unique invoice reference.\n   Set VAT and dates as shown below.\n6. Set a link life of 1–30 days. Read the replacement notice, then select **Prepare sign-off preview**.\n   Check the exact customer text, task and invoice plan.\n7. Select **Publish sign-off link**. Check its expiry and choose **Copy link**.\n   Share the copied link with your customer. If copying is unavailable, copy the selected URL from the field."
+  },
+  {
+    "id": "guides/customer-signoffs#saved-previews-and-drafts",
+    "doc": "Customer sign-offs",
+    "section": "Saved previews and drafts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#saved-previews-and-drafts",
+    "body": "Preparing the preview saves a request. It replaces old active requests for that quote at once.\nThis includes accepted requests that need your review.\nTheir links stop working then. Queued releases stop too. This happens before you publish.\nLeave a form with edits, and Recued asks if you want to discard them.\nChoose **Discard draft** to clear the fields. A request already prepared remains\nin **Requests and responses**; cancel it there if needed.\nFind a saved draft. Choose **Resume preview**. Read its terms, then publish that same request.\nThis keeps its saved terms and expiry. It does not replace another request.\nFor this same saved draft, unchanged fields can resume after a failed publish.\nChanged fields need a new preview. Finish or discard a different draft first.\n\nSaved drafts and previews show the link end time and time left.\nDays count from when you prepared the request. Resuming keeps that same end time."
+  },
+  {
+    "id": "guides/customer-signoffs#share-a-saved-link",
+    "doc": "Customer sign-offs",
+    "section": "Share a saved link",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#share-a-saved-link",
+    "body": "Before publishing, you can choose **Save this link for follow-up emails**.\nRecued then keeps an encrypted copy for your reminders.\nLeaving this off keeps the link out of the reminder store.\nRefreshing the same saved request keeps this choice.\nPreparing a new request or discarding local fields clears it.\n\nThe link needs a public server name. See\n[Reachability](../setup/reachability.md).\nOpen `/reception` under **Settings → Server → Exposure** for that address.\nUse Public for an internet address, or LAN for visitors on your network.\nThe preview expires after ten minutes.\n**Review valid until** shows this review's end time, separate from the customer link deadline.\nWhen the review ends, choose **Refresh sign-off preview** before publishing.\nThis keeps the saved request and its customer link deadline.\nIf refresh fails, the saved preview stays in view. Choose **Retry sign-off preview**.\nOnce the customer link deadline passes, prepare a new request.\nRefreshing a review cannot extend that deadline.\nThe app may ask you to review the draft again. Find it and choose **Resume preview**."
+  },
+  {
+    "id": "guides/customer-signoffs#copy-and-check-a-link",
+    "doc": "Customer sign-offs",
+    "section": "Copy and check a link",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#copy-and-check-a-link",
+    "body": "If a new preview fails, Recued checks the saved link.\nYou can copy it again if it is still available.\n**Copy link** checks the saved link before copying it.\nThe sharing card names the saved customer and quote.\nCheck those names if you start editing a different request.\nFor a link that stays valid, return checks keep your selected text for manual copying.\nCancelling the request or reaching its end time clears the sharing field.\nReceiving a customer reply also clears it, even while the reply waits to be processed.\nIf the check fails, choose **Check link availability** before sharing.\nWas the link replaced, closed, expired or rotated? It stays blocked.\n\nIf you lose a published link, use **Manage share link** to rotate it.\nAn expired or revoked link shows a page. It asks the customer to get a new link."
   },
   {
     "id": "guides/customer-signoffs#vat-and-dates",
@@ -2445,7 +2485,7 @@
     "section": "Respond, review and release",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#respond-review-and-release",
-    "body": "The page shows the customer and quote reference.\nIt shows the revision, total, net amount and included VAT.\nIt also shows the valid-until date and full scope.\nEach link takes one reply: accept or decline.\nThey may add their name and email.\nAnyone with the link can reply. Recued does not check who they are.\n\nAn accepted reply queues a release in **Reception → Inbox**.\nCheck the accepted terms, task title, invoice reference, total and dates.\nThe release plan is fixed.\nTo change it, cancel the request and prepare a new one.\nAsk the customer to accept that new request.\n\nApproval makes three local changes together:\n\n- Mark the quote won.\n- Create the task with the accepted scope.\n- Create an open Invoice Book invoice for the quoted total.\n  It uses the included VAT and due date you chose.\n\nThe task appears in Tasks. The invoice is in Invoice Book Records.\nSending it and taking payment are separate steps.\nA declined customer request creates no task or invoice.\nNeither does an owner review you reject."
+    "body": "The page shows the customer and quote reference.\nIt shows the revision, total, net amount and included VAT.\nIt also shows the valid-until date and full scope.\nEach link takes one reply: accept or decline.\nThey may add their name and email.\nAnyone with the link can reply. Recued does not check who they are.\n\nFor a declined quote, the owner can read **Reason or proposed changes** on its card.\nChoose **Read full reason** for a long reply.\nA locked or unreadable reply stays unavailable. Refresh to try again.\nReply comments stay out of the receipt you can share.\n\nAn accepted reply queues a release in **Reception → Inbox**.\nCheck the accepted terms, task title, invoice reference, total and dates.\nThe release plan is fixed.\nTo change it, cancel the request and prepare a new one.\nAsk the customer to accept that new request.\n\nApproval makes three local changes together:\n\n- Mark the quote won.\n- Create the task with the accepted scope.\n- Create an open Invoice Book invoice for the quoted total.\n  It uses the included VAT and due date you chose.\n\nThe task appears in Tasks. The invoice is in Invoice Book Records.\nSending it and taking payment are separate steps.\nA declined customer request creates no task or invoice.\nNeither does an owner review you reject."
   },
   {
     "id": "guides/customer-signoffs#find-an-earlier-request",
@@ -2453,7 +2493,7 @@
     "section": "Find an earlier request",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#find-an-earlier-request",
-    "body": "Use **Search** to find a customer, quote or invoice reference.\nYou can also search by quote name.\nChoose **Request status** to show just that kind of request.\nEach page shows up to 50 requests, with the newest first.\n**Older requests** opens the next page. **Newer requests** goes back.\n**Refresh** keeps your search, status and current page.\n**Clear search** shows all requests again, from the newest page.\nYou can read past requests even if open quotes cannot be loaded.\n\nSearch uses the names and references saved with each request.\nIt does not search private quote notes or the offered scope."
+    "body": "Use **Search** to find a customer, quote or invoice reference.\nYou can also search by quote name.\nChoose **Request status** to show just that kind of request.\nEach page shows up to 50 requests, with the newest first.\n**Older requests** opens the next page. **Newer requests** goes back.\n**Refresh** keeps your search, status and current page.\nOpen a job and use Back to return to the same request page and position.\nOpen details and keyboard focus return with it.\n**Clear search** shows all requests again, from the newest page.\nYou can read past requests even if open quotes cannot be loaded.\nYour quote choice stays set if that read fails. Try **Refresh**.\nIf the quote is no longer open, choose an open one.\n\nSearch uses the names and references saved with each request.\nIt does not search private quote notes or the offered scope."
   },
   {
     "id": "guides/customer-signoffs#follow-up-with-a-customer",
@@ -2477,7 +2517,7 @@
     "section": "Add work after release",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#add-work-after-release",
-    "body": "1. Find the released request in **Requests and responses**. Select **Add work**.\n   Use the latest released request if you already added work.\n2. Enter the added scope and amount. This amount is an extra charge.\n   Use the same currency as the first quote.\n3. Choose a new invoice reference. Enter any VAT included in the added amount.\n4. Select **Preview added work**. Check the old scope, added scope and new total.\n5. Publish the link. Ask the customer to accept it.\n6. Review the added work in **Reception → Inbox**, then approve it.\n\nApproval adds the scope to the same task and creates a separate invoice.\nThe first quote, invoice and accepted scope stay as they were.\nSending the new invoice and taking payment are separate steps.\nThe task must be present and unfinished.\nChanges to it while a request waits block release.\nA new added-work request replaces any earlier one still waiting.\nDeclines, expiry and cancelled requests keep the old agreement in place.\nEach added-work link has its own expiry.\nIt can be used after the first quote's valid-until date."
+    "body": "1. Find the released request in **Requests and responses**. Open **Details and actions**, then select **Add work**.\n   Use the latest released request if you already added work.\n2. Enter the added scope and amount. This amount is an extra charge.\n   Use the same currency as the first quote.\n3. Choose a new invoice reference. Enter any VAT included in the added amount.\n4. Read the replacement notice, then select **Prepare added-work preview**.\n   This immediately replaces pending added-work requests for this agreement.\n   Check the old scope, added scope and new total.\n5. Publish the link. Ask the customer to accept it.\n6. Review the added work in **Reception → Inbox**, then approve it.\n\nApproval adds the scope to the same task and creates a separate invoice.\nThe first quote, invoice and accepted scope stay as they were.\nSending the new invoice and taking payment are separate steps.\nThe task must be present and unfinished.\nChanges to it while a request waits block release.\nA new added-work request replaces any earlier one still waiting.\nDeclines, expiry and cancelled requests keep the old agreement in place.\nEach added-work link has its own expiry.\nIt can be used after the first quote's valid-until date."
   },
   {
     "id": "guides/customer-signoffs#ask-the-customer-to-confirm-completion",
@@ -2485,7 +2525,15 @@
     "section": "Ask the customer to confirm completion",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#ask-the-customer-to-confirm-completion",
-    "body": "Choose the latest released offer.\nSelect **Request completion** once the work is done.\nDescribe what you delivered. Choose **Preview completion**.\nThe customer sees the full saved scope and all released additions.\nThey also see your new text.\nPrivate task notes stay private.\nYour new text can use up to 4,000 characters.\nThe full preview must fit within 8,000 characters.\nSet a link life of 1–30 days. Choose **Publish completion link**.\nShare the link with the customer yourself.\n\nThe customer chooses **Accept completion** to confirm the work.\nThey choose **Request corrections** to ask for fixes.\nThey must say what needs to change when asking for fixes.\nThe link accepts one reply.\nA task edit or a new released addition can close the old link.\nSo can a new request or a cancelled request.\nReview or cancel pending added work first."
+    "body": "Choose the latest released offer.\nSelect **Request completion** once the work is done.\nDescribe what you delivered. Read the replacement notice.\nChoose **Prepare completion preview**. It replaces old pending requests for that agreement at once.\nThis includes replies waiting for your review.\nThe customer sees the full saved scope and all released additions.\nThey also see your new text.\nPrivate task notes stay private.\nYour new text can use up to 4,000 characters.\nThe full preview must fit within 8,000 characters.\nSet a link life of 1–30 days. Choose **Publish completion link**.\nShare the link with the customer yourself.\n\nThe customer chooses **Accept completion** to confirm the work.\nThey choose **Request corrections** to ask for fixes.\nThey must say what needs to change when asking for fixes.\nThe link accepts one reply.\nA task edit or a new released addition can close the old link.\nSo can a new request or a cancelled request.\nReview or cancel pending added work first."
+  },
+  {
+    "id": "guides/customer-signoffs#completion-drafts-and-response-errors",
+    "doc": "Customer sign-offs",
+    "section": "Completion drafts and response errors",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#completion-drafts-and-response-errors",
+    "body": "**Close completion editor** keeps your draft in this view.\nChoose **Resume completion draft** to return to it.\nUse **Discard completion draft** to clear its fields.\nA prepared request stays in completion history.\nYou can also resume its draft from the job's **Overview**.\nChoose **Resume completion preview**. Review it, then publish the saved request.\nIts saved delivery and expiry stay the same.\nWhen its review expires, choose **Refresh completion preview** before publishing.\nIf refresh fails, its saved preview stays in view. Choose **Retry completion preview**.\nThis keeps the saved request, link deadline and follow-up choice.\nOnce the customer link deadline passes, prepare a new request.\nIf publishing fails, unchanged delivery fields can resume that same saved request.\nThe app brings the error message into view, with the next step to take.\nRead its end time and time left before publishing.\n\nIf a customer enters an invalid email, the response page keeps their fields.\nThey choose **Accept completion** or **Request corrections** to reply.\nPressing Enter in a contact field does not choose a reply.\nThe page focuses **Check your response** above the terms.\nChoose **Fix your response** to reach the form and try again.\nIs the response form stale? Choose **Review request again**.\nThis opens the current request. It does not send the old response again.\nA link already used shows that its response was recorded.\nRefreshing a successful response shows **Already responded** and keeps the recorded reply.\nCustomer corrections can use up to 4,000 characters, including non-Latin text.\nFor a reply that is too large, go back to shorten it or choose **Review request again**."
   },
   {
     "id": "guides/customer-signoffs#review-completion-responses",
@@ -2493,7 +2541,7 @@
     "section": "Review completion responses",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#review-completion-responses",
-    "body": "**Customer completion** lists saved requests and replies.\nThe list stays here when you browse or filter the quote list.\nChoose **Needs owner review** to find replies that still need your review.\nUse **Newer completions** and **Older completions** to browse them.\nYour view shows the requested fixes.\nYou must be able to read the saved reply.\nA locked or unreadable reply stays unavailable.\nA changed saved reply stays unavailable too.\nTask status does not stand in for the customer's reply.\n\nChoose **Review completion in Reception Inbox**.\nYou can approve or reject the proposed action.\nApprove the action to close the task.\nThe customer must have accepted the work.\nFor fixes, approve the action to reopen the task.\nReject the action to leave the task as it was.\nThis review cannot change an invoice or record payment.\nIt checks the exact saved scope and task version.\nIt also catches an edit that was then undone.\nIf the work changed, prepare a new request.\nA reply received before link expiry stays on record.\nYou can review it later while the terms still match.\n\nAfter making fixes, prepare a new request with the new delivery text.\nOld replies and owner actions stay in the history and receipts.\n**Cancel completion request** closes an unfinished request and any queued work changes.\nAn owner action already applied stays recorded.\nReopen the task yourself for further work."
+    "body": "**Customer completion** lists saved requests and replies.\nRefresh keeps open delivery terms and keyboard focus on the same action.\nLong correction replies show a short summary.\nChoose **Read full corrections** for the full reply.\nJob Overview uses the same short summary and full-reply control.\nUse the review link above the reply.\nThe list stays here when you browse or filter the quote list.\nChoose **Needs owner review** to find replies that still need your review.\nUse **Newer completions** and **Older completions** to browse them.\nYour view shows the requested fixes.\nYou must be able to read the saved reply.\nA locked or unreadable reply stays unavailable.\nA changed saved reply stays unavailable too.\nTask status does not stand in for the customer's reply.\n\nChoose **Review completion in Reception Inbox**.\nUse Back to return to the same filter, page and open details.\nYou can approve or reject the proposed action.\nApprove the action to close the task.\nThe customer must have accepted the work.\nFor fixes, approve the action to reopen the task.\nReject the action to leave the task as it was.\nThis review cannot change an invoice or record payment.\nIt checks the exact saved scope and task version.\nIt also catches an edit that was then undone.\nIf the work changed, prepare a new request.\nA reply received before link expiry stays on record.\nYou can review it later while the terms still match.\n\nAfter making fixes, prepare a new request with the new delivery text.\nOld replies and owner actions stay in the history and receipts.\n**Cancel completion request** closes an unfinished request and any queued work changes.\nAn owner action already applied stays recorded.\nReopen the task yourself for further work."
   },
   {
     "id": "guides/customer-signoffs#keep-a-sign-off-receipt",
@@ -3152,6 +3200,62 @@
     "body": "- [Grants and approvals](../concepts/grants-and-approvals.md): the gate that\n  customer calls pass through.\n- [AI chat and MCP](ai-chat-and-mcp.md): the access types customers connect\n  through.\n- [Reachability](../setup/reachability.md): giving your server a steady\n  public name."
   },
   {
+    "id": "guides/today-and-yours",
+    "doc": "Today and Yours",
+    "section": "Today and Yours",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours",
+    "body": "Much of life admin comes from things you own. A passport runs out. A car\nneeds a service. An insurance policy renews unless you cancel in time.\nRecued keeps these things in **Yours**. It shows what needs you in **Today**."
+  },
+  {
+    "id": "guides/today-and-yours#yours-the-things-you-own",
+    "doc": "Today and Yours",
+    "section": "Yours: the things you own",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#yours-the-things-you-own",
+    "body": "Open **Yours** to add an asset. An asset is one thing you own or hold.\nPick a type, and the type brings its reminders with it.\n\n| Type | What Recued reminds you about |\n| --- | --- |\n| Passport | Renewal, 6, 3 and 1 months before it runs out |\n| ID card, visa, driving licence | Renewal, 3 and 1 months before |\n| Insurance policy | Reviewing the cover, and the last day to cancel |\n| Service contract | Reviewing the contract, and the last day to cancel |\n| Vehicle | Its legal check, a yearly service, and open recalls |\n| Boiler | A yearly service |\n| Smoke or CO alarm | A yearly test, and a low battery |\n| Warranty-bearing purchase | The day the warranty ends |\n\nPacks can add more types. The **Travel documents** pack adds passports, ID\ncards, visas and driving licences that are checked against your trips."
+  },
+  {
+    "id": "guides/today-and-yours#add-your-own-details",
+    "doc": "Today and Yours",
+    "section": "Add your own details",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#add-your-own-details",
+    "body": "Every asset can hold more than its type asks for.\n\n- **Dates**, such as the day you last serviced it.\n- **Readings**, such as a car's mileage.\n- **Settings** and **Attributes**: fields you name yourself, such as a colour.\n- **Places**, **identifiers** and a **value history**.\n- **Documents**, such as a receipt or a policy.\n\nA passport has a field for its nationality. A visa has a field for the\ncountry it lets you into. Use two-letter codes, such as JP.\n\nWhen a trip is checked, the check lists the traveller's visas. An AI can\nthen see which one covers the trip.\n\nYou can also tie a visa to a passport. Do this only when the visa stops\nworking once you get a new passport, as an ESTA or an eTA does. Then\nretiring that passport retires the visa too. A visa that stays valid in an\nold passport, like a US visa, can stay untied."
+  },
+  {
+    "id": "guides/today-and-yours#today-what-needs-you-now",
+    "doc": "Today and Yours",
+    "section": "Today: what needs you now",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#today-what-needs-you-now",
+    "body": "**Today** puts your day in one list. It shows tasks, promises and calendar\nevents. It also shows reminders from your assets.\n\n- **Overdue** holds what is late.\n- **Today** holds what is due today.\n- **Next seven days** holds what comes after.\n\nRecued can also send you a **digest**. It lists what is coming up. It comes\nonce a week unless you change it. A private reminder, such as a passport's\nor a birthday's, shows there only as **Private reminder**. Open Today to see\nit."
+  },
+  {
+    "id": "guides/today-and-yours#occasions-what-comes-back-each-year",
+    "doc": "Today and Yours",
+    "section": "Occasions: what comes back each year",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#occasions-what-comes-back-each-year",
+    "body": "An **occasion** is something that comes back each year. It can be a\nbirthday or a yearly trip. Recued reminds you a week before each one.\n\nYou can create an occasion in Yours. Recued can also suggest one. It asks\n**Does this recur?** when the same thing happens about a year apart. Two\ntrips to one country can make a suggestion like **Trip to Japan**.\n\nSuggestions need **last time** switched on. Find it in **Settings**, then\n**Privacy**, then **Learning**. A suggestion never turns itself on. Nothing\nchanges until you accept it."
+  },
+  {
+    "id": "guides/today-and-yours#trips-and-travel-documents",
+    "doc": "Today and Yours",
+    "section": "Trips and travel documents",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#trips-and-travel-documents",
+    "body": "With the Travel documents pack, Recued checks each traveller's passport\nagainst their booked trips. It knows the Schengen rule. Your passport must\nlast three months after you leave. It must also be less than ten years old.\nCitizens of the EU, EEA and Switzerland do not need this check.\n\nRecued asks who is travelling when a trip does not say. It does not check\nvisas. An AI you connect can see the trip, the passport and its nationality.\nIt can work out the visa question from those."
+  },
+  {
+    "id": "guides/today-and-yours#what-an-ai-can-see",
+    "doc": "Today and Yours",
+    "section": "What an AI can see",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#what-an-ai-can-see",
+    "body": "AI apps you connect can read your assets and what is coming up. They see\nthe fields you typed, as you typed them.\n\nDocument numbers, serial numbers and exact addresses are optional. Recued's\nown chat hides them from its AI model. An app you connect over MCP gets\nwhat you typed.\n\nAn AI can also ask about the past. It can find the trips and bookings that\nended in a month you name."
+  },
+  {
     "id": "index",
     "doc": "Recued documentation",
     "section": "Recued documentation",
@@ -3454,6 +3558,310 @@
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/glossary#t-w",
     "body": "**Tier** — a named level of access a seller offers. Behind each tier is a\ncustomer contract template. That template fixes what the tier grants and how\nmuch it may be used.\n\n**Timeline** — one feed, in time order, for one thing, such as a person or a\ndeal. It is built\nfrom provenance links across mail, calendar, CRM, notes (annotations), and\nmemory.\n\n**Transform** — a small safe tool a recipe uses to work on data. It always\ngives the same answer for the same input. It costs nothing. See\n[Transforms](transforms.md).\n\n**Trigger** — the web page patterns (URLs) a recipe is made for, so it can\nauto-run there. This is not the same as `trigger_steps`. Those are the check\nsteps a reactive recipe runs to decide whether to go ahead.\n\n**Warehouse** — the place on your server that keeps a copy of your mail,\ncalendar, contacts, files, and CRM records. Recipes and AI answers are based\non it. See [The warehouse](../concepts/warehouse.md).\n\n**Watcher** — the trigger part of a reactive recipe. It watches mail, files,\nthe calendar, the clock, or web pages. Each tick, it decides whether the\nrecipe should go ahead.\n\n**Webclient** — the app in your web browser at `app.recued.com`. Your own\nserver can serve it too. It shows things and takes your clicks and typing.\nIt does no\nreal work and holds no secret keys."
+  },
+  {
+    "id": "reference/grant-switches",
+    "doc": "Grant switches",
+    "section": "Grant switches",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches",
+    "body": "A contract is the saved list of what one actor may do. Each line on it is a\nswitch. A switch that is on is a grant: a yes you give ahead of time.\n\nThis page lists Recued's own switches. Packs add their own. On the Contracts\npage, a pack switch shows the words its pack wrote.\n\nThis page is made from the same words the Contracts page shows. So the two\nalways say the same thing."
+  },
+  {
+    "id": "reference/grant-switches#three-kinds-of-switch",
+    "doc": "Grant switches",
+    "section": "Three kinds of switch",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#three-kinds-of-switch",
+    "body": "- **AI tools.** An AI app, or your own chat, calls these by name. Recipes do not.\n- **Operations.** These are the steps a recipe can take. Some AI tools check one\n  before they act.\n- **Data switches.** These say which of your data an AI or a recipe may read.\n\nTurning an operation off stops an AI from using it on its own. A recipe you allow\non that contract can still run it as a step. To stop that too, turn the recipe\noff. See [Grants and approvals](../concepts/grants-and-approvals.md)."
+  },
+  {
+    "id": "reference/grant-switches#how-an-ai-tool-joins-up",
+    "doc": "Grant switches",
+    "section": "How an AI tool joins up",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#how-an-ai-tool-joins-up",
+    "body": "An AI tool often needs more than its own switch. Say you turn on `work.create`.\nIt still adds no task until `core.work-entity.task.create` is on too.\n\nA contract you make for an AI app starts with every switch off. So turn on each\ntool you want, and then the switches it needs. On the Contracts page, they are\nlisted under each tool. You can turn them on right there. The tables below list\nthem too."
+  },
+  {
+    "id": "reference/grant-switches#ai-tools",
+    "doc": "Grant switches",
+    "section": "AI tools",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#ai-tools",
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `account.search` | **Search CRM accounts.** Searches the companies copied from your CRM. To search the CRM itself, the search switch of that CRM must be on too. |\n| `calendar.create` | **Add a calendar event.** Adds an event to your calendar. Needs `core.data.calendar.create`. |\n| `calendar.search` | **Search your calendar.** Finds events by title, place or who is coming. Needs `data.calendar`. |\n| `calendar.update` | **Change a calendar event.** Changes an event on your calendar. Needs `core.data.calendar.update`. |\n| `contact.read` | **Read the details of a contact.** Reads the title, birthday, address and relationship of one contact. Needs `data.contact`. |\n| `contact.search` | **Search your contacts.** Finds people in your contacts by name, email, phone, company or nickname. Needs `data.contact` for your own contacts. To search the CRM itself, the search switch of that CRM must be on too. |\n| `deal.search` | **Search CRM deals.** Searches the deals copied from your CRM. Needs `data.contact` to show the contact on a deal. To search the CRM itself, the search switch of that CRM must be on too. |\n| `document.read` | **Read a document.** Reads the text of a file, like an email attachment or a stored PDF. Needs `data.file`. Also needs `core.storage.data-file-read` for a plain text file and `core.storage.file.read-temp` for a document it converts. To convert a document, the MarkItDown or Docling pack must be installed, with its convert switch on. |"
+  },
+  {
+    "id": "reference/grant-switches#ai-tools-part-2",
+    "doc": "Grant switches",
+    "section": "AI tools, part 2",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-2",
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `enrichment.search` | **Search worked-out facts.** Finds facts Recued worked out about records, like a score or a summary. Each kind of fact also needs its own switch on the Entities tab. |\n| `file.search` | **Search your files.** Finds files in your connected folders. Needs `data.file`. |\n| `mail.read` | **Read an email.** Reads one email in full and lists its attachments. Needs `data.mail`. Also needs `data.file` to list attachments. |\n| `mail.search` | **Search your mail.** Searches your mail by subject, sender, words or date. Needs `data.mail`. |\n| `memory.forget` | **Forget a saved fact.** Forgets a fact the AI saved earlier. You can bring it back. Needs `core.memory.write`. |\n| `memory.search` | **Search your memory.** Finds facts and notes saved in your memory. Needs `core.memory.read`. |\n| `memory.write` | **Save to your memory.** Saves a fact to your memory. You can see it and undo it. Needs `core.memory.write`. |\n| `recipe.run` | **Run a recipe.** Runs one of your recipes. Each step of the recipe needs its own switch here, unless the recipe is on under Recipes. |\n| `recipe.schedule` | **Schedule a recipe.** Sets a recipe to run later or on a timer. Needs `core.schedule.recipe`. Only you can schedule, from your own chat. An AI app that connects with a key cannot. |\n| `recipe.stop` | **Stop a recipe.** Stops a recipe run that the same conversation started. |\n| `situation.query` | **Ask what is going on.** Gets a short, ranked picture of what is going on around a time. Needs `core.situation.read`. Each kind of item in the picture also needs its own read switch and data switch. |"
+  },
+  {
+    "id": "reference/grant-switches#ai-tools-part-3",
+    "doc": "Grant switches",
+    "section": "AI tools, part 3",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-3",
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `work.create` | **Add a task, note or more.** Adds a task, note, commitment, project or thing you own. Needs `core.work-entity.task.create` to add tasks, `core.work-entity.note.create` to add notes, `core.work-entity.commitment.create` to add commitments, `core.work-entity.project.create` to add projects and `core.work-entity.asset.create` to add things you own. |\n| `work.read` | **Read a task, note or more.** Reads one task, note, commitment, project, booking or thing you own in full. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |\n| `work.search` | **Search tasks, notes and more.** Finds tasks, notes, commitments, projects, bookings and things you own. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |\n| `work.type` | **Look up a type of thing you own.** Tells an AI which dates and reminders a type of thing has, such as a passport, before it adds one. Needs `core.work-entity.asset.create`. |"
+  },
+  {
+    "id": "reference/grant-switches#ai-tools-part-4",
+    "doc": "Grant switches",
+    "section": "AI tools, part 4",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-4",
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `work.update` | **Change a task, note or more.** Changes a task, note, commitment or project, or ticks a task off. Needs `core.work-entity.task.update` to change tasks, `core.work-entity.note.update` to change notes, `core.work-entity.commitment.update` to change commitments, `core.work-entity.project.update` to change projects and `core.work-entity.task.mark-done` to tick a task off. |"
+  },
+  {
+    "id": "reference/grant-switches#operations",
+    "doc": "Grant switches",
+    "section": "Operations",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#operations",
+    "body": "Recipes use these as steps. Some AI tools check one before they act. They are\ngrouped below by what they reach, the same way the Contracts page groups them."
+  },
+  {
+    "id": "reference/grant-switches#mail",
+    "doc": "Grant switches",
+    "section": "Mail",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#mail",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.mail.body-read` | **Read the full text of an email.** Reads the whole text of one email. |\n| `core.mail.delete` | **Delete an email.** Deletes one email from your mail account and from your server. |\n| `core.mail.draft.create` | **Save a new draft.** Saves a new email draft on your server. Nothing is sent. |\n| `core.mail.draft.delete` | **Delete a saved draft.** Deletes an email draft saved on your server. |\n| `core.mail.draft.read` | **Read a saved draft.** Reads an email draft saved on your server. |\n| `core.mail.draft.save-to-mailbox` | **Put a draft in your mailbox.** Copies a saved draft into the Drafts folder of your mail account. You can finish it in your mail app. |\n| `core.mail.draft.update` | **Change a saved draft.** Changes an email draft saved on your server. |\n| `core.mail.email.get` | **Read one stored email.** Reads one email from a mailbox stored on your server, by its id. |\n| `core.mail.email.list` | **List stored emails.** Lists emails from a mailbox, picked by sender, folder, date and more. |\n| `core.mail.email.search` | **Search stored emails.** Searches the words in the emails stored on your server. |\n| `core.mail.fact.get` | **Read one mail fact.** Reads one thing Recued found in your mail, like a parcel or a bill, and the facts behind it. |\n| `core.mail.fact.list` | **List mail facts.** Lists the parcels, orders and bills Recued found in your mail, newest first. |\n| `core.mail.flag` | **Flag an email.** Stars or flags one email, or takes the flag off. |\n| `core.mail.get` | **Read one email.** Reads one email from the copy of your mail on your server. |"
+  },
+  {
+    "id": "reference/grant-switches#mail-part-2",
+    "doc": "Grant switches",
+    "section": "Mail, part 2",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#mail-part-2",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.mail.mark` | **Mark an email read or unread.** Marks one email read or unread, in your mail account and on your server. |\n| `core.mail.move` | **Move an email to a folder.** Files one email into another folder or label. |\n| `core.mail.notify-booking-visitor` | **Email the visitor of a booking.** Tells the person behind a booking that it changed. Recued finds their address itself, so the recipe never sees it. |\n| `core.mail.send` | **Send an email.** Sends an email from one of your mail accounts. |\n| `core.mail.sent.reconcile` | **Check that an email really went.** Asks your mail provider whether an email Recued sent really left, and records the answer. |\n| `core.mail.thread-read` | **Read an email thread.** Puts every email in one thread together, oldest first. |"
+  },
+  {
+    "id": "reference/grant-switches#calendar",
+    "doc": "Grant switches",
+    "section": "Calendar",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#calendar",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.data.calendar.create` | **Create a calendar event.** Adds an event to one of your calendars. Needed by `calendar.create`. |\n| `core.data.calendar.delete` | **Delete a calendar event.** Deletes an event from one of your calendars. |\n| `core.data.calendar.get` | **Read one calendar event.** Reads one event from the copy of your calendar on your server. |\n| `core.data.calendar.list` | **List calendar events.** Lists events from one calendar, or from all of them, in time order. |\n| `core.data.calendar.rsvp` | **Answer an invitation.** Says yes, no or maybe to a meeting invitation, for you. |\n| `core.data.calendar.search` | **Search calendar events.** Searches the titles, notes and places of your events. |\n| `core.data.calendar.stat` | **Check a calendar event.** Checks whether an event exists and reads its time and status, without the details. |\n| `core.data.calendar.update` | **Change a calendar event.** Changes an event on one of your calendars. Needed by `calendar.update`. |"
+  },
+  {
+    "id": "reference/grant-switches#contacts",
+    "doc": "Grant switches",
+    "section": "Contacts",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#contacts",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.contact.business-context` | **See the business links of a contact.** Counts the deals, tasks, meetings, bookings and projects linked to one contact. It uses no AI. |\n| `core.contact.engagements.read` | **See your history with a contact.** Lets an AI read the emails, meetings and other contact you have had with one person. |\n| `core.contact.resolve` | **Find a contact.** Finds a contact from an email, a phone number, a nickname or an account on another site. |\n| `core.contact.upsert` | **Add or update a contact.** Adds a contact, or updates the one with the same email. |"
+  },
+  {
+    "id": "reference/grant-switches#files",
+    "doc": "Grant switches",
+    "section": "Files",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#files",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.storage.csv.columns` | **Read spreadsheet columns.** Reads the column names of a CSV file. |\n| `core.storage.csv.filter` | **Save matching spreadsheet rows.** Saves the rows of a CSV file that match into a new file. |\n| `core.storage.csv.rows` | **Search a spreadsheet.** Returns the rows of a CSV file that match, and saves nothing. |\n| `core.storage.csv.stats` | **Sum up a spreadsheet.** Counts the rows of a CSV file and sums up each column. |\n| `core.storage.data-file-read` | **Read a received file.** Reads a file your server received, like an email attachment. Needed by `document.read` for a plain text file. |\n| `core.storage.file.delete` | **Delete a file.** Deletes one file from a connected folder. |\n| `core.storage.file.fetch-remote` | **Fetch files from connected apps.** Lets Recued fetch what is in a file from a connected app, like a cloud drive. It applies to the whole server. |\n| `core.storage.file.folders` | **List your folders.** Lists your connected folders, and whether a file can be saved into each one. |\n| `core.storage.file.get` | **Read one stored file.** Reads one file stored on your server, by its id. |\n| `core.storage.file.list` | **List files.** Lists the files in a connected folder. |\n| `core.storage.file.move` | **Move a file.** Moves a file to another place. |\n| `core.storage.file.persist` | **Keep a file a step made.** Keeps a file that a recipe step made, so it is not thrown away when the run ends. |\n| `core.storage.file.put-ref` | **Copy a file into a folder.** Writes a stored file into a named place in a connected folder. |"
+  },
+  {
+    "id": "reference/grant-switches#files-part-2",
+    "doc": "Grant switches",
+    "section": "Files, part 2",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#files-part-2",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.storage.file.read` | **Read a file.** Reads what is in one file in a connected folder. |\n| `core.storage.file.read-temp` | **Read a file a step made.** Reads a file that an earlier step in the same run made. Needed by `document.read` for a document it converts. |\n| `core.storage.file.render-markdown-template` | **Fill in a document template.** Fills a Markdown template with a few set values, like a name and a date. |\n| `core.storage.file.save-to-folder` | **Save a file into a folder.** Saves a stored file, like an email attachment, into the folder you named. |\n| `core.storage.file.set-scan-status` | **Record a virus scan result.** Marks a received file as clean or flagged, after a virus scan. |\n| `core.storage.file.stat` | **Check a file.** Checks whether a file exists and reads its size and date, without what is in it. |\n| `core.storage.file.write` | **Write a file.** Saves a file into a connected folder. |\n| `core.storage.ics.read` | **Read a calendar file.** Reads a calendar file, like an emailed invitation, and saves nothing. |"
+  },
+  {
+    "id": "reference/grant-switches#shared-store",
+    "doc": "Grant switches",
+    "section": "Shared store",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#shared-store",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.storage.shared.compare-and-set` | **Save a value only if unchanged.** Saves a value only if nobody changed it since it was read. |\n| `core.storage.shared.delete` | **Delete a value.** Deletes one saved value. |\n| `core.storage.shared.delete-prefix` | **Delete values by name.** Deletes every saved value whose name starts the same way. |\n| `core.storage.shared.list` | **List values.** Lists the saved values whose names start the same way. |\n| `core.storage.shared.patch` | **Change part of a value.** Changes some fields of a saved value and leaves the rest. |\n| `core.storage.shared.read` | **Read a value.** Reads one saved value by its name. |\n| `core.storage.shared.search` | **Search values.** Searches the words in saved values. |\n| `core.storage.shared.write` | **Save a value.** Saves a value under a name in the shared store, where recipes keep notes between runs. |"
+  },
+  {
+    "id": "reference/grant-switches#memory",
+    "doc": "Grant switches",
+    "section": "Memory",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#memory",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.memory.annotation.create` | **Add a note to a record.** Sticks a small labelled fact onto a record, like a contact or an email. |\n| `core.memory.annotation.delete` | **Remove notes from records.** Removes the labelled facts that this recipe stuck onto records. |\n| `core.memory.annotation.list` | **List notes on records.** Lists the labelled facts stuck onto records. |\n| `core.memory.annotation.search` | **Search notes on records.** Searches the words in the labelled facts stuck onto records. |\n| `core.memory.link.create` | **Link two records.** Records that two things belong together, like an email and the contact who sent it. |\n| `core.memory.link.delete` | **Remove links.** Removes the links between records that match, whoever made them. |\n| `core.memory.link.list` | **List links.** Lists the links between records. |\n| `core.memory.read` | **Read your memory.** Lets an AI search the facts and notes saved in your memory. Needed by `memory.search`. |\n| `core.memory.timeline.read` | **Read the timeline of a record.** Lists everything about one person or thing in date order: mail, events, notes and more. |\n| `core.memory.write` | **Save to your memory.** Lets an AI save a fact to your memory, or forget one it saved. You see each one and can undo it. Needed by `memory.write` and `memory.forget`. |"
+  },
+  {
+    "id": "reference/grant-switches#audit-trail",
+    "doc": "Grant switches",
+    "section": "Audit trail",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#audit-trail",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.audit.read` | **Read run history.** Lets an AI read what your recipes did, and when. |"
+  },
+  {
+    "id": "reference/grant-switches#enrichments",
+    "doc": "Grant switches",
+    "section": "Enrichments",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#enrichments",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.data.enrichment.describe` | **See which facts exist.** Lets an AI see the kinds of facts Recued works out, and what each one holds. |\n| `core.data.enrichment.list` | **List worked-out facts.** Lists the facts Recued worked out about records, newest first. |\n| `core.data.enrichment.read` | **Read worked-out facts.** Lets an AI read the facts Recued worked out about a record. |\n| `core.data.enrichment.upsert` | **Save a worked-out fact.** Saves a fact Recued worked out about a record, like a score or a summary. |\n| `core.data.enrichment.vector-search` | **Search facts by meaning.** Lets an AI find worked-out facts that mean something close to what it asks. |"
+  },
+  {
+    "id": "reference/grant-switches#tasks-notes",
+    "doc": "Grant switches",
+    "section": "Tasks & notes",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#tasks-notes",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.asset.create` | **Add a thing you own.** Adds a thing you keep track of, like a car or a device, and where its facts came from. Needed by `work.type`, and by `work.create` to add things you own. |\n| `core.work-entity.asset.delete` | **Delete a thing you own.** Deletes a thing you keep track of, with its readings. |\n| `core.work-entity.asset.observe` | **Record a reading.** Lets a recipe record a reading, like a meter value, for a thing you own. It records only what you allowed. |\n| `core.work-entity.asset.update` | **Change a thing you own.** Changes the facts about a thing you keep track of. |\n| `core.work-entity.booking.create` | **Create a booking.** Adds a booking: who the customer is, when it is, and what it is worth. |\n| `core.work-entity.booking.delete` | **Delete a booking.** Deletes a booking. |\n| `core.work-entity.booking.update` | **Change a booking.** Changes a booking, which is also how a booking is cancelled or finished. |\n| `core.work-entity.commitment.cancel` | **Cancel a commitment.** Marks a commitment as cancelled. |\n| `core.work-entity.commitment.create` | **Create a commitment.** Adds a commitment: a promise you made, or one made to you. Needed by `work.create` to add commitments. |\n| `core.work-entity.commitment.fulfill` | **Mark a commitment kept.** Marks a commitment as kept. |\n| `core.work-entity.commitment.propose` | **Suggest a commitment.** Suggests a commitment for you to check. It is only added once you say yes. |\n| `core.work-entity.commitment.update` | **Change a commitment.** Changes the details of a commitment. Needed by `work.update` to change commitments. |"
+  },
+  {
+    "id": "reference/grant-switches#tasks-notes-part-2",
+    "doc": "Grant switches",
+    "section": "Tasks & notes, part 2",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#tasks-notes-part-2",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.customer-account-payment.apply` | **Record a customer payment.** After you check it, records a payment from a customer across the invoices it pays. |\n| `core.work-entity.customer-account-payment.correct` | **Correct a customer payment.** After you check it, corrects or cancels how a payment was split across invoices. |\n| `core.work-entity.customer-invoice.credit` | **Credit a customer invoice.** After you check it, records a credit on an invoice and lowers what is still owed. |\n| `core.work-entity.customer-invoice.credit.correct` | **Correct an invoice credit.** After you check it, undoes a credit on an invoice and can add a new one in its place. |\n| `core.work-entity.customer-payment.correct` | **Correct an invoice payment.** After you check it, corrects or cancels one payment and fixes what the invoice still owes. |\n| `core.work-entity.customer-refund.apply` | **Record a customer refund.** After you check it, records a refund to a customer. |\n| `core.work-entity.customer-refund.correct` | **Correct a customer refund.** After you check it, undoes a wrong refund record and can add a new one in its place. |\n| `core.work-entity.get` | **Read one task, note or more.** Lets a recipe read one item, like a task or a note, by its id. |\n| `core.work-entity.list` | **List tasks, notes and more.** Lets a recipe list the items of one kind: tasks, notes, commitments, projects, bookings or things you own. |\n| `core.work-entity.note.create` | **Create a note.** Adds a note. It goes on your server unless the recipe picks a connected app. Needed by `work.create` to add notes. |"
+  },
+  {
+    "id": "reference/grant-switches#tasks-notes-part-3",
+    "doc": "Grant switches",
+    "section": "Tasks & notes, part 3",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#tasks-notes-part-3",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.note.delete` | **Delete a note.** Deletes a note. |\n| `core.work-entity.note.update` | **Change a note.** Changes the fields of a note. Needed by `work.update` to change notes. |\n| `core.work-entity.project.archive` | **Archive a project.** Moves a project to the archive. |\n| `core.work-entity.project.create` | **Create a project.** Adds a project. It goes on your server unless the recipe picks a connected app. Needed by `work.create` to add projects. |\n| `core.work-entity.project.update` | **Change a project.** Changes the fields of a project. Needed by `work.update` to change projects. |\n| `core.work-entity.quote-completion.review` | **Close or reopen a finished job.** After you approve, closes the task for work the customer accepted, or reopens it for changes. |\n| `core.work-entity.quote-signoff.release` | **Release an accepted quote.** After you approve, turns an accepted quote into a task and an invoice. |\n| `core.work-entity.read` | **Read tasks, notes and more.** Lets an AI read and search your tasks, notes, commitments, projects, bookings and things you own. Each kind also needs its own data switch. Needed by `work.search` and `work.read`. |\n| `core.work-entity.task.create` | **Create a task.** Adds a task. It goes on your server unless the recipe picks a connected app. Needed by `work.create` to add tasks. |\n| `core.work-entity.task.delete` | **Delete a task.** Deletes a task. |\n| `core.work-entity.task.mark-done` | **Mark a task done.** Ticks a task off as done. Needed by `work.update` to tick a task off. |"
+  },
+  {
+    "id": "reference/grant-switches#tasks-notes-part-4",
+    "doc": "Grant switches",
+    "section": "Tasks & notes, part 4",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#tasks-notes-part-4",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.task.mark-reminder-fired` | **Mark a reminder task as sent.** Marks a reminder kept as a task as sent, so it is no longer due. |\n| `core.work-entity.task.update` | **Change a task.** Changes the fields of a task. Needed by `work.update` to change tasks. |"
+  },
+  {
+    "id": "reference/grant-switches#form-responses",
+    "doc": "Grant switches",
+    "section": "Form responses",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#form-responses",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.data.form-response.get` | **Read one form answer.** Reads one answer to a form that you accepted. |\n| `core.data.form-response.list` | **List form answers.** Lists the answers to your forms that you accepted. |\n| `core.data.form-response.set-state` | **Move a form answer along.** Marks a form answer as in review, accepted, declined or a no-show. |"
+  },
+  {
+    "id": "reference/grant-switches#webhooks",
+    "doc": "Grant switches",
+    "section": "Webhooks",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#webhooks",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.webhook.event.get` | **Read a webhook message.** Lets the recipe a webhook started read the message that started it. |"
+  },
+  {
+    "id": "reference/grant-switches#peers",
+    "doc": "Grant switches",
+    "section": "Peers",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#peers",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.peer.ask` | **Ask the owner of another server.** Puts one question to the owner of another Recued server, then waits for the answer. |\n| `core.peer.receive-answer` | **Take answers from a peer.** Lets the answer to a question you sent come back from that server. |\n| `core.peer.receive-ask` | **Take questions from a peer.** Lets another Recued server put a question to you. You see it and choose the answer. |\n| `core.storage.exchange.status` | **Check a question sent to a peer.** Checks what happened to a question you sent to another server. |"
+  },
+  {
+    "id": "reference/grant-switches#selling",
+    "doc": "Grant switches",
+    "section": "Selling",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#selling",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.customer.status` | **Let a customer check their access.** Lets a customer see the state of their own access. |\n| `core.seller.customer-access.close` | **End the access of a customer.** Ends the access of a customer. |\n| `core.seller.customer-access.extend` | **Extend the access of a customer.** Gives a customer more time. |\n| `core.seller.customer-access.issue` | **Give a customer access.** Gives a paying customer access, or gives them more time. |\n| `core.seller.customer-access.swap-tier` | **Move a customer to another tier.** Moves a customer to another price tier. |\n| `core.seller.offer.attach-fulfillment` | **Link an offer to its recipe.** Links an offer to the recipe that delivers it. |\n| `core.seller.offer.ensure` | **Set up a draft offer.** Sets up a draft of something to sell. It cannot make the offer live. |\n| `core.seller.offer.get` | **Read an offer.** Reads one of your offers. |\n| `core.seller.offer.list` | **List offers.** Lists your offers. |\n| `core.seller.order.attach-artifact` | **Attach what was delivered.** Attaches the finished work the customer paid for to the order. |\n| `core.seller.order.attach-payment` | **Link a checkout to an order.** Links the checkout of your payment provider to an order, which then waits for payment. |\n| `core.seller.order.confirm-payment` | **Confirm an order was paid.** Marks an order as paid. Nothing else can. |\n| `core.seller.order.confirm-refund` | **Confirm an order was refunded.** Marks an order as refunded. Nothing else can. |"
+  },
+  {
+    "id": "reference/grant-switches#selling-part-2",
+    "doc": "Grant switches",
+    "section": "Selling, part 2",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#selling-part-2",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.seller.order.confirm-renewal-payment` | **Confirm a renewal was paid.** Marks the order for one renewal as paid, one order for each billing period. |\n| `core.seller.order.get` | **Read an order.** Reads one order. |\n| `core.seller.order.link-customer` | **Link an order to a customer.** Links a paid order to the customer who got access. |\n| `core.seller.order.link-work-entity` | **Link an order to a task.** Links an order to the task or commitment for the work. |\n| `core.seller.order.list` | **List orders.** Lists your orders. |\n| `core.seller.order.open` | **Open an order.** Opens an order for one purchase of an offer. |\n| `core.seller.order.quote` | **Price an order.** Sets the price of an order that is not paid yet. |\n| `core.seller.order.transition` | **Move an order along.** Moves an order to its next step, like delivering, complete or cancelled. |\n| `core.seller.tier.get` | **Read a price tier.** Reads one of your price tiers. |\n| `core.seller.tier.list` | **List price tiers.** Lists your price tiers. |"
+  },
+  {
+    "id": "reference/grant-switches#notifications",
+    "doc": "Grant switches",
+    "section": "Notifications",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#notifications",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.notification.recipe-callback` | **Nudge a connected AI app.** Tells an AI app that an answer it asked for may have changed. The app must ask again to see anything. A contract for an AI app cannot get this. |\n| `core.notification.send` | **Send you a notification.** Sends a message to you on the channels you set up, like Slack, Telegram or email. It cannot reach anyone else. |\n| `core.preapproval.request` | **Ask you to approve a future run.** Puts a planned recipe run or a saved draft in front of you to approve. It cannot approve anything itself. |\n| `core.reminder.create` | **Set a reminder.** Sets a reminder for you. Recued sends it once, at the time chosen. |"
+  },
+  {
+    "id": "reference/grant-switches#conversation-history",
+    "doc": "Grant switches",
+    "section": "Conversation history",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#conversation-history",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.recall.search` | **Search past conversations.** Lets your own chat find what was said in earlier conversations. An AI app cannot use it. |"
+  },
+  {
+    "id": "reference/grant-switches#reminders",
+    "doc": "Grant switches",
+    "section": "Reminders",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#reminders",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.reminder.cancel` | **Cancel a reminder.** Cancels a reminder still to come, so it never goes off. |\n| `core.reminder.list` | **List your reminders.** Lists the reminders still to come, soonest first. |\n| `core.reminder.update` | **Change a reminder.** Changes the words or the time of a reminder still to come. |"
+  },
+  {
+    "id": "reference/grant-switches#situations",
+    "doc": "Grant switches",
+    "section": "Situations",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#situations",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.situation.prefetch` | **Look ahead before each chat turn.** Lets Recued add a short picture of what is going on to your chat before the AI answers. |\n| `core.situation.read` | **Read what is going on.** Reads a short, ranked picture of what is going on around a time. Each kind of item also needs its own switches. Needed by `situation.query`. |"
+  },
+  {
+    "id": "reference/grant-switches#ai-models",
+    "doc": "Grant switches",
+    "section": "AI models",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#ai-models",
+    "body": "A contract for an AI app cannot get these.\n\n| Switch | What it does |\n| --- | --- |\n| `core.ai.classify` | **Sort into a category.** Asks your AI model which category, from a list the recipe gives, fits some text best. |\n| `core.ai.compare` | **Compare two things.** Asks your AI model how two pieces of data differ and where they match. |\n| `core.ai.embed` | **Turn text into numbers for search.** Asks your AI model for numbers that stand for what some text means. Search by meaning uses them. |\n| `core.ai.extract` | **Pull out fields.** Asks your AI model to pull named fields, like a date or an amount, out of free text. |\n| `core.ai.generate` | **Draft text.** Asks your AI model to write a draft, like an email or an agenda, from data the recipe gives. |\n| `core.ai.prompt` | **Ask your AI model anything.** Sends the recipe’s own question to your AI model and returns the answer. It cannot search the web. |\n| `core.ai.rewrite` | **Rewrite text.** Asks your AI model to rewrite text in another style. |\n| `core.ai.score` | **Score against a list.** Asks your AI model to score data against a list of points. |\n| `core.ai.sentiment` | **Read the mood of text.** Asks your AI model whether text sounds positive, neutral or negative. |\n| `core.ai.summarize` | **Summarize.** Asks your AI model for a short summary and the key points of a long text. |\n| `core.ai.translate` | **Translate.** Asks your AI model to put text into another language. |"
+  },
+  {
+    "id": "reference/grant-switches#browser",
+    "doc": "Grant switches",
+    "section": "Browser",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#browser",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.read` | **Read from a web page.** Reads text from a web page open in your browser, through the Browser Bridge. |\n| `core.dom.write` | **Type into a web page.** Types into a web page open in your browser, through the Browser Bridge. |"
+  },
+  {
+    "id": "reference/grant-switches#schedules",
+    "doc": "Grant switches",
+    "section": "Schedules",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#schedules",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.schedule.recipe` | **Schedule recipes.** Lets your own chat set a recipe to run later or on a timer. An AI app cannot schedule recipes. Needed by `recipe.schedule`. |"
+  },
+  {
+    "id": "reference/grant-switches#triggers",
+    "doc": "Grant switches",
+    "section": "Triggers",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#triggers",
+    "body": "A contract for an AI app cannot get these.\n\n| Switch | What it does |\n| --- | --- |\n| `core.watch.http` | **Watch a web page.** Starts a recipe when a web page changes. |\n| `core.watch.time` | **Run only at set times.** Lets a recipe run only on chosen days or hours. |\n| `core.watch.time-relative` | **Run before or after a date.** Starts a recipe when the time comes near a date on a record, like a day before a meeting. |"
+  },
+  {
+    "id": "reference/grant-switches#recipes",
+    "doc": "Grant switches",
+    "section": "Recipes",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#recipes",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.approval-workflow.continue` | **Carry on a job a customer accepted.** After you approve, finishes a task, keeps a commitment or starts a saved recipe that a customer accepted. |"
+  },
+  {
+    "id": "reference/grant-switches#data-switches",
+    "doc": "Grant switches",
+    "section": "Data switches",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#data-switches",
+    "body": "An AI or a recipe can read only the data whose switch is on.\n\n| Switch | What it does |\n| --- | --- |\n| `data.mail` | **Your mail.** Lets an AI or a recipe read the copy of your mail on your server. Needed by `mail.search` and `mail.read`. |\n| `data.calendar` | **Your calendar.** Lets an AI or a recipe read your calendar events. Needed by `calendar.search`. |\n| `data.file` | **Your files.** Lets an AI or a recipe read your stored files, like email attachments and files in your folders. Needed by `mail.read` to list attachments, and by `document.read` and `file.search`. |\n| `data.contact` | **Your contacts.** Lets an AI or a recipe read your contacts. Needed by `contact.search` for your own contacts, and by `contact.read`, and by `deal.search` to show the contact on a deal. |\n| `data.task` | **Your tasks.** Lets an AI or a recipe read your tasks. Needed by `work.search` and `work.read` for tasks. |\n| `data.note` | **Your notes.** Lets an AI or a recipe read your notes. Needed by `work.search` and `work.read` for notes. |\n| `data.commitment` | **Your commitments.** Lets an AI or a recipe read your commitments: promises you made, or ones made to you. Needed by `work.search` and `work.read` for commitments. |\n| `data.project` | **Your projects.** Lets an AI or a recipe read your projects. Needed by `work.search` and `work.read` for projects. |\n| `data.booking` | **Your bookings.** Lets an AI or a recipe read your bookings. Needed by `work.search` and `work.read` for bookings. |\n| `data.asset` | **Things you own.** Lets an AI or a recipe read the things you keep track of, like a car or a device. Needed by `work.search` and `work.read` for things you own. |"
+  },
+  {
+    "id": "reference/grant-switches#data-switches-part-2",
+    "doc": "Grant switches",
+    "section": "Data switches, part 2",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#data-switches-part-2",
+    "body": "An AI or a recipe can read only the data whose switch is on.\n\n| Switch | What it does |\n| --- | --- |\n| `data.form_response` | **Form answers.** Lets an AI or a recipe read the answers to your forms. |\n| `data.webhook` | **Webhook messages.** Lets an AI or a recipe read the messages other websites sent to your server. |\n| `data.episode` | **Past episodes.** Lets an AI see past times you did something: when, where and with whom. It sees them only inside a situation. |\n| `data.occasion` | **Occasions.** Lets an AI see the things that come back each year, like a birthday dinner. It sees them only inside a situation. |"
   },
   {
     "id": "reference/ingredient-manifest",
@@ -4085,7 +4493,7 @@
     "section": "Alerts when this server is off",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/backup-and-restore#alerts-when-this-server-is-off",
-    "body": "Open **Offline backup alerts** in **Settings → Backup & Recovery**.\nUse a heartbeat monitor on another host, such as Healthchecks.\nIt sends alerts when it stops hearing from Recued.\nSet its period to one minute and its grace to at least five minutes.\nSet up and test its alert route on that host too.\n\nPaste its HTTPS success-ping URL, turn on pings, and choose **Save monitor**.\nUse a URL with no query, fragment, or login, on port 443.\nRecued saves the URL encrypted and does not show it again.\nLeave the field blank to keep that saved URL.\nIt needs none of your secret recovery words.\n\nPings need a verified backup within its age limit and no backup warnings.\nIf S3 checks are on, they need a full passing scan first.\nA first recovery test can still be in its grace period.\nA ping does not mean that test passed.\nCheck that the monitor has seen its first ping before relying on it.\nAn acknowledgment does not prove that its alerts reach you.\n\nStopping the server or pausing backups stops pings too.\nPause the external check for planned downtime.\n**Remove monitor** forgets its URL here. Remove or pause its external check too."
+    "body": "Open **Offline backup alerts** in **Settings → Backup & Recovery**.\nUse a heartbeat monitor on another host, such as Healthchecks.\nIt sends alerts when it stops hearing from Recued.\nSet its period to one minute and its grace to at least five minutes.\nSet up and test its alert route on that host too.\n\nPaste its HTTPS success-ping URL, turn on pings, and choose **Save monitor**.\nUse a URL with no query, fragment, or login, on port 443.\nRecued saves the URL encrypted and does not show it again.\nLeave the field blank to keep that saved URL.\nIt does not need your recovery key.\n\nPings need a verified backup within its age limit and no backup warnings.\nIf S3 checks are on, they need a full passing scan first.\nA first recovery test can still be in its grace period.\nA ping does not mean that test passed.\nCheck that the monitor has seen its first ping before relying on it.\nAn acknowledgment does not prove that its alerts reach you.\n\nStopping the server or pausing backups stops pings too.\nPause the external check for planned downtime.\n**Remove monitor** forgets its URL here. Remove or pause its external check too."
   },
   {
     "id": "setup/backup-and-restore#test-the-external-alert-route",
@@ -4093,7 +4501,7 @@
     "section": "Test the external alert route",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/backup-and-restore#test-the-external-alert-route",
-    "body": "After a healthy ping is acknowledged, choose **Test monitor alerts**.\nPick 10, 15, 30, or 60 minutes, longer than the monitor's period plus grace.\nReview the pause and confirm it. This may send real alerts to your saved routes.\nLeave the external monitor on during the test.\n\nRecued pauses pings until the shown server time, even if you close this page.\nThe pause also survives a server restart and is never extended by a retry.\nWhen it ends, pings can resume while the server is running.\nThey still need healthy backup proof and an open vault.\nA changed server clock can delay them.\n\nIf the alert reaches you, choose **I received the alert** to end the pause early.\nRecued records your report and waits for a fresh ping acknowledgment.\nBoth are needed for a completed drill. Your report is not an independent check\nthat the alert provider delivered a message.\nIf no alert arrives, end the drill and check the route on the monitor host.\nYou can also report an alert after the pause has ended.\n\nChanging monitor setup ends an open drill for that setup.\nAfter a lost link, refresh the drill status before taking another action.\nNo recovery words are needed. The drill does not start backups or S3 checks."
+    "body": "After a healthy ping is acknowledged, choose **Test monitor alerts**.\nPick 10, 15, 30, or 60 minutes, longer than the monitor's period plus grace.\nReview the pause and confirm it. This may send real alerts to your saved routes.\nLeave the external monitor on during the test.\n\nRecued pauses pings until the shown server time, even if you close this page.\nThe pause also survives a server restart and is never extended by a retry.\nWhen it ends, pings can resume while the server is running.\nThey still need healthy backup proof and an open vault.\nA changed server clock can delay them.\n\nIf the alert reaches you, choose **I received the alert** to end the pause early.\nRecued records your report and waits for a fresh ping acknowledgment.\nBoth are needed for a completed drill. Your report is not an independent check\nthat the alert provider delivered a message.\nIf no alert arrives, end the drill and check the route on the monitor host.\nYou can also report an alert after the pause has ended.\n\nChanging monitor setup ends an open drill for that setup.\nAfter a lost link, refresh the drill status before taking another action.\nYour recovery key is not needed. The drill does not start backups or S3 checks."
   },
   {
     "id": "setup/backup-and-restore#backup-warnings-in-account",
@@ -4117,7 +4525,7 @@
     "section": "Check backups after a restore",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/backup-and-restore#check-backups-after-a-restore",
-    "body": "Once the server confirms the restore, **Backup & Recovery** shows a checklist.\nIt reads this server's current backup and alert setup.\nIt shows the schedule, backup age, recovery tests, S3 checks, and health alerts.\nIt also shows the offline monitor and its latest alert drill.\nAn accepted restore still waiting for restart does not show this checklist.\n\nReview each item that needs care. Each **Review** button opens its settings.\nThe backup key and monitor setup live outside the restored database.\nThey may still be set up on the same host. A move may need fresh setup.\nThe checklist checks this server. It does not use claims from an old Passport.\nIf backup setup is missing, enter your recovery words once to set it up.\nThe words are not saved. Keep them apart from your archives.\n\nChoose **Refresh readiness** after changing setup.\nThe checklist reads saved status. It starts no backups, S3 scans, or alert drills.\nA passing test may cover an earlier copy. Test the copy you plan to use too.\nA ping does not prove an alert reached you. Check the route on the monitor host.\nA drill shows your report and the ping after the pause as separate facts.\nIf the link is lost, passing claims clear until you can check again.\nClearing the saved restore check also hides its checklist.\nYou can still view and download the JSON file."
+    "body": "Once the server confirms the restore, **Backup & Recovery** shows a checklist.\nIt reads this server's current backup and alert setup.\nIt shows the schedule, backup age, recovery tests, S3 checks, and health alerts.\nIt also shows the offline monitor and its latest alert drill.\nAn accepted restore still waiting for restart does not show this checklist.\n\nReview each item that needs care. Each **Review** button opens its settings.\nThe backup key and monitor setup live outside the restored database.\nThey may still be set up on the same host. A move may need fresh setup.\nThe checklist checks this server. It does not use claims from an old Passport.\nIf backup setup is missing, enter your recovery key once to set it up.\nThe words are not saved. Keep them apart from your archives.\n\nChoose **Refresh readiness** after changing setup.\nThe checklist reads saved status. It starts no backups, S3 scans, or alert drills.\nA passing test may cover an earlier copy. Test the copy you plan to use too.\nA ping does not prove an alert reached you. Check the route on the monitor host.\nA drill shows your report and the ping after the pause as separate facts.\nIf the link is lost, passing claims clear until you can check again.\nClearing the saved restore check also hides its checklist.\nYou can still view and download the JSON file."
   },
   {
     "id": "setup/backup-and-restore#test-recovery",

@@ -270,10 +270,15 @@ export const prefetchEntities = async (
  *
  *  ⚠ The "wrong entity" caution SURVIVES — a confident match can still be the
  *  wrong Sarah. What is gone is the suggestion that the entity might not be on
- *  file, which is the part that was never true. */
+ *  file, which is the part that was never true.
+ *
+ *  ⚠ SCOPED TO ITS LINES (2026-10-24). It said "an alias is only ever issued for a
+ *  record that EXISTS", which stopped being true when an email or URL written in
+ *  the conversation began to be aliased whether or not it is on file (D-167
+ *  amendment). The claim the lines need survives: each one is a stored record. */
 const PREFETCH_CONFIDENT_HEADER =
-  'Entities this message refers to, resolved from records already on file. An'
-  + ' alias is only ever issued for a record that EXISTS, so each line below is'
+  'Entities this message refers to, resolved from records already on file. Each'
+  + ' line below was matched to a stored record, so it is'
   + ' real — it is not a guess about whether the entity is there. Use the alias'
   + ' directly as a tool argument; call a tool when you need fields these lines'
   + ' do not carry, or if a match looks like the wrong entity:';
