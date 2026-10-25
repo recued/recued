@@ -46,9 +46,9 @@ again.
 
 ## 3. Open an MCP door (the user does this)
 
-In the web app, the user opens **Contracts** and makes an agreement for
+In the web app, the user opens **Contracts** and makes a contract for
 you. That is the MCP door. They switch on the tools you may use under
-**AI tools**, at the top of the agreement's list. Under each tool are the
+**AI tools**, at the top of the contract's list. Under each tool are the
 other switches it needs, and they can switch those on right there. The
 **Connect** tab shows the server's MCP address, which ends in `/mcp`, and
 the door's secret key, once. Ask the user to paste both to you.
@@ -79,10 +79,10 @@ transport. Keep the key in this file only. Do not print it back to the user.
 Recued should now list its tools. Two of them are always there, because
 they are Recued's own: `recued_actionStatus` and `recued_stopRecipe`. If
 those are the only two, the door shows no tools yet. Ask the user to switch
-some on under **AI tools** on the agreement's page. If a tool they switched
-on does not appear, the agreement may be older than Recued 26.10.24.
+some on under **AI tools** on the contract's page. If a tool they switched
+on does not appear, the contract may be older than Recued 26.10.24.
 Its key keeps the tools it was made with, so ask the user to make a new
-agreement. If Cline cannot connect and says the server requires
+contract. If Cline cannot connect and says the server requires
 authorization, the key is wrong.
 
 By default, anything that writes or deletes waits for the user's yes. A
