@@ -126,7 +126,7 @@ export const mountContractKeyPanel = (
   const now = opts.now ?? Date.now;
   const root = doc.createElement('section');
   root.setAttribute(CONTRACT_KEY_PANEL_ATTR, '');
-  root.setAttribute('aria-label', 'This agreement’s key');
+  root.setAttribute('aria-label', 'This contract’s key');
   opts.host.appendChild(root);
 
   let disposed = false;
@@ -183,11 +183,11 @@ export const mountContractKeyPanel = (
     el('h3', root, undefined, 'Key');
 
     if (state === 'loading') {
-      el('p', root, 'contract-key-copy-text', 'Checking for this agreement’s key…');
+      el('p', root, 'contract-key-copy-text', 'Checking for this contract’s key…');
       return;
     }
     if (state === 'unavailable') {
-      const line = el('p', root, undefined, `Recued could not check this agreement’s key: ${listError}`);
+      const line = el('p', root, undefined, `Recued could not check this contract’s key: ${listError}`);
       line.setAttribute(CONTRACT_KEY_ERROR_ATTR, '');
       line.setAttribute('role', 'alert');
       return;
@@ -203,8 +203,8 @@ export const mountContractKeyPanel = (
           'p',
           root,
           'contract-key-copy-text',
-          'An AI app connects to this agreement with its key. The app can do only what '
-            + 'this agreement allows under Ops, Entities and Recipes, and nothing is '
+          'An AI app connects to this contract with its key. The app can do only what '
+            + 'this contract allows under Ops, Entities and Recipes, and nothing is '
             + 'allowed until you switch it on there.',
         );
         const actions = el('div', root, 'contract-key-actions');
@@ -234,7 +234,7 @@ export const mountContractKeyPanel = (
           'p',
           root,
           'contract-key-copy-text',
-          `This agreement has a key, made ${formatClientDateTime(current.created_at, { invalidText: String(current.created_at) })}. `
+          `This contract has a key, made ${formatClientDateTime(current.created_at, { invalidText: String(current.created_at) })}. `
             + 'Recued shows a key only once. If you no longer have it, turn it off and create a new one.',
         );
       }

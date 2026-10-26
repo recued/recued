@@ -96,14 +96,16 @@ export const createSituationAccess = (deps: {
       if (before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the situation read. Ask the owner to refresh before relying on it.');
       return result;
     },
-    async prefetch(text: string, source: ExecutionSource | undefined, signal: AbortSignal): Promise<SituationResult> {
+    async prefetch(text: string, source: ExecutionSource | undefined, signal: AbortSignal, citeSavedDetails = false): Promise<SituationResult> {
       // The alias is independently grantable. It confers no tool grant and
       // the explicit tool confers no speculative-prefetch grant.
       const access = context(source, SITUATION_PREFETCH_OP);
       const before = authority(source, SITUATION_PREFETCH_OP);
       const at = now();
       const result = await deps.query({ time: { from: at, to: Math.min(8.64e15, at + 14 * 86_400_000) }, text: text.slice(0, 2048),
-        surface: 'prefetch', limit_clusters: 2, limit_items: 3 }, { ...access, signal });
+        surface: 'prefetch', limit_clusters: 2, limit_items: 3 }, { ...access, signal,
+          ...(citeSavedDetails && access.owner && source?.channel === 'chat' && source.actor === 'user_self'
+            && !('contract_id' in source) ? { citeAssetDetails: true as const } : {}) });
       if (before !== authority(source, SITUATION_PREFETCH_OP)) throw new SituationAccessError('Prefetch permissions changed');
       return result;
     },

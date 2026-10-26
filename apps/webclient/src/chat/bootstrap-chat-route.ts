@@ -1,4 +1,4 @@
-import { renderResourceReview } from '@recued/contracts';
+import { approvalValueLabel, renderResourceReview, tier1CallTitle, type ApprovalValueLabels } from '@recued/contracts';
 import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
 import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
 import { assetChatHref, assetChatMessage, readAssetChatMessage, type ChatAssetContext } from './asset-context.js';
@@ -3078,7 +3078,12 @@ const PLAN_ACTION_TITLES: Readonly<Record<string, string>> = {
 /** Human title first; the exact tool slug remains available in the technical
  * disclosure. This deliberately recognizes common write tools and falls back
  * to a readable slug instead of leaking an internal identifier as the heading. */
-const planActionTitle = (tool: string): string => {
+const planActionTitle = (tool: string, args?: unknown): string => {
+  // The owner's words for one call of an AI tool, by the kind of thing it changes ("Change
+  // a thing you own"), as its ask names it. A model's prompt passes no args and keeps the
+  // generic title.
+  const call = args === undefined ? undefined : tier1CallTitle(tool, args);
+  if (call !== undefined) return call;
   const candidate = tool.trim().split('/').pop() ?? tool;
   const normalized = candidate.toLowerCase();
   for (const [suffix, title] of Object.entries(PLAN_ACTION_TITLES)) {
@@ -3192,6 +3197,7 @@ const planInstantValue = (
 
 const planDetailEntries = (
   args: unknown,
+  labels?: ApprovalValueLabels,
 ): ReadonlyArray<readonly [label: string, value: string]> => {
   if (
     args !== null
@@ -3204,7 +3210,9 @@ const planDetailEntries = (
       return entries.map(
         ([key, value]) => [
           planDetailLabel(key),
-          planInstantValue(key, value, record) ?? planDetailValue(value),
+          // A record the call names by id reads as its name (`value_labels`); the id stays
+          // in the technical bits below.
+          approvalValueLabel(labels, key, value) ?? planInstantValue(key, value, record) ?? planDetailValue(value),
         ] as const,
       );
     }
@@ -5006,7 +5014,7 @@ export const bootstrapChatRoute = (
       runId: context.runId,
       relationship: context.relationship,
       runMatch,
-      actionTitle: planActionTitle(card.tool),
+      actionTitle: planActionTitle(card.tool, card.args),
       prompt,
       mode,
       origin,
@@ -5040,7 +5048,7 @@ export const bootstrapChatRoute = (
     dataVerificationDiagnosisDraft = null;
     approvedPlanContinuationDraft = {
       planId: card.plan_id,
-      actionTitle: planActionTitle(card.tool),
+      actionTitle: planActionTitle(card.tool, card.args),
       prompt,
       mode,
       ...(mode === 'fresh' && sourceMessageId !== undefined
@@ -5665,7 +5673,7 @@ export const bootstrapChatRoute = (
       (candidate) => candidate.plan_id === context.plan_id,
     );
     const actionTitle =
-      card === undefined ? 'reviewed action' : planActionTitle(card.tool);
+      card === undefined ? 'reviewed action' : planActionTitle(card.tool, card.args);
     const intent =
       context.intent === 'safe_check' ? 'safe_check' : 'explanation';
     const safeCheck = intent === 'safe_check';
@@ -5944,7 +5952,7 @@ export const bootstrapChatRoute = (
   // offers an editable composer handoff and never sends automatically; only
   // server-linked tool events add the running / terminal execution receipt.
   const renderPlanCard = (host: HTMLElement, card: PlanApprovalCard): void => {
-    const actionTitle = planActionTitle(card.tool);
+    const actionTitle = planActionTitle(card.tool, card.args);
     const preparedMode =
       approvedPlanContinuationDraft?.planId === card.plan_id
         ? approvedPlanContinuationDraft.mode
@@ -6293,7 +6301,7 @@ export const bootstrapChatRoute = (
     const detailEntries =
       card.payload_available === false
         ? [['Details', 'Gone after the recovery']] as const
-        : planDetailEntries(card.args);
+        : planDetailEntries(card.args, card.value_labels);
     for (const [label, value] of detailEntries) {
       const row = doc.createElement('div');
       row.className = 'chat-plan-card-detail';

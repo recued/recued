@@ -18,6 +18,7 @@ import type Database from 'better-sqlite3';
 import {
   isChatDispatchReason,
   isChatPlanStatus,
+  type ApprovalValueLabels,
   type ChatPlanExecutionReceipt,
   type ChatPlanProposal,
   type ChatPlanRecord,
@@ -63,6 +64,8 @@ interface ChatPlanRow {
   hold_run_id: string | null;
   /** D-329 — when that hold expired unanswered (`hold.lapsed_at`). */
   hold_lapsed_at: number | null;
+  /** D-329 — the names of the records its args name (`ChatPlanProposal.value_labels`). */
+  value_labels_encrypted: string | null;
 }
 
 const chatMutationIdentity = (row: ChatPlanRow): unknown => ({
@@ -104,13 +107,19 @@ interface PlanPayloadIdentity {
   readonly created_at: number;
 }
 
+type PlanPayloadKind = 'args' | 'execution' | 'resource_review' | 'value_labels';
+/** A stored `value_labels`: a name per value of a top-level argument. */
+const isValueLabels = (value: unknown): value is ApprovalValueLabels =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+  && Object.values(value).every((byValue) => byValue !== null && typeof byValue === 'object' && !Array.isArray(byValue)
+    && Object.values(byValue).every((name) => typeof name === 'string'));
 const aadForPlanPayload = (
-  kind: 'args' | 'execution' | 'resource_review',
+  kind: PlanPayloadKind,
   identity: PlanPayloadIdentity,
 ): Uint8Array =>
   new TextEncoder().encode(
     JSON.stringify(
-      kind === 'args' || kind === 'resource_review'
+      kind === 'args' || kind === 'resource_review' || kind === 'value_labels'
         ? [
             'recued/v1/chat/plan/' + kind,
             identity.session_id,
@@ -146,7 +155,7 @@ const requireKey = (
 
 const encodePayload = async (
   value: unknown,
-  kind: 'args' | 'execution' | 'resource_review',
+  kind: PlanPayloadKind,
   identity: PlanPayloadIdentity,
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -163,7 +172,7 @@ const encodePayload = async (
 
 const decodePayload = async (
   blob: string,
-  kind: 'args' | 'execution' | 'resource_review',
+  kind: PlanPayloadKind,
   identity: PlanPayloadIdentity,
   getKey?: ChatKeyProvider,
 ): Promise<unknown> => {
@@ -234,8 +243,14 @@ const decodePlan = async (
     const review = row.resource_review_encrypted == null ? undefined
       : await decodePayload(row.resource_review_encrypted, 'resource_review', row, getKey);
     if (review !== undefined && !isResourceReview(review)) return undefined;
+    // Display only: names that do not read back leave the card its ids.
+    const labels = row.value_labels_encrypted == null ? undefined
+      : await decodePayload(row.value_labels_encrypted, 'value_labels', row, getKey).catch((error: unknown) => {
+        if (error instanceof ChatVaultLockedError) throw error;
+        return undefined;
+      });
     const plan = planShellFromRow(row, args);
-    return plan && { ...plan, ...(review ? { resource_review: review } : {}) };
+    return plan && { ...plan, ...(review ? { resource_review: review } : {}), ...(isValueLabels(labels) ? { value_labels: labels } : {}) };
   } catch (error) {
     if (error instanceof ChatVaultLockedError) throw error;
     return undefined;
@@ -463,12 +478,12 @@ export const createSqliteChatPlanStore = (
       tool, tier, classification,
       args_encrypted, resource_review_encrypted, args_hash, target_instance, status, created_at,
       resolved_at, consumed_at, execution_status, execution_turn_id,
-      execution_blob_encrypted, execution_updated_at, hold_run_id
+      execution_blob_encrypted, execution_updated_at, hold_run_id, value_labels_encrypted
     ) VALUES (
       @plan_id, @session_id, @turn_id, @retry_of_plan_id, NULL,
       @tool, @tier, @classification,
       @args_encrypted, @resource_review_encrypted, @args_hash, @target_instance, @status, @created_at,
-      @resolved_at, @consumed_at, NULL, NULL, NULL, NULL, @hold_run_id
+      @resolved_at, @consumed_at, NULL, NULL, NULL, NULL, @hold_run_id, @value_labels_encrypted
     )
     ON CONFLICT(plan_id) DO NOTHING
   `);
@@ -638,6 +653,8 @@ export const createSqliteChatPlanStore = (
       resolved_at: plan.resolved_at ?? null,
       consumed_at: plan.consumed_at ?? null,
       hold_run_id: plan.hold?.run_id ?? null,
+      value_labels_encrypted: plan.value_labels
+        ? await encodePayload(plan.value_labels, 'value_labels', plan, getKey) : null,
     });
   };
 

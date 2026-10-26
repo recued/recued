@@ -510,6 +510,14 @@ export const composeMcpHttpTransport = (
               boundContractActive: boundContractActive === true,
             }
           : {}),
+        // D-327 — which refusal fits this key: its contract's switches, or a new contract.
+        ...(record.contract_id !== undefined
+          ? (() => {
+              const reads = deps.executeDeps.contractOverlay
+                ?.readsKeyToolsFromContract?.(record.contract_id);
+              return reads === undefined ? {} : { keyReadsContractTools: reads };
+            })()
+          : {}),
         // Door standing closure, MCP arm — read off the BOUND CONTRACT, live per
         // dispatch, never off the token record. Lifecycle and limitation are the
         // contract's job; the token authenticates. Gated on the contract being

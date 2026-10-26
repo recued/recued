@@ -456,6 +456,49 @@ export const modernMcpToolArgumentHeaders = (
   return headers;
 };
 
+/** The version header a handshake-era HTTP request carries after `initialize`. From 2025-06-18 the client
+ *  MUST name the negotiated revision in `MCP-Protocol-Version` on every later request; 2024-11-05 and
+ *  2025-03-26 define no such header, so they get none. */
+export const handshakeMcpHttpHeaders = (
+  version: RecuedMcpProtocolVersion | undefined,
+): Record<string, string> => (
+  version === '2025-06-18' || version === '2025-11-25' ? { 'MCP-Protocol-Version': version } : {}
+);
+
+/** Header sets for one HTTP request, merged with later sources winning by case-INSENSITIVE name. A plain
+ *  object holding both `Content-Type` and `content-type` reaches the wire as one header with the two values
+ *  joined ("application/json, application/json"), which a strict server refuses with 415; the official
+ *  SDK v2 server did, to Recued's push probe and listen stream. */
+export const mergeMcpHttpHeaders = (
+  ...sources: ReadonlyArray<Readonly<Record<string, string>>>
+): Record<string, string> => {
+  const merged = new Map<string, readonly [string, string]>();
+  for (const source of sources) {
+    for (const [name, value] of Object.entries(source)) merged.set(name.toLowerCase(), [name, value]);
+  }
+  return Object.fromEntries(merged.values());
+};
+
+/** Whether a decoded JSON-RPC message is a request or notification FROM the server (it names a `method`),
+ *  as opposed to a reply to one of ours. Servers number their own requests, so an id alone cannot tell
+ *  them apart: matching by id let a server's `ping` stand in for the answer to Recued's own call. */
+export const isMcpServerMessage = (
+  message: unknown,
+): message is { id?: string | number | null; method: string } => (
+  message !== null && typeof message === 'object' && !Array.isArray(message)
+  && typeof (message as { method?: unknown }).method === 'string'
+);
+
+/** Recued's answer to a request a server sends it. `ping` is answered at once with an empty result, which
+ *  every handshake-era revision requires of a receiver. Anything else (sampling, elicitation, roots) asks for
+ *  a capability this client never declares, so it is refused as not found. */
+export const mcpServerRequestReply = (
+  id: string | number,
+  method: string,
+): Record<string, unknown> => (method === 'ping'
+  ? { jsonrpc: '2.0', id, result: {} }
+  : { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
+
 /** Required HTTP headers for one modern MCP request. */
 export const modernMcpHttpHeaders = (
   method: string,

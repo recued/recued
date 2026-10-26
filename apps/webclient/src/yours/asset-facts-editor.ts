@@ -1,5 +1,5 @@
 import { yoursFieldError } from './yours-field-errors.js';
-import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, calendarDayMs, type Asset, type AssetAnchor, type AssetPatch, type AssetValue } from '@recued/contracts';
+import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_SEARCH_TERMS, assetSearchTerms, parseAssetSearchTerms, calendarDayMs, type Asset, type AssetAnchor, type AssetPatch, type AssetValue } from '@recued/contracts';
 
 /** Typed forms preserve source receipts on untouched historical values. Free
  * attributes remain descriptive and never become a rule expression. */
@@ -31,6 +31,11 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
     return input;
   };
   const maps: Array<() => AssetPatch> = [];
+  const keywordSection = section('Search keywords');
+  const initialKeywords = assetSearchTerms(own.attributes?.[ASSET_SEARCH_TERMS]).join(', ');
+  const keywords = field(keywordSection, 'Additional search keywords', initialKeywords);
+  keywords.placeholder = 'London, family visit';
+  node('small', keywordSection, 'Adds to this type’s keywords when AI looks for your things. Separate keywords with commas. You can also ask AI to edit these words. Clearing them keeps the type’s keywords.');
   for (const [key, title] of [['settings', 'Settings'], ['attributes', 'Attributes']] as const) {
     const root = section(title); const values = { ...own[key] }; const getters: Array<() => [string, unknown] | null> = [];
     // Document cards own this field. An ordinary asset draft must not write its
@@ -55,6 +60,7 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
           if (key === 'settings' && next === 'nationality') yoursFieldError(nameField, 'Use the passport nationality field above');
           if (key === 'settings' && next === 'valid_for') yoursFieldError(nameField, 'Use the visa country field above');
           if (key === 'attributes' && next === ASSET_DOCUMENT_DETAILS_ATTRIBUTE) yoursFieldError(nameField, 'Use Document details on the attached file');
+          if (next === ASSET_SEARCH_TERMS) yoursFieldError(nameField, 'Use the Search keywords field above. Type defaults are edited with the class preset.');
           if (name && next !== name) values[name] = null;
           if (kind.value === 'Number' && (!input.value.trim() || !Number.isFinite(Number(input.value)))) yoursFieldError(input, `Enter a real number for ${next}`);
           if (kind.value === 'Boolean' && !['true', 'false'].includes(input.value.toLowerCase())) yoursFieldError(input, `Use true or false for ${next}`);
@@ -66,10 +72,14 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
       return nameField;
     };
     // Their own fields above the form edit these two settings.
-    Object.entries(values).filter(([name]) => key !== 'settings' || !['nationality', 'valid_for'].includes(name)).forEach(([key, value]) => add(key, value));
+    Object.entries(values).filter(([name]) => name !== ASSET_SEARCH_TERMS && (key !== 'settings' || !['nationality', 'valid_for'].includes(name))).forEach(([key, value]) => add(key, value));
     const addButton = button(root, key === 'settings' ? 'Add setting' : 'Add attribute', () => add());
     maps.push(() => { const entries = getters.map(get => get()).filter((row): row is [string, unknown] => row !== null);
       if (new Set(entries.filter(([, value]) => value !== null).map(([key]) => key)).size !== entries.filter(([, value]) => value !== null).length) throw new Error(`Choose distinct ${title.toLowerCase()} field names`);
+      if (key === 'attributes' && keywords.value !== initialKeywords) {
+        try { const terms = parseAssetSearchTerms(keywords.value); values[ASSET_SEARCH_TERMS] = terms.length ? terms : null; }
+        catch (error) { yoursFieldError(keywords, (error as Error).message); }
+      }
       return { [key]: { ...values, ...Object.fromEntries(entries) } }; });
   }
   const anchors = section('Anchors'); const anchorGetters: Array<() => AssetAnchor | null> = [];

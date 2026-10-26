@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { AssetValidationError, type AssetClassPreset, type AssetCreateInput, type AssetPatch, type AssetRule, type AssetRuleOffset } from '@recued/contracts';
+import { ASSET_SEARCH_TERMS, assetSearchTerms, AssetValidationError, type AssetClassPreset, type AssetCreateInput, type AssetPatch, type AssetRule, type AssetRuleOffset } from '@recued/contracts';
 import { createAssetClassStore, type AssetClassStore } from './asset-classes.js';
 
 /** D-325 §4.4 amendment (2026-10-24) — a type of thing the owner keeps, as an AI
@@ -45,15 +45,17 @@ export const assetTypeNeedsHolder = (type: Pick<AssetClassPreset, 'id' | 'fields
 
 export interface AssetTypeEntry { type: string; name: string; dates: string[]; holder_required?: true }
 export interface AssetTypeReminder { title: string; due: string; remind: string[]; off?: true }
-export interface AssetTypeShape extends AssetTypeEntry { readings?: string[]; observations?: string[]; reminders: AssetTypeReminder[] }
+export interface AssetTypeShape extends AssetTypeEntry { readings?: string[]; observations?: string[]; search_keywords?: string[]; reminders: AssetTypeReminder[] }
 
 export const listAssetTypes = (types: readonly AssetClassPreset[]): AssetTypeEntry[] => types.map(type => ({
   type: type.id, name: type.name, dates: Object.keys(type.fields.dates), ...(assetTypeNeedsHolder(type) ? { holder_required: true as const } : {}),
 }));
 export const describeAssetType = (type: AssetClassPreset): AssetTypeShape => {
   const readings = Object.keys(type.fields.readings); const observations = Object.keys(type.fields.observations);
+  const searchKeywords = assetSearchTerms(type.fields.settings[ASSET_SEARCH_TERMS]);
   return {
     ...listAssetTypes([type])[0]!, ...(readings.length ? { readings } : {}), ...(observations.length ? { observations } : {}),
+    ...(searchKeywords.length ? { search_keywords: searchKeywords } : {}),
     reminders: type.rules.map(rule => ({ title: rule.title, due: due(rule.when), remind: remind(rule.schedule),
       ...(!rule.enabled || rule.muted || !rule.reaction.notify ? { off: true as const } : {}) })),
   };

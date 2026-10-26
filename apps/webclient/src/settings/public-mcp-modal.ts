@@ -90,12 +90,12 @@ export const PUBLIC_MCP_MODAL_COPY = {
     // exactly the misreading that this is an access grant.
     subtitle:
       'This opens the door beyond your own network. What an AI app may then do is '
-      + 'set by its agreement, not by this switch.',
+      + 'set by its contract, not by this switch.',
     bullets: [
       'AI apps anywhere can reach the door. Every single thing they ask for is still checked against '
-        + 'their agreement: what they may do, and what they may read.',
+        + 'their contract: what they may do, and what they may read.',
       'There is a real risk here. Whatever an AI app reads can push it around, '
-        + 'and its agreement is what limits how far that can go.',
+        + 'and its contract is what limits how far that can go.',
       'Contract grants decide what is exposed: `enrichment.<topic>` per topic, '
         + '`data.<collection>` per collection, resolved against the bound contract.',
       'We suggest keeping this to your own network, unless you really need it open.',

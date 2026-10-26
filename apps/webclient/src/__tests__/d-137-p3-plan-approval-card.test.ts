@@ -1141,6 +1141,34 @@ describe('D-137 P3 plan-approval chat route', () => {
     h.route.dispose();
   });
 
+  it('names the thing a held update changes and the kind of thing it is, keeping the id in the technical bits (2026-10-25)', async () => {
+    // ⛔ Live: an approved reading was shown as "id: we1:asset:…e1a798e8…" under "Work update".
+    const h = mountChatRoute({ messages: [assistantMessage('msg_anchor', 'Anchor.')] });
+    await openMountedRoute(h);
+    const id = 'we1:asset:recued.asset:local:e1a798e8-8cb9-4cc1-89ed-e532efa2aa04';
+    h.publish(planProposed({
+      plan_id: 'plan_named', turn_id: 'turn_named', tool: 'work.update', tier: 1, held: true,
+      args: { kind: 'asset', id, readings: { odometer: { value: 12400, unit: 'km' } } },
+      value_labels: { id: { [id]: 'Family car' } },
+    }));
+    // An older server records no names: the card shows the id as before.
+    h.publish(planProposed({
+      plan_id: 'plan_unnamed', turn_id: 'turn_unnamed', tool: 'work.update', tier: 1, cursor: 4,
+      args: { kind: 'task', id: 'task-1', done: true },
+    }));
+    await tick();
+    const named = requirePlanCard(h.root, 'plan_named');
+    expect(allText(requireChildClass(named, 'chat-plan-card-tool'))).toBe('Change a thing you own');
+    const details = allText(requireChildClass(named, 'chat-plan-card-details'));
+    expect(details).toContain('Family car');
+    expect(details).not.toContain('e1a798e8');
+    expect(allText(requireChildClass(named, 'chat-plan-card-args'))).toContain('e1a798e8');
+    const unnamed = requirePlanCard(h.root, 'plan_unnamed');
+    expect(allText(requireChildClass(unnamed, 'chat-plan-card-tool'))).toBe('Tick a task off');
+    expect(allText(requireChildClass(unnamed, 'chat-plan-card-details'))).toContain('task-1');
+    h.route.dispose();
+  });
+
   it('approves once while keeping the pending action focusable', async () => {
     const approve = deferred<{ plan: ChatPlanProposal }>();
     const h = mountChatRoute({

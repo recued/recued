@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "45ddb74d7d1974a4755a7c5afd89b27b6aea37d4",
-    "tree": "c86eee0d1e4ce142b6c9790aa5fb79415c05eb27",
-    "committed_at": "2026-10-24T21:14:56-07:00"
+    "commit": "e21df1e08a075be9d94ec3e48de62fdf7b222b0a",
+    "tree": "dfe5787ae93fb7d5c18a6a9ceddeb5874422b6e6",
+    "committed_at": "2026-10-25T20:40:01-07:00"
   },
-  "export_manifest_sha256": "046fe82991e1899e051301ff05a3ec27fb016cb672f483f33ab45b6bf792a94b",
-  "version": "26.10.24",
+  "export_manifest_sha256": "69359e69f803055a1e88735d302b55f34047e9ab12861cc318e1375bc30a87e9",
+  "version": "26.10.25",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -883,7 +883,7 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1129,
+    "files_changed": 1128,
     "rules": [
       {
         "id": "internal-spec-reference",
@@ -895,7 +895,7 @@
       },
       {
         "id": "internal-handover-note",
-        "comments_rewritten": 32
+        "comments_rewritten": 31
       },
       {
         "id": "internal-planning-note",
@@ -994,7 +994,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 7750,
-    "sha256": "c79f5bf05170ade19c5fbbc23e627d8b18300f278ef5747bdbe5cf1b670c8fff"
+    "file_count": 7768,
+    "sha256": "8a0094a313758fc42ef2f90c0241ec90ac49851e856a44cefff329bcf5c8b26f"
   }
 }

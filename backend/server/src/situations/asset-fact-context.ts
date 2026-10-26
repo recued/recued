@@ -1,10 +1,11 @@
-import { assetFactRefKey, assetFieldValue, assetRuleInput, parseAssetFactContextRequest, SITUATION_CONTEXT_MAX_BYTES,
+import { assetFactRefKey, assetFieldValue, assetRuleInput, parseAssetFactContextRequest, parseQualifiedWorkEntityId, SITUATION_CONTEXT_MAX_BYTES,
   type AssetEvidence, type AssetFactContext, type AssetFactContextNode, type AssetFactContextRef,
   type AssetFactContextRequest, type AssetFieldRef, type SituationRef } from '@recued/contracts';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import type Database from 'better-sqlite3';
 import type { SituationReadContext } from './query.js';
 import { situationSourceAccess } from './sources.js';
+import { rememberAssetContextRead } from './asset-projection-provenance.js';
 export { parseAssetFactContextRequest } from '@recued/contracts';
 
 export const ASSET_CONTEXT_LIMITS = { nodes: 40, edges: 60, bytes: SITUATION_CONTEXT_MAX_BYTES } as const;
@@ -19,7 +20,7 @@ export const assetContextWriters = (db: Database.Database, name: (actor: string)
     return rows.map(row => ({ id: row.id, name: name(row.actor_ref), fields: JSON.parse(row.fields) as string[], enabled: row.enabled === 1 }));
   };
 export interface AssetFactContextDeps {
-  work: Pick<WorkEntityStore, 'readAsset'>;
+  work: Pick<WorkEntityStore, 'readAsset' | 'getSource' | 'localIdBySourceIdentity'>;
   now?: () => number;
   referenceSphere?: SituationReadContext['referenceSphere'];
   /** The adapter must enforce the requested row limit before materializing. */
@@ -31,18 +32,40 @@ const fieldName = (value: string) => value.replaceAll('_', ' ');
 /** One root, at most two relationship hops. No snapshot refresh, cache, or writes.
  * Read grants and sphere fences are applied before returning values or links. */
 const readAssetFactContext = (deps: AssetFactContextDeps, raw: AssetFactContextRequest, context: SituationReadContext): AssetFactContext => {
-  const { root } = parseAssetFactContextRequest(raw);
+  const { root: requested } = parseAssetFactContextRequest(raw);
   if (context.signal?.aborted) throw new Error('Context read cancelled');
-  const allowed = (ref: SituationRef): boolean => {
+  const collectionAllowed = (ref: SituationRef): boolean => {
     const access = situationSourceAccess(ref.collection);
-    if (!access || !context.grants.isVerbOpGranted(access.verb_op) || !context.grants.isCollectionReadGranted(access.collection)) return false;
+    return Boolean(access && context.grants.isVerbOpGranted(access.verb_op) && context.grants.isCollectionReadGranted(access.collection));
+  };
+  const sphereAllowed = (ref: SituationRef): boolean => {
     if (context.owner || context.all_spheres) return true;
     const sphere = context.referenceSphere?.(ref) ?? deps.referenceSphere?.(ref);
     return sphere !== undefined && context.spheres?.includes(sphere) === true;
   };
-  if (!allowed({ collection: 'asset', id: root.asset_id })) throw new Error('This context is not available with the current read permissions');
-  const asset = deps.work.readAsset(root.asset_id);
+  const allowed = (ref: SituationRef): boolean => collectionAllowed(ref) && sphereAllowed(ref);
+  // Check grants before resolving even metadata. A qualified spelling is an
+  // identity, never a permission or a sphere placement.
+  if (!collectionAllowed({ collection: 'asset', id: requested.asset_id })) throw new Error('This context is not available with the current read permissions');
+  const qualified = parseQualifiedWorkEntityId(requested.asset_id);
+  let id = requested.asset_id;
+  if (qualified) {
+    if (qualified.kind !== 'asset') throw new Error('Choose an asset identity for fact context');
+    const source = deps.work.getSource(qualified.source_id);
+    if (!source || source.top_tier_kind !== 'asset' || source.sync_posture === 'read_through') throw new Error('Asset source is not available for retained fact context');
+    const local = qualified.identity === 'local' ? qualified.record_id
+      : deps.work.localIdBySourceIdentity('asset', qualified.source_id, qualified.record_id);
+    if (local === null) throw new Error('Asset not available');
+    id = local;
+  }
+  if (!sphereAllowed({ collection: 'asset', id })) throw new Error('This context is not available with the current read permissions');
+  const asset = deps.work.readAsset(id);
   if (!asset || asset.deleted_at != null || !['live', 'stale_unreachable'].includes(asset.sync_state)) throw new Error('Asset not available');
+  if (qualified && (asset.id !== id || asset.source_id !== qualified.source_id || qualified.identity === 'source' && asset.source_record_id !== qualified.record_id))
+    throw new Error('Asset source identity does not match. Refresh the asset search.');
+  // Every root, node, edge, writer lookup and source receipt uses the same
+  // canonical local identity, regardless of the request's valid spelling.
+  const root = { ...requested, asset_id: asset.id };
   const rootRule = root.kind === 'rule' ? asset.rules.find(rule => rule.id === root.rule_id) : undefined;
   if (root.kind === 'rule' && !rootRule || root.kind === 'field' && !Object.hasOwn(asset[root.group], root.field)) throw new Error('Fact or rule not found. Refresh the asset.');
   const packet: AssetFactContext = { root, asset: { id: asset.id, name: asset.name, status: asset.status, source_state: asset.sync_state }, nodes: [], edges: [], read_at: (deps.now ?? Date.now)(),
@@ -112,6 +135,7 @@ const readAssetFactContext = (deps: AssetFactContextDeps, raw: AssetFactContextR
   if (context.signal?.aborted) throw new Error('Context read cancelled');
   if (!allowed({ collection: 'asset', id: root.asset_id })) throw new Error('Context permissions changed. Refresh before relying on this result.');
   if (size() > ASSET_CONTEXT_LIMITS.bytes) throw new Error('This context is too large. Open the asset to review it.');
+  rememberAssetContextRead(asset, packet);
   return packet;
 };
 

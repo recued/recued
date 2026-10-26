@@ -172,6 +172,9 @@ export interface PlanApprovalCard {
   /** D-329 — its hold expired unanswered (`hold.lapsed_at`): cancelled with nothing run, by
    *  no one's no. */
   lapsed?: true;
+  /** D-329 — how the owner knows the records `args` names, by their names
+   *  (`ChatPlanProposal.value_labels`). Display only: `args` is what runs. */
+  value_labels?: import('@recued/contracts').ApprovalValueLabels;
 }
 
 /** Execution receipt for a consumed one-time approval. `held` is distinct
@@ -368,6 +371,7 @@ export const hydrateThreadFromSnapshot = (
         : {}),
       ...(record.plan.hold !== undefined ? { held: true as const } : {}),
       ...(record.plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
+      ...(record.plan.value_labels !== undefined ? { value_labels: record.plan.value_labels } : {}),
       recovered: true,
       payload_available: record.payload_available,
     })),
@@ -755,6 +759,7 @@ export const reduceChatThreadEvent = (
             : {}),
           status: 'proposed',
           ...(event.held === true ? { held: true as const } : {}),
+          ...(event.value_labels !== undefined ? { value_labels: event.value_labels } : {}),
           recovered: false,
           payload_available: true,
         },
@@ -976,6 +981,7 @@ export const applyPlanResolution = (
           status: plan.status,
           ...(plan.hold !== undefined ? { held: true as const } : {}),
           ...(plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
+          ...(plan.value_labels !== undefined ? { value_labels: plan.value_labels } : {}),
         },
       ],
     };

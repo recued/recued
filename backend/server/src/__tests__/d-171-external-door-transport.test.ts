@@ -1,5 +1,7 @@
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CONTRACT_DEFINITION_SCOPE,
   LLM_GATEWAY_PAID_ACK_VERSION,
   MCP_INBOUND_TOKEN_PREFIX,
   type McpInboundTokenRecord,
@@ -13,6 +15,9 @@ import type {
   ClientTokenStore,
 } from '../pairing/client-tokens.js';
 import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
+import { createContractOverlayResolver } from '../policy-contract-overlay.js';
+import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
+import { createContractStore } from '../storage/contract-store.js';
 
 const mcpServerMocks = vi.hoisted(() => ({
   createMcpHttpDispatch: vi.fn(),
@@ -699,6 +704,59 @@ describe('D-171 external-door HTTP MCP bound-contract deps', () => {
     // unaffected — it still reflects the token's grants (GRANTED_TOOL → true).
     expect(deps.boundContractActive).toBe(false);
     expect(deps.inboundTokenAuthorize(GRANTED_TOOL)).toBe(true);
+  });
+
+  it('D-327 — tells the dispatcher whether the key takes its tools from its contract', async () => {
+    // A REAL overlay over a real store: the answer comes from the contract the
+    // owner made, so an older contract's key is told something its switches
+    // can actually do (a new contract), not to flip a switch that adds nothing.
+    const db = new Database(':memory:');
+    try {
+      let seq = 0;
+      const store = createContractStore(db, { now: () => 1_000 });
+      const definitionStore = createContractDefinitionStore(store, {
+        now: () => 1_000,
+        newId: () => `ct_${++seq}`,
+      });
+      const contractOverlay = createContractOverlayResolver({ definitionStore, now: () => 1_000 });
+      const older = definitionStore.mint({ minted_by: 'user:1', display_name: 'older door', scope: {} });
+      const current = definitionStore.mint({
+        minted_by: 'user:1', display_name: 'door', scope: {}, key_authority: 'contract',
+      });
+      // A seller customer's contract can never take `key_authority`, so "older
+      // kind" would be false of it, and its customer has no Contracts page.
+      const customer = definitionStore.mint({ minted_by: 'user:1', display_name: 'customer', scope: {} });
+      store.put(CONTRACT_DEFINITION_SCOPE, [customer.contract_id], {
+        ...customer,
+        grant_kind: 'customer_instance',
+      });
+
+      for (const [contract_id, expected] of [
+        [older.contract_id, false],
+        [current.contract_id, true],
+        [customer.contract_id, undefined],
+        ['ct_never_minted', undefined],
+      ] as const) {
+        const bundle = composeDefined({
+          executeDeps: makeExecuteDeps({ contractOverlay } as any),
+          inboundTokenStore: makeInboundTokenStore(vi.fn(() => makeInboundTokenRecord({ contract_id }))),
+        });
+
+        await bundle.mcpHttpDeps.dispatch(
+          { jsonrpc: '2.0', id: `key-${contract_id}`, method: 'tools/list' },
+          INBOUND_BEARER,
+        );
+
+        expect(lastCapturedDeps().boundContractId).toBe(contract_id);
+        if (expected === undefined) {
+          expect(lastCapturedDeps()).not.toHaveProperty('keyReadsContractTools');
+        } else {
+          expect(lastCapturedDeps().keyReadsContractTools).toBe(expected);
+        }
+      }
+    } finally {
+      db.close();
+    }
   });
 });
 

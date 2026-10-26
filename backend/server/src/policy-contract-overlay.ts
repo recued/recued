@@ -55,6 +55,7 @@ import {
   contractScopeMatches,
   executionSourceContractId,
   isContractActive,
+  isKeyAuthorityContract,
   isStandingContractDefinition,
   READABLE_COLLECTIONS,
   RpcError,
@@ -222,6 +223,13 @@ export interface ContractOverlayResolver {
    *  its absence as the wildcard-admit `true`. The SOLE production factory
    *  ({@link createContractOverlayResolver}) always implements it. */
   permitsDoorType?(contract_id: string, doorType: DoorType): boolean;
+  /** D-327 — whether a key bound to the STANDING contract `contract_id` takes its tools from
+   *  that contract's switches (minted with `key_authority: 'contract'`). `false` for the older
+   *  kind, whose key keeps the tool list it was issued with, so the door can say the switches
+   *  cannot help it. `undefined` when there is no answer: no such contract, or a seller
+   *  customer's, which can never take that setting. Optional so stubs need no change; a caller
+   *  treats its absence as unknown. */
+  readsKeyToolsFromContract?(contract_id: string): boolean | undefined;
   /** The door's owner-confirmed standing closure — `scope.operation_ids` iff
    *  `door_execution_policy.standing_closure` is on, else `undefined`.
    *
@@ -466,6 +474,13 @@ export const createContractOverlayResolver = (
       // indistinguishable from "no opt-in". Same rule the reception builder
       // states.
       return def.scope?.operation_ids ?? [];
+    },
+    readsKeyToolsFromContract(contract_id): boolean | undefined {
+      const def = deps.definitionStore.get(contract_id);
+      // ⚠ Only a standing contract can be either kind: a customer contract is refused
+      // `key_authority` at mint, so `false` for it would tell its customer to make a contract.
+      if (!def || !isStandingContractDefinition(def)) return undefined;
+      return isKeyAuthorityContract(def);
     },
     permitsDoorType(contract_id, doorType): boolean {
       // No def ⇒ no door-type restriction to enforce here; the dead/absent case is

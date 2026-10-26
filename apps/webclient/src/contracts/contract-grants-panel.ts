@@ -452,6 +452,14 @@ export const CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR = 'data-recued-contract-grants-a
 export const CONTRACT_GRANTS_AI_TOOLS_NOTE =
   'An AI app, or your own chat, calls these by name. Recipes never do. '
   + 'Under each tool are the other switches it needs. You can switch them on right there.';
+export const CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR = 'data-recued-contract-grants-older-key-note';
+/** ⛔ Shown only where it is true ({@link MountContractGrantsPanelOptions.keyKeepsItsTools}).
+ *  Until 2026-10-25 nothing here said it, and an owner who switched notes tools on for
+ *  an older contract's app saw the app still not have them. */
+export const CONTRACT_GRANTS_OLDER_KEY_NOTE =
+  'This contract was made before a contract could hold its own key. Its key keeps the '
+  + 'AI tools it was made with, so switching one on here does not give it to the key. '
+  + 'To give an app another AI tool, make a new contract.';
 
 // ════════════════════════════════════════════════════════════════
 // Helpers
@@ -553,6 +561,11 @@ export interface MountContractGrantsPanelOptions {
    *  listed — the grant write refuses them for this agreement, so a switch would
    *  only ever fail. */
   keyAgreement?: boolean;
+  /** D-327 — an ordinary contract of the older kind, made before a contract could hold
+   *  its own key. Its key keeps the AI tools it was issued with, so an AI tool's own
+   *  switch here cannot give that key a tool; the AI tools group says so. (Its pack ops
+   *  and the switches a tool needs still count: the contract decides those.) */
+  keyKeepsItsTools?: boolean;
   /** D-247 D11 — recipe→op usage for the op row. Absent ⇒ the row renders without
    *  the "still used by / ran N×" line, which is the honest degradation: no line
    *  at all rather than a line claiming zero. */
@@ -1111,6 +1124,9 @@ export const mountContractGrantsPanel = (
           sub.appendChild(subName);
           if (entry.group === CONTRACT_GRANTS_AI_TOOLS_GROUP) {
             appendLine(sub, CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR, 'cg-ai-tools-note', CONTRACT_GRANTS_AI_TOOLS_NOTE);
+            if (opts.keyKeepsItsTools === true) {
+              appendLine(sub, CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR, 'cg-ai-tools-note', CONTRACT_GRANTS_OLDER_KEY_NOTE);
+            }
           }
           group.appendChild(sub);
           groupBody = sub;

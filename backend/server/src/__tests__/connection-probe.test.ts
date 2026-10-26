@@ -711,6 +711,100 @@ describe('handleConnectionProbe real health probes', () => {
     }
   });
 
+  it('reaches a stateful Streamable HTTP server under the official SDK’s rules', async () => {
+    // The rules of the official TS SDK v1.32.2 `StreamableHTTPServerTransport`,
+    // driven for real 2026-10-25: 406 unless Accept names both media types; a
+    // session minted at `initialize`; 400 for any later request without it. The
+    // check met none of them until then: it sent `Accept: application/json`,
+    // fell back to the 2024 transport and reported "unreachable", while calls
+    // to the same server worked. The lenient server in the test above checks
+    // none of these, which is how that went unseen.
+    const name = await enroll('mcp', { subtype: 'sse' });
+    const seen: Array<{ method: string; version?: string }> = [];
+    const sdkLike = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'GET') return new Response('Method Not Allowed', { status: 405 });
+      const headers = new Headers(init?.headers);
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: number; method?: string };
+      seen.push({ method: body.method ?? '', ...(headers.get('mcp-protocol-version') ? { version: headers.get('mcp-protocol-version')! } : {}) });
+      const fail = (status: number, message: string) => new Response(
+        JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32000, message } }),
+        { status, headers: { 'content-type': 'application/json' } },
+      );
+      const accept = headers.get('accept') ?? '';
+      if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+        return fail(406, 'Not Acceptable: Client must accept both application/json and text/event-stream');
+      }
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: body.id,
+          result: { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'sdk', version: '1.32.2' } },
+        }), { status: 200, headers: { 'content-type': 'application/json', 'mcp-session-id': 'SESS-7' } });
+      }
+      if (headers.get('mcp-session-id') !== 'SESS-7') return fail(400, 'Bad Request: No valid session ID provided');
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0', id: body.id, result: { tools: [{ name: 'sdk-tool', inputSchema: { type: 'object' } }] },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', sdkLike);
+    try {
+      const result = await handleConnectionProbe(
+        { store, now: () => NOW + 1_000, getEncryptionKey },
+        { kind: 'mcp', name },
+      );
+      expect(result.health).toMatchObject({ status: 'ok', tools: ['sdk-tool'] });
+      // From 2025-06-18 every request after `initialize` names the revision.
+      expect(seen.filter((s) => s.method === 'notifications/initialized' || s.method === 'tools/list'))
+        .toEqual([{ method: 'notifications/initialized', version: '2025-11-25' }, { method: 'tools/list', version: '2025-11-25' }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reads a listen acknowledgement without waiting for the stream to end', async () => {
+    // A 2026-07-28 listen stream stays open by design. The bounded production
+    // fetcher read every body to its end, so against the official SDK v2 server
+    // (acknowledged in 1 ms, driven 2026-10-25) the check waited out its whole
+    // 10 s deadline and recorded `listen_error` for a server that does push.
+    const name = await enroll('mcp', { subtype: 'sse' });
+    let listenCancelled = false;
+    const modern = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: number | string; method?: string };
+      const json = (result: unknown) => new Response(
+        JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { resultType: 'complete', ...result as object } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+      if (body.method === 'server/discover') {
+        return json({ supportedVersions: ['2026-07-28'], capabilities: { tools: { listChanged: true } }, ttlMs: 0, cacheScope: 'private' });
+      }
+      if (body.method === 'tools/list') return json({ tools: [{ name: 'modern-tool', inputSchema: { type: 'object' } }], ttlMs: 0, cacheScope: 'private' });
+      if (body.method === 'resources/list') return json({ resources: [], ttlMs: 0, cacheScope: 'private' });
+      // subscriptions/listen: acknowledge at once, then hold the stream open.
+      const ack = `event: message\ndata: ${JSON.stringify({
+        jsonrpc: '2.0', method: 'notifications/subscriptions/acknowledged',
+        params: { notifications: { toolsListChanged: true }, _meta: { 'io.modelcontextprotocol/subscriptionId': body.id } },
+      })}\n\n`;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode(ack)); },
+        cancel() { listenCancelled = true; },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    vi.stubGlobal('fetch', modern);
+    try {
+      const started = Date.now();
+      const result = await handleConnectionProbe(
+        { store, now: () => NOW + 1_000, getEncryptionKey },
+        { kind: 'mcp', name },
+      );
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result.health).toMatchObject({ status: 'ok', tools: ['modern-tool'], push: { acknowledged: { toolsListChanged: true } } });
+      expect(listenCancelled).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('does not downgrade a recognized modern HTTP protocol error', async () => {
     const name = await enroll('mcp', { subtype: 'sse' });
     const methods: string[] = [];

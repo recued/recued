@@ -109,37 +109,48 @@ const sweepFocus = async (page: Page): Promise<Sweep> => {
       const content = document.querySelector('[data-recued-webclient-content]');
       if (el === null || content === null || el === content || !content.contains(el)) return { done: true };
       if (!shown(el)) return { skip: true };
-      const cs = getComputedStyle(el);
-      const outside = behind(el.parentElement ?? el);
-      let best = 0;
-      const outline = parse(cs.outlineColor);
-      if (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) >= 2 && outline) {
-        best = Math.max(best, ratio(over(outline, outside), outside));
+      const ringOf = (node: HTMLElement): number => {
+        const cs = getComputedStyle(node);
+        const outside = behind(node.parentElement ?? node);
+        let best = 0;
+        const outline = parse(cs.outlineColor);
+        if (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) >= 2 && outline) {
+          best = Math.max(best, ratio(over(outline, outside), outside));
+        }
+        // A ring is a box-shadow with no offset or blur; its width is its spread
+        // past the ring inside it.
+        const shadows: string[] = [];
+        let depth = 0;
+        let current = '';
+        for (const ch of cs.boxShadow === 'none' ? '' : cs.boxShadow) {
+          if (ch === '(') depth += 1;
+          if (ch === ')') depth -= 1;
+          if (ch === ',' && depth === 0) { shadows.push(current.trim()); current = ''; } else current += ch;
+        }
+        if (current.trim()) shadows.push(current.trim());
+        let inner = 0;
+        shadows
+          .map((shadow) => {
+            const color = /^(rgba?\([^)]*\)|color\([^)]*\))/.exec(shadow)?.[1] ?? '';
+            const [x = 0, y = 0, blur = 0, spread = 0] = shadow.replace(color, '').trim().split(/\s+/).map(parseFloat);
+            return { color: parse(color), x, y, blur, spread, inset: shadow.includes('inset') };
+          })
+          .filter((s) => s.color && !s.inset && s.x === 0 && s.y === 0 && s.blur <= 1 && s.spread > 0)
+          .sort((a, b) => a.spread - b.spread)
+          .forEach((s) => {
+            if (s.spread - inner >= 2) best = Math.max(best, ratio(over(s.color, outside), outside));
+            inner = s.spread;
+          });
+        return best;
+      };
+      let best = ringOf(el);
+      // A checkbox or radio whose whole label is the target may wear its ring on that
+      // label (`label:has(> input:focus-visible)`), as the notification cards do since
+      // `23abcca83`. Measuring the input alone read that as no ring at all.
+      if (best < 3 && el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')
+        && el.parentElement instanceof HTMLLabelElement) {
+        best = Math.max(best, ringOf(el.parentElement));
       }
-      // A ring is a box-shadow with no offset or blur; its width is its spread
-      // past the ring inside it.
-      const shadows: string[] = [];
-      let depth = 0;
-      let current = '';
-      for (const ch of cs.boxShadow === 'none' ? '' : cs.boxShadow) {
-        if (ch === '(') depth += 1;
-        if (ch === ')') depth -= 1;
-        if (ch === ',' && depth === 0) { shadows.push(current.trim()); current = ''; } else current += ch;
-      }
-      if (current.trim()) shadows.push(current.trim());
-      let inner = 0;
-      shadows
-        .map((shadow) => {
-          const color = /^(rgba?\([^)]*\)|color\([^)]*\))/.exec(shadow)?.[1] ?? '';
-          const [x = 0, y = 0, blur = 0, spread = 0] = shadow.replace(color, '').trim().split(/\s+/).map(parseFloat);
-          return { color: parse(color), x, y, blur, spread, inset: shadow.includes('inset') };
-        })
-        .filter((s) => s.color && !s.inset && s.x === 0 && s.y === 0 && s.blur <= 1 && s.spread > 0)
-        .sort((a, b) => a.spread - b.spread)
-        .forEach((s) => {
-          if (s.spread - inner >= 2) best = Math.max(best, ratio(over(s.color, outside), outside));
-          inner = s.spread;
-        });
       return { element: name(el), best };
     }, MEASURE);
     if ('done' in result) break;

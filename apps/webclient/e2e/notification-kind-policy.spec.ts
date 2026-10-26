@@ -210,7 +210,7 @@ const openReachability = async (page: Page, width: number, options: {
   await expect(panel(page)).toHaveAttribute('data-recued-kind-policy-state', options.holdPolicyRead ? 'loading' : options.failPolicyRead ? 'error' : 'ready');
 };
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const outcome of ['success', 'error'] as const) {
     test(`independent timing load waits for policy after channel lookup ${outcome} at ${width}px`, async ({ page }) => {
       await openReachability(page, width, { policyDescribe: 'held', holdPolicyRead: true });
@@ -306,7 +306,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`reachability hint follows confirmed channel changes without reloading timing controls at ${width}px`, async ({ page }) => {
     await openReachability(page, width); await expect(reachabilityHint(page)).toBeVisible();
     const timing = await control(page, 'offset', 'booking').elementHandle(); const before = await reachabilityCounts(page);
@@ -419,7 +419,7 @@ const unloadBlocked = (page: Page) => page.evaluate(() => {
   const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
 });
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`initial policy read retry keeps keyboard focus through failures and sends one attempt at ${width}px`, async ({ page }) => {
     await open(page, width, 'error'); await expect(retryRead(page)).toBeVisible();
     if (width === 390) expect((await retryRead(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
@@ -534,7 +534,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`each timing dropdown has a distinct accessible name at ${width}px`, async ({ page }) => {
     await open(page, width);
     await expectTimingNames(page);

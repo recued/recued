@@ -1,4 +1,5 @@
 import { withQueuedChatTurns } from '../../chat-turn-queue.js';
+import { createProjectionVersionProbe } from '../../chat-projection-refresh.js';
 import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
 /** D-137 — boot composer for the AI Chat substrate.
  *
@@ -1023,6 +1024,10 @@ export const composeChatOrchestrator = (
 
   const internalRegistry = createInternalToolRegistry({
     tier1Handlers: chatToolRegistryInputs.tier1Handlers,
+    // D-329 — a write's own refusal, asked before the owner is: the chat's proposals and
+    // the MCP door's holds both call `checkBeforeAsking`.
+    tier1Checks: chatToolRegistryInputs.tier1Checks,
+    tier1AskLabels: chatToolRegistryInputs.tier1AskLabels,
     // ⛔⛔ D-228 slice 5 — the contract gates Tier-1 primitives on the INTERNAL
     // chat channel too, not only `mcp_wire`. `buildInternalDispatchCtx` always
     // sets `execution_source` (a `(chat, user_self)` source), and
@@ -1422,6 +1427,11 @@ export const composeChatOrchestrator = (
 
   const executionOrchestrator = withChatSessionBusy(createChatOrchestrator({
     chatStore,
+    revalidateProjectionRead: createProjectionVersionProbe({
+      query: chatToolRegistryInputs.tier1Handlers['situation.query']!,
+      admit: ctx => admitTier1('situation.query', ctx),
+      now: Date.now,
+    }),
     revalidateAssetRead: async (id, version, ctx) => {
       // Same canonical admission and handler as the existing index probes.
       // Only unqualified, default local owner-asset reads reach this seam.

@@ -339,7 +339,7 @@ const policyFacets = (p: OverridePolicyInput): string[] => {
  *  `contracted_self` actor collapsed into a `user_self` carrying a contract). */
 const ACTOR_OPTIONS: ReadonlyArray<{ value: Actor; label: string }> = [
   { value: 'user_self', label: 'You (user_self)' },
-  { value: 'contracted_user', label: 'An app you have an agreement with' },
+  { value: 'contracted_user', label: 'An app you have a contract with' },
 ];
 
 const APPROVAL_OPTIONS = ['never', 'ask', 'always'] as const;

@@ -1,5 +1,14 @@
-import { assetDateAt, calendarDayMs, shiftAssetDate, type SituationFact, type TravelValidityRule } from '@recued/contracts';
+import { assetDateAt, calendarDayMs, shiftAssetDate, type SituationFact, type SituationQuery, type TravelValidityRule, type TripDetails } from '@recued/contracts';
 import type { SituationReadContext } from './query.js';
+
+/** The records whose travellers the owner can name (the trip store's subjects). */
+const TRIP_SUBJECTS = new Set(['booking', 'mail_fact', 'calendar']);
+
+/** Whether a reader is told a trip's travellers are not recorded: one asking about
+ *  it, the chat or an AI app (`tool`, and the chat's own `prefetch`). Today, the
+ *  digest and a push leave that to the one private "Who is travelling?" question. */
+export const asksWhoTravels = (query: Pick<SituationQuery, 'surface'>): boolean =>
+  ['tool', 'prefetch'].includes(query.surface ?? 'tool');
 
 /** "No passport on file" is a claim about every travel document, so it needs a
  * reader that sees them all: the owner or an all-sphere contract granted the
@@ -25,7 +34,7 @@ const visasOnFile = (visas: readonly SituationFact[]): string => {
 /** Table arithmetic only. The table belongs to an installed pack, with
  * jurisdiction and applicability explicitly recorded beside its source. */
 export const relateTravelDocuments = (facts: readonly SituationFact[], rules: readonly TravelValidityRule[], timeZone: string,
-  documentsVisible = false): SituationFact[] => {
+  documentsVisible = false, askWhoTravels = false): SituationFact[] => {
   const documents = [...new Map(facts.filter(fact => fact.travel_document).map(fact => [fact.ref.id, fact])).values()];
   const visas = [...new Map(facts.filter(fact => fact.visa).map(fact => [fact.ref.id, fact])).values()];
   const result: SituationFact[] = [];
@@ -33,7 +42,27 @@ export const relateTravelDocuments = (facts: readonly SituationFact[], rules: re
     const trip = tripFact.trip; if (!trip || !tripFact.when) continue;
     const entry = trip.entry_on ?? assetDateAt(tripFact.when.from, timeZone);
     const exit = trip.exit_on ?? assetDateAt(tripFact.when.to, timeZone);
-    if (!trip.travellers.length) continue; // one private proposal asks; no fabricated holder match
+    // Each item about the trip carries the days it is checked against, the trip's first and
+    // last, as the owner or its booking gave them. Its window is epoch ms, and a run that saw
+    // only that and the first day said "November 14–23" for November 14–21 (2026-10-25).
+    const days: TripDetails = { subject: trip.subject, travellers: [], entry_on: entry, exit_on: exit,
+      ...(trip.destination_country ? { destination_country: trip.destination_country } : {}),
+      ...(trip.special_entry_status ? { special_entry_status: true } : {}) };
+    if (!trip.travellers.length) {
+      // One private proposal asks the owner who is travelling, and no holder is
+      // fabricated. A reader asking about the trip is told nothing was checked, or it
+      // reads the missing check as a pass: on a trip with no travellers named, 2 of 6
+      // answers said "the family is ready" (live family-trip run, 2026-10-25).
+      if (askWhoTravels && documentsVisible && TRIP_SUBJECTS.has(tripFact.ref.collection)) {
+        result.push({ ...tripFact, ref: { ...tripFact.ref, field: 'trip_travellers' }, kind: 'travel_validity',
+          title: `${tripFact.title} · who is travelling is not recorded, so no traveller's passport was checked; ask who is travelling`,
+          related: [tripFact.ref], subjects: [tripFact.ref], people: [], when: tripFact.when, when_day: entry,
+          act_by: calendarDayMs(entry)!, valid_until: tripFact.when.to, missing: true, basis: 'derived', consequence: 'routine',
+          evidence: [...tripFact.evidence], updated_at: tripFact.updated_at,
+          represents: undefined, travel_document: undefined, trip: days });
+      }
+      continue;
+    }
     for (const holder of trip.travellers) {
       const held = documents.filter(fact => fact.travel_document!.holder === holder);
       // The traveller's visas go with each check of theirs, tied to a passport or not.
@@ -55,7 +84,7 @@ export const relateTravelDocuments = (facts: readonly SituationFact[], rules: re
           related: [tripFact.ref], subjects: [tripFact.ref], people: [holder], when: tripFact.when, when_day: entry,
           act_by: calendarDayMs(entry)!, valid_until: tripFact.when.to, missing: true, basis: 'derived', consequence: 'routine',
           evidence: [...tripFact.evidence, ...cited], updated_at: Math.max(tripFact.updated_at, ...theirs.map(fact => fact.updated_at)),
-          represents: undefined, travel_document: undefined, trip: undefined });
+          represents: undefined, travel_document: undefined, trip: days });
         continue;
       }
       // A citizen going home, or a national every table covering the destination
@@ -93,7 +122,7 @@ export const relateTravelDocuments = (facts: readonly SituationFact[], rules: re
           // A computed validity check is distinct from the renewal obligation.
           // Keeping its represents pointer would collapse the verdict into the
           // canonical commitment and discard the validity text entirely.
-          represents: undefined, travel_document: undefined, trip: undefined });
+          represents: undefined, travel_document: undefined, trip: days });
       }
     }
   }

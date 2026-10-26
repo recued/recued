@@ -73,7 +73,7 @@ export const checkAgreementKeyGrant = (
   if (name === undefined) return;
   if (deps.preflight === undefined) {
     throw new Error(
-      `'${name}' cannot be checked for an agreement's key right now — try again once the server has finished starting`,
+      `'${name}' cannot be checked for a contract's key right now — try again once the server has finished starting`,
     );
   }
   deps.preflight(name);

@@ -206,11 +206,11 @@ const SELLER_SUBPAGE_META: Readonly<Record<
   },
   tiers: {
     label: 'Tiers',
-    description: 'Set up the packages people can buy, what each one allows, and the agreement behind it.',
+    description: 'Set up the packages people can buy, what each one allows, and the contract behind it.',
   },
   customers: {
     label: 'Customers',
-    description: 'Give people access, and look after their agreements.',
+    description: 'Give people access, and look after their contracts.',
   },
   usage: {
     label: 'Usage',
@@ -253,7 +253,7 @@ const SELLER_CREATE_META: Readonly<Record<
     },
     pass: {
       label: 'New timed pass',
-      description: 'Make a pass that runs out, with its own agreement.',
+      description: 'Make a pass that runs out, with its own contract.',
     },
   },
   customers: {
@@ -271,7 +271,7 @@ const SELLER_TIER_TAB_META: Readonly<Record<
 >> = {
   edit: {
     label: 'Edit',
-    description: 'Change this package\'s name, agreement, limits and status.',
+    description: 'Change this package\'s name, contract, limits and status.',
   },
   // Not "Customers": the Seller sections above it have a "Customers" too, and the
   // two sat on screen together (2026-09-24). The address keeps `customers`.
@@ -2030,7 +2030,7 @@ const renderProviderTierSynchronizeForm = (
     'p',
     'Bring in the packages from whoever takes your payments: Stripe, Paddle or '
       + 'Lemon Squeezy. New packages start with no '
-      + 'agreement. Anything you have already given out stays as it is.',
+      + 'contract. Anything you have already given out stays as it is.',
     'seller-section-copy',
   );
   const fields = append(doc, section, 'div', 'seller-settings-form-grid');
@@ -2441,7 +2441,7 @@ const renderLlmGatewayAckForm = (
     doc,
     section,
     'p',
-    'Before you sell AI access, check that your own agreements let every '
+    'Before you sell AI access, check that your own contracts let every '
       + 'AI you have set up serve paying customers. That includes the free '
       + 'ones. Recued cannot work this out for you. Free help, '
       + 'booking and your own use do not need this.',
@@ -2506,7 +2506,7 @@ const renderTiers = (
     doc,
     section,
     'p',
-    'Each package has an agreement behind it. Change that agreement under '
+    'Each package has a contract behind it. Change that contract under '
       + 'Contracts, and new customers get the new one.',
     'seller-section-copy',
   );
@@ -3097,10 +3097,10 @@ const renderCreatePassTierForm = (
     doc,
     section,
     'p',
-    'Makes an empty agreement for the kind of access you pick, and ties a new pass '
+    'Makes an empty contract for the kind of access you pick, and ties a new pass '
       + 'to it in one go. Set three things: how long it lasts, how many '
       + 'AI turns it allows, and how many tool uses. Once it is '
-      + 'made, open the agreement under Contracts to say which tools and which things '
+      + 'made, open the contract under Contracts to say which tools and which things '
       + 'the pass allows.',
   ).className = 'seller-form-intro';
   const fields = append(doc, section, 'div', 'seller-tier-form-grid');
@@ -3264,7 +3264,7 @@ const renderManualTierForm = (
   const templateContractId = appendField(
     doc,
     fields,
-    'The agreement behind it',
+    'The contract behind it',
     'template_contract_id',
   );
   const passDuration = appendField(
@@ -3350,7 +3350,7 @@ const renderManualTierForm = (
         display_name: requiredFieldValue(displayName, 'Display name'),
         template_contract_id: requiredFieldValue(
           templateContractId,
-          'The agreement behind it',
+          'The contract behind it',
         ),
         usage_policy_json: parseUsagePolicy(usagePolicy),
         pass_duration_seconds: parseOptionalWholeSeconds(passDuration),
@@ -3776,8 +3776,8 @@ const renderManualCustomerLifecycleControls = (
     doc,
     section,
     'p',
-    'Pick what to do for one of your customers. Their agreements '
-      + 'live here. The package agreements are changed under Contracts.',
+    'Pick what to do for one of your customers. Their contracts '
+      + 'live here. The package contracts are changed under Contracts.',
     'seller-form-intro',
   );
   const status = append(doc, section, 'div', 'seller-form-status');
@@ -3898,7 +3898,7 @@ const renderManualCustomerLifecycleControls = (
       doc,
       action,
       'p',
-      'Moving them re-issues their agreement from the new package. '
+      'Moving them re-issues their contract from the new package. '
         + 'Anything you changed just for them, under Contracts, goes back to the '
         + 'package’s own wording. Only moving does this. Giving them longer does not.',
       'seller-table-detail',

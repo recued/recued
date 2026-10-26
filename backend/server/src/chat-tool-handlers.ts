@@ -58,9 +58,23 @@ import { calendarChatUpdateInput } from './collections/calendar/chat-update-inpu
  *  identical to the legacy `not_implemented` behaviour. */
 
 import {
+  ASSET_DOCUMENT_DETAILS_ATTRIBUTE,
+  ASSET_SEARCH_TERMS,
+  AssetValidationError,
+  parseAssetSearchTerms,
+  parseQualifiedWorkEntityId,
+  WORK_ENTITY_KIND_SET,
   calendarDayMs,
   COMMITMENT_DIRECTION_SET,
   isAssetDate,
+  zonedWallClockToEpochMs,
+  type ApprovalValueLabels,
+  type Asset,
+  type AssetContributionKind,
+  type AssetPatch,
+  type AssetReading,
+  type AssetRule,
+  type WorkEntityKind,
   isReadableCollection,
   OP_ENTITY_COLLECTION,
   TIER1_CLASSIFICATIONS,
@@ -79,6 +93,7 @@ import {
   composePlatformRecordTargetId,
   cronZoneFor,
   executionSourceContractId,
+  ownerApprovesCallsOf,
   isDelegatedMcpToken,
   // D-237 P1 — the per-instance freshness verdict the AI-facing collection
   // reads now carry, alongside the CRM trio's `crm_freshness`.
@@ -130,7 +145,8 @@ import type {
   Collection as StorageCollection,
 } from '@recued/storage';
 import { recipeDateArgumentIssue } from './date-argument-format.js';
-import { unambiguousDateMs } from './storage/work-entity-store.js';
+import { AssetFieldHeldError, unambiguousDateMs } from './storage/work-entity-store.js';
+import type { AssetAiWrite } from './work-entity-ingredients.js';
 import { isMentionOnlyEmail, type ContactStore } from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
@@ -241,8 +257,8 @@ import { missingPacksOfRefusal } from './install-offers/needed-packs.js';
 import type { InstalledRecipeScheduler } from './schedule-installed-recipe.js';
 import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
 import { calendarAddressOf } from './collections/calendar/provider.js';
-import { eventWhen, parseInstantWithOffset } from '@recued/transforms';
-import { utcOffsetLabel } from './chat-clock.js';
+import { parseInstantWithOffset } from '@recued/transforms';
+import { eventWhenOnTurnClock } from './chat-clock.js';
 
 /** Executor closure shape. `chat-tool-handlers` calls this rather than
  *  importing `handleExecute` directly so tests can substitute a fake
@@ -1868,24 +1884,6 @@ const createMailSearchHandler =
  *  table on a `table` property. Codex review P2 fold (2026-05-12). */
 const isCalendarCollection = (c: Collection): c is CalendarCollection =>
   'table' in c && (c as Partial<CalendarCollection>).table !== undefined;
-
-/** When an event happens on the turn's clock, written beside the epoch-ms
- *  `start_at` / `end_at` it is read from: `2026-08-27 06:40–07:40 (UTC-07:00)`,
- *  or `2026-12-24, all day` (an all-day event is stored as the UTC midnight of
- *  its day, which converted by hand west of UTC reads as the day before).
- *
- *  ⛔ Left to convert epoch ms itself, the model named the wrong day: bench 175
- *  (2026-10-24) said "Aug 26" for a meeting at 13:40 UTC on Aug 27 in 8 of its
- *  60 conversations. The zone is the one the turn's `current_date` is stamped in; absent
- *  when the dispatch carries none (an MCP caller keeps its own clock). */
-const eventWhenOnTurnClock = (hot: unknown, zone: string | undefined): string | undefined => {
-  if (zone === undefined || hot === null || typeof hot !== 'object') return undefined;
-  const when = eventWhen({ event: hot, time_zone: zone });
-  if (when === null) return undefined;
-  if (when.time === 'All day') return when.text;
-  const offset = utcOffsetLabel(when.start, zone);
-  return offset ? `${when.text} (${offset})` : when.text;
-};
 
 const createCalendarSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
@@ -4171,10 +4169,12 @@ export const WORK_ENTITY_CREATE_OP_ID: Readonly<Record<WorkCreateKind, string>> 
   commitment: 'core.work-entity.commitment.create',
   project: 'core.work-entity.project.create',
 };
-/** D-325 (2026-10-24) — `work.create` of an `asset`, and `work.type`, which
- *  describes a type for that create. An asset is kept apart from
- *  `WorkCreateKind` because `work.update` does not take one. */
+/** D-325 — `work.create` of an `asset` (2026-10-24), `work.type`, which describes a
+ *  type for that create, and `work.update` of one (2026-10-25). An asset is kept apart
+ *  from `WorkCreateKind` because it takes its own arguments, on its own path in both
+ *  tools (`createAssetFromChat`, `updateAssetFromChat`). */
 export const ASSET_CREATE_OP_ID = 'core.work-entity.asset.create';
+export const ASSET_UPDATE_OP_ID = 'core.work-entity.asset.update';
 
 /** Mirrors {@link admitWorkEntityRead} on the write side — same shape, same
  *  fail-closed posture, different op. The tool is `classification: 'unknown'`
@@ -4230,7 +4230,7 @@ export const TASK_MARK_DONE_OP_ID = 'core.work-entity.task.mark-done';
  *  reported to the owner as one confirmed action. Doing one thing per call keeps
  *  the approval card honest about what it approved. */
 const createWorkUpdateHandler =
-  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
     const crud = deps.getWorkEntityCrudDeps?.();
     if (!crud) return executionError('work-entity write path unavailable');
@@ -4238,14 +4238,18 @@ const createWorkUpdateHandler =
     if (!args) return invalidArgs('args must be an object');
 
     const kind = args.kind;
+    if (kind === 'asset') return updateAssetFromChat(deps, args, ctx, check);
     if (!isWorkCreateKind(kind)) {
       return invalidArgs(
-        `work.update requires kind to be one of ${WORK_CREATE_KINDS.join(' / ')}`,
+        `work.update requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset'].join(' / ')}`,
       );
     }
     const id = typeof args.id === 'string' ? args.id.trim() : '';
     if (id.length === 0) {
       return invalidArgs('work.update requires the id of the row to change');
+    }
+    for (const name of ['dates', 'readings', 'attributes', 'place', 'belongs_to'] as const) {
+      if (args[name] !== undefined) return invalidArgs(`work.update: \`${name}\` applies to an asset only`);
     }
 
     // ⛔ EVERY FIELD GOES WHERE ITS KIND KEEPS IT, OR IS REFUSED. A dispatcher
@@ -4360,6 +4364,7 @@ const createWorkUpdateHandler =
       };
     }
 
+    if (check) return WOULD_RUN;
     try {
       if (marksDone) {
         if (!(crud.dispatchers as { taskMarkDone?: unknown }).taskMarkDone) {
@@ -4387,6 +4392,21 @@ const createWorkUpdateHandler =
       );
     }
   };
+
+/** The answer a check gets for a `work.create` or `work.update` call that would run. */
+const WOULD_RUN: ChatDispatchResult = Object.freeze({ ok: true, result: { would_run: true } });
+
+/** D-329 — what a `work.update` call would be refused for, asked before the owner is
+ *  asked to approve it: the handler's own checks, stopped just before the write (for an
+ *  asset, its dispatcher's checks too, then rolled back). `null` when it would run. */
+export const checkWorkUpdate = async (
+  deps: ChatToolHandlerDeps,
+  raw: unknown,
+  ctx: ChatDispatchContext,
+): Promise<ChatDispatchResult | null> => {
+  const checked = await createWorkUpdateHandler(deps, true)(raw, ctx);
+  return checked === WOULD_RUN ? null : checked;
+};
 
 export const CALENDAR_CREATE_OP_ID = 'core.data.calendar.create';
 export const CALENDAR_UPDATE_OP_ID = 'core.data.calendar.update';
@@ -4547,162 +4567,380 @@ const isWorkCreateKind = (v: unknown): v is WorkCreateKind =>
  *  off the wire regardless. */
 const createWorkCreateHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
-  async (raw, ctx) => {
-    const crud = deps.getWorkEntityCrudDeps?.();
-    if (!crud) return executionError('work-entity write path unavailable');
-    const args = asObject(raw);
-    if (!args) return invalidArgs('args must be an object');
+  async (raw, ctx) => workCreate(deps, raw, ctx);
 
-    const kind = args.kind;
-    if (kind === 'asset') return createAssetFromChat(deps, args, ctx);
-    if (!isWorkCreateKind(kind)) {
-      return invalidArgs(
-        `work.create requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset'].join(' / ')}`,
-      );
-    }
-    for (const name of ['type', 'dates', 'holder_email'] as const) {
-      if (args[name] !== undefined) return invalidArgs(`work.create: \`${name}\` applies to an asset only`);
-    }
+/** D-329 — what a `work.create` call would be refused for, asked before the owner is asked
+ *  to approve it (the registry's `checkBeforeAsking`): the handler's own checks, stopped
+ *  just before the write, so the check and the run cannot disagree. `null` when it would
+ *  run. ⛔ Found live (2026-10-25): an AI sent an asset's details as `body`, the owner
+ *  approved, and only then did the create refuse `body`. */
+export const checkWorkCreate = async (
+  deps: ChatToolHandlerDeps,
+  raw: unknown,
+  ctx: ChatDispatchContext,
+): Promise<ChatDispatchResult | null> => {
+  const checked = await workCreate(deps, raw, ctx, true);
+  return checked === WOULD_RUN ? null : checked;
+};
 
-    const title = typeof args.title === 'string' ? args.title.trim() : '';
-    const body = typeof args.body === 'string' ? args.body.trim() : '';
-    // A note IS its body; everything else is identified by its title. Refusing
-    // here rather than at the dispatcher keeps the model's error specific to the
-    // field it actually omitted.
-    if (kind === 'note' ? body.length === 0 : title.length === 0) {
-      return invalidArgs(
-        kind === 'note'
-          ? 'work.create requires a non-empty body for a note'
-          : `work.create requires a non-empty title for a ${kind}`,
-      );
-    }
+const workCreate = async (
+  deps: ChatToolHandlerDeps,
+  raw: unknown,
+  ctx: ChatDispatchContext,
+  check = false,
+): Promise<ChatDispatchResult> => {
+  const crud = deps.getWorkEntityCrudDeps?.();
+  if (!crud) return executionError('work-entity write path unavailable');
+  const args = asObject(raw);
+  if (!args) return invalidArgs('args must be an object');
 
-    if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, kind)) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: `work.create is not granted to this contract for ${kind} (write rejected)`,
-      };
-    }
+  const kind = args.kind;
+  if (kind === 'asset') return createAssetFromChat(deps, args, ctx, check);
+  if (!isWorkCreateKind(kind)) {
+    return invalidArgs(
+      `work.create requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset'].join(' / ')}`,
+    );
+  }
+  for (const name of ['type', 'dates', 'readings', 'holder_email', 'attributes', 'place', 'belongs_to'] as const) {
+    if (args[name] !== undefined) return invalidArgs(`work.create: \`${name}\` applies to an asset only`);
+  }
 
-    // ⛔ EVERY FIELD GOES WHERE ITS KIND KEEPS IT, OR IS REFUSED — as in
-    // `work.update`. A create dispatcher ignores what it does not have: a
-    // project's `body` and date were dropped behind `created: true`, and a
-    // commitment could not be created at all (no direction, no derivation, its
-    // words not in `statement`). `input` is in the dispatcher's words, `fields`
-    // in the tool's.
-    const input: Record<string, unknown> = { kind };
-    const fields: string[] = [];
-    const put = (argName: string, field: string, value: unknown): void => {
-      input[field] = value;
-      fields.push(argName);
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  const body = typeof args.body === 'string' ? args.body.trim() : '';
+  // A note IS its body; everything else is identified by its title. Refusing
+  // here rather than at the dispatcher keeps the model's error specific to the
+  // field it actually omitted.
+  if (kind === 'note' ? body.length === 0 : title.length === 0) {
+    return invalidArgs(
+      kind === 'note'
+        ? 'work.create requires a non-empty body for a note'
+        : `work.create requires a non-empty title for a ${kind}`,
+    );
+  }
+
+  if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, kind)) {
+    return {
+      ok: false,
+      reason: 'classification_blocked',
+      detail: `work.create is not granted to this contract for ${kind} (write rejected)`,
     };
-    if (title.length > 0) put('title', kind === 'commitment' ? 'statement' : 'title', title);
-    if (body.length > 0) {
-      if (kind === 'commitment') {
-        return invalidArgs('work.create: a commitment has no `body` — what was promised is its `title`');
-      }
-      put('body', kind === 'project' ? 'description' : 'body', body);
-    }
-    if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
-      if (kind !== 'task') return wrongKindDate('work.create', 'due_at', 'task', kind);
-      put('due_at', 'due_at', args.due_at);
-    }
-    // A project's target is a DAY — asked for as one, stored as its UTC midnight.
-    if (args.target_completion_at !== undefined) {
-      if (kind !== 'project') return wrongKindDate('work.create', 'target_completion_at', 'project', kind);
-      const day = typeof args.target_completion_at === 'string'
-        ? calendarDayMs(args.target_completion_at.trim())
-        : null;
-      if (day === null) {
-        return invalidArgs('work.create: `target_completion_at` must be a date as YYYY-MM-DD');
-      }
-      put('target_completion_at', 'target_completion_at', day);
-    }
-    // A promise is for a day or an exact time — never a time without its zone.
-    if (args.promised_for_at !== undefined) {
-      if (kind !== 'commitment') return wrongKindDate('work.create', 'promised_for_at', 'commitment', kind);
-      const when = typeof args.promised_for_at === 'string' ? unambiguousDateMs(args.promised_for_at) : null;
-      if (when === null) {
-        return invalidArgs(
-          'work.create: `promised_for_at` must be a date as YYYY-MM-DD, or a time with its offset',
-        );
-      }
-      put('promised_for_at', 'promised_for_at', when);
-    }
-    if (args.counterparty_email !== undefined) {
-      if (kind !== 'commitment') {
-        return invalidArgs('work.create: `counterparty_email` applies to a commitment only');
-      }
-      const email = typeof args.counterparty_email === 'string'
-        ? args.counterparty_email.trim().toLowerCase()
-        : '';
-      if (!EMAIL_SHAPE.test(email)) {
-        return invalidArgs('work.create: `counterparty_email` must be an email address — never a name');
-      }
-      put('counterparty_email', 'counterparty_contact_id', email);
-    }
-    if (args.direction !== undefined && kind !== 'commitment') {
-      return invalidArgs('work.create: `direction` applies to a commitment only');
-    }
-    if (kind === 'commitment') {
-      // A commitment is WHO promised WHAT. `direction` has no default: a guess
-      // would file the user's own promise as one owed to them, or the reverse.
-      if (typeof args.direction !== 'string' || !COMMITMENT_DIRECTION_SET.has(args.direction as never)) {
-        return invalidArgs(
-          'work.create requires `direction` for a commitment: `outbound` (the user promised it), '
-            + '`inbound` (someone promised it to the user) or `internal`',
-        );
-      }
-      put('direction', 'direction', args.direction);
-      // The user said so: every commitment made here is theirs to have declared.
-      input.derivation = 'user_declared';
-    }
+  }
 
-    try {
-      const res = await handleWorkEntityUpsert(
-        crud,
-        input as unknown as Parameters<typeof handleWorkEntityUpsert>[1],
-        ctx.execution_source,
-      );
-      const entity = res.entity as { id?: string; _kind?: string } | undefined;
-      return {
-        ok: true,
-        result: {
-          created: true,
-          kind,
-          ...(entity?.id !== undefined ? { id: entity.id } : {}),
-          fields,
-        },
-      };
-    } catch (e) {
-      return executionError(
-        `work.create failed: ${e instanceof Error ? e.message : String(e)}`,
+  // ⛔ EVERY FIELD GOES WHERE ITS KIND KEEPS IT, OR IS REFUSED — as in
+  // `work.update`. A create dispatcher ignores what it does not have: a
+  // project's `body` and date were dropped behind `created: true`, and a
+  // commitment could not be created at all (no direction, no derivation, its
+  // words not in `statement`). `input` is in the dispatcher's words, `fields`
+  // in the tool's.
+  const input: Record<string, unknown> = { kind };
+  const fields: string[] = [];
+  const put = (argName: string, field: string, value: unknown): void => {
+    input[field] = value;
+    fields.push(argName);
+  };
+  if (title.length > 0) put('title', kind === 'commitment' ? 'statement' : 'title', title);
+  if (body.length > 0) {
+    if (kind === 'commitment') {
+      return invalidArgs('work.create: a commitment has no `body` — what was promised is its `title`');
+    }
+    put('body', kind === 'project' ? 'description' : 'body', body);
+  }
+  if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
+    if (kind !== 'task') return wrongKindDate('work.create', 'due_at', 'task', kind);
+    put('due_at', 'due_at', args.due_at);
+  }
+  // A project's target is a DAY — asked for as one, stored as its UTC midnight.
+  if (args.target_completion_at !== undefined) {
+    if (kind !== 'project') return wrongKindDate('work.create', 'target_completion_at', 'project', kind);
+    const day = typeof args.target_completion_at === 'string'
+      ? calendarDayMs(args.target_completion_at.trim())
+      : null;
+    if (day === null) {
+      return invalidArgs('work.create: `target_completion_at` must be a date as YYYY-MM-DD');
+    }
+    put('target_completion_at', 'target_completion_at', day);
+  }
+  // A promise is for a day or an exact time — never a time without its zone.
+  if (args.promised_for_at !== undefined) {
+    if (kind !== 'commitment') return wrongKindDate('work.create', 'promised_for_at', 'commitment', kind);
+    const when = typeof args.promised_for_at === 'string' ? unambiguousDateMs(args.promised_for_at) : null;
+    if (when === null) {
+      return invalidArgs(
+        'work.create: `promised_for_at` must be a date as YYYY-MM-DD, or a time with its offset',
       );
     }
-  };
+    put('promised_for_at', 'promised_for_at', when);
+  }
+  if (args.counterparty_email !== undefined) {
+    if (kind !== 'commitment') {
+      return invalidArgs('work.create: `counterparty_email` applies to a commitment only');
+    }
+    const email = typeof args.counterparty_email === 'string'
+      ? args.counterparty_email.trim().toLowerCase()
+      : '';
+    if (!EMAIL_SHAPE.test(email)) {
+      return invalidArgs('work.create: `counterparty_email` must be an email address — never a name');
+    }
+    put('counterparty_email', 'counterparty_contact_id', email);
+  }
+  if (args.direction !== undefined && kind !== 'commitment') {
+    return invalidArgs('work.create: `direction` applies to a commitment only');
+  }
+  if (kind === 'commitment') {
+    // A commitment is WHO promised WHAT. `direction` has no default: a guess
+    // would file the user's own promise as one owed to them, or the reverse.
+    if (typeof args.direction !== 'string' || !COMMITMENT_DIRECTION_SET.has(args.direction as never)) {
+      return invalidArgs(
+        'work.create requires `direction` for a commitment: `outbound` (the user promised it), '
+          + '`inbound` (someone promised it to the user) or `internal`',
+      );
+    }
+    put('direction', 'direction', args.direction);
+    // The user said so: every commitment made here is theirs to have declared.
+    input.derivation = 'user_declared';
+  }
+
+  if (check) return WOULD_RUN;
+  try {
+    const res = await handleWorkEntityUpsert(
+      crud,
+      input as unknown as Parameters<typeof handleWorkEntityUpsert>[1],
+      ctx.execution_source,
+    );
+    const entity = res.entity as { id?: string; _kind?: string } | undefined;
+    return {
+      ok: true,
+      result: {
+        created: true,
+        kind,
+        ...(entity?.id !== undefined ? { id: entity.id } : {}),
+        fields,
+      },
+    };
+  } catch (e) {
+    return executionError(
+      `work.create failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+};
 
 const CHAT_ASSET_TYPE_WORDS: AssetTypeWords = {
   holder: '`holder_email`, the email address of the person it belongs to', describe: 'work.type',
 };
-const ASSET_CREATE_ARGS: ReadonlySet<string> = new Set(['kind', 'type', 'title', 'dates', 'holder_email']);
+const ASSET_CREATE_ARGS: ReadonlySet<string> = new Set(['kind', 'type', 'title', 'dates', 'readings', 'holder_email', 'attributes', 'place', 'belongs_to', 'body']);
+const ASSET_UPDATE_ARGS: ReadonlySet<string> = new Set(['kind', 'id', 'title', 'body', 'dates', 'readings', 'attributes', 'place', 'belongs_to']);
+/** How much of what the user said about a thing the AI may keep on it. */
+const ASSET_ATTRIBUTES_MAX = 20;
+const ASSET_ATTRIBUTE_TEXT_MAX = 500;
+const ASSET_NAME_MAX = 200;
+const ASSET_NOTE_MAX = 2000;
+const ASSET_PLACE_MAX = 200;
+/** The longest unit `validateAsset` takes. */
+const ASSET_UNIT_MAX = 80;
+
+/** An asset argument refused, in its tool's words; the handler answers `invalidArgs`. */
+class AssetArgRefusal extends Error {}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const listedNames = (names: readonly string[]): string => {
+  const shown = names.map((name) => `\`${name}\``);
+  return shown.length < 2 ? shown.join('') : `${shown.slice(0, -1).join(', ')} and ${shown.at(-1)}`;
+};
+/** Where an AI's facts about an asset came from: its chat, or the AI app's token. */
+const aiAssetSourceRef = (ctx: ChatDispatchContext): string =>
+  ctx.channel === 'mcp_wire' ? `mcp:${ctx.mcp_token_id ?? 'agent'}` : `chat:${ctx.session_id ?? 'turn'}`;
+
+/** An attribute's name as Yours keeps one: lower-case words joined by underscores, so
+ *  "Frame size" is `frame_size`. ⛔ The Yours form refuses any other name on save, so one
+ *  an AI wrote another way would stop the owner saving the thing's details. */
+const assetAttributeName = (tool: string, given: string): string => {
+  const name = given.trim().toLowerCase().replace(/[\s-]+/gu, '_');
+  if (!/^[a-z][a-z0-9_]{0,63}$/u.test(name)) {
+    throw new AssetArgRefusal(`${tool}: name each attribute in lower-case letters, digits and underscores, starting with a letter, such as \`frame_size\``);
+  }
+  if (name === ASSET_DOCUMENT_DETAILS_ATTRIBUTE) throw new AssetArgRefusal(`${tool}: \`${name}\` belongs to a document attached in Yours`);
+  return name;
+};
+/** What the user said about a thing, by name, kept where Yours keeps the owner's own
+ *  details: plain values, plus the bounded keyword list. On an update, `null`
+ *  removes one. Keyword edits replace this asset's additions, never type defaults. */
+const assetAttributesArg = (tool: string, raw: unknown, removable: boolean): Record<string, string | number | boolean | string[] | null> => {
+  const attributes: Record<string, string | number | boolean | string[] | null> = {};
+  if (raw === undefined) return attributes;
+  if (!isPlainObject(raw)) throw new AssetArgRefusal(`${tool}: \`attributes\` must be an object of named details, such as {"brand": "Trek"}`);
+  const entries = Object.entries(raw);
+  if (entries.length > ASSET_ATTRIBUTES_MAX) throw new AssetArgRefusal(`${tool}: send at most ${ASSET_ATTRIBUTES_MAX} attributes at a time`);
+  for (const [given, value] of entries) {
+    const name = assetAttributeName(tool, given);
+    if (Object.hasOwn(attributes, name)) throw new AssetArgRefusal(`${tool}: \`attributes\` names \`${name}\` twice`);
+    if (name === ASSET_SEARCH_TERMS) {
+      try { const terms = parseAssetSearchTerms(value); attributes[name] = terms.length ? terms : null; }
+      catch (error) { throw new AssetArgRefusal(`${tool}: \`attributes.${ASSET_SEARCH_TERMS}\`: ${(error as Error).message}`); }
+    }
+    else if (typeof value === 'string' && value.trim().length > 0 && [...value.trim()].length <= ASSET_ATTRIBUTE_TEXT_MAX) attributes[name] = value.trim();
+    else if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) attributes[name] = value;
+    else if (value === null && removable) attributes[name] = null;
+    else {
+      throw new AssetArgRefusal(`${tool}: \`attributes.${name}\` must be text of at most ${ASSET_ATTRIBUTE_TEXT_MAX} characters, a number or true/false${removable ? ', or null to remove it' : ''}`);
+    }
+  }
+  return attributes;
+};
+/** A note about the thing, kept as `attributes.note`. */
+const assetNoteArg = (tool: string, raw: unknown, attributes: Record<string, unknown>): string | undefined => {
+  const note = typeof raw === 'string' ? raw.trim() : raw;
+  if (note === undefined) return undefined;
+  if (typeof note !== 'string' || note.length === 0 || [...note].length > ASSET_NOTE_MAX) {
+    throw new AssetArgRefusal(`${tool}: \`body\` is a note about the asset, of at most ${ASSET_NOTE_MAX} characters`);
+  }
+  if (Object.hasOwn(attributes, 'note')) throw new AssetArgRefusal(`${tool}: give an asset its note once, as \`body\` or as \`attributes.note\``);
+  return note;
+};
+const assetPlaceArg = (tool: string, raw: unknown): string | undefined => {
+  const place = typeof raw === 'string' ? raw.trim() : raw;
+  if (place !== undefined && (typeof place !== 'string' || place.length === 0 || [...place].length > ASSET_PLACE_MAX)) {
+    throw new AssetArgRefusal(`${tool}: \`place\` says where it is kept, such as "the garage", in at most ${ASSET_PLACE_MAX} characters`);
+  }
+  return place;
+};
+/** What a thing is part of or covers (`belongs_to`): another live asset, by its id as
+ *  `work.search` returned it or a local one. The thing then shares that one's place, and
+ *  follows it when it is sold or retired: a part is retired with it, and a policy is
+ *  given a reminder to cancel or transfer (`retireAsset`). */
+const assetParentArg = (tool: string, raw: unknown, assetById: (id: string) => Asset, self?: string): string | undefined => {
+  if (raw === undefined) return undefined;
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  if (id.length === 0) throw new AssetArgRefusal(`${tool}: \`belongs_to\` is the id of another thing they own, as \`work.search\` returned it`);
+  let parent: Asset;
+  try {
+    parent = assetById(id);
+  } catch (e) {
+    throw new AssetArgRefusal(`${tool}: \`belongs_to\` names no thing they own (${e instanceof Error ? e.message : String(e)}). Find it with \`work.search\``);
+  }
+  if (parent.id === self) throw new AssetArgRefusal(`${tool}: a thing cannot belong to itself`);
+  return parent.id;
+};
+/** The unit a reading is recorded in, as the Yours reading form holds the owner to it:
+ *  its last reading's, else the one its reminders read it in. `null` when those
+ *  reminders disagree; `undefined` when any unit will do. */
+const assetReadingUnit = (field: string, last: AssetReading | null | undefined, rules: readonly AssetRule[]): string | null | undefined => {
+  if (last) return last.unit;
+  const units = [...new Set(rules.flatMap((rule) => rule.when.kind === 'objective' && rule.when.field === field ? [rule.when.unit] : []))];
+  return units.length > 1 ? null : units[0];
+};
+/** When a reading was observed, as epoch ms: a time the AI gave with its offset; a day,
+ *  at its noon in the turn's zone (UTC on the MCP wire, which has none), or now while
+ *  that noon is still to come; or now. `null` for a time that has not happened yet. */
+const assetReadingTime = (raw: unknown, now: number, timeZone: string | undefined): number | null => {
+  if (raw === undefined) return now;
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim();
+  if (text.length === 10 && calendarDayMs(text) !== null) {
+    const start = zonedWallClockToEpochMs(`${text}T00:00`, timeZone ?? 'UTC');
+    const noon = zonedWallClockToEpochMs(`${text}T12:00`, timeZone ?? 'UTC');
+    return start === null || noon === null || start > now ? null : Math.min(noon, now);
+  }
+  const at = unambiguousDateMs(text);
+  return at !== null && at <= now ? at : null;
+};
+/** Readings the user gave, each recorded as the Yours form records the owner's: a number
+ *  in the unit its field is read in, at the time it was observed. */
+const assetReadingsArg = (
+  tool: string,
+  raw: Record<string, unknown>,
+  unitOf: (field: string) => string | null | undefined,
+  now: number,
+  timeZone: string | undefined,
+): Record<string, AssetReading> => {
+  const readings: Record<string, AssetReading> = {};
+  for (const [field, given] of Object.entries(raw)) {
+    const named = `\`readings.${field}\``;
+    if (!isPlainObject(given) || Object.keys(given).some((key) => !['value', 'unit', 'as_of'].includes(key))) {
+      throw new AssetArgRefusal(`${tool}: ${named} is {"value": <the number>, "unit": "<its unit>"}, with \`as_of\` unless it was read just now`);
+    }
+    const value = given.value;
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new AssetArgRefusal(`${tool}: ${named}.value is the number read; leave out a reading the user did not give`);
+    }
+    const unit = typeof given.unit === 'string' ? given.unit.trim() : '';
+    if (unit.length === 0 || [...unit].length > ASSET_UNIT_MAX) throw new AssetArgRefusal(`${tool}: ${named}.unit says what it is read in, such as "km"`);
+    const kept = unitOf(field);
+    if (kept === null) {
+      throw new AssetArgRefusal(`${tool}: the reminders on \`${field}\` read it in different units, so the user fixes them in Yours before a reading is recorded`);
+    }
+    if (kept !== undefined && unit !== kept) {
+      throw new AssetArgRefusal(`${tool}: \`${field}\` is read in \`${kept}\`, not \`${unit}\`. Convert the reading, or ask the user`);
+    }
+    const as_of = assetReadingTime(given.as_of, now, timeZone);
+    if (as_of === null) {
+      throw new AssetArgRefusal(`${tool}: ${named}.as_of is when it was read, as YYYY-MM-DD or a time with its offset, and not later than now`);
+    }
+    readings[field] = { value, unit, as_of, evidence: [] };
+  }
+  return readings;
+};
+/** What an asset keeps in a group, against the names a call sent. */
+const assetFieldsText = (tool: string, asset: Asset, group: 'dates' | 'readings', extra: readonly string[]): string => {
+  const kept = Object.keys(asset[group]);
+  return `${tool}: \`${asset.name}\` keeps ${kept.length > 0 ? `the ${group} ${listedNames(kept)}` : `no ${group}`}, not ${listedNames(extra)}. The user can add the field in Yours`;
+};
+/** Why an AI may not change a field, by the rank that holds it. */
+const assetHeldReason = (kind: AssetContributionKind, many: boolean): string => {
+  switch (kind) {
+    case 'owner': return `the user entered ${many ? 'them' : 'it'}`;
+    case 'confirmed_document': return `${many ? 'they come' : 'it comes'} from a document the user confirmed`;
+    case 'observation': return `a device or recipe reports ${many ? 'them' : 'it'}`;
+    default: return `${many ? 'they rank' : 'it ranks'} above an AI`;
+  }
+};
+const assetHeldName = (path: string): string => path === 'name' ? 'its name' : path === 'anchors' ? 'where it is kept'
+  : path === 'belongs_to' ? 'what it belongs to' : path === 'attributes.note' ? 'its note' : `\`${path.slice(path.indexOf('.') + 1)}\``;
+/** ⛔ The owner's ruling of 2026-10-25 ("readings mine, rest AI's"): an AI fills an empty
+ *  field or replaces what an AI wrote. Where the owner set the value, or a document they
+ *  confirmed or a device did, it is refused, before the owner is asked. Search keywords
+ *  are editable retrieval metadata, under the owner's later ruling, not ranked facts. */
+const assetHeldText = (tool: string, held: AssetFieldHeldError['held']): string => {
+  const parts = [...new Set(held.map((entry) => entry.kind))].map((kind) => {
+    const names = held.filter((entry) => entry.kind === kind).map((entry) => assetHeldName(entry.path));
+    const shown = names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+    return `${shown} (${assetHeldReason(kind, names.length > 1)})`;
+  });
+  return `${tool}: an AI cannot change ${parts.join(' or ')}. The user can, in Yours; leave ${held.length > 1 ? 'them' : 'it'} out to change the rest`;
+};
+/** How an AI's asset write is ranked (`AssetAiWrite`). A check runs as its write will once
+ *  approved, and whose approval that is depends on where the call came from: in a chat under
+ *  a contract, the write's readings stay the AI's. */
+const assetAiWrite = (ctx: ChatDispatchContext, check: boolean): AssetAiWrite => check
+  ? { check: true, owner_approved: ctx.execution_source !== undefined && ownerApprovesCallsOf(ctx.execution_source) }
+  : { owner_approved: ctx.owner_approved === true };
+/** An asset write's refusal in its tool's words, or `null` for a failure of another kind. */
+const assetWriteRefusal = (tool: string, error: unknown): ChatDispatchResult | null => {
+  if (error instanceof AssetArgRefusal) return invalidArgs(error.message);
+  if (error instanceof AssetFieldHeldError) return invalidArgs(assetHeldText(tool, error.held));
+  if (error instanceof AssetTypeError) return invalidArgs(`${tool}: ${assetTypeIssueText(error.type, error.issues, CHAT_ASSET_TYPE_WORDS)}`);
+  if (error instanceof AssetValidationError) return invalidArgs(`${tool}: ${error.message}`);
+  return null;
+};
 
 /** D-325 (2026-10-24) — `work.create` of an `asset`, at the AI's own rank
  *  (`extracted`): the user said it and the model wrote it down. It goes through
  *  the create every extracted writer uses, which keeps a typed asset to its type's
  *  fields and starts its type's own reminders. The checks here only answer first,
- *  in this tool's words (`holder_email`, `work.type`). */
+ *  in this tool's words (`holder_email`, `work.type`). Its readings, once the owner
+ *  approves the create, are their own samples (`AssetAiWrite`). */
 const createAssetFromChat = async (
   deps: ChatToolHandlerDeps,
   args: Record<string, unknown>,
   ctx: ChatDispatchContext,
+  check = false,
 ): Promise<ChatDispatchResult> => {
   const crud = deps.getWorkEntityCrudDeps?.();
   if (!crud) return executionError('work-entity write path unavailable');
   const other = Object.keys(args).filter((name) => !ASSET_CREATE_ARGS.has(name) && args[name] !== undefined);
   if (other.length > 0) {
     return invalidArgs(
-      `work.create: an asset takes \`type\`, \`title\`, \`dates\` and \`holder_email\`, not ${other.map((name) => `\`${name}\``).join(', ')}`,
+      `work.create: an asset takes \`type\`, \`title\`, \`dates\`, \`readings\`, \`holder_email\`, \`attributes\`, \`place\`, \`belongs_to\` and \`body\`, not ${other.map((name) => `\`${name}\``).join(', ')}`,
     );
   }
   const title = typeof args.title === 'string' ? args.title.trim() : '';
@@ -4736,8 +4974,12 @@ const createAssetFromChat = async (
       dates[field] = value;
     }
   }
-  if (!type && Object.keys(dates).length > 0) {
-    return invalidArgs('work.create: an asset with no type keeps no dates. Pass its `type`; work.type lists them.');
+  if (args.readings !== undefined && !isPlainObject(args.readings)) {
+    return invalidArgs('work.create: `readings` must be an object of readings by name, such as {"odometer": {"value": 12400, "unit": "km"}}');
+  }
+  const givenReadings = (args.readings ?? {}) as Record<string, unknown>;
+  if (!type && Object.keys(dates).length + Object.keys(givenReadings).length > 0) {
+    return invalidArgs('work.create: an asset with no type keeps no dates or readings. Pass its `type`; work.type lists them.');
   }
   let holder: string | undefined;
   if (args.holder_email !== undefined) {
@@ -4749,24 +4991,43 @@ const createAssetFromChat = async (
     // email of someone not in contacts.
     holder = deps.getContactStore()?.get(email)?.contact_id ?? email;
   }
-  if (type) {
-    const issues = assetTypeIssues(type, { dates, ...(holder !== undefined ? { holder_contact: holder } : {}) });
-    if (issues) return invalidArgs(`work.create: ${assetTypeIssueText(type, issues, CHAT_ASSET_TYPE_WORDS)}`);
-  }
-  const fields = ['title', ...(type ? ['type'] : []), ...(Object.keys(dates).length > 0 ? ['dates'] : []),
-    ...(holder !== undefined ? ['holder_email'] : [])];
   try {
+    // What the user said about it goes where Yours keeps the owner's own details: named
+    // values in `attributes`, a note as `attributes.note`, and where it is kept as a place.
+    // ⛔ With nowhere to put them, the AI sent them as `body` in 3 of 3 live runs (2026-10-25).
+    const attributes = assetAttributesArg('work.create', args.attributes, false);
+    const note = assetNoteArg('work.create', args.body, attributes);
+    if (note !== undefined) attributes.note = note;
+    const place = assetPlaceArg('work.create', args.place);
+    const parent = assetParentArg('work.create', args.belongs_to, (id) => crud.dispatchers.assetById(id));
+    let readings: Record<string, AssetReading> = {};
+    if (type) {
+      const issues = assetTypeIssues(type, {
+        dates,
+        readings: Object.fromEntries(Object.keys(givenReadings).map((field) => [field, null])),
+        ...(holder !== undefined ? { holder_contact: holder } : {}),
+      });
+      if (issues) return invalidArgs(`work.create: ${assetTypeIssueText(type, issues, CHAT_ASSET_TYPE_WORDS)}`);
+      readings = assetReadingsArg('work.create', givenReadings, (field) => assetReadingUnit(field, undefined, type.rules),
+        deps.now?.() ?? Date.now(), ctx.time_zone);
+    }
+    const fields = ['title', ...(type ? ['type'] : []), ...(Object.keys(dates).length > 0 ? ['dates'] : []),
+      ...(Object.keys(readings).length > 0 ? ['readings'] : []), ...(holder !== undefined ? ['holder_email'] : []),
+      ...(args.attributes !== undefined ? ['attributes'] : []), ...(note !== undefined ? ['body'] : []), ...(place !== undefined ? ['place'] : []),
+      ...(parent !== undefined ? ['belongs_to'] : [])];
     const { asset } = await crud.dispatchers.assetCreate({
       name: title,
       ...(type ? { class_id: type.id } : {}),
       ...(Object.keys(dates).length > 0 ? { dates } : {}),
+      ...(Object.keys(readings).length > 0 ? { readings } : {}),
       ...(holder !== undefined ? { holder_contact: holder } : {}),
-      source: {
-        kind: 'extracted',
-        ref: ctx.channel === 'mcp_wire' ? `mcp:${ctx.mcp_token_id ?? 'agent'}` : `chat:${ctx.session_id ?? 'turn'}`,
-      },
+      ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
+      ...(place !== undefined ? { anchors: [{ kind: 'place' as const, name: place }] } : {}),
+      ...(parent !== undefined ? { belongs_to: parent } : {}),
+      source: { kind: 'extracted', ref: aiAssetSourceRef(ctx) },
       ...(ctx.execution_source ? { origin_execution_source: ctx.execution_source } : {}),
-    });
+    }, assetAiWrite(ctx, check));
+    if (check) return WOULD_RUN;
     const on = asset.rules.filter((rule) => rule.enabled && !rule.muted && rule.reaction.notify);
     const waiting = [...new Set(on.flatMap((rule) =>
       (rule.when.kind === 'expiry' || rule.when.kind === 'interval') && asset.dates[rule.when.field] == null
@@ -4785,11 +5046,187 @@ const createAssetFromChat = async (
       },
     };
   } catch (e) {
-    if (e instanceof AssetTypeError) {
-      return invalidArgs(`work.create: ${assetTypeIssueText(e.type, e.issues, CHAT_ASSET_TYPE_WORDS)}`);
-    }
-    return executionError(`work.create failed: ${e instanceof Error ? e.message : String(e)}`);
+    return assetWriteRefusal('work.create', e)
+      ?? executionError(`work.create failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+};
+
+/** D-325 (2026-10-25) — `work.update` of an `asset`: what the user says about a thing they
+ *  own, written as `work.create` writes a new one. Its readings, once the owner approves
+ *  the write, are their own samples; the rest keeps the AI's rank, so it fills an empty
+ *  field or replaces what an AI wrote, and is refused where the owner set the value
+ *  (`assetHeldText`). The dispatcher's strict write makes that refusal, so a check
+ *  makes it before the owner is asked. */
+const updateAssetFromChat = async (
+  deps: ChatToolHandlerDeps,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+  check = false,
+): Promise<ChatDispatchResult> => {
+  const crud = deps.getWorkEntityCrudDeps?.();
+  if (!crud) return executionError('work-entity write path unavailable');
+  const other = Object.keys(args).filter((name) => !ASSET_UPDATE_ARGS.has(name) && args[name] !== undefined);
+  if (other.length > 0) {
+    return invalidArgs(
+      `work.update: an asset takes \`title\`, \`body\`, \`dates\`, \`readings\`, \`attributes\`, \`place\` and \`belongs_to\`, not ${other.map((name) => `\`${name}\``).join(', ')}`,
+    );
+  }
+  const id = typeof args.id === 'string' ? args.id.trim() : '';
+  if (id.length === 0) return invalidArgs('work.update requires the id of the row to change');
+  if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, ASSET_UPDATE_OP_ID)) {
+    return {
+      ok: false,
+      reason: 'classification_blocked',
+      detail: 'work.update is not granted to this contract for asset (write rejected)',
+    };
+  }
+  let prior: Asset;
+  try {
+    prior = crud.dispatchers.assetToUpdate(id);
+  } catch (e) {
+    return invalidArgs(`work.update: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  try {
+    const patch: AssetPatch = {};
+    const fields: string[] = [];
+    if (args.title !== undefined) {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      if (title.length === 0 || [...title].length > ASSET_NAME_MAX) {
+        throw new AssetArgRefusal(`work.update: \`title\` is the asset's new name, of at most ${ASSET_NAME_MAX} characters`);
+      }
+      patch.name = title;
+      fields.push('title');
+    }
+    const attributes = assetAttributesArg('work.update', args.attributes, true);
+    const missing = Object.entries(attributes).filter(([name, value]) => value === null && prior.attributes[name] == null).map(([name]) => name);
+    if (missing.length > 0) throw new AssetArgRefusal(`work.update: \`${prior.name}\` has no attribute ${listedNames(missing)} to remove`);
+    if (Object.keys(attributes).length > 0) fields.push('attributes');
+    const note = assetNoteArg('work.update', args.body, attributes);
+    if (note !== undefined) {
+      attributes.note = note;
+      fields.push('body');
+    }
+    if (Object.keys(attributes).length > 0) patch.attributes = attributes;
+    const place = assetPlaceArg('work.update', args.place);
+    if (place !== undefined) {
+      // Only its place moves; an identifier or an instrument stays.
+      patch.anchors = [...prior.anchors.filter((anchor) => anchor.kind !== 'place'), { kind: 'place', name: place }];
+      fields.push('place');
+    }
+    const parent = assetParentArg('work.update', args.belongs_to, (parentId) => crud.dispatchers.assetById(parentId), prior.id);
+    if (parent !== undefined) {
+      patch.belongs_to = parent;
+      fields.push('belongs_to');
+    }
+    if (args.dates !== undefined) {
+      if (!isPlainObject(args.dates)) throw new AssetArgRefusal('work.update: `dates` must be an object of dates as YYYY-MM-DD');
+      const extra = Object.keys(args.dates).filter((field) => !Object.hasOwn(prior.dates, field));
+      if (extra.length > 0) throw new AssetArgRefusal(assetFieldsText('work.update', prior, 'dates', extra));
+      const dates: Record<string, string> = {};
+      for (const [field, value] of Object.entries(args.dates)) {
+        if (!isAssetDate(value)) throw new AssetArgRefusal(`work.update: \`dates.${field}\` must be a date as YYYY-MM-DD`);
+        dates[field] = value;
+      }
+      if (Object.keys(dates).length > 0) {
+        patch.dates = dates;
+        fields.push('dates');
+      }
+    }
+    if (args.readings !== undefined) {
+      if (!isPlainObject(args.readings)) {
+        throw new AssetArgRefusal('work.update: `readings` must be an object of readings by name, such as {"odometer": {"value": 12400, "unit": "km"}}');
+      }
+      const extra = Object.keys(args.readings).filter((field) => !Object.hasOwn(prior.readings, field));
+      if (extra.length > 0) throw new AssetArgRefusal(assetFieldsText('work.update', prior, 'readings', extra));
+      const readings = assetReadingsArg('work.update', args.readings,
+        (field) => assetReadingUnit(field, prior.readings[field], prior.rules), deps.now?.() ?? Date.now(), ctx.time_zone);
+      if (Object.keys(readings).length > 0) {
+        patch.readings = readings;
+        fields.push('readings');
+      }
+    }
+    // Same reasoning as the other kinds: an empty change would be put to the owner,
+    // change nothing and report success.
+    if (fields.length === 0) {
+      throw new AssetArgRefusal('work.update: send at least one change to the asset (title / body / dates / readings / attributes / place / belongs_to)');
+    }
+    const { asset } = await crud.dispatchers.assetUpdate({
+      ...patch,
+      id: prior.id,
+      source: { kind: 'extracted', ref: aiAssetSourceRef(ctx) },
+      ...(ctx.execution_source ? { origin_execution_source: ctx.execution_source } : {}),
+    }, assetAiWrite(ctx, check));
+    if (check) {
+      return JSON.stringify(asset) === JSON.stringify(prior)
+        ? invalidArgs(`work.update: \`${prior.name}\` already says that, so nothing would change`)
+        : WOULD_RUN;
+    }
+    return { ok: true, result: { updated: true, kind: 'asset', id, fields } };
+  } catch (e) {
+    return assetWriteRefusal('work.update', e)
+      ?? executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+
+/** The field each kind of work row is known by. */
+const WORK_ROW_NAME_FIELD: Readonly<Record<WorkEntityKind, string>> = {
+  task: 'title', note: 'title', project: 'title', booking: 'title', commitment: 'statement', asset: 'name',
+};
+/** The name the owner knows a work row by, from the id a tool holds (local, or as
+ *  `work.search` returned it), or `undefined` when it names none. */
+const workRowName = (crud: NonNullable<ReturnType<NonNullable<ChatToolHandlerDeps['getWorkEntityCrudDeps']>>>,
+  kind: WorkEntityKind, id: string): string | undefined => {
+  try {
+    const qualified = parseQualifiedWorkEntityId(id);
+    const row = qualified === null ? crud.resolver.readEntity(kind, id)
+      : qualified.kind !== kind ? null
+        : qualified.identity === 'source'
+          ? crud.resolver.readEntityBySourceIdentity(kind, qualified.source_id, qualified.record_id)
+          : crud.resolver.readEntity(kind, qualified.record_id);
+    const name = row === null ? undefined : (row as unknown as Record<string, unknown>)[WORK_ROW_NAME_FIELD[kind]];
+    return typeof name === 'string' && name.trim().length > 0 ? name.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+};
+/** D-329 — how the owner knows the rows a held `work.create` or `work.update` names: its
+ *  `id`, and an asset's `belongs_to`, by their own names. Recorded on the ask and the card
+ *  (`value_labels`), never shown to the AI. ⛔ Found live (2026-10-25): an asset's reading
+ *  was put to the owner as "id: we1:asset:recued.asset:local:e1a798e8…", so with two cars
+ *  they could not tell which one they were approving. */
+export const workAskLabels = async (deps: ChatToolHandlerDeps, raw: unknown): Promise<ApprovalValueLabels | undefined> => {
+  const crud = deps.getWorkEntityCrudDeps?.();
+  const args = asObject(raw);
+  if (!crud || !args) return undefined;
+  const labels: Record<string, Record<string, string>> = {};
+  const label = (key: string, kind: unknown): void => {
+    const value = args[key];
+    if (typeof value !== 'string' || typeof kind !== 'string' || !WORK_ENTITY_KIND_SET.has(kind as WorkEntityKind)) return;
+    const name = workRowName(crud, kind as WorkEntityKind, value);
+    if (name !== undefined) labels[key] = { [value]: name };
+  };
+  label('id', args.kind);
+  if (args.kind === 'asset') label('belongs_to', 'asset');
+  return Object.keys(labels).length > 0 ? labels : undefined;
+};
+/** D-329 — how the owner knows the event a held `calendar.update` changes: its title and
+ *  when it is, on the turn's clock (the MCP wire has none, so there its title alone). */
+export const calendarAskLabels = async (
+  deps: ChatToolHandlerDeps,
+  raw: unknown,
+  ctx: ChatDispatchContext,
+): Promise<ApprovalValueLabels | undefined> => {
+  const args = asObject(raw);
+  const id = typeof args?.source_id === 'string' ? args.source_id : undefined;
+  if (args === null || id === undefined) return undefined;
+  const slug = typeof args.calendar_id === 'string' && args.calendar_id.trim() ? args.calendar_id.trim() : DEFAULT_LOCAL_CALENDAR_SLUG;
+  const calendar = deps.getCollectionRegistry()?.list()
+    .filter(isCalendarCollection).find((collection) => collection.slug === slug);
+  const event = calendar?.table.get(id)?.event;
+  const summary = typeof event?.summary === 'string' ? event.summary.trim() : '';
+  if (summary.length === 0) return undefined;
+  const when = eventWhenOnTurnClock(event, ctx.time_zone);
+  return { source_id: { [id]: when === undefined ? summary : `${summary}, ${when}` } };
 };
 
 /** D-325 (2026-10-24) — `work.type`: what a type of thing the owner keeps holds,
@@ -5378,7 +5815,9 @@ export const buildChatTier1Handlers = (
     if (!access) return executionError('Situation query unavailable');
     try {
       const { situationModelProjection } = await import('./situations/model-projection.js');
-      return { ok: true, result: situationModelProjection(await access.read(raw, ctx.execution_source), situationPersonName(deps.getContactStore?.())) };
+      const { situationSourceCitations } = await import('./chat-situation-source-citations.js');
+      const native = await access.read(raw, ctx.execution_source);
+      return { ok: true, ...situationSourceCitations(native, situationModelProjection(native, situationPersonName(deps.getContactStore?.()))) };
     } catch (error) {
       const { SituationAccessError } = await import('./situations/access.js');
       if (error instanceof SituationAccessError) return { ok: true, result: { refused: true, hint: error.message } };
@@ -5833,6 +6272,16 @@ const HELD_FOR_APPROVAL_CHAT_MESSAGE =
 
 export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
   tier1Handlers: buildChatTier1Handlers(deps),
+  // D-329 — a write's own refusal, asked before the owner is (`checkBeforeAsking`).
+  tier1Checks: {
+    'work.create': (args: unknown, ctx: ChatDispatchContext) => checkWorkCreate(deps, args, ctx),
+    'work.update': (args: unknown, ctx: ChatDispatchContext) => checkWorkUpdate(deps, args, ctx),
+  },
+  tier1AskLabels: {
+    'work.create': (args: unknown) => workAskLabels(deps, args),
+    'work.update': (args: unknown) => workAskLabels(deps, args),
+    'calendar.update': (args: unknown, ctx: ChatDispatchContext) => calendarAskLabels(deps, args, ctx),
+  },
   tier2Source: createChatTier2Source(deps),
   manifestLookup: createChatManifestLookup(deps),
   tier2Dispatch: createChatTier2Dispatch(deps),

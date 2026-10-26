@@ -26,6 +26,8 @@
  *  Spec: § A.1 + § A.1.1 + § A.2 + `project_mcp_channel_invariant.md`. */
 
 import type {
+  ApprovalValueLabels,
+  ChatDispatchContext,
   ChatDispatchResult,
   ContractSnapshot,
   ExecutionSource,
@@ -64,6 +66,13 @@ export interface McpInternalToolAdapter {
    *  The mcp-server.ts catalog merge uses this to disambiguate legacy
    *  `recued_listRecipes` from the wrapped registry tools. */
   hasTool(name: string): boolean;
+  /** D-329 — what a write would be refused for by its own arguments, asked before the
+   *  owner is asked to approve it, on the same channel and token as `callTool`; `null`
+   *  when it would run or the tool has no check. */
+  checkBeforeAsking(name: string, args: unknown): Promise<ChatDispatchResult | null>;
+  /** D-329 — how the owner knows the records a held write names, for its ask; `undefined`
+   *  when there are none to name. */
+  askValueLabels(name: string, args: unknown): Promise<ApprovalValueLabels | undefined>;
 }
 
 export interface BuildInternalToolMcpAdapterOptions {
@@ -89,6 +98,9 @@ export interface BuildInternalToolMcpAdapterOptions {
    *  (`'mcp'` always is); the adapter still treats this as
    *  pass-through. Producer-side resolution lives in mcp-server.ts. */
   contract_snapshot?: ContractSnapshot;
+  /** D-325 — the call runs on a standing write rule the owner accepted for this app,
+   *  so its dispatch carries `owner_approved`. Set only by the MCP door. */
+  owner_approved?: true;
 }
 
 /** § A.1 — build the MCP-wire-channel adapter over the registry.
@@ -96,7 +108,7 @@ export interface BuildInternalToolMcpAdapterOptions {
 export const buildInternalToolMcpAdapter = (
   options: BuildInternalToolMcpAdapterOptions,
 ): McpInternalToolAdapter => {
-  const { registry, mcp_token_id, execution_source, contract_snapshot } = options;
+  const { registry, mcp_token_id, execution_source, contract_snapshot, owner_approved } = options;
 
   const listTools = (): ReadonlyArray<McpInternalToolDescriptor> => {
     // ⛔⛔ D-247 D9 — DELIBERATELY NOT FILTERED BY THE OWNER'S `recipe.*` GRANT,
@@ -133,6 +145,14 @@ export const buildInternalToolMcpAdapter = (
     return out;
   };
 
+  const wireCtx = (): ChatDispatchContext => ({
+    channel: 'mcp_wire',
+    mcp_token_id,
+    ...(execution_source ? { execution_source } : {}),
+    ...(contract_snapshot ? { contract_snapshot } : {}),
+    ...(owner_approved ? { owner_approved } : {}),
+  });
+
   const callTool = async (name: string, args: unknown): Promise<ChatDispatchResult> => {
     // Channel-isolation invariant: every dispatch from this adapter
     // carries the `mcp_wire` channel + the caller-supplied token id.
@@ -148,17 +168,18 @@ export const buildInternalToolMcpAdapter = (
     // gate evaluates the recipe under the right `(channel × actor)`
     // cell. Catalog-enumeration tests + read-only Tier 1 callers leave
     // both undefined; the registry passes them through unchanged.
-    return registry.dispatch(name, args, {
-      channel: 'mcp_wire',
-      mcp_token_id,
-      ...(execution_source ? { execution_source } : {}),
-      ...(contract_snapshot ? { contract_snapshot } : {}),
-    });
+    return registry.dispatch(name, args, wireCtx());
   };
 
   const hasTool = (name: string): boolean => registry.getByName(name) !== null;
 
-  return { listTools, callTool, hasTool };
+  const checkBeforeAsking = async (name: string, args: unknown): Promise<ChatDispatchResult | null> =>
+    registry.checkBeforeAsking ? registry.checkBeforeAsking(name, args, wireCtx()) : null;
+
+  const askValueLabels = async (name: string, args: unknown): Promise<ApprovalValueLabels | undefined> =>
+    registry.askValueLabels ? registry.askValueLabels(name, args, wireCtx()) : undefined;
+
+  return { listTools, callTool, hasTool, checkBeforeAsking, askValueLabels };
 };
 
 /** Closed-list of MCP error-envelope mappings for `ChatDispatchResult`

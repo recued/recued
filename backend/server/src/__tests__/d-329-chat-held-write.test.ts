@@ -13,6 +13,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import {
+  type ApprovalValueLabels,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type Checkpoint,
@@ -77,6 +78,10 @@ const harness = (opts: {
   askStatus?: () => PendingAsk['status'];
   granted?: () => boolean;
   writeRules?: boolean;
+  /** The registry's `checkBeforeAsking`: what a call's own arguments refuse it for. */
+  check?: (name: string, args: unknown) => ChatDispatchResult | null;
+  /** The registry's `askValueLabels`: the names of the records a call names. */
+  labels?: (name: string, args: unknown) => ApprovalValueLabels | undefined;
 } = {}) => {
   const db = new Database(':memory:');
   ensureChatSchema(db);
@@ -101,6 +106,8 @@ const harness = (opts: {
       calls.push({ name, args, ctx });
       return { ok: true, result: { created: true, event_id: 'evt-1' } };
     },
+    ...(opts.check !== undefined ? { checkBeforeAsking: async (name: string, args: unknown) => opts.check!(name, args) } : {}),
+    ...(opts.labels !== undefined ? { askValueLabels: async (name: string, args: unknown) => opts.labels!(name, args) } : {}),
     subscribeRefresh: () => () => undefined,
   };
 
@@ -321,6 +328,47 @@ describe('D-329 B — a chat\'s Tier-1 write is held', () => {
   });
 });
 
+describe('D-329 B — a write its own arguments refuse is not put to the owner', () => {
+  it('answers the model with the refusal: no proposal, no hold, no ask, nothing run', async () => {
+    // ⛔ Live (2026-10-25): an AI sent an asset's details as `body`, the owner approved, and
+    // only then did the create refuse `body`.
+    const refusal: ChatDispatchResult = { ok: false, reason: 'invalid_args', detail: 'calendar.create: `summary` must not be empty' };
+    const h = harness({ check: (_name, args) => ((args as { summary?: string }).summary === '' ? refusal : null) });
+    expect(await h.dispatch('turn-1', { ...EVENT, summary: '' })).toEqual(refusal);
+    expect(h.asks).toEqual([]);
+    expect(h.holdCalls()).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(await h.plans.listForSession!(h.session_id)).toEqual([]);
+    expect(h.broadcasted.find((e) => e.kind === 'chat.plan_proposed')).toBeUndefined();
+    expect(h.broadcasted.find((e) => e.kind === 'chat.tool_call_completed')).toMatchObject({ status: 'error', reason: 'invalid_args' });
+    // A call it lets through is held as before.
+    planIdOf(await h.dispatch('turn-2'));
+    expect(h.asks).toHaveLength(1);
+  });
+});
+
+describe('D-329 B — the card and the ask name the records a call names', () => {
+  const NAMES = { summary: { Dentist: 'Dr Okafor, the dentist' } };
+  it('records the names on the proposal, its event and its hold, and the ask reads them', async () => {
+    const h = harness({ labels: (name) => (name === 'calendar.create' ? NAMES : undefined) });
+    const plan_id = planIdOf(await h.dispatch('turn-1'));
+    expect((await h.plans.get(plan_id))!.value_labels).toEqual(NAMES);
+    expect(h.broadcasted.find((e) => e.kind === 'chat.plan_proposed')).toMatchObject({ plan_id, value_labels: NAMES });
+    const [checkpoint] = [...h.checkpoints.values()];
+    expect(checkpoint!.preflight_context?.value_labels).toEqual(NAMES);
+    expect(h.asks[0]!.message.text).toContain('Dr Okafor, the dentist');
+    // The call itself is unchanged: what runs is what the model sent.
+    expect((await h.plans.get(plan_id))!.args).toEqual(EVENT);
+  });
+
+  it('proposes and holds with no names when the lookup throws', async () => {
+    const h = harness({ labels: () => { throw new Error('store went away'); } });
+    const plan_id = planIdOf(await h.dispatch('turn-1'));
+    expect((await h.plans.get(plan_id))!.value_labels).toBeUndefined();
+    expect((await h.plans.get(plan_id))!.hold).toBeDefined();
+  });
+});
+
 describe('D-329 B — approving from the card runs it', () => {
   it('runs once with the reviewed arguments, settles the card, and replies after the turn\'s answer', async () => {
     const h = harness();
@@ -330,7 +378,8 @@ describe('D-329 B — approving from the card runs it', () => {
     expect(h.calls).toHaveLength(1);
     expect(h.calls[0]).toMatchObject({
       name: 'calendar.create', args: EVENT,
-      ctx: { channel: 'internal_function_call', session_id: h.session_id, turn_id: 'turn-1' },
+      // D-325 — the owner approved it, so an asset reading it writes is their own sample.
+      ctx: { channel: 'internal_function_call', session_id: h.session_id, turn_id: 'turn-1', owner_approved: true },
     });
     const settled = await h.record(plan_id);
     expect(settled!.plan).toMatchObject({ status: 'approved', consumed_at: NOW });
@@ -470,6 +519,7 @@ describe('D-329 B — when nothing is held', () => {
     expect(h.calls).toEqual([]);
     await h.dispatch('turn-2');
     expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.ctx.owner_approved).toBe(true);
   });
 
   it('a hold that may exist is never also approvable as a plain card', async () => {
@@ -491,6 +541,12 @@ describe('D-329 B — when nothing is held', () => {
     const plan_id = planIdOf(await h.dispatch('turn-1'));
     expect(h.holdCalls()).toBe(0);
     expect((await h.plans.get(plan_id))!.hold).toBeUndefined();
+    // D-325 — its own re-issue spends the card, and runs it as that chat's call, never as
+    // one the owner approved: a household member's reading is not the owner's sample.
+    await handlePlanApprove(h.rpcDeps, { plan_id });
+    await h.dispatch('turn-2');
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.ctx.owner_approved).toBeUndefined();
   });
 
   it('so does the owner\'s own chat when it runs under a contract (self-restricted)', async () => {
@@ -564,6 +620,7 @@ describe('D-329 B — the plan table', () => {
     ensureChatSchema(db);
     const columns = (db.prepare('PRAGMA table_info(chat_plans)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(columns).toContain('hold_run_id');
+    expect(columns).toContain('value_labels_encrypted');
   });
 });
 
@@ -609,6 +666,7 @@ describe('D-329 §3.4 — the chat\'s approvals teach a write rule', () => {
     const result = await h.dispatch('turn-4');
     expect(result).toMatchObject({ ok: true });
     expect(h.calls).toHaveLength(4);
+    expect(h.calls[3]!.ctx.owner_approved).toBe(true);
     expect(h.asks).toHaveLength(asksBefore);
     expect(h.activity.find((a) => a.action === 'write_rule_used')).toMatchObject({
       target: `${h.session_id}:turn-4:calendar.create`,

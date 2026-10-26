@@ -25,6 +25,7 @@ import {
 
 import {
   ASSET_CREATE_OP_ID,
+  ASSET_UPDATE_OP_ID,
   CALENDAR_CREATE_OP_ID,
   CALENDAR_UPDATE_OP_ID,
   FENCED_EMPTY_CONTAINER,
@@ -88,7 +89,7 @@ const EXPECTED: Readonly<Record<Tier1ToolName, readonly string[]>> = {
   'work.create': [...Object.values(WORK_ENTITY_CREATE_OP_ID), ASSET_CREATE_OP_ID],
   'calendar.create': [CALENDAR_CREATE_OP_ID],
   'calendar.update': [CALENDAR_UPDATE_OP_ID],
-  'work.update': [...Object.values(WORK_ENTITY_UPDATE_OP_ID), TASK_MARK_DONE_OP_ID],
+  'work.update': [...Object.values(WORK_ENTITY_UPDATE_OP_ID), ASSET_UPDATE_OP_ID, TASK_MARK_DONE_OP_ID],
   'file.search': fencedCollection('file.search'),
   // Each step meets its own op gate inside the run; the tool checks nothing first.
   'recipe.run': [],

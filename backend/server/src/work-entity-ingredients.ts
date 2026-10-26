@@ -2851,21 +2851,45 @@ const createdAssetType = (deps: WorkEntityIngredientDeps, input: AssetCreateInpu
   if (issues) throw new AssetTypeError(type, issues);
   return type;
 };
-const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreateInput & WorkEntityCreateOrigin): Promise<{ asset: Asset }> => {
+/** D-325 — an AI's write to an asset, from the chat tools (`work.create`, `work.update`):
+ *  a second argument, which neither the kernel op nor an rpc sends, so no recipe holds
+ *  it. Its write is strict: a field a higher-ranked source holds is refused rather than
+ *  kept, and nothing is written (`AssetFieldHeldError`). */
+export interface AssetAiWrite {
+  /** The owner approved this write: an ask they answered, or a standing rule they
+   *  accepted. Its readings are then their own samples, at their rank, and the rest keeps
+   *  the AI's (the owner's ruling of 2026-10-25: "readings mine, rest AI's"). */
+  readonly owner_approved?: boolean;
+  /** Make every check the write makes, then roll it back: why it would be refused,
+   *  asked before the owner is asked (D-329). Nothing is written or emitted. */
+  readonly check?: boolean;
+}
+const aiReadingsSource = (input: AssetCreateInput | AssetUpdateInput, factSource: AssetWriteSource, ai: AssetAiWrite | undefined) =>
+  ai?.owner_approved === true && factSource.kind === 'extracted' && input.readings !== undefined
+    ? { readings_source: { kind: 'owner' as const, ref: factSource.ref } } : {};
+const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreateInput & WorkEntityCreateOrigin, ai?: AssetAiWrite): Promise<{ asset: Asset }> => {
   const factSource = checkedAssetFactSource(input);
   const type = createdAssetType(deps, input, factSource);
   const source = resolveCreateSource(deps, 'asset', input.source_id, input);
   if (source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(source.id, 'asset', 'create');
   const keyed = idempotentCreateKey('asset', input.idempotency_key, source.id);
   const patch = type ? typedAssetFacts(type, assetPatchOf(input)) : assetPatchOf(input);
-  const write = { ...patch, source_id: source.id, source: factSource };
+  const write = { ...patch, source_id: source.id, source: factSource, ...aiReadingsSource(input, factSource, ai) };
+  // Both writes a create makes, its type's included: a reading in a unit the type's
+  // rules do not read would cost the asset its reminders, which a run only logs.
+  if (ai?.check) {
+    return { asset: deps.store.dryRun(() => {
+      const created = deps.store.writeAsset(write, deps.now?.(), { strict: true });
+      return type ? deps.store.writeAsset({ ...assetTypeApplication(type), id: created.id, source_id: created.source_id }, deps.now?.()) : created;
+    }) };
+  }
   let asset: Asset;
   if (keyed) {
     const result = deps.store.ensureAsset({ ...write, id: keyed.id,
       source_extension_blob: { [IDEMPOTENCY_MARK.asset]: keyed.key } }, deps.now?.());
     asset = result.asset;
     if (!result.created) { verifyIdempotentReuse('asset', asset, keyed.key); return { asset }; }
-  } else asset = deps.store.writeAsset(write, deps.now?.());
+  } else asset = deps.store.writeAsset(write, deps.now?.(), { strict: ai !== undefined });
   // The owner's ruling of 2026-10-24: its type's own reminders start at once.
   // Should this second write fail, the asset still stands with its type, and
   // Yours offers the type's reminders as a class update.
@@ -2877,14 +2901,26 @@ const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreat
   await deps.onAssetChanged?.(asset);
   return { asset };
 };
-const assetUpdate = (deps: WorkEntityIngredientDeps) => async (input: AssetUpdateInput & WorkEntityCreateOrigin): Promise<{ asset: Asset }> => {
-  const factSource = checkedAssetFactSource(input);
-  const id = resolveWorkEntityInputId(deps, 'asset', input.id);
-  const prior = deps.store.readAsset(id);
-  if (!prior || prior.deleted_at != null || prior.sync_state !== 'live') throw new WorkEntityNotFoundError('asset', input.id);
+/** The live asset a local or a qualified id names. */
+const assetById = (deps: WorkEntityIngredientDeps) => (rawId: string): Asset => {
+  const asset = deps.store.readAsset(resolveWorkEntityInputId(deps, 'asset', rawId));
+  if (!asset || asset.deleted_at != null || asset.sync_state !== 'live') throw new WorkEntityNotFoundError('asset', rawId);
+  return asset;
+};
+/** The live asset an update would change, in a Source it may write. */
+const assetToUpdate = (deps: WorkEntityIngredientDeps) => (rawId: string): Asset => {
+  const prior = assetById(deps)(rawId);
   const source = deps.store.getSource(prior.source_id);
   if (!source || source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(prior.source_id, 'asset', 'update');
-  const asset = deps.store.writeAsset({ ...assetPatchOf(input), id, source_id: source.id, source: factSource }, deps.now?.());
+  return prior;
+};
+const assetUpdate = (deps: WorkEntityIngredientDeps) => async (input: AssetUpdateInput & WorkEntityCreateOrigin, ai?: AssetAiWrite): Promise<{ asset: Asset }> => {
+  const factSource = checkedAssetFactSource(input);
+  const prior = assetToUpdate(deps)(input.id);
+  const id = prior.id;
+  const write = { ...assetPatchOf(input), id, source_id: prior.source_id, source: factSource, ...aiReadingsSource(input, factSource, ai) };
+  if (ai?.check) return { asset: deps.store.dryRun(() => deps.store.writeAsset(write, deps.now?.(), { strict: true })) };
+  const asset = deps.store.writeAsset(write, deps.now?.(), { strict: ai !== undefined });
   if (JSON.stringify(asset) !== JSON.stringify(prior)) {
     emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', asset), tagWorkEntity('asset', prior));
     cascadeOnWrite(deps, 'asset', id, 'update');
@@ -3417,6 +3453,8 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
   bookingDelete: bookingDelete(deps),
   assetCreate: assetCreate(deps),
   assetUpdate: assetUpdate(deps),
+  assetById: assetById(deps),
+  assetToUpdate: assetToUpdate(deps),
   assetAddEvidence: async (input: Parameters<WorkEntityStore['addAssetEvidence']>[0], actor: ExecutionSource, verifyAttachment: () => void) => {
     if (actor?.channel !== 'user' || actor.actor !== 'user_self') throw new AssetValidationError('Adding evidence requires the owner');
     const id = resolveWorkEntityInputId(deps, 'asset', input.id); const prior = deps.store.readAsset(id);

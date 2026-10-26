@@ -28,6 +28,8 @@ import {
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJsonString, canonicalRecipeDefinition } from '@recued/recipes';
+import { readAssetTypeSearchTerms } from '../asset-search-terms.js';
+import { ASSET_SEARCH_TERMS } from '@recued/contracts';
 
 import {
   WORK_ENTITY_LONG_TEXT_FIELD,
@@ -38,7 +40,7 @@ import {
 } from '../work-entity-searchable-text.js';
 import {
   ASSET_SOURCE_RANKS, ASSET_DOCUMENT_DETAILS_ATTRIBUTE, AssetValidationError, validateAsset, canonicalJSONStringify,
-  type Asset, type AssetPatch, type AssetWriteSource, type AssetCondition, type AssetReading, type AssetAttributeReadingCommand, type AssetAddEvidenceCommand,
+  type Asset, type AssetContributionKind, type AssetFactSource, type AssetPatch, type AssetWriteSource, type AssetCondition, type AssetReading, type AssetAttributeReadingCommand, type AssetAddEvidenceCommand,
   CONFLICT_POLICIES,
   COMMITMENT_AMOUNT_REGEX,
   COMMITMENT_CURRENCY_REGEX,
@@ -842,6 +844,23 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
   }
 
   repairWorkEntityTextDates(db, Date.now());
+  reindexAssetSearchText(db, Date.now());
+};
+
+/** D-325 (2026-10-25) — once per format, every asset re-indexed by its places, details,
+ *  identifiers and search keywords (including type defaults). An asset written before it is found by its name only,
+ *  and only its next write would re-index it. ⛔ Assets alone: the content format is
+ *  shared by every index, so bumping it would rebuild mail's at boot too. No notice: it
+ *  changes no record, only what a search finds. */
+const reindexAssetSearchText = (db: Database.Database, now: number): void => {
+  const ledger = createDataRepairLedger(db);
+  if (ledger.get(ASSET_SEARCH_TEXT_REINDEX_ID) !== null) return;
+  db.transaction(() => {
+    // Again under the write lock, as the text-dates repair above does.
+    if (ledger.get(ASSET_SEARCH_TEXT_REINDEX_ID) !== null) return;
+    const assets = reindexWorkEntityKindFts(db, 'asset', ASSET_TABLE);
+    ledger.record({ repair_id: ASSET_SEARCH_TEXT_REINDEX_ID, applied_at: now, summary: { assets } });
+  }).immediate();
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -850,6 +869,8 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
 
 /** The D-308 ledger id of the one-off repair of dates stored as text. */
 export const WORK_ENTITY_TEXT_DATES_REPAIR_ID = 'work-entity-text-dates-v1';
+/** The one-off re-index of asset shared values and keyword metadata. */
+export const ASSET_SEARCH_TEXT_REINDEX_ID = 'asset-search-text-v2';
 
 export type WorkEntityDateKind = 'task' | 'commitment' | 'project' | 'booking';
 
@@ -985,47 +1006,65 @@ const workEntityFtsIsEmpty = (db: Database.Database): boolean =>
  *  `searchIdsByText`), so an index entry for a row the query would drop costs a
  *  join, while a MISSING entry for a row the query would keep is unfindable. */
 const reindexWorkEntityFts = (db: Database.Database): void => {
-  for (const [kind, table] of WORK_ENTITY_FTS_SOURCES) {
-    const long = WORK_ENTITY_LONG_TEXT_FIELD[kind];
-    // ⚠ BOTH FIELDS ARE PER-KIND AND EITHER CAN BE ABSENT. `commitment` has no
-    // `title` column and `booking` no long text; naming a column that does not
-    // exist is a hard `SqliteError` at boot, on the migration path, where it is
-    // most expensive to discover.
-    const title = WORK_ENTITY_TITLE_FIELD[kind];
-    const cols = [
-      'id',
-      title === null ? "'' AS title" : `${title} AS title`,
-      ...(long === null ? [] : [`${long} AS long_text`]),
-      'source_extension_blob',
-    ].join(', ');
-    let offset = 0;
-    for (;;) {
-      const rows = db
-        .prepare(`SELECT ${cols} FROM ${table} ORDER BY id LIMIT ? OFFSET ?`)
-        .all(FTS_REINDEX_PAGE, offset) as Array<{
-          id: string;
-          title: string | null;
-          long_text?: string | null;
-          source_extension_blob?: string | null;
-        }>;
-      if (rows.length === 0) break;
-      for (const row of rows) {
-        ftsIndexRecord(
-          db,
-          WORK_ENTITY_FTS_TABLE,
-          workEntityFtsKey(kind, row.id),
-          workEntitySearchableText(kind, {
-            title: row.title,
-            ...(title !== null ? { [title]: row.title } : {}),
-            source_extension_blob: row.source_extension_blob ?? null,
-            ...(long !== null ? { [long]: row.long_text ?? null } : {}),
-          }),
-        );
-      }
-      if (rows.length < FTS_REINDEX_PAGE) break;
-      offset += FTS_REINDEX_PAGE;
+  for (const [kind, table] of WORK_ENTITY_FTS_SOURCES) reindexWorkEntityKindFts(db, kind, table);
+};
+/** One kind's part of {@link reindexWorkEntityFts}; the number of rows it indexed. */
+const reindexWorkEntityKindFts = (db: Database.Database, kind: WorkEntityKind, table: string, classId?: string): number => {
+  let indexed = 0;
+  const typeTerms = kind === 'asset' ? readAssetTypeSearchTerms(db, classId) : new Map<string, string[]>();
+  const long = WORK_ENTITY_LONG_TEXT_FIELD[kind];
+  // ⚠ BOTH FIELDS ARE PER-KIND AND EITHER CAN BE ABSENT. `commitment` has no
+  // `title` column and `booking` no long text; naming a column that does not
+  // exist is a hard `SqliteError` at boot, on the migration path, where it is
+  // most expensive to discover.
+  const title = WORK_ENTITY_TITLE_FIELD[kind];
+  const cols = [
+    'id',
+    title === null ? "'' AS title" : `${title} AS title`,
+    ...(long === null ? [] : [`${long} AS long_text`]),
+    'source_extension_blob',
+    // An asset's places, details and identifiers live in its blob (`assetSharedValues`).
+    ...(kind === 'asset' ? ['data_blob', 'class_id'] : []),
+  ].join(', ');
+  let offset = 0;
+  for (;;) {
+    const rows = db
+      .prepare(`SELECT ${cols} FROM ${table}${classId === undefined ? '' : ' WHERE class_id=?'} ORDER BY id LIMIT ? OFFSET ?`)
+      .all(...(classId === undefined ? [] : [classId]), FTS_REINDEX_PAGE, offset) as Array<{
+        id: string;
+        title: string | null;
+        long_text?: string | null;
+        source_extension_blob?: string | null;
+        data_blob?: string | null;
+        class_id?: string | null;
+      }>;
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      ftsIndexRecord(
+        db,
+        WORK_ENTITY_FTS_TABLE,
+        workEntityFtsKey(kind, row.id),
+        workEntitySearchableText(kind, {
+          title: row.title,
+          ...(title !== null ? { [title]: row.title } : {}),
+          source_extension_blob: row.source_extension_blob ?? null,
+          ...(long !== null ? { [long]: row.long_text ?? null } : {}),
+          ...(row.data_blob !== undefined ? { data_blob: row.data_blob } : {}),
+        }, typeTerms.get(row.class_id ?? '') ?? []),
+      );
+      indexed += 1;
     }
+    if (rows.length < FTS_REINDEX_PAGE) break;
+    offset += FTS_REINDEX_PAGE;
   }
+  return indexed;
+};
+
+/** Refresh derived text when type keywords change. Asset facts, versions and
+ * timestamps remain untouched; type storage and index updates share a transaction. */
+export const reindexAssetTypeSearchTerms = (db: Database.Database, classId: string): void => {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('data_asset','work_entity_fts')").all();
+  if (tables.length === 2) reindexWorkEntityKindFts(db, 'asset', ASSET_TABLE, classId);
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -1260,7 +1299,23 @@ export type AssetWriteInput = AssetPatch & WorkEntitySourceIdentityInput & {
   /** Host-only revision for a confirmed attribute copy. Public patch dispatchers
    * never forward it; retries recognize the canonical field receipt. */
   attribute_reading_revision?: { field: string; revision: string };
+  /** Host-only rank for this write's readings, when it differs from `source`: an
+   * AI's write the owner approved records its readings as their own samples. Public
+   * patch dispatchers never forward it from an op/RPC. */
+  readings_source?: AssetWriteSource;
 };
+export interface AssetWriteOptions {
+  /** Refuse, rather than keep, a field a higher-ranked source set that this write
+   * would change, so that nothing is written and the writer learns why. */
+  strict?: boolean;
+}
+/** A strict write would have changed fields that a higher-ranked source holds. */
+export class AssetFieldHeldError extends AssetValidationError {
+  constructor(readonly held: ReadonlyArray<{ path: string; kind: AssetContributionKind }>) {
+    super(`A higher-ranked source holds ${held.map(entry => entry.path).join(', ')}`, held[0]?.path);
+    this.name = 'AssetFieldHeldError';
+  }
+}
 export interface AssetObservationBinding {
   id: string; asset_id: string; actor_ref: string; source_ref: string; fields: string[]; enabled: boolean;
   recipe_hash?: string;
@@ -2330,7 +2385,10 @@ interface WorkEntityStoreInternal {
 }
 
 export interface WorkEntityStore {
-  writeAsset(input: AssetWriteInput, now?: number): Asset;
+  writeAsset(input: AssetWriteInput, now?: number, options?: AssetWriteOptions): Asset;
+  /** Run `write`, then roll back everything it wrote: what a write would do, or why
+   * it would be refused, with nothing written. */
+  dryRun<T>(write: () => T): T;
   recordAttributeReading(input: AssetAttributeReadingCommand, source: AssetWriteSource, now?: number): Asset;
   addAssetEvidence(input: AssetAddEvidenceCommand, verifyAttachment: () => void, now?: number): Asset;
   ensureAsset(input: AssetWriteInput & { id: string }, now?: number): { asset: Asset; created: boolean };
@@ -2535,6 +2593,9 @@ export interface WorkEntityStore {
   // ── polymorphic ────────────────────────────────────────────────
   /** Generic by-kind read. Returns the row tagged with `_kind`. */
   readByKind<K extends WorkEntityKind>(kind: K, id: string): WorkEntity | null;
+  /** Metadata-only resolution of a retained Source identity. This grants no
+   * access: consumers must fence the canonical local id before loading values. */
+  localIdBySourceIdentity(kind: WorkEntityKind, source_id: string, source_record_id: string): string | null;
   /** Resolve the stable mirror identity emitted at tool boundaries. The
    *  `(source_id, source_record_id)` pair is unique within each kind table;
    *  unlike a local row id it can also be handed safely to a provider tool. */
@@ -2582,6 +2643,8 @@ export interface WorkEntityStore {
    *  (source, done, tombstones, orphans), so a stale index entry costs a
    *  dropped join row and never a wrong result. */
   searchIdsByText(kind: WorkEntityKind, query: string, limit: number): string[];
+  /** Current type metadata for text matching with a permission-checked holder name. */
+  assetTypeSearchTerms?(classId: string | undefined): readonly string[];
   /** Match arbitrary TEXTS against `query` under the same tokenizer and match
    *  rule the durable index uses, returning the indices that matched.
    *
@@ -2886,9 +2949,13 @@ export const createWorkEntityStore = (
       db,
       WORK_ENTITY_FTS_TABLE,
       workEntityFtsKey(kind, entity.id),
-      workEntitySearchableText(kind, entity as Record<string, unknown>),
+      workEntitySearchableText(kind, entity as Record<string, unknown>, kind === 'asset'
+        ? assetTypeSearchTerms((entity as { class_id?: string }).class_id) : []),
     );
   };
+
+  const assetTypeSearchTerms = (classId: string | undefined): readonly string[] =>
+    classId ? readAssetTypeSearchTerms(db, classId).get(classId) ?? [] : [];
 
   // ── assets: ranked patches, source-bound observations and one parent ─────
   const readAsset: WorkEntityStore['readAsset'] = id => {
@@ -2942,7 +3009,7 @@ export const createWorkEntityStore = (
     db.prepare(`INSERT INTO asset_reading_history(asset_id,field,as_of,value) VALUES(?,?,?,?)
       ON CONFLICT(asset_id,field,as_of) DO UPDATE SET value=excluded.value`).run(id, field, reading.as_of, JSON.stringify(reading));
   };
-  const writeAsset: WorkEntityStore['writeAsset'] = (input, now = Date.now()) => db.transaction(() => {
+  const writeAsset: WorkEntityStore['writeAsset'] = (input, now = Date.now(), options = {}) => db.transaction(() => {
     if (input.preset_application && input.source?.kind !== 'owner') throw new AssetValidationError('A preset application requires a direct owner action');
     if (!input.source || !['owner', 'confirmed_document', 'extracted'].includes(input.source.kind)
       || typeof input.source.ref !== 'string' || !input.source.ref.trim()) throw new AssetValidationError('An explicit fact source is required', 'source');
@@ -2956,18 +3023,26 @@ export const createWorkEntityStore = (
       field_sources: {}, retirement: 'part', created_at: now, updated_at: now,
     };
     const source = { ...input.source, at: now };
-    const accepts = (path: string): boolean => !draft.field_sources[path]
-      || ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] <= ASSET_SOURCE_RANKS[source.kind];
-    const stamp = (path: string, before: unknown, after: unknown): boolean => {
-      if (!accepts(path)) return false;
-      const prior = draft.field_sources[path];
-      let same = before === after;
-      if (!same && before !== undefined && after !== undefined) {
-        try { same = canonicalJSONStringify(before) === canonicalJSONStringify(after); }
-        catch { throw new AssetValidationError('Asset facts must contain valid JSON'); }
+    const readingsSource = input.readings_source ? { ...input.readings_source, at: now } : source;
+    // User and AI may both edit retrieval keywords. Keep the actual writer's
+    // provenance; this exception gives no authority over dates, details or rules.
+    const accepts = (path: string, by: AssetFactSource): boolean => path === `attributes.${ASSET_SEARCH_TERMS}` || !draft.field_sources[path]
+      || ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] <= ASSET_SOURCE_RANKS[by.kind];
+    const same = (before: unknown, after: unknown): boolean => {
+      if (before === after) return true;
+      if (before === undefined || after === undefined) return false;
+      try { return canonicalJSONStringify(before) === canonicalJSONStringify(after); }
+      catch { throw new AssetValidationError('Asset facts must contain valid JSON'); }
+    };
+    const held: Array<{ path: string; kind: AssetContributionKind }> = [];
+    const stamp = (path: string, before: unknown, after: unknown, by: AssetFactSource = source): boolean => {
+      if (!accepts(path, by)) {
+        if (options.strict && !same(before, after)) held.push({ path, kind: draft.field_sources[path]!.kind });
+        return false;
       }
-      if (same && prior?.kind === source.kind && prior.ref === source.ref) return false;
-      draft.field_sources[path] = source; return true;
+      const prior = draft.field_sources[path];
+      if (same(before, after) && prior?.kind === by.kind && prior.ref === by.ref) return false;
+      draft.field_sources[path] = by; return true;
     };
     for (const name of ['name', 'class_id', 'status', 'holder_contact', 'belongs_to', 'audience', 'sphere', 'sphere_override',
       'document_number', 'serial_number', 'exact_address', 'retirement', 'values', 'anchors'] as const) {
@@ -2989,11 +3064,12 @@ export const createWorkEntityStore = (
         if (['__proto__', 'prototype', 'constructor'].includes(field)) throw new AssetValidationError('Reserved field name', name);
         const path = `${name}.${field}`;
         const observed = name === 'readings' || name === 'observations';
+        const by = name === 'readings' ? readingsSource : source;
         // Applying a class carries its existing fact maps forward; it is not a
         // new manual sample and cannot reclaim a released or automated field.
         if (input.preset_application && observed && existing && Object.hasOwn(existing[name], field)
           && canonicalJSONStringify(raw) === canonicalJSONStringify(existing[name][field])) continue;
-        const manualSample = observed && source.kind === 'owner'
+        const manualSample = observed && by.kind === 'owner'
           && (raw !== null || draft[name][field] != null || draft.field_sources[path]?.kind === 'owner');
         if (manualSample && draft.automatic_updates?.[path] !== undefined) {
           delete draft.automatic_updates[path];
@@ -3006,11 +3082,11 @@ export const createWorkEntityStore = (
           (draft[name] as Record<string, unknown>)[field] = null; continue;
         }
         const value = name === 'observations' && raw !== null ? { ...raw as AssetCondition, source: source.ref } : raw;
-        if (stamp(path, draft[name][field], value) || manualSample) {
+        if (stamp(path, draft[name][field], value, by) || manualSample) {
           (draft[name] as Record<string, unknown>)[field] = structuredClone(value);
           // Every explicit manual sample, including an identical sample or
           // clear, invalidates stale handoffs even within one clock tick.
-          if (manualSample) draft.field_sources[path] = { ...source, revision: name === 'readings' && input.attribute_reading_revision?.field === field ? input.attribute_reading_revision.revision : newId() };
+          if (manualSample) draft.field_sources[path] = { ...by, revision: name === 'readings' && input.attribute_reading_revision?.field === field ? input.attribute_reading_revision.revision : newId() };
         }
       }
     }
@@ -3035,6 +3111,7 @@ export const createWorkEntityStore = (
       }
       draft.rules = [...rows.values()];
     }
+    if (held.length) throw new AssetFieldHeldError(held);
     validateAsset(draft); checkAssetParent(draft);
     if (existing && JSON.stringify(existing) === JSON.stringify(draft)) return existing;
     const written = persistAsset(draft, { ...existing, ...input }, now);
@@ -3178,6 +3255,13 @@ export const createWorkEntityStore = (
     const current = readAsset(input.id);
     return current ? { asset: current, created: false } : { asset: writeAsset(input, now), created: true };
   })();
+  const dryRun: WorkEntityStore['dryRun'] = write => {
+    const rollBack = Symbol('dry run');
+    let result: ReturnType<typeof write> | undefined;
+    try { db.transaction(() => { result = write(); throw rollBack; })(); }
+    catch (error) { if (error !== rollBack) throw error; }
+    return result as ReturnType<typeof write>;
+  };
   const listAssets: WorkEntityStore['listAssets'] = query => {
     const { norm, where } = assetListWhere(query);
     return (db.prepare(`SELECT * FROM ${ASSET_TABLE} ${where.sql} ORDER BY updated_at DESC,id ASC LIMIT ? OFFSET ?`)
@@ -3668,6 +3752,16 @@ export const createWorkEntityStore = (
     // model can tell an exact hit from a widened one — never `loose` silently.
     const match = toFtsMatch(query);
     if (match === null) return [];
+    if (kind === 'asset') {
+      // Keywords expand the matching set, but their frequency and length must
+      // not decide which records survive the cap before newest-first sorting.
+      return (db.prepare(`SELECT ${WORK_ENTITY_FTS_TABLE}.key FROM ${WORK_ENTITY_FTS_TABLE}
+        JOIN ${ASSET_TABLE} AS asset ON ${WORK_ENTITY_FTS_TABLE}.key='asset.' || asset.id
+        WHERE ${WORK_ENTITY_FTS_TABLE}.key LIKE 'asset.%' AND ${WORK_ENTITY_FTS_TABLE} MATCH ?
+        ORDER BY asset.updated_at DESC,asset.id ASC LIMIT ?`)
+        .all(match, Math.max(1, Math.min(MAX_LIST_LIMIT, Math.trunc(limit)))) as Array<{ key: string }>)
+        .map(row => row.key.slice('asset.'.length));
+    }
     return ftsSearch(db, WORK_ENTITY_FTS_TABLE, {
       scope: workEntityFtsScope(kind),
       query: match,
@@ -4681,17 +4775,15 @@ export const createWorkEntityStore = (
     }
   };
 
-  const readBySourceIdentity: WorkEntityStore['readBySourceIdentity'] = (
-    kind,
-    source_id,
-    source_record_id,
-  ) => {
+  const localIdBySourceIdentity: WorkEntityStore['localIdBySourceIdentity'] = (kind, source_id, source_record_id) => {
     if (!WORK_ENTITY_KIND_SET.has(kind)) return null;
-    const row = db
-      .prepare(`SELECT id FROM ${TABLE_FOR_KIND[kind]}
-        WHERE source_id = ? AND source_record_id = ?`)
+    const row = db.prepare(`SELECT id FROM ${TABLE_FOR_KIND[kind]} WHERE source_id = ? AND source_record_id = ?`)
       .get(source_id, source_record_id) as { id: string } | undefined;
-    return row === undefined ? null : readByKind(kind, row.id);
+    return row?.id ?? null;
+  };
+  const readBySourceIdentity: WorkEntityStore['readBySourceIdentity'] = (kind, source_id, source_record_id) => {
+    const id = localIdBySourceIdentity(kind, source_id, source_record_id);
+    return id === null ? null : readByKind(kind, id);
   };
 
   const countByKind: WorkEntityStore['countByKind'] = (kind, query) => {
@@ -4828,7 +4920,7 @@ export const createWorkEntityStore = (
     findCommitment,
     deleteCommitment,
     countCommitments,
-    writeAsset, ensureAsset, readAsset, readAssets, readAssetEffective, readAssetsEffective,
+    writeAsset, ensureAsset, dryRun, readAsset, readAssets, readAssetEffective, readAssetsEffective,
     hasDefaultAssetProjection() { return this.readAssetEffective === readAssetEffective && this.readAssetsEffective === readAssetsEffective; },
     listAssets, assetCandidates, countAssets, listHouseholdAssets, listAssetsWithHolder, deleteAsset, walkByAssetId, walkAssetsForClassUpdates, walkAssetsForEvidenceRefresh,
     listAssetChildren: id => (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE belongs_to=? AND deleted_at IS NULL ORDER BY id`).all(id) as AssetRow[]).map(rowToAsset),
@@ -4855,11 +4947,13 @@ export const createWorkEntityStore = (
     getSource,
     listSources,
     readByKind,
+    localIdBySourceIdentity,
     readBySourceIdentity,
     countByKind,
     listByKind,
     listRecordIdentitiesForSource,
     searchIdsByText,
+    assetTypeSearchTerms,
     matchTextsByQuery,
     checkSpelling: (query: string): FtsWordCheck[] =>
       checkQuerySpelling(db, WORK_ENTITY_FTS_TABLE, query),

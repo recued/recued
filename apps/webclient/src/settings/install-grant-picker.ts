@@ -262,7 +262,7 @@ export const ownNeedsText = (
 const SCOPE_LABEL: Record<InstallScopeWho, string> = {
   owner: 'You',
   all_customers: 'All customers',
-  all_other_contracts: 'Everyone else you have an agreement with',
+  all_other_contracts: 'Everyone else you have a contract with',
   all_contracts: 'Everyone',
 };
 
@@ -316,7 +316,7 @@ const SCOPE_HINT: Record<InstallScopeWho, string> = {
   all_customers:
     'Customers you already have may do these. Anyone you add later starts with nothing until you share again.',
   all_other_contracts:
-    'Everyone else you already have an agreement with may do these. Anyone added later starts with nothing until you share again.',
+    'Everyone else you already have a contract with may do these. Anyone added later starts with nothing until you share again.',
   all_contracts:
     'Every app and every way in that you have now may do these too. Anything you add later starts with nothing until you share again.',
 };
@@ -571,7 +571,7 @@ export const renderInstallGrantPicker = (
       const summary = doc.createElement('summary');
       summary.textContent = who === 'all_customers'
         ? 'Choose customer packages'
-        : 'Choose particular agreements';
+        : 'Choose particular contracts';
       details.appendChild(summary);
       const selected = {
         tier: new Set(audience.customer_tier_ids ?? []),

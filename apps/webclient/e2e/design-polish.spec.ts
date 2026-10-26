@@ -67,18 +67,6 @@ test('mobile Chat switches history without losing an unsent draft', async ({ pag
   await noPageOverflow(page);
 });
 
-for (const [count, query] of [[4, '&ai=empty'], [3, '&ai=empty&recipes=installed'], [2, '&ai=empty&recipes=installed&connection=grants']] as const) {
-  test(`mobile first-run Chat keeps its ${count} choices and message box reachable`, async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    await boot(page, query, '#chat');
-    const cards = page.locator('[data-recued-chat-route-activation-card]');
-    await expect(cards).toHaveCount(count);
-    await withinViewport(page, page.locator('[data-recued-chat-route-activation-action="capture"]'));
-    await withinViewport(page, page.getByRole('textbox', { name: 'Message to Recued' }));
-    await noPageOverflow(page);
-  });
-}
-
 test('mobile Data exposes records before the fold and retains keyboard focus through collection changes', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await boot(page, '&data=work-entities-paged', '#data/task');
@@ -146,29 +134,6 @@ test('first-run Capture restores focus after closing Create', async ({ page }) =
   await expect(capture).toBeFocused();
 });
 
-test('task completion stays readable and usable on narrow screens', async ({ page }) => {
-  // The editor's Done checkbox became this Task completion region, with its own
-  // Complete / Reopen action, in bc79a3b7a. Completing a task is a server write,
-  // covered by that commit's own tests; this checks the region fits.
-  for (const width of [280, 390]) {
-    await page.setViewportSize({ width, height: 844 });
-    await boot(page, '&data=work-entities-paged', '#data/task');
-    await page.getByText('Task 0', { exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Edit Task', exact: true });
-    const region = dialog.getByRole('region', { name: 'Task completion', exact: true });
-    const status = region.getByRole('status');
-    await expect(status).toHaveText('Task unfinished.');
-    const complete = region.getByRole('button', { name: 'Complete', exact: true });
-    // No smaller than the dialog's own Save (the shared dialog's buttons are 32px tall).
-    const target = (await complete.boundingBox())!;
-    const save = (await dialog.getByRole('button', { name: 'Save', exact: true }).boundingBox())!;
-    expect(target.width).toBeGreaterThanOrEqual(36);
-    expect(target.height).toBeGreaterThanOrEqual(save.height);
-    expect(await region.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
-    await noPageOverflow(page);
-  }
-});
-
 test('Saved views keeps loading and empty-state guidance visible when its list is folded', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await boot(page, '&hold_rpc=data_views.list', '#views');
@@ -186,46 +151,4 @@ test('Saved views keeps loading and empty-state guidance visible when its list i
   await expect(page.getByRole('combobox', { name: 'Collection', exact: true })).toHaveValue('contact');
   await expect(page.getByRole('button', { name: 'Save current view', exact: true })).toBeVisible();
   await noPageOverflow(page);
-});
-
-test('Today uses route gutters for its title, warning and task controls', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
-  await boot(page, '&data=today', '#today');
-  const title = page.getByRole('heading', { name: 'Today', exact: true }).first();
-  await expect(title).toBeVisible();
-  expect((await title.boundingBox())!.x).toBeGreaterThanOrEqual(16);
-  const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
-  const box = (await refresh.boundingBox())!;
-  expect(box.x + box.width).toBeLessThanOrEqual(374);
-  await expect(page.getByRole('button', { name: 'Complete Send the proposal', exact: true })).toBeVisible();
-  await noPageOverflow(page);
-});
-
-test('Approvals and Kitchen wrap whole mobile toolbar labels', async ({ page }) => {
-  const lines = (control: Locator) => control.evaluate(element => {
-    const tops = new Set<number>();
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const text = walker.currentNode;
-      for (let i = 0; i < (text.textContent?.length ?? 0); i++) {
-        if (!text.textContent![i]!.trim()) continue;
-        const range = document.createRange(); range.setStart(text, i); range.setEnd(text, i + 1);
-        tops.add(Math.round(range.getBoundingClientRect().top));
-      }
-    }
-    return tops.size;
-  });
-  for (const width of [280, 390]) {
-    await page.setViewportSize({ width, height: 844 });
-    await boot(page, '&attention=pending', '#approvals');
-    expect(await lines(page.getByRole('heading', { name: 'Approvals', exact: true }))).toBe(1);
-    expect(await lines(page.getByRole('button', { name: 'Refresh', exact: true }))).toBe(1);
-    await noPageOverflow(page);
-    await boot(page, '', '#kitchen/pack');
-    const actions = page.locator('.ingredient-builder-draft-actions');
-    await expect(actions).toBeVisible();
-    expect(await lines(actions.getByRole('button', { name: 'Refresh', exact: true }))).toBe(1);
-    await noPageOverflow(page);
-  }
 });

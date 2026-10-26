@@ -39,10 +39,12 @@ const fixture = (reuse = false) => {
   const person = contacts.upsertManual({ name: PRIVATE_NAME, email: PRIVATE_EMAIL }, NOW);
   work.writeAsset({ id: ASSET, source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' },
     name: 'Preparation hose', holder_contact: person.contact_id!, attributes: { length: 'about 25 meters' } }, NOW);
-  const control = { allowed: true, opAllowed: true, linked: true, beforeRead: undefined as (() => Promise<void>) | undefined,
+  const control = { allowed: true, opAllowed: true, linked: true as boolean | undefined, citeDocument: false, answerReading: false,
+    documentVersion: 'b'.repeat(64), documentText: `Old measurement: 24 meters. Contact ${PRIVATE_NAME} at ${PRIVATE_EMAIL}.`, beforeRead: undefined as (() => Promise<void>) | undefined,
     afterAsset: undefined as (() => void) | undefined, afterDocument: undefined as (() => void) | undefined,
     documentStatus: 'read', partial: false, retryFirst: false, tier: 1 as 1 | 2, repeats: 0,
     beforeReply: undefined as (() => void) | undefined, mixedBatch: false,
+    attachmentCheck: undefined as (() => boolean | undefined | Promise<boolean | undefined>) | undefined,
     afterValidation: undefined as (() => Promise<void>) | undefined };
   const checker = createReadGrantChecker({ isGranted: () => control.allowed }, 'owner');
   const deps: ChatToolHandlerDeps = { getCollectionRegistry: () => undefined, getContactStore: () => contacts,
@@ -75,20 +77,20 @@ const fixture = (reuse = false) => {
       if (control.documentStatus === 'held') return { ok: true, run_id: 'held-document', run_held: { kind: 'approval' }, result: { status: 'held' } };
       if (control.documentStatus !== 'read') return { ok: true, result: { status: control.documentStatus } };
       const citation = sourceCitation({ kind: 'file', file_ref: FILE, collection_slug: 'received' },
-        'Measurement note', 'b'.repeat(64), NOW);
+        'Measurement note', control.documentVersion, NOW);
       control.afterDocument?.();
       return { ok: true, source_citations: [citation], result: { status: 'read', file_ref: FILE,
-        body: `Old measurement: 24 meters. Contact ${PRIVATE_NAME} at ${PRIVATE_EMAIL}.`,
+        body: control.documentText,
         next_offset: control.partial ? 24000 : null, text_incomplete: control.partial, ...sourceCitationHint(citation) } };
     } };
-  const orchestrator = createChatOrchestrator({ chatStore: store, registry,
+  const createEngine = () => createChatOrchestrator({ chatStore: store, registry,
     ...(reuse ? { revalidateAssetRead: async (id: string, version: string, ctx: ChatDispatchContext) => {
       validations += 1;
       const current = localAssetReadVersion(id, await handlers['work.read']!({ kind: 'asset', id }, ctx)) === version;
       await control.afterValidation?.();
       return current;
     } } : {}),
-    currentAssetAttachment: () => control.linked,
+    currentAssetAttachment: () => control.attachmentCheck ? control.attachmentCheck() : control.linked,
     piiLedgerStore: piiEgress.createSessionLedgerStore(),
     getContactKnownValueIndex: createContactKnownValueIndexBuilder(() => contacts),
     fieldPrivacyResolver: createMetaFieldPrivacyResolverFromLocalManifestStore(createLocalManifestStore(db),
@@ -110,22 +112,133 @@ const fixture = (reuse = false) => {
       if (packets.length <= control.repeats && read) return { body: { response: '', events: [],
         tool_calls: [{ tool: 'work.read', args: read.args },
           ...(control.mixedBatch && packets.length === 1 ? [{ tool: 'unknown.operation', args: {} }] : [])] } };
-      const length = read?.result?.entity?.attributes?.length;
-      return { body: { response: length ? `Saved length: ${length} [source](${read.result.source_ref}).` : 'No current source.',
+      const length = control.answerReading ? read?.result?.entity?.readings?.length?.as_of : read?.result?.entity?.attributes?.length;
+      const document = packet.prior_tool_calls?.findLast((call: any) => call.tool_name === 'document.read');
+      return { body: { response: length ? `Saved length: ${length} [source](${read.result.source_ref}).${control.citeDocument && document ? ` Note: ${document.result.body} [source](${document.result.source_ref}).` : ''}` : 'No current source.',
         events: [], tool_calls: [] } };
     },
   });
+  let orchestrator = createEngine();
   const message = (question = 'What length is saved?', ids = [FILE]) =>
     assetChatMessage(question, { id: ASSET, name: 'Preparation hose', fileIds: ids, omittedFiles: 0 });
   const send = async (text = message(), extra = {}) => {
     const ack = await orchestrator.runTurn({ session_id: 's', message: text, picker_state: { current: 'self' }, ...extra });
     return (await store.listMessages('s')).find(row => row.role === 'assistant' && row.turn_id === ack.turn_id)!;
   };
-  return { db, store, work, control, registry, orchestrator, message, send, packets, briefPackets, dispatches, events, order,
+  return { db, store, work, control, registry, get orchestrator() { return orchestrator; }, reopen: () => { orchestrator = createEngine(); }, message, send, packets, briefPackets, dispatches, events, order,
     validations: () => validations };
 };
 
 describe('selected asset preparation through owner Chat', () => {
+  it('rereads a clock-only correction and the linked note after rebuilding the orchestrator', async () => {
+    const f = fixture(true); f.control.citeDocument = true; f.control.answerReading = true;
+    const writeReading = (as_of: number) => f.work.writeAsset({ id: ASSET, source_id: 'recued.asset',
+      source: { kind: 'owner', ref: 'owner' }, readings: { length: { value: 25, unit: 'm', as_of, evidence: [] } } }, NOW);
+    writeReading(1609459200000);
+    const first = await f.send(f.message('Compare with the attached note. Use amber falcon as the chat reference phrase.'));
+    const before = f.packets[0]!.prior_tool_calls[0].result;
+    writeReading(1640995200000);
+    f.control.documentText = 'Revised note: measurement observed in 2019, written in 2020.';
+    f.control.documentVersion = 'c'.repeat(64);
+    f.reopen(); const start = f.order.length;
+    const answer = await f.send('Which times are established? Read the current asset and note, cite both and copy its raw as_of value.');
+    expect(f.order.slice(start)).toEqual(['work.read', 'document.read', 'model', 'brief']);
+    expect(answer.content).toContain('1640995200000'); expect(answer.content).not.toContain('1609459200000');
+    expect(answer.content).toContain('Revised note');
+    const calls = f.packets.at(-1)!.prior_tool_calls;
+    const current = calls.find((call: any) => call.tool_name === 'work.read').result;
+    expect(current.entity.updated_at).toBe(before.entity.updated_at);
+    expect(current.entity.attributes).toEqual(before.entity.attributes);
+    expect(current.read_version).not.toBe(before.read_version);
+    expect(answer.source_citations).toContainEqual(expect.objectContaining({ kind: 'asset', read_version: current.read_version }));
+    expect(answer.source_citations).toContainEqual(expect.objectContaining({ kind: 'file', read_version: 'c'.repeat(64) }));
+    expect(first.source_citations?.find(source => source.kind === 'asset')?.read_version).toBe(before.read_version);
+    expect(await f.store.readSessionBrief('s')).toContain('amber falcon');
+    expect(f.packets).toHaveLength(2); expect(f.briefPackets).toHaveLength(2);
+    expect(JSON.stringify(f.packets)).not.toContain(PRIVATE_EMAIL); expect(f.validations()).toBe(0);
+  });
+
+  it.each(['collection', 'operation', 'detached', 'unknown', 'document'] as const)('does not use the earlier answer when a follow-up read fails: %s', async kind => {
+    const f = fixture(); f.control.citeDocument = true;
+    await f.send(f.message('Compare with the attached note.'));
+    f.reopen();
+    if (kind === 'collection') f.control.allowed = false;
+    else if (kind === 'operation') f.control.opAllowed = false;
+    else if (kind === 'detached') f.control.linked = false;
+    else if (kind === 'unknown') f.control.linked = undefined;
+    else f.control.documentStatus = 'held';
+    const answer = await f.send('Reread the asset and the attached note.');
+    expect(answer.content).not.toContain('25 meters'); expect(f.packets).toHaveLength(1);
+    expect(f.briefPackets).toHaveLength(2);
+  });
+
+  it.each(['non-native', 'read-only', 'ordinary', 'future'] as const)('keeps follow-up preparation out of %s requests', async kind => {
+    const f = fixture(); await f.send(); f.reopen();
+    if (kind === 'non-native') f.control.tier = 2;
+    await f.send(kind === 'ordinary' ? 'What did we establish earlier?' : kind === 'future'
+      ? f.message('Read the current asset again.').replace('"version":1', '"version":2') : 'Read the current asset again.',
+    kind === 'read-only' ? { read_only: true } : {});
+    expect(f.dispatches).toHaveLength(1); expect(f.packets).toHaveLength(2);
+  });
+
+  it('cancels a follow-up reread without another model call or answer', async () => {
+    const f = fixture(); await f.send(); f.reopen();
+    let release!: () => void; let finished!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const settled = new Promise<void>(resolve => { finished = resolve; });
+    f.control.beforeRead = () => blocked;
+    const queued = withQueuedChatTurns({ ...f.orchestrator, runTurn: async input => {
+      try { return await f.orchestrator.runTurn(input); } finally { finished(); }
+    } }, { db: f.db, store: f.store, pollMs: 5 });
+    try {
+      const turn = queued.runTurn({ session_id: 's', message: 'Read the current asset again.', picker_state: { current: 'self' } });
+      await vi.waitFor(() => expect(f.dispatches).toHaveLength(2));
+      const [running] = (await queued.turnQueue!.snapshot('s')).turns;
+      await queued.turnQueue!.cancel('s', running!.turn_id); release(); await turn; await settled;
+      expect(f.packets).toHaveLength(1);
+      expect((await f.store.listMessages('s')).filter(row => row.role === 'assistant')).toHaveLength(1);
+    } finally { release(); queued.turnQueue!.close(); await new Promise(resolve => setImmediate(resolve)); }
+  });
+
+  it('checks cancellation after asynchronous attachment verification before model egress', async () => {
+    const f = fixture(); f.control.citeDocument = true;
+    await f.send(f.message('Compare with the attached note.')); f.reopen();
+    let checks = 0; let release!: (linked: boolean) => void; let finished!: () => void;
+    const blocked = new Promise<boolean>(resolve => { release = resolve; });
+    const settled = new Promise<void>(resolve => { finished = resolve; });
+    f.control.attachmentCheck = () => ++checks === 2 ? blocked : true;
+    const queued = withQueuedChatTurns({ ...f.orchestrator, runTurn: async input => {
+      try { return await f.orchestrator.runTurn(input); } finally { finished(); }
+    } }, { db: f.db, store: f.store, pollMs: 5 });
+    try {
+      const turn = queued.runTurn({ session_id: 's', message: 'Read the current asset and note.', picker_state: { current: 'self' } });
+      await vi.waitFor(() => expect(checks).toBe(2));
+      const [running] = (await queued.turnQueue!.snapshot('s')).turns;
+      await queued.turnQueue!.cancel('s', running!.turn_id); release(true); await turn; await settled;
+      expect(f.packets).toHaveLength(1);
+      expect((await f.store.listMessages('s')).filter(row => row.role === 'assistant')).toHaveLength(1);
+    } finally { release(true); queued.turnQueue!.close(); await new Promise(resolve => setImmediate(resolve)); }
+  });
+
+  it('keeps observation and provenance clocks distinct through the real reader and privacy boundary', async () => {
+    const f = fixture();
+    f.work.writeAsset({ id: ASSET, source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' },
+      readings: { length: { value: 31, unit: 'm', as_of: 0, evidence: [] } } }, NOW + 1);
+    await f.send();
+    const result = f.packets[0]!.prior_tool_calls[0].result;
+    expect(result.entity.readings.length).toEqual({ value: 31, unit: 'm', as_of: 0, evidence: [] });
+    expect(result.entity.updated_at).toBe(NOW + 1);
+    expect(result.entity.field_sources['readings.length'].at).toBe(NOW + 1);
+    expect(result.read_at).toEqual(expect.any(Number));
+    expect(result.read_at).not.toBe(result.entity.readings.length.as_of);
+    expect(result.citation_hint).toContain('field_sources.*.at records fact provenance');
+    expect(result.citation_hint).toContain('preserve an explicit observation time');
+    expect(result.citation_hint).toContain('name that missing time specifically');
+    expect(JSON.stringify(f.packets)).not.toContain(PRIVATE_NAME);
+    expect(JSON.stringify(f.packets)).not.toContain(PRIVATE_EMAIL);
+    expect(f.dispatches).toHaveLength(1);
+  });
+
   it('revalidates repeated reads without recording or dispatching the same Chat tool twice', async () => {
     const f = fixture(true); f.control.repeats = 2;
     const answer = await f.send(); expect(answer.content).toContain('about 25 meters');

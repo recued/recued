@@ -286,6 +286,24 @@ const WORK_READ_NEEDS: readonly Tier1ToolNeed[] = [
 
 const CRM_LIVE_NOTE = 'To search the CRM itself, the search switch of that CRM must be on too.';
 
+/** The kind of thing a work tool adds or changes, as an approval names it. */
+const WORK_KIND_WORDS: Readonly<Partial<Record<WorkEntityKind, string>>> = {
+  task: 'a task', note: 'a note', commitment: 'a commitment', project: 'a project', asset: 'a thing you own',
+};
+/** D-329 — what one call of an AI tool does, in the owner's words: the tool's title, or
+ *  for the work tools the kind of thing it adds or changes ("Change a thing you own"). A
+ *  held call's ask, its card and the chat's reply name it so. `undefined` for a name that
+ *  is no AI tool. */
+export const tier1CallTitle = (tool: string, args: unknown): string | undefined => {
+  if (!Object.hasOwn(TIER1_TOOL_GUIDE, tool)) return undefined;
+  const call = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const words = typeof call.kind === 'string' && Object.hasOwn(WORK_KIND_WORDS, call.kind)
+    ? WORK_KIND_WORDS[call.kind as WorkEntityKind] : undefined;
+  if (words !== undefined && tool === 'work.create') return `Add ${words}`;
+  if (words !== undefined && tool === 'work.update') return call.done === true ? 'Tick a task off' : `Change ${words}`;
+  return TIER1_TOOL_GUIDE[tool as Tier1ToolName].title;
+};
+
 /** Every AI tool: what it does, and the other switches it checks first. An AI app,
  *  or your own chat, calls these by name. Recipes never do. */
 export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> = {
@@ -405,12 +423,13 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
   },
   'work.update': {
     title: 'Change a task, note or more',
-    summary: 'Changes a task, note, commitment or project, or ticks a task off.',
+    summary: 'Changes a task, note, commitment, project or thing you own, or ticks a task off.',
     needs: [
       { entry: 'core.work-entity.task.update', when: 'to change tasks', kind: 'task' },
       { entry: 'core.work-entity.note.update', when: 'to change notes', kind: 'note' },
       { entry: 'core.work-entity.commitment.update', when: 'to change commitments', kind: 'commitment' },
       { entry: 'core.work-entity.project.update', when: 'to change projects', kind: 'project' },
+      { entry: 'core.work-entity.asset.update', when: 'to change things you own', kind: 'asset' },
       { entry: 'core.work-entity.task.mark-done', when: 'to tick a task off', kind: 'task' },
     ],
   },

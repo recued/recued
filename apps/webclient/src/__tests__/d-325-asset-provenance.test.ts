@@ -51,6 +51,18 @@ describe('D-325 asset provenance in the owner’s words', () => {
     expect(assetSourceWords({ kind: 'extracted', ref: 'type:passport@1', at }).from).toMatch(/^Extracted from your data, /u);
   });
 
+  it('says a reading the owner approved an AI\'s write of came from that AI, never that they typed it', () => {
+    // D-325 (2026-10-25) — "readings mine, rest AI's": an approved AI write records its
+    // readings at the owner's rank under the AI's own `chat:` / `mcp:` ref.
+    const at = Date.parse('2026-10-25T12:00Z');
+    expect(assetSourceWords({ kind: 'owner', ref: 'chat:session-1', at }))
+      .toEqual({ from: expect.stringMatching(/^From a chat, approved by you, /u), rank: 'Nothing automatic replaces it.' });
+    expect(assetSourceWords({ kind: 'owner', ref: 'mcp:token-1', at }).from).toMatch(/^From an AI app, approved by you, /u);
+    expect(assetSourceWords({ kind: 'extracted', ref: 'chat:session-1', at }).from).toMatch(/^From a chat, /u);
+    expect(assetSourceWords({ kind: 'extracted', ref: 'mcp:token-1', at }).from).toMatch(/^From an AI app, /u);
+    expect(assetSourceWords({ kind: 'extracted', ref: 'mail:message-1', at }).from).toMatch(/^Extracted from your data, /u);
+  });
+
   it('says what each piece of evidence showed, by where it is', () => {
     expect(assetEvidenceText({ collection: 'home-assistant', id: 'light.porch', field: 'transitions', value: 'on and off 14 times' }))
       .toBe('Home Assistant · light.porch · transitions: on and off 14 times');

@@ -395,3 +395,55 @@ describe('D-228 slice 5 — admitTier1', () => {
     expect(seen).toEqual(['contact.search']);
   });
 });
+
+/** D-329 — a write's own refusal, asked before the owner is asked to approve it. The chat
+ *  and the MCP door call `checkBeforeAsking` before holding a write, so a call that cannot
+ *  run is never put to the owner (live 2026-10-25: an approved asset create then refused
+ *  `body`). */
+describe('D-329 — checkBeforeAsking', () => {
+  const refusal = { ok: false as const, reason: 'invalid_args' as const, detail: 'work.create: not `colour`' };
+
+  it('answers with the tool\'s own refusal, and null when the call would run', async () => {
+    const seen: unknown[] = [];
+    const registry = createInternalToolRegistry({
+      tier1Checks: { 'work.create': async (args) => { seen.push(args); return (args as { colour?: string }).colour ? refusal : null; } },
+    });
+    expect(await registry.checkBeforeAsking!('work.create', { colour: 'blue' }, ctxInternal())).toEqual(refusal);
+    expect(await registry.checkBeforeAsking!('work.create', { title: 'Road bike' }, ctxMcpWire())).toBeNull();
+    expect(seen).toEqual([{ colour: 'blue' }, { title: 'Road bike' }]);
+  });
+
+  it('is null for a tool with no check, and for a name that is not a Tier-1 tool', async () => {
+    const registry = createInternalToolRegistry({ tier1Checks: { 'work.create': async () => refusal } });
+    expect(await registry.checkBeforeAsking!('calendar.create', {}, ctxInternal())).toBeNull();
+    expect(await registry.checkBeforeAsking!('recipe.nope', {}, ctxInternal())).toBeNull();
+  });
+
+  it('⛔ refuses as a dispatch would when the contract has the tool off, without running the check', async () => {
+    let ran = false;
+    const registry = createInternalToolRegistry({
+      tier1Checks: { 'work.create': async () => { ran = true; return null; } },
+      admitTier1: () => false,
+    });
+    expect(await registry.checkBeforeAsking!('work.create', {}, ctxInternal())).toMatchObject({ ok: false, reason: 'classification_blocked' });
+    expect(ran).toBe(false);
+  });
+});
+
+describe('D-329 — askValueLabels', () => {
+  it('answers with the tool\'s names for the records a call names, and nothing for a tool with none', async () => {
+    const registry = createInternalToolRegistry({
+      tier1AskLabels: { 'work.update': async (args) => ({ id: { [(args as { id: string }).id]: 'Family car' } }) },
+    });
+    expect(await registry.askValueLabels!('work.update', { kind: 'asset', id: 'a1' }, ctxInternal())).toEqual({ id: { a1: 'Family car' } });
+    expect(await registry.askValueLabels!('calendar.update', { source_id: 'e1' }, ctxInternal())).toBeUndefined();
+    expect(await registry.askValueLabels!('recipe.nope', {}, ctxInternal())).toBeUndefined();
+  });
+
+  it('a lookup that fails names nothing, rather than failing the ask', async () => {
+    const registry = createInternalToolRegistry({
+      tier1AskLabels: { 'work.update': async () => { throw new Error('store went away'); } },
+    });
+    expect(await registry.askValueLabels!('work.update', { id: 'a1' }, ctxInternal())).toBeUndefined();
+  });
+});

@@ -36,6 +36,8 @@ import {
   CONTRACT_GRANTS_SUMMARY_ATTR,
   CONTRACT_GRANTS_AI_TOOLS_GROUP,
   CONTRACT_GRANTS_AI_TOOLS_NOTE,
+  CONTRACT_GRANTS_OLDER_KEY_NOTE,
+  CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR,
   CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR,
   CONTRACT_GRANTS_NEED_ATTR,
   CONTRACT_GRANTS_NEEDS_ATTR,
@@ -365,6 +367,8 @@ interface PanelOpts {
   explicitGrantRowsOnly?: boolean;
   /** D-327 — an agreement that is its key's whole authority. */
   keyAgreement?: boolean;
+  /** D-327 — an older app contract, whose key keeps the tools it was made with. */
+  keyKeepsItsTools?: boolean;
   withCatalog?: boolean;
   withRegistry?: boolean;
   grantReadRejects?: boolean;
@@ -479,6 +483,7 @@ const mountPanelWith = (opts: PanelOpts = {}) => {
     runGrantWrite,
     ...(opts.explicitGrantRowsOnly === true ? { explicitGrantRowsOnly: true } : {}),
     ...(opts.keyAgreement === true ? { keyAgreement: true } : {}),
+    ...(opts.keyKeepsItsTools === true ? { keyKeepsItsTools: true } : {}),
     ...(opts.withCatalog === false ? {} : { runCatalogOperations }),
     ...(opts.withRegistry === false ? {} : { runRegistryDescribe }),
     ...(opts.withCliList === false ? {} : { runCliReachabilityList }),
@@ -1274,7 +1279,7 @@ describe('contracts route delta 3 — header door toggle (L1)', () => {
     expect(doorInput(doorToggle(root, 'mcp')).hasAttribute('disabled')).toBe(false);
     expect(doorToggle(root, 'llm_gateway').getAttribute('data-backed')).toBe('true');
     expect(doorInput(doorToggle(root, 'llm_gateway')).hasAttribute('disabled')).toBe(true);
-    expect(allText(root)).toContain('One way in has to stay on. To stop this agreement, use Revoke.');
+    expect(allText(root)).toContain('One way in has to stay on. To stop this contract, use Revoke.');
   });
 
   it('offers no MCP chat box — nothing serves that door yet', async () => {
@@ -1318,9 +1323,9 @@ describe('contracts route delta 3 — header door toggle (L1)', () => {
     expect(onlyInput.hasAttribute('disabled')).toBe(true);
     // A greyed tick with no reason read as a third state of the box.
     expect(doorToggle(root, 'mcp').getAttribute('title')).toBe(
-      'One way in has to stay on. To stop this agreement, use Revoke.',
+      'One way in has to stay on. To stop this contract, use Revoke.',
     );
-    expect(allText(root)).toContain('One way in has to stay on. To stop this agreement, use Revoke.');
+    expect(allText(root)).toContain('One way in has to stay on. To stop this contract, use Revoke.');
     onlyInput.dispatch('change'); // disabled → no-op
     await tick();
     expect(ctx.grantSetDoorTypesCaller).not.toHaveBeenCalled();
@@ -1572,6 +1577,19 @@ describe('D-327 follow-on — every switch says what it is, every AI tool what i
     // …and the steps stay under what they reach.
     const work = panel.getEntries().find((e) => e.entry_key === opGrantEntry('core.work-entity.task.create'));
     expect(work?.group).toBe('Tasks & notes');
+  });
+
+  it('tells an older contract that an AI tool switched on here does not reach its key', async () => {
+    for (const [options, shown] of [
+      [{ keyKeepsItsTools: true }, true],
+      [{}, false],
+      [{ keyAgreement: true }, false],
+    ] as const) {
+      const { panel } = mountPanelWith(options);
+      await panel.whenLoaded();
+      const notes = collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR);
+      expect(notes.map((n) => n.textContent)).toEqual(shown ? [CONTRACT_GRANTS_OLDER_KEY_NOTE] : []);
+    }
   });
 
   it('lists what an AI tool needs, each one on or off, and a click switches it in place', async () => {
@@ -1989,6 +2007,8 @@ describe('D-327 — an agreement is its key\'s whole authority', () => {
     // A kernel op kept off every door is not offered at all.
     expect(cellFor(opsRootEl(panel), opGrantEntry('core.ai.summarize'))).toBeUndefined();
     expect(cellFor(opsRootEl(panel), opGrantEntry('core.data.calendar.list'))).toBeDefined();
+    // Its key reads its tools from these switches, so the older-key line is not shown.
+    expect(collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR)).toHaveLength(0);
   });
 
   it('keeps an older agreement on its old defaults and its old tabs', async () => {
@@ -2002,6 +2022,9 @@ describe('D-327 — an agreement is its key\'s whole authority', () => {
     await panel.whenLoaded();
     expect(panel.getEffective(opGrantEntry('core.data.calendar.list'))).toBe('on');
     expect(cellFor(opsRootEl(panel), opGrantEntry('core.ai.summarize'))).toBeDefined();
+    // Its key keeps the tools it was made with, and the AI tools group says so.
+    expect(collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR).map((n) => n.textContent))
+      .toEqual([CONTRACT_GRANTS_OLDER_KEY_NOTE]);
   });
 
   it('creates this agreement\'s key with its id and nothing else, shows it once, and turns it off', async () => {
@@ -2056,7 +2079,7 @@ describe('D-327 — an agreement is its key\'s whole authority', () => {
     await older.route.contractKeyPanel()!.whenLoaded();
     const olderRoot = older.root as unknown as FakeEl;
     expect(collectByAttr(olderRoot, CONTRACT_KEY_CREATE_ATTR)).toHaveLength(0);
-    expect(allText(olderRoot)).toContain('made before an agreement could hold its own key');
+    expect(allText(olderRoot)).toContain('made before a contract could hold its own key');
 
     const withKey = makeKeyStore([keyToken()]);
     const ctx = mountRoute('door_alpha', { keyCallers: withKey.callers });
@@ -2083,7 +2106,7 @@ describe('D-327 — an agreement is its key\'s whole authority', () => {
     const root = list.root as unknown as FakeEl;
     await list.route.whenLoaded();
     const section = collectByAttr(root, CONTRACTS_ROUTE_RULES_ATTR)[0]!;
-    expect(allText(section)).toContain('Rules for every agreement');
+    expect(allText(section)).toContain('Rules for every contract');
     // Loaded on first open, not with every list paint.
     expect(list.route.rulesPanel()).toBeNull();
     (section as unknown as { open: boolean }).open = true;

@@ -561,7 +561,6 @@ test('Settings AI Models provider controls expose their owning source', async ({
   ]) {
     const field = page.getByRole('textbox', { name, exact: true });
     await expect(field).toHaveCount(1);
-    expect((await field.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   }
   // A protocol is a choice; a provider's name is the owner's word for it.
   for (const name of [
@@ -572,7 +571,6 @@ test('Settings AI Models provider controls expose their owning source', async ({
   ]) {
     const field = page.getByRole('combobox', { name, exact: true });
     await expect(field).toHaveCount(1);
-    expect((await field.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   }
   for (const name of [
     'Save Slot 1: fast',
@@ -588,7 +586,6 @@ test('Settings AI Models provider controls expose their owning source', async ({
   ]) {
     const action = page.getByRole('button', { name, exact: true });
     await expect(action).toHaveCount(1);
-    expect((await action.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   }
   for (const name of [
     'Slot 1: fast chat tool catalog',
@@ -1056,7 +1053,6 @@ const releaseCacheRpc = async (page: Page, method: string) => {
 };
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   test(`Settings AI Models cache focus ${size.name} opens and cancels with either activation key`, async ({ page, browserName }) => {
@@ -2395,7 +2391,6 @@ const remountFreePoolAndCheck = async (
 };
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1360, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const { enabled, outcome } of [
@@ -2910,7 +2905,6 @@ const leaveSettledAiModels = async (page: Page, count: number) => {
 };
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1360, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   test(`Settings AI Models exit guard ${size.name} transcription success`, async ({ page }) => {

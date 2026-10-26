@@ -42,10 +42,11 @@
 
 import { renderMailWorkSourceRecap } from './mail-work-source-recap.js';
 import { priorSourceReads } from './chat-source-citations.js';
+import { createProjectionDemand, MAX_PROJECTION_REFRESH_READS, PROJECTION_REFRESH_GUIDANCE } from './chat-projection-refresh.js';
 import { finishMailWorkProposal } from './mail-work-proposal-ending.js';
 import { piiEgress } from '@recued/gateway';
 import { parseMailWorkReadRequest, readCurrentMailWork } from './mail-work-fresh-read.js';
-import { assetQuestionForRead, readCurrentAssetQuestion, type CurrentAssetAttachment } from './chat-asset-fresh-read.js';
+import { assetQuestionForRead, assetRereadForRead, readCurrentAssetQuestion, type CurrentAssetAttachment } from './chat-asset-fresh-read.js';
 import { createAssetReadReuse, ASSET_READ_REUSE_FEEDBACK } from './chat-asset-read-reuse.js';
 import { createMailWorkDiscoveryReader, mailWorkDiscoveryQueries } from './mail-work-discovery-read.js';
 import { MAIL_WORK_BRIEF_GUIDANCE } from './mail-work-investigation-guidance.js';
@@ -2083,6 +2084,9 @@ export interface RunChatTurnDeps {
    *  here. */
   readonly currentAssetAttachment?: CurrentAssetAttachment;
   readonly assertActive?: () => void;
+  /** Already exposed, native per-turn prefetch receipts; never caller markers. */
+  readonly currentProjectionSources?: () => readonly ChatSourceCitation[];
+  readonly revalidateProjectionRead?: (source: Extract<ChatSourceCitation, { kind: 'asset_projection' }>, time_zone: string) => Promise<boolean>;
   readonly revalidateAssetRead?: (id: string, version: string, time_zone: string) => Promise<boolean>;
   readonly dispatchTool: OrchestratorDispatch['dispatchTool'];
   /** Optional owner-Chat preview of the settled answer, before the closing
@@ -2146,6 +2150,8 @@ export interface RunChatTurnDeps {
  *  projection over `tool_calls`, `usage.total_tokens` → `tokens`. */
 export interface RunChatTurnResult {
   readonly assistant_content: string;
+  /** Filled by the owner driver from native sources in successful protected main packets. */
+  readonly prefetch_source_citations?: readonly ChatSourceCitation[];
   readonly tool_calls?: ChatToolCall[];
   /** Dispatch bodies for turn-end recall finalization or the legacy writer.
    *  message_id identifies a call already saved before dispatch. */
@@ -2688,7 +2694,8 @@ export const runChatTurn = async (
     return produced;
   };
 
-  const tryMainTurn = async (
+  let projectionRefreshFeedback = '';
+  const callMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
     output_feedback?: string,
     draft_for_review?: string,
@@ -2784,7 +2791,8 @@ export const runChatTurn = async (
           : {}),
         ...(carriedWorking ? { prior_working_unverified: carriedWorking } : {}),
         ...(activeEditTarget ? { mail_work_edit_target: mailWorkEditPrompt(activeEditTarget) } : {}),
-        ...(output_feedback ? { output_feedback } : {}),
+        ...((projectionRefreshFeedback || output_feedback)
+          ? { output_feedback: [projectionRefreshFeedback, output_feedback].filter(Boolean).join('\n\n') } : {}),
         ...(draft_for_review ? { draft_for_review } : {}),
       });
     // Estimate against the role we will ACTUALLY send under — an owner who
@@ -3378,11 +3386,13 @@ export const runChatTurn = async (
     return entry?.tier === 1 && entry.classification === 'read';
   };
   const assetQuestion = inputs.prefetch_selected_asset && inputs.mail_work === undefined && nativeRead('work.read')
-    ? assetQuestionForRead(inputs.content.user_message) : null;
+    ? assetQuestionForRead(inputs.content.user_message) ?? assetRereadForRead(inputs.content.user_message,
+      inputs.content.chat_tail, inputs.source_citations ?? [], nativeRead('document.read') && !!deps.currentAssetAttachment) : null;
   const assetReadReuse = inputs.prefetch_selected_asset && inputs.mail_work === undefined
     && picker_target === 'self' && dispatchPeerName === null && nativeRead('work.read') && deps.revalidateAssetRead
     ? createAssetReadReuse((id, version) => deps.revalidateAssetRead!(id, version, turnTimeZone)) : undefined;
-  const read = async (tool_name: 'mail.read' | 'mail.search' | 'work.read' | 'document.read', args: Record<string, unknown>): Promise<ChatDispatchResult> => {
+  let recordPreparedRead: ((observed: ChatPriorToolCall, result: NonNullable<typeof assistantToolResults>[number], call: ChatToolCall) => void) | undefined;
+  const read = async (tool_name: 'mail.read' | 'mail.search' | 'work.read' | 'document.read' | 'situation.query', args: Record<string, unknown>): Promise<ChatDispatchResult> => {
     const tc: ToolCall = { tool: tool_name, args };
     const started_at = now();
     const result = await dispatchTool({
@@ -3396,12 +3406,15 @@ export const runChatTurn = async (
     const observed = observeToolCall(tc, result, started_at, completed_at);
     freshCalls.push(observed);
     mailEvidence?.record(observed);
-    (assistantToolCalls ??= []).push(toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id));
+    const provenance = toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id);
+    (assistantToolCalls ??= []).push(provenance);
     const held = isNonTerminalToolResult(result);
     const heldRunId = held ? runIdOf(result) : undefined;
-    (assistantToolResults ??= []).push({ tool_name, args, ts: completed_at,
+    const receipt = { tool_name, args, ts: completed_at,
       message_id: savedChatToolCallId(result), ...(held ? {} : { result }),
-      ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}) });
+      ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}) };
+    (assistantToolResults ??= []).push(receipt);
+    recordPreparedRead?.(observed, receipt, provenance);
     return result;
   };
   let sourceReadFailure: string | undefined;
@@ -3410,7 +3423,38 @@ export const runChatTurn = async (
       canReadDocument: nativeRead('document.read'),
       ...(deps.currentAssetAttachment ? { currentAttachment: deps.currentAssetAttachment } : {}),
     });
+    // Attachment verification may await after the final governed dispatch.
+    // A cancellation in that interval must stop both answer and brief egress.
+    deps.assertActive?.();
   }
+  const projectionDemand = !assetQuestion && inputs.prefetch_selected_asset && inputs.mail_work === undefined
+    && picker_target === 'self' && dispatchPeerName === null && nativeRead('situation.query')
+    ? createProjectionDemand(inputs.source_citations ?? []) : undefined;
+  let projectionSources = (): readonly ChatSourceCitation[] => deps.currentProjectionSources?.() ?? [];
+  const tryMainTurn: typeof callMainTurn = async (prior, feedback, draft) => {
+    let calls = [...prior ?? []]; let usage: TokenUsageReport | undefined;
+    for (let revision = 0; ; revision++) {
+      const result = await callMainTurn(calls, feedback, draft);
+      usage = aggregateTokenUsageReports(usage, result.usage);
+      if (result.kind !== 'ok' || !projectionDemand) return { ...result, ...(usage ? { usage } : {}) };
+      const before = freshCalls.length;
+      const proof = projectionSources();
+      const demanded = await projectionDemand.check(JSON.stringify({ response: result.output.response, events: result.output.events, tool_calls: result.output.tool_calls }), proof, async args => {
+        deps.assertActive?.(); const readResult = await read('situation.query', args); deps.assertActive?.(); return readResult;
+      }, now(), deps.revalidateProjectionRead ? async source => {
+        deps.assertActive?.();
+        const unchanged = await deps.revalidateProjectionRead!(source, turnTimeZone);
+        deps.assertActive?.();
+        return unchanged;
+      } : undefined);
+      if (!demanded.revise) return { ...result, ...(usage ? { usage } : {}) };
+      if (demanded.limited || revision >= MAX_PROJECTION_REFRESH_READS) return { kind: 'ok', output: {
+        response: 'I could not verify all the saved views needed for this answer. Ask about a smaller set of saved facts.', events: [], tool_calls: [],
+      }, ...(usage ? { usage } : {}) };
+      calls.push(...freshCalls.slice(before));
+      projectionRefreshFeedback = PROJECTION_REFRESH_GUIDANCE;
+    }
+  };
   if (inputs.mail_work !== undefined) {
     const request = mailWorkRequest!;
     const reading = await readCurrentMailWork(request, read);
@@ -3427,7 +3471,7 @@ export const runChatTurn = async (
     }
   }
   const presentAnswer = (text: string): string => readingNotice && text.trim() ? `${readingNotice}\n\n${text}` : text;
-  const openingPriorToolCalls: ReadonlyArray<ChatPriorToolCall> | undefined =
+  const openingPriorToolCalls = (): ReadonlyArray<ChatPriorToolCall> | undefined =>
     carriedBrief === null && freshCalls.length === 0 && mailEvidence === null ? undefined
       : [...(carriedBrief === null ? [] : [briefAsPriorToolCall(carriedBrief)]),
         ...(sourceCarry ? [sourceCarry] : []), ...freshCalls];
@@ -3435,7 +3479,7 @@ export const runChatTurn = async (
   // closing fold still captures this turn's owner statements for restart.
   let initialResult: Awaited<ReturnType<typeof tryMainTurn>> = sourceReadFailure
     ? { kind: 'ok', output: { response: sourceReadFailure, events: [], tool_calls: [] } }
-    : await tryMainTurn(openingPriorToolCalls);
+    : await tryMainTurn(openingPriorToolCalls());
   totalUsage = aggregateTokenUsageReports(totalUsage, initialResult.usage);
 
   // ⛔⛔ THE SAME GUIDED RETRY THE MID-LOOP REINVOKE GETS, at the site where an
@@ -3490,7 +3534,7 @@ export const runChatTurn = async (
       //   it. Re-composing under the relearned ceiling is exactly when the trim
       //   runs, and the brief is ~400 est against a floor of ~18,000: if
       //   anything has to go, the ladder decides that, not an omitted argument.
-      const fitted = await tryMainTurn(openingPriorToolCalls);
+      const fitted = await tryMainTurn(openingPriorToolCalls());
       totalUsage = aggregateTokenUsageReports(totalUsage, fitted.usage);
       initialResult = fitted;
     }
@@ -3504,7 +3548,7 @@ export const runChatTurn = async (
     const initialRetry = await tryMainTurn(
       // ⛔ See the note on the absence retry below — a repair packet must not
       //   carry LESS grounding than the call it is repairing.
-      openingPriorToolCalls,
+      openingPriorToolCalls(),
       invalidOutputFeedback(initialResult.validation_issues),
     );
     totalUsage = aggregateTokenUsageReports(totalUsage, initialRetry.usage);
@@ -3585,7 +3629,7 @@ export const runChatTurn = async (
     if (isEmptyChatAiOutput(currentAiOutput)) {
       recoveryCalls = 1;
       const retryResult = await tryMainTurn(
-        openingPriorToolCalls,
+        openingPriorToolCalls(),
         emptyOutputFeedback(currentAiOutput),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, retryResult.usage);
@@ -3617,7 +3661,7 @@ export const runChatTurn = async (
       const inventedRetry = await tryMainTurn(
         // ⚠ THIS ONE MOST OF ALL: the retry that exists to stop invented values
         //   was removing the grounding that prevents inventing them.
-        openingPriorToolCalls,
+        openingPriorToolCalls(),
         buildInventedValueFeedback(),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, inventedRetry.usage);
@@ -3656,7 +3700,7 @@ export const runChatTurn = async (
       //   LESS grounding than the call it repairs — true whether or not the
       //   guard was right to fire. Only the story about WHY was wrong.
       const absenceRetry = await tryMainTurn(
-        openingPriorToolCalls,
+        openingPriorToolCalls(),
         buildUnverifiedAbsenceFeedback(),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, absenceRetry.usage);
@@ -3728,6 +3772,18 @@ export const runChatTurn = async (
       }
       if (sourceCarry) priorToolCalls.push(sourceCarry);
       priorToolCalls.push(...freshCalls);
+      let projectionReadBarrier = 0; let allowPrefetchProof = true;
+      projectionSources = () => [
+        ...(allowPrefetchProof ? deps.currentProjectionSources?.() ?? [] : []),
+        ...toolResultsAccum.slice(projectionReadBarrier).flatMap(entry => {
+          if (entry.tool_name !== 'situation.query' || !entry.result || typeof entry.result !== 'object') return [];
+          const result = entry.result as ChatDispatchResult;
+          return result.ok && !result.run_failed && !isNonTerminalToolResult(result) ? result.source_citations ?? [] : [];
+        }),
+      ];
+      recordPreparedRead = (observed, receipt, provenance) => {
+        priorToolCalls.push(observed); toolResultsAccum.push(receipt); toolCallsAccum.push(provenance);
+      };
       let nextToolCalls: ReadonlyArray<ToolCall> = currentAiOutput.tool_calls;
       let roundIndex = 0;
       // `(tool, args)` → how many times this EXACT call has been refused in this
@@ -3913,7 +3969,7 @@ export const runChatTurn = async (
         const sourceReadBatch = nextToolCalls.every(tc => nativeRead(tc.tool)
           && ['work.read', 'document.read', 'situation.query'].includes(tc.tool));
         // A mixed batch may contain a write before or after a concurrent read.
-        if (!sourceReadBatch) assetReadReuse?.clear();
+        if (!sourceReadBatch) { assetReadReuse?.clear(); projectionDemand?.invalidate(); allowPrefetchProof = false; }
         const dispatchOutput = await dispatchToolCalls<ToolCall, ToolCallExecution>({
           calls: nextToolCalls.map((tc) => ({
             concurrency_safe: resolveConcurrencySafe(tc.tool),
@@ -4274,6 +4330,7 @@ export const runChatTurn = async (
         // to the AI. Later rounds keep mutating the live array;
         // passing the live reference would let those mutations leak
         // into the earlier round's wire input.
+        if (!sourceReadBatch) projectionReadBarrier = toolResultsAccum.length;
         const reinvokeResult = await tryMainTurn(
           retainForReinvoke(priorToolCalls, roundStart),
           reusedAssetRead ? ASSET_READ_REUSE_FEEDBACK : undefined,

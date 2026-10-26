@@ -1251,7 +1251,7 @@ const COPY = {
   detail_saved_views_note: 'These appear in Data under “From packs”. The Pack sets their name and settings; you can hide one there.',
   detail_recipes_error_prefix: 'Recued could not load what this Pack can do.',
   detail_access_placeholder:
-    'One day you will manage this Pack’s access here. For now, it is set per agreement:',
+    'One day you will manage this Pack’s access here. For now, it is set per contract:',
   detail_access_contracts_label: 'Open Contracts →',
   // Slice G — symmetric uninstall body-grant disclosure. Mirrors the
   // install dialog's body-grants callout (now in `packs-install-dialog.ts`)

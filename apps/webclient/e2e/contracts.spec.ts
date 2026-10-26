@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { TIER1_TOOL_GUIDE } from '@recued/contracts';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 /** Contracts browser journeys against the deterministic full-app harness. */
@@ -9,7 +10,7 @@ const CONTRACTS_LIST_TAB = 'data-recued-contracts-list-tab';
 
 installFullAppHooks();
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Contracts keeps the key on Connect and grant filters through access repaints at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`${HARNESS_URL}?contracts=paged#contracts/door_paged_01/connect`);
@@ -118,7 +119,7 @@ test('Contracts category tabs form one arrow-key keyboard stop', async ({ page }
   await expect(builtIn).toHaveAttribute('tabindex', '0');
   await expect(builtIn).toBeFocused();
   await expect(page.locator('[data-recued-contracts-page-status]')).toHaveText(
-    'No agreements you look after on this page',
+    'No contracts you look after on this page',
   );
 
   await page.keyboard.press('End');
@@ -415,7 +416,7 @@ test('Contracts contains page failures and preserves the exact retry', async ({ 
   const failureId = `page_${'P'.repeat(220)}`;
   const error = body.locator('[data-recued-contracts-error]');
   await expect(error).toHaveText(
-    `Recued could not load some of your agreements: Contract page unavailable for cursor `
+    `Recued could not load some of your contracts: Contract page unavailable for cursor `
       + `${failureId}. Retry this page.`,
   );
   await expect(status).toHaveText('Showing 1–25 of 26');
@@ -586,7 +587,7 @@ test('Contracts Connect renders a full-size mobile credential editor', async ({ 
 
   // D-327 — the agreement's own key, not a server-wide door panel.
   const key = page.locator('[data-recued-contract-key]');
-  await expect(key).toContainText('This agreement has a key');
+  await expect(key).toContainText('This contract has a key');
   const turnOff = key.locator('[data-recued-contract-key-turn-off]');
   await expect(turnOff).toHaveText('Turn off this key');
   expect((await turnOff.boundingBox())?.height).toBeGreaterThanOrEqual(36);
@@ -720,7 +721,9 @@ test('Contracts opens Ops with the AI tools, each saying what else it needs', as
   const needs = panel.locator('[data-recued-contract-grants-needs][data-entry="primitive.work.create"]');
   await expect(needs).toBeVisible();
   const buttons = needs.locator('[data-recued-contract-grants-need]');
-  await expect(buttons).toHaveCount(4);
+  // One button per switch the tool needs, counted from the guide the panel draws from. A
+  // literal 4 went stale when `work.create` gained things you own (`0088062d8`).
+  await expect(buttons).toHaveCount(TIER1_TOOL_GUIDE['work.create'].needs.length);
   const heights = await buttons.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
   expect(Math.min(...heights)).toBeGreaterThanOrEqual(24);
   expect(await panel.locator('.cg-needs, .cg-need, .cg-cell-title, .cg-ai-tools-note').evaluateAll(

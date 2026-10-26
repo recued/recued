@@ -891,6 +891,7 @@ export {
   KERNEL_OP_GUIDE,
   TIER1_TOOL_GUIDE,
   grantSwitchText,
+  tier1CallTitle,
   toolsNeedingSwitch,
 } from './grant-switch-guide.js';
 export type { GrantSwitchText, Tier1ToolGuide, Tier1ToolNeed } from './grant-switch-guide.js';
@@ -1933,6 +1934,7 @@ export {
   isActor,
   executionSourceContractId,
   executionSourceHasContract,
+  ownerApprovesCallsOf,
   STDIO_MCP_TOKEN_ID,
   isDelegatedMcpToken,
   isDoorDispatchSource,
@@ -6957,7 +6959,7 @@ export type { MailboxCollection, MailboxSetting } from './mailbox-settings.js';
 export { INSTALL_OFFER_LIMIT, INSTALL_OFFER_RECIPE_NAMES_LIMIT, installOffersOf } from './install-offers.js';
 export type { InstallOffer } from './install-offers.js';
 export { CHAT_SOURCE_CITATION_LIMIT, chatSourceCitationsOf } from './chat-source-citation.js';
-export type { ChatSourceCitation } from './chat-source-citation.js';
+export type { ChatAssetProjectionScope, ChatSourceCitation } from './chat-source-citation.js';
 
 // D-315 — mail facts: the built-in fact types, the template shape, the fact and
 // thing records, and the event vocabulary.
@@ -7066,6 +7068,7 @@ export type { AssetRuleClock, AssetReminderPoint } from './asset-rule-clock.js';
 export * from './yours.js';
 export * from './asset-fact-context.js';
 export * from './asset-documents.js';
+export * from './asset-search-terms.js';
 export * from './proactive-history.js';
 export type {
   SituationBasis, SituationVerdict, SituationReason, SituationRef, SituationPlace,

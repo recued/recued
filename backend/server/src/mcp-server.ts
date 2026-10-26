@@ -35,7 +35,7 @@ import {
   runCanonicalSearchFanout,
 } from './canonical-op-tool-catalog.js';
 import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
-import { CANONICAL_OP_TOOL_PREFIX } from '@recued/contracts';
+import { CANONICAL_OP_TOOL_PREFIX, type ApprovalValueLabels } from '@recued/contracts';
 import { deriveChannelSessionId, planApproval } from '@recued/gateway';
 import { resolveConnectionVendor } from './storage/connection-store.js';
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
@@ -440,12 +440,32 @@ const resolveMcpDoorReadGrantChecker = (deps: McpDeps): ReadGrantChecker =>
  *  passes `isVerbOpGranted('core.peer.receive-ask')` (the CONTRACT overlay, a
  *  different axis) and then the receiver's default-closed per-(peer, label)
  *  exposure check. This one answers "may this token call this tool at all". */
-/** What a key is told for a tool it may not call. D-327: an agreement's key
- *  takes its tools from the agreement's switches, so that is where it points —
- *  the key's own checklist has no page of its own any more. */
-const MCP_KEY_TOOL_REFUSAL = (tool_name: string): string =>
-  `Tool '${tool_name}' is not granted to this key. Switch it on for the key's agreement `
-  + 'on the Contracts page of the web app (Ops, Entities, Recipes).';
+/** What a key is told for a tool it may not call. D-327: a contract's key takes its tools
+ *  from the contract's switches, so that is where it points.
+ *
+ *  ⛔ NOT FOR THE KEY OF THE OLDER KIND OF CONTRACT. That key keeps the tool list it was
+ *  issued with, and the page that edited that list is gone, so its switches cannot add a
+ *  tool of this kind (a pack op, `recued_op_*`, is the contract's at every door and never
+ *  reaches this text). Until 2026-10-25 that key was sent to them too, and an owner who did
+ *  as told saw nothing change. It says "the kind made before 26.10.24", not "made before": a direct
+ *  `chat.inbound_token.issue` can still mint one. ⛔ NOR FOR A SELLER'S CUSTOMER, who has
+ *  no Contracts page; it gets its contract's wording, as the op gate words it.
+ *  ⚠ Model-facing: the AI relays it (chat-prompt log). */
+const MCP_KEY_TOOL_REFUSAL = (
+  tool_name: string,
+  deps: Pick<McpDeps, 'customerContractGrants' | 'keyReadsContractTools'>,
+): string => {
+  if (deps.customerContractGrants === true) {
+    return `Tool '${tool_name}' is not granted by this customer contract.`;
+  }
+  return deps.keyReadsContractTools === false
+    ? `Tool '${tool_name}' is not granted to this key. Its contract is the kind made before `
+      + 'Recued 26.10.24: the key keeps the tools it was made with, so switching this tool on '
+      + 'in the web app cannot add it. To use it, make a new contract on the Contracts page, '
+      + "switch the tool on there, and connect with that contract's key."
+    : `Tool '${tool_name}' is not granted to this key. Switch it on for the key's contract `
+      + 'on the Contracts page of the web app (Ops, Entities, Recipes).';
+};
 
 const isCheckedListGranted = (deps: McpDeps, tool_name: string): boolean => {
   const gate = deps.inboundTokenAuthorize;
@@ -1442,6 +1462,7 @@ const holdMcpTier1Write = async (
   deps: McpDeps,
   tool: string,
   args: Record<string, unknown>,
+  valueLabels?: ApprovalValueLabels,
 ): Promise<unknown> => {
   const executionSource = buildMcpExecutionSource(deps);
   const contractSnapshot = buildMcpContractSnapshot(executionSource, deps);
@@ -1451,6 +1472,7 @@ const holdMcpTier1Write = async (
     executionSource,
     contractSnapshot,
     ...(executionSource.channel === 'mcp' ? { correlationId: executionSource.tool_call_id } : {}),
+    ...(valueLabels !== undefined ? { valueLabels } : {}),
   });
   if (outcome.kind === 'held') return heldMcpTier1Response(deps, tool, outcome.run_id);
   if (outcome.kind === 'ask') {
@@ -1614,15 +1636,44 @@ const handleDiscover = (deps: McpDeps): unknown => ({
   _meta: mcpServerResultMeta(SERVER_INFO),
 });
 
-const modernMcpResult = (result: unknown, modern: boolean): unknown => {
+/** 2026-07-28 (SEP-2549) — the methods whose results a client may cache. Each such result must carry
+ *  `ttlMs` and `cacheScope`, and the official SDK v2 client (`@modelcontextprotocol/client` 2.2.0, the
+ *  one DeepSeek Harness connects with) rejects a result without them. Until 2026-10-25 only
+ *  `server/discover` set them, so that client got the handshake and then no tools at all. The list is
+ *  the SDK's own `CACHEABLE_RESULT_METHODS`. */
+const MCP_CACHEABLE_RESULT_METHODS: ReadonlySet<string> = new Set([
+  'tools/list',
+  'prompts/list',
+  'resources/list',
+  'resources/templates/list',
+  'resources/read',
+  'server/discover',
+]);
+
+/** A handler's own valid cache fields win (`server/discover` keeps its five minutes). Anything else gets
+ *  `0` and `private`, the SDK server's defaults, which are also right for Recued: each key sees its own
+ *  tools, and a switch flipped on its contract changes them on the next request. */
+const mcpCacheFields = (
+  record: Record<string, unknown>,
+): { ttlMs: number; cacheScope: 'public' | 'private' } => ({
+  ttlMs: typeof record.ttlMs === 'number' && Number.isSafeInteger(record.ttlMs) && record.ttlMs >= 0
+    ? record.ttlMs
+    : 0,
+  cacheScope: record.cacheScope === 'public' || record.cacheScope === 'private' ? record.cacheScope : 'private',
+});
+
+const modernMcpResult = (result: unknown, modern: boolean, method: string): unknown => {
   if (!modern || result === null || typeof result !== 'object' || Array.isArray(result)) {
     return result;
   }
   const record = result as Record<string, unknown>;
   const existingMeta = record._meta;
+  const resultType = typeof record.resultType === 'string' ? record.resultType : 'complete';
   return {
     ...record,
-    resultType: typeof record.resultType === 'string' ? record.resultType : 'complete',
+    // Only a complete result is cacheable; a result asking for more input is not.
+    ...(resultType === 'complete' && MCP_CACHEABLE_RESULT_METHODS.has(method) ? mcpCacheFields(record) : {}),
+    resultType,
     _meta: {
       ...(existingMeta !== null && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
         ? existingMeta as Record<string, unknown>
@@ -2012,6 +2063,10 @@ export interface McpDeps extends ExecuteHandlerDeps {
    *  exhaustion of the bound contract is a live kill-switch. Only meaningful when
    *  `boundContractId` is set. */
   boundContractActive?: boolean;
+  /** D-327 — whether this key takes its tools from its contract's switches. `false` for the key of
+   *  the older kind of standing contract, which keeps the tools it was issued with, so a refusal
+   *  must not send the owner to switches that cannot help. Absent ⇒ unknown, told as the former. */
+  keyReadsContractTools?: boolean;
   /** Door standing closure, MCP arm — resolved from the BOUND CONTRACT at
    *  request entry (`contractOverlay.standingClosureOperationIds`), never from
    *  the token record. Threaded onto the dispatch snapshot so
@@ -2115,6 +2170,16 @@ const mcpActionKindForRun = async (
   }
 };
 
+/** Said after a held answer's `message` on this door, where an `action_ref` comes with it:
+ *  when to check the action. ⚠ Model-facing (chat-prompt log 2026-10-25l). Told only that
+ *  the action was queued, an app wanting to finish its task checked `recued_actionStatus`
+ *  four times running inside one turn, each answer the same "waiting" (Cline on qwen3.7-plus,
+ *  live 10-25), when nothing could change until the user answered. */
+const MCP_ACTION_CHECK_ONCE_MESSAGE =
+  `Do not call ${MCP_ACTION_STATUS_TOOL_NAME} while you wait: until the user answers, it only `
+  + 'reports awaiting_approval. When the user says they have answered, call '
+  + `${MCP_ACTION_STATUS_TOOL_NAME} once with this action_ref to learn the outcome.`;
+
 /** Attach a durable continuation address to an already-durable hold. Failure
  * never changes approval semantics: the action remains held and must not be
  * retried, while the missing receipt is logged for the operator. */
@@ -2142,8 +2207,12 @@ const attachMcpActionRef = async (
       kind: input.kind,
       checkpoint_id: await currentCheckpointId(deps, input.run_id),
     });
+    const { message } = input.projected as { message?: unknown };
     return {
       ...(input.projected as Record<string, unknown>),
+      message: typeof message === 'string'
+        ? `${message} ${MCP_ACTION_CHECK_ONCE_MESSAGE}`
+        : MCP_ACTION_CHECK_ONCE_MESSAGE,
       action_ref: action.action_ref,
       action_status: action.status,
       action_query_tool: MCP_ACTION_STATUS_TOOL_NAME,
@@ -2468,6 +2537,7 @@ const buildAdapterForDeps = (
   deps: McpDeps,
   executionSource?: ExecutionSource,
   contractSnapshot?: ContractSnapshot,
+  ownerApproved = false,
 ): McpInternalToolAdapter | null => {
   if (!deps.internalRegistry) return null;
   return buildInternalToolMcpAdapter({
@@ -2475,6 +2545,7 @@ const buildAdapterForDeps = (
     mcp_token_id: deps.mcpTokenId ?? STDIO_MCP_TOKEN_ID,
     ...(executionSource ? { execution_source: executionSource } : {}),
     ...(contractSnapshot ? { contract_snapshot: contractSnapshot } : {}),
+    ...(ownerApproved ? { owner_approved: true as const } : {}),
   });
 };
 
@@ -2588,7 +2659,7 @@ const preflightMcpCustomerUsage = (
     ) {
       return {
         ok: false,
-        result: err(MCP_KEY_TOOL_REFUSAL(params.name)),
+        result: err(MCP_KEY_TOOL_REFUSAL(params.name, deps)),
       };
     }
   }
@@ -2773,7 +2844,7 @@ const handleToolCall = async (
           ? `Tool '${params.name}' is not available: this connection presented no MCP token, `
             + 'so it carries no per-tool checklist. Pass --token <bearer> or set '
             + 'RECUED_MCP_TOKEN; create one on the Contracts page of the web app.'
-          : MCP_KEY_TOOL_REFUSAL(params.name),
+          : MCP_KEY_TOOL_REFUSAL(params.name, deps),
       );
     }
   }
@@ -2849,6 +2920,8 @@ const handleToolCall = async (
     // D-329 — a Tier-1 write is held for the owner, as a write raw op is: the ask fans out
     // to every approval channel, and approving runs it (`resumeRawOp`). Every MCP call runs
     // at the `read` ceiling, the owner's own token included, so every such write asks.
+    // D-325 — set when a write rule the owner accepted for this app runs the call.
+    let ruledWrite = false;
     if (registryEntry.tier === 1 && planApproval.requiresPlanApproval(registryEntry)) {
       const source = buildMcpExecutionSource(deps);
       const gate = await oneIdenticalMcpCallAtATime(source, params.name, args, async () => {
@@ -2868,11 +2941,21 @@ const handleToolCall = async (
         // D-329 §3.4 — unless a standing write rule the owner accepted for this app stands in
         // for the ask: then it runs below, and spends one of the rule's uses.
         const ruled = useWriteRule(deps.writeRules, source, params.name, args);
-        if (ruled === undefined) return { response: await holdMcpTier1Write(deps, params.name, args) };
+        if (ruled === undefined) {
+          // A call its own arguments refuse is not put to the owner: the app reads why
+          // now, instead of the owner approving a write that then does not run.
+          const adapter = buildAdapterForDeps(deps, source, buildMcpContractSnapshot(source, deps));
+          const refused = await adapter?.checkBeforeAsking(params.name, args);
+          if (refused && !refused.ok) return { response: err(formatMcpDispatchError(refused)) };
+          // The records it names, by their names, for the owner's ask.
+          const valueLabels = await adapter?.askValueLabels(params.name, args).catch(() => undefined);
+          return { response: await holdMcpTier1Write(deps, params.name, args, valueLabels) };
+        }
         return { ruled };
       });
       if ('response' in gate) return gate.response;
       const { ruled } = gate;
+      ruledWrite = true;
       if (deps.auditLog) {
         try {
           await deps.auditLog.logActivity({
@@ -2905,6 +2988,7 @@ const handleToolCall = async (
       deps,
       registryExecutionSource,
       registryContractSnapshot,
+      ruledWrite,
     )!;
     const startedAt = Date.now();
     let status: 'ok' | 'failed' = 'failed';
@@ -4166,7 +4250,7 @@ const dispatch = async (
   const resultResponse = (result: unknown): JsonRpcResponse => ({
     jsonrpc: '2.0',
     id,
-    result: modernMcpResult(result, modern),
+    result: modernMcpResult(result, modern, request.method),
   });
 
   try {

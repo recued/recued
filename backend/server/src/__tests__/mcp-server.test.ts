@@ -1184,6 +1184,46 @@ describe('MCP protocol version negotiation', () => {
     });
   });
 
+  // `tools/list` exactly as the official MCP SDK v2 client (`@modelcontextprotocol/client` 2.2.0)
+  // sends it with `versionNegotiation: { mode: 'auto' }`, the way DeepSeek Harness's dsh-mcp-client
+  // connects; recorded from that client on 2026-10-25.
+  const SDK_V2_TOOLS_LIST = {
+    method: 'tools/list',
+    jsonrpc: '2.0',
+    id: 0,
+    params: {
+      _meta: {
+        'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+        'io.modelcontextprotocol/clientInfo': { name: 'dsh-mcp-client', version: '0.0.1' },
+        'io.modelcontextprotocol/clientCapabilities': {},
+      },
+    },
+  };
+
+  it('gives a modern tools/list the cache fields the SDK v2 client requires (SEP-2549)', async () => {
+    // Without `ttlMs` and `cacheScope` that client rejects the whole list, so it got the handshake and
+    // then no tools at all. The SDK's schema: a non-negative integer, and 'public' or 'private'.
+    const response = await _testing.dispatch(SDK_V2_TOOLS_LIST, makeDeps() as McpDeps) as {
+      result: { tools: unknown[] } & Record<string, unknown>;
+    };
+
+    expect(response.result.tools.length).toBeGreaterThan(0);
+    expect(response.result).toMatchObject({ resultType: 'complete', ttlMs: 0, cacheScope: 'private' });
+  });
+
+  it('leaves a 2025-era tools/list as it was, with no cache fields', async () => {
+    const response = await _testing.dispatch({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+    }, makeDeps() as McpDeps) as { result: Record<string, unknown> };
+
+    expect(response.result).toHaveProperty('tools');
+    expect(response.result).not.toHaveProperty('ttlMs');
+    expect(response.result).not.toHaveProperty('cacheScope');
+    expect(response.result).not.toHaveProperty('resultType');
+  });
+
   it('answers a ping with an empty result, before any handshake', async () => {
     const response = await _testing.dispatch({
       jsonrpc: '2.0',
@@ -1863,6 +1903,46 @@ describe('MCP per-ingredient dispatch', () => {
     const text = (res as { content: Array<{ text: string }> }).content[0].text;
     expect(text).toMatch(/not granted/);
     expect(text).toMatch(/forbidden-slug/);
+  });
+
+  // D-327 — the refusal is relayed to the owner, so it must name a step that
+  // works for THIS key. The older kind of contract's key keeps the tools it was
+  // made with; sending it to the switches (as every key was until 2026-10-25)
+  // left an owner flipping a switch that changed nothing.
+  it('D-327 — tells each kind of key the step that can add the tool', async () => {
+    const manifests = createManifestRegistry('/nonexistent');
+    manifests.register({ ...httpTool, slug: 'forbidden-slug', name: 'Forbidden Slug' });
+    const refusal = async (extra: Record<string, unknown>): Promise<string> => {
+      const res = await _testing.handleToolCall(
+        { name: 'recued_ingredient_forbidden-slug', arguments: {} },
+        {
+          recipeStore: createRecipeStore('/nonexistent'),
+          executorConfig: { manifests },
+          baseVault: {},
+          inboundTokenAuthorize: () => false,
+          ...extra,
+        } as unknown as Parameters<typeof _testing.handleToolCall>[1],
+      );
+      expect((res as { isError?: boolean }).isError).toBe(true);
+      return (res as { content: Array<{ text: string }> }).content[0].text;
+    };
+
+    const older = await refusal({ keyReadsContractTools: false });
+    expect(older).toContain('the kind made before Recued 26.10.24');
+    expect(older).toContain('make a new contract on the Contracts page');
+    expect(older).toContain('switching this tool on in the web app cannot add it');
+    expect(older).not.toContain('Switch it on');
+
+    for (const extra of [{ keyReadsContractTools: true }, {}]) {
+      const current = await refusal(extra);
+      expect(current).toContain("Switch it on for the key's contract on the Contracts page");
+      expect(current).not.toContain('make a new contract');
+    }
+
+    // A seller's customer has no Contracts page: it gets its contract's wording,
+    // whatever its key's kind.
+    const customer = await refusal({ customerContractGrants: true, keyReadsContractTools: false });
+    expect(customer).toBe("Tool 'recued_ingredient_forbidden-slug' is not granted by this customer contract.");
   });
 
   it('unknown slug on server route surfaces a clear error', async () => {

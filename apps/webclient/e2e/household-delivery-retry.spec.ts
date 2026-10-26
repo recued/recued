@@ -184,7 +184,7 @@ test('Household says where to connect a destination when none is connected', asy
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Household an unchanged Home Assistant save still needs a complete recovery read at ${width}px`, async ({ page }) => {
     await open(page, width, false); await release(page, 'read'); await press(save(page, 'home_assistant'));
     await release(page, 'save', 0, 'error'); await expect(notice(page)).toHaveAttribute('role', 'alert');

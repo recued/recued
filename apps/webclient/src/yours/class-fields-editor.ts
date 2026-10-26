@@ -1,4 +1,4 @@
-import type { AssetClassPreset } from '@recued/contracts';
+import { ASSET_SEARCH_TERMS, assetSearchTerms, parseAssetSearchTerms, type AssetClassPreset } from '@recued/contracts';
 import { factKey, factName } from './fact-words.js';
 import { yoursFieldError } from './yours-field-errors.js';
 import { yoursDisclosure, yoursInput, yoursNode } from './yours-view.js';
@@ -6,6 +6,18 @@ import { yoursDisclosure, yoursInput, yoursNode } from './yours-view.js';
 export const mountClassFieldsEditor = (host: HTMLFormElement, preset: AssetClassPreset, changed: () => void) => {
   const readers: Array<() => void> = [];
   const result = structuredClone(preset.fields);
+  const initialKeywords = assetSearchTerms(preset.fields.settings[ASSET_SEARCH_TERMS]).join(', ');
+  const keywords = yoursInput(host, 'Search keywords', 'search-terms', initialKeywords, changed);
+  keywords.placeholder = 'trip, travel, holiday';
+  yoursNode(host, 'small', '', 'Helps AI find assets of this type for related requests. Separate keywords with commas.');
+  readers.push(() => {
+    if (keywords.value === initialKeywords) return;
+    try {
+      const terms = parseAssetSearchTerms(keywords.value);
+      if (terms.length) result.settings[ASSET_SEARCH_TERMS] = terms;
+      else delete result.settings[ASSET_SEARCH_TERMS];
+    } catch (error) { yoursFieldError(keywords, (error as Error).message); }
+  });
   for (const [group, title] of [['dates', 'Date'], ['readings', 'Reading'], ['observations', 'Condition']] as const) {
     const section = yoursNode(host, 'fieldset', 'yours-class-fields'); yoursNode(section, 'legend', '', `${title} fields`);
     const rows = yoursNode(section, 'div', 'yours-class-field-list');

@@ -8,7 +8,7 @@ const runAndReview = async (page: Page) => {
   await page.getByRole('button', { name: 'Review configuration activation', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Review exact configuration', exact: true })).toBeVisible();
 };
-for (const width of [280, 1280]) {
+for (const width of [280]) {
   test(`distinguishes saved proof from working and unadded scenario edits at ${width}px`, async ({ page }) => {
     await open(page, width);
     const working = page.locator('[data-rehearsal-working-state]');

@@ -480,7 +480,7 @@ describe('D-182 §7.1 (5b.2) — renderInstallGrantPicker', () => {
     ]);
     expect(checks.map((r) => r.checked)).toEqual([true, false, false]);
     expect(collectText(scope!)).toContain('All customers');
-    expect(collectText(scope!)).toContain('Everyone else you have an agreement with');
+    expect(collectText(scope!)).toContain('Everyone else you have a contract with');
     // Audience hints disclose the Option-A future-door limitation.
     expect(collectText(scope!)).toContain('added later');
   });

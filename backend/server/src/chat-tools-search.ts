@@ -48,6 +48,7 @@ import {
 } from './chat-doc-search.js';
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 import type { InstalledMatchText } from './install-offers/match.js';
+import { forwardedRegistryHooks } from './registry-forwarding.js';
 
 /** D-323 — the marketplace offers for one search: its query, and what it found
  *  installed. The source decides whether something installed already does it. */
@@ -410,6 +411,7 @@ export const wrapRegistryWithToolsSearch = (
       name === TOOLS_SEARCH_TOOL_NAME
         ? dispatchSearch(args, ctx)
         : inner.dispatch(name, args, ctx),
+    ...forwardedRegistryHooks(inner),
     subscribeRefresh: (callback: () => void) => inner.subscribeRefresh(callback),
   };
 };

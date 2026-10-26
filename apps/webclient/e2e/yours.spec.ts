@@ -1682,6 +1682,7 @@ test('Asset details save typed preferences, anchors and dated value history', as
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
   let form = page.locator('[data-yours-editor]'); await form.getByRole('button', { name: 'Add setting', exact: true }).click();
+  await form.getByLabel('Additional search keywords', { exact: true }).fill('Reunion, travel, reunion');
   await form.getByLabel('Settings field name', { exact: true }).fill('preferred_notice_days'); await form.getByLabel('Settings value type', { exact: true }).selectOption('Number'); await form.getByLabel('Settings value', { exact: true }).fill('21');
   await form.getByRole('button', { name: 'Add attribute', exact: true }).click(); await form.getByLabel('Attributes field name', { exact: true }).fill('cover'); await form.getByLabel('Attributes value', { exact: true }).fill('Blue');
   await form.getByRole('button', { name: 'Add place', exact: true }).click(); await form.getByLabel('Place name', { exact: true }).fill('Home'); await form.getByLabel('Latitude', { exact: true }).fill('37.78'); await form.getByLabel('Longitude', { exact: true }).fill('-122.41');
@@ -1689,8 +1690,25 @@ test('Asset details save typed preferences, anchors and dated value history', as
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
   await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
+  await expect(form.getByLabel('Additional search keywords', { exact: true })).toHaveValue('reunion, travel');
   await expect(form.getByLabel('Settings value type', { exact: true })).toHaveValue('Number'); await expect(form.getByLabel('Settings value', { exact: true })).toHaveValue('21');
   await expect(form.getByLabel('Latitude', { exact: true })).toHaveValue('37.78'); await expect(form.getByLabel('Amount', { exact: true })).toHaveValue('85.50'); await expect(form.getByLabel('Valued on', { exact: true })).toHaveValue('2026-10-10');
+  await form.getByLabel('Additional search keywords', { exact: true }).fill('');
+  await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
+  await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
+  await expect(form.getByLabel('Additional search keywords', { exact: true })).toHaveValue('');
+  await expect(form.getByLabel('Attributes value', { exact: true })).toHaveValue('Blue');
+});
+
+test('Search keywords reject oversized terms before saving and focus the editable field', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Edit asset', exact: true }).click();
+  const form = route.locator('[data-yours-editor]'); const keywords = form.getByLabel('Additional search keywords', { exact: true });
+  const before = await page.evaluate(() => window.__app.rpcCallCount('yours.change'));
+  await keywords.fill('x'.repeat(81)); await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(keywords).toBeFocused(); await expect(keywords).toHaveAttribute('aria-invalid', 'true');
+  await expect(route.getByRole('alert')).toContainText('80 characters');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(before);
 });
 
 test.describe('Asset fact row focus', () => {

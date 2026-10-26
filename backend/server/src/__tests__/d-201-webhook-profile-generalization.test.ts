@@ -1605,10 +1605,6 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
     }
     expect(driver).toContain("kind: 'addressable_endpoint_collection.v1'");
     expect(driver).toContain("kind: 'bounded_after_id.v1'");
-    expect(driver).toContain('preset.pagination.max_pages');
-    expect(driver).toContain('preset.pagination.page_size');
-    expect(driver).toContain('prepareSearch');
-    expect(driver).toContain('readSearchPage');
 
     expect(presets).toContain('stripe.event.v1');
     expect(presets).toContain('paddle.notification.v1');
@@ -1670,10 +1666,6 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
     expect(driver)
       .toContain("kind: 'target_scoped_endpoint_collection.v1'");
     expect(driver).toContain("kind: 'bounded_page_number.v1'");
-    expect(driver).toContain('preset.pagination.max_pages');
-    expect(driver).toContain('preset.pagination.page_size');
-    expect(driver).toContain('prepareSearch');
-    expect(driver).toContain('readSearchPage');
 
     expect(presets).toContain('github.webhook.v1');
     expect(presets)

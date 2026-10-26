@@ -65,6 +65,7 @@ import {
   type ToolEntry,
   type ToolTier,
 } from '@recued/contracts';
+import { forwardedRegistryHooks } from './registry-forwarding.js';
 
 /** Chat-catalog name for a per-topic entry. The `enrichment.` prefix is
  *  the lab's bench-validated naming (`enrichmentToolName` in
@@ -295,6 +296,7 @@ export const wrapRegistryWithEnrichmentTopicTools = (
     listByTier,
     getByName,
     dispatch,
+    ...forwardedRegistryHooks(inner),
     subscribeRefresh: (callback) => inner.subscribeRefresh(callback),
   };
 };

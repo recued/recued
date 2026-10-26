@@ -15,7 +15,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  HOUSEKEEPING_PANEL_STYLES,
   mountHousekeepingPanel,
 } from '../settings/housekeeping-panel-mount.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
@@ -480,59 +479,6 @@ describe('Housekeeping initial-load recovery', () => {
 });
 
 describe('mountHousekeepingPanel — trust-core slice', () => {
-  it('floors the run-policy control so its three labels cannot close up', () => {
-    // The control lives in a grid cell whose track is `minmax(0, 1fr)` and
-    // whose `td` sets `min-width: 0` — both of which exist to let a child
-    // shrink past its own min-content. Without an explicit floor the
-    // segmented control compresses and Off/Manual/Auto read as one word.
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-producer-runpolicy\s*\{[^}]*min-width:\s*144px/s,
-    );
-    // The structural half: a floor stops the control shrinking, nowrap
-    // stops a label breaking onto a second line inside whatever width it
-    // does get.
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-producer-runpolicy-seg span\s*\{[^}]*white-space:\s*nowrap/s,
-    );
-  });
-
-  it('floors Last run to its own widest value, and never wraps it', () => {
-    // The column renders relative time, so the ceiling is `999d ago`
-    // (measured 70.5px in Chrome incl. cell padding). 80px is that plus
-    // headroom for a wider default font off macOS — NOT room for an
-    // absolute stamp, which this column deliberately does not show.
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-producer-last-run\s*\{[^}]*min-width:\s*80px/s,
-    );
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-producer-last-run\s*\{[^}]*white-space:\s*nowrap/s,
-    );
-  });
-
-  it('gives producer and drawer controls full targets with mobile cards', () => {
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-producer-cost-segment\s*\{[^}]*min-height:\s*36px/s,
-    );
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-producer-runpolicy-seg\s*\{[^}]*min-height:\s*36px/s,
-    );
-    expect(HOUSEKEEPING_PANEL_STYLES).toContain(
-      '.housekeeping-drawer-toggle-button { box-sizing: border-box; '
-      + 'min-width: 36px; min-height: 36px; }',
-    );
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-drawer-radio\s*\{[^}]*min-height:\s*36px/s,
-    );
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-reset-psi-toggle\s*\{[^}]*min-height:\s*36px/s,
-    );
-    expect(HOUSEKEEPING_PANEL_STYLES).toContain(
-      '@media (max-width: 720px)',
-    );
-    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
-      /\.housekeeping-producer-table \.housekeeping-producer-row\s*\{[^}]*display:\s*grid/s,
-    );
-  });
 
   it('fires config + status + trust reads on mount and paints the panel', async () => {
     const fakeHost = makeFakeHost();

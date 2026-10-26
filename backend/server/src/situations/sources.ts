@@ -20,8 +20,11 @@ import { createProactiveProposalStore } from '../storage/proactive-proposal-stor
 import { declaredOccasionId } from './declared-occasions.js';
 import { assetRuleTimings, isTravelDocument, isVisa } from './asset-rule-timing.js';
 import { situationAssetDetails } from './asset-details.js';
+import { rememberAssetDetailsRead } from './asset-projection-provenance.js';
 import { placeCountry } from './country-place.js';
 import { ruleStatement } from './rule-titles.js';
+import { ASSET_SEARCH_TERMS } from '@recued/contracts';
+import { assetSearchTermsFromJson, readAssetTypeSearchTerms } from '../asset-search-terms.js';
 
 const PAGE = 500;
 const DATED: Record<string, string> = { bill: 'due_at', statement: 'due_at', shipment: 'expected_at', reservation: 'starts_at' };
@@ -326,6 +329,7 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       base.subjects = [subject]; base.people = asset.holder_contact ? [asset.holder_contact] : [];
       // Every item this asset produces carries its own fields, whatever its class.
       base.details = situationAssetDetails(asset);
+      if (query.surface === 'tool' || query.surface === 'prefetch' && context?.citeAssetDetails === true) rememberAssetDetailsRead(asset, base.details, now());
       if (isTravelDocument(asset)) base.travel_document = {
         ...(asset.holder_contact ? { holder: asset.holder_contact } : {}), issued_on: asset.dates.issued_on, expires_on: asset.dates.expires_on,
         ...(typeof asset.settings.nationality === 'string' && /^[A-Z]{2}$/u.test(asset.settings.nationality) ? { nationality: asset.settings.nationality } : {}),
@@ -376,7 +380,21 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
   // every evaluated asset; the unevaluated ones are read whatever they say.
   const holders = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE holder_contact=?`);
   const changed = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE updated_at>?`);
-  const assetNames = deps.db.prepare(`SELECT id,name FROM ${ASSET_TABLE} WHERE deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')`);
+  const assetNames = deps.db.prepare(`SELECT id,name,class_id,json_quote(json_extract(data_blob,'$.attributes.${ASSET_SEARCH_TERMS}')) AS terms
+    FROM ${ASSET_TABLE} WHERE deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')`);
+  assets.textMatcher = query => {
+    const text = situationText(query); const types = readAssetTypeSearchTerms(deps.db); const rules = clocks.ruleTitles();
+    const terms = new Map<string, string>(); const hits = new Map<string, number>(); const candidates = new Set<string>();
+    for (const row of assetNames.all() as Array<{ id: string; name: string; class_id: string | null; terms: string }>) {
+      const hints = [...(types.get(row.class_id ?? '') ?? []), ...assetSearchTermsFromJson(row.terms)].join(' ');
+      terms.set(row.id, hints);
+      hits.set(row.id, text.hits(hints));
+      if (text.title(`${row.name} ${hints}`) || rules.get(row.id)?.some(title => text.title(`${title} · ${row.name} ${hints}`))) candidates.add(row.id);
+    }
+    // Search metadata must remain usable when the bounded model projection
+    // omits an array, a long string, or all of an asset's details.
+    return { candidates, matches: item => text.title(`${item.title} ${terms.get(item.ref.id) ?? ''}`), keywordHits: item => hits.get(item.ref.id) ?? 0 };
+  };
   const descendants = deps.db.prepare(`WITH RECURSIVE tree(id) AS (SELECT value FROM json_each(?)
     UNION SELECT a.id FROM ${ASSET_TABLE} a JOIN tree ON a.belongs_to=tree.id WHERE a.deleted_at IS NULL) SELECT id FROM tree`);
   assets.index = {
@@ -384,12 +402,6 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       const window = typeof query.time === 'number' ? { from: query.time, to: query.time } : query.time;
       const unevaluated = clocks.unevaluated(deps.timeZone());
       const ids = new Set(query.surface === 'prefetch' ? unevaluated : clocks.candidates({ ...window, now: now(), zone: deps.timeZone() }));
-      if (query.text?.trim()) {
-        const text = situationText(query); const rules = clocks.ruleTitles();
-        for (const row of assetNames.all() as Array<{ id: string; name: string }>) {
-          if (text.title(row.name) || rules.get(row.id)?.some(title => text.title(`${title} · ${row.name}`))) ids.add(row.id);
-        }
-      }
       const named = placeNamed(query);
       if (named) {
         const roots = [...clocks.places().filter(row => row.places.some(named)).map(row => row.asset_id), ...unevaluated];

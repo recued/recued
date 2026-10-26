@@ -61,12 +61,17 @@ export const TRIGGER_SKIPPED_MESSAGE =
  *  eight held chat turns. The place sentence is general ("approvals are answered
  *  …"), never "it is waiting there now": the 2026-06-08 rule still holds that this
  *  must not imply a prompt is already visible (the notifier can be absent).
+ *
+ *  ⚠ NOT "AN ACTION THAT SENDS A MESSAGE OR CHANGES SOMETHING OUTSIDE RECUED". It
+ *  said that until 2026-10-25, when most held actions became writes to the owner's own
+ *  records (D-329), and the `work.create` it was answering says it "never leaves this
+ *  machine". The MCP door appends when to check the action (`attachMcpActionRef`).
  *  Byte-pinned twice — the D-177 ratchet and the trio-A copy — edit all or none,
  *  and log it (internal design notes). */
 export const HELD_FOR_APPROVAL_MESSAGE =
   "This action is paused and is now queued for the user's approval before it can run. "
-  + 'This is the expected, successful outcome for an action that sends a message or '
-  + 'changes something outside Recued — it is NOT a failure. The action is already '
+  + "This is the expected, successful outcome for an action that needs the user's "
+  + 'approval — it is NOT a failure. The action is already '
   + 'queued; do NOT call this tool again or resend it. Let the user know the action '
   + 'needs their approval before it can proceed. Approvals are answered in the Recued '
   + 'app, from the bell at the top of the page (Attention), which also opens the '

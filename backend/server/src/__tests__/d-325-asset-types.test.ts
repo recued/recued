@@ -28,7 +28,7 @@ import { AssetTypeError, assetTypeIssues, assetTypes, describeAssetType, listAss
 const NOW = Date.parse('2026-10-24T09:00:00Z');
 const starter = (id: string) => STARTER_ASSET_CLASSES.find(type => type.id === id)!;
 const extracted = { kind: 'extracted' as const, ref: 'chat:session-1' };
-const typeSource = { kind: 'owner', ref: 'type:passport@1' };
+const typeSource = { kind: 'owner', ref: `type:passport@${starter('passport').version}` };
 
 let db: Database.Database;
 beforeEach(() => { db = new Database(':memory:'); });
@@ -53,6 +53,7 @@ describe('D-325 — a type of thing, as an AI is told it', () => {
   it('describes a passport: its dates, that it needs its holder, and the reminders those dates send', () => {
     expect(describeAssetType(starter('passport'))).toEqual({
       type: 'passport', name: 'Passport', dates: ['expires_on', 'issued_on'], holder_required: true,
+      search_keywords: ['trip', 'travel', 'holiday', 'international', 'overseas'],
       reminders: [{ title: 'Renew', due: 'on expires_on', remind: ['6 months before', '3 months before', '1 month before', 'on the day', 'then every 1 month'] }],
     });
   });
@@ -102,7 +103,7 @@ describe('D-325 — an extracted create that names a type', () => {
     const { asset } = await f.dispatchers.assetCreate(passport());
     expect(asset.rules).toEqual([{ ...starter('passport').rules[0]!, pinned: false }]);
     expect(asset.rules[0]!.enabled).toBe(true);
-    expect(asset.settings).toEqual({ sensitive: true, class_version: 1, class_rule_ids: ['renew'] });
+    expect(asset.settings).toEqual({ ...starter('passport').fields.settings, class_version: starter('passport').version, class_rule_ids: ['renew'] });
     expect(asset.dates).toEqual({ expires_on: '2027-03-01', issued_on: null });
     expect(asset.field_sources['dates.expires_on']).toMatchObject(extracted);
     expect(asset.field_sources.holder_contact).toMatchObject(extracted);
@@ -142,7 +143,7 @@ describe('D-325 — an extracted create that names a type', () => {
       rules: [{ ...asset.rules[0]!, enabled: false }], settings: { class_version: 0 } });
     const after = f.work.readAsset(asset.id)!;
     expect(after.rules[0]!.enabled).toBe(true);
-    expect(after.settings.class_version).toBe(1);
+    expect(after.settings.class_version).toBe(starter('passport').version);
     expect(after.field_sources['rules.renew']).toMatchObject(typeSource);
   });
 

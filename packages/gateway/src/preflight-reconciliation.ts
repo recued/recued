@@ -57,9 +57,8 @@ import {
   isOperationSpecHash,
   kernelWriteStaysInRecued,
   renderBatchItemsBlock,
-  isTier1ToolName,
+  tier1CallTitle,
   tier1WriteStaysInRecued,
-  TIER1_TOOL_GUIDE,
   getMessengerVendorDeclaration,
   MAIL_CHAT_DOOR_VENDOR,
   WRITE_STAYS_IN_RECUED_CLAUSE,
@@ -474,7 +473,9 @@ const tier1HoldOf = (checkpoint: Checkpoint, riskTier: string | undefined) => {
   const args = checkpoint.raw_op!.op_args;
   return {
     tool,
-    title: oneLine(isTier1ToolName(tool) ? TIER1_TOOL_GUIDE[tool].title : tool),
+    // The kind of thing a work tool adds or changes, so the owner reads "Change a thing you
+    // own", not "Change a task, note or more".
+    title: oneLine(tier1CallTitle(tool, args) ?? tool),
     proposer: tier1Proposer(checkpoint.raw_op!.execution_source),
     args,
     clause: riskTier === 'write' && tier1WriteStaysInRecued(tool, args) ? LOCAL_WRITE_CLAUSE : tierClause(riskTier),

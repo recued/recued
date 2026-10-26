@@ -165,13 +165,13 @@ describe('D-327 — the key rpcs give an agreement\'s key nothing of its own', (
     const { deps, agreement } = rig();
     expect(await rejectionOf(handleInboundTokenIssue(
       deps, issueArgs(agreement.contract_id, { grants: { 'mail.search': true } }),
-    ))).toContain('grant tools on the agreement');
+    ))).toContain('grant tools on the contract');
     expect(await rejectionOf(handleInboundTokenIssue(
       deps, issueArgs(agreement.contract_id, { chat_mode: { offered: true } }),
     ))).toContain('takes no chat setting');
     expect(await rejectionOf(handleInboundTokenIssue(
       deps, issueArgs(agreement.contract_id, { contract_limits: { max_uses: 5 } }),
-    ))).toContain('live on the agreement');
+    ))).toContain('live on the contract');
   });
 
   it('gives an agreement one key, and a new one only once the old is off', async () => {
@@ -202,7 +202,7 @@ describe('D-327 — the key rpcs give an agreement\'s key nothing of its own', (
     expect(await rejectionOf(handleInboundTokenUpdateGrants(deps, {
       token_id: agreementKey.record.token_id,
       grants: { 'mail.search': true },
-    }))).toContain('takes its permissions from agreement');
+    }))).toContain('takes its permissions from contract');
     expect(await rejectionOf(handleInboundTokenUpdateContract(deps, {
       token_id: otherKey.record.token_id,
       contract_id: agreement.contract_id,

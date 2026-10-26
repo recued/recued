@@ -622,11 +622,123 @@ describe('connection.mcp handler — transport dispatch', () => {
     const toolCall = calls.at(-1)!;
     expect(JSON.parse(toolCall.body!).method).toBe('tools/call');
     expect(toolCall.headers['mcp-session-id']).toBe('SESS-9');
-    // Per-request metadata and mirrored headers are 2026-07-28 constructs and
-    // must not appear on a handshake-era request.
+    // Per-request metadata and the mirrored method header are 2026-07-28
+    // constructs and must not appear on a handshake-era request.
     expect(JSON.parse(toolCall.body!).params._meta).toBeUndefined();
-    expect(toolCall.headers['mcp-protocol-version']).toBeUndefined();
     expect(toolCall.headers['mcp-method']).toBeUndefined();
+    // The version header is not one of them: from 2025-06-18 every request after
+    // `initialize` names the settled revision. This asserted its absence until
+    // 2026-10-25, on a server that had just settled on 2025-11-25.
+    expect(toolCall.headers['mcp-protocol-version']).toBe('2025-11-25');
+  });
+
+  // What the official TS SDK v1.32.2 server does (driven for real 2026-10-25): a
+  // stateful server sends its OWN requests on the call's SSE stream, numbered
+  // from its own counter, so the same id as Recued's call is ordinary, and the
+  // call's real result comes after them.
+  const handshakeServer = (
+    onCall: (call: FetchCall, request: { id: number }) => Response,
+    { version = '2025-11-25', mint = (n: number) => `SESS-${n}` } = {},
+  ): { fetch: typeof fetch; calls: FetchCall[]; initializes: () => number } => {
+    let initializes = 0;
+    const captured = captureFetch((call) => {
+      if (call.method === 'GET') return new Response('nope', { status: 405 });
+      const request = JSON.parse(call.body ?? '{}') as { id?: number; method?: string };
+      if (request.method === 'server/discover') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: null,
+          error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+        }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+      if (request.method === 'initialize') {
+        initializes += 1;
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: request.id,
+          result: { protocolVersion: version, capabilities: { tools: {} }, serverInfo: { name: 's', version: '1' } },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'mcp-session-id': mint(initializes) },
+        });
+      }
+      if (request.method === 'tools/call') return onCall(call, request as { id: number });
+      return new Response(null, { status: 202 });
+    });
+    return { ...captured, initializes: () => initializes };
+  };
+  const sse = (...messages: unknown[]): Response => new Response(
+    messages.map((m) => `event: message\ndata: ${JSON.stringify(m)}\n\n`).join(''),
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+
+  it('answers a server ping on the call’s SSE stream and never takes it for the result', async () => {
+    // Until 2026-10-25 the ping, sharing the call's id, WAS taken for the result:
+    // the call returned an empty result and the real one was dropped.
+    const server = handshakeServer((_call, request) => sse(
+      { jsonrpc: '2.0', id: request.id, method: 'ping' },
+      { jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: 'the real answer' }] } },
+    ));
+    const handler = createConnectionMcpHandler({ decodeAuth: async () => ({ type: 'none' }), fetchImpl: server.fetch });
+
+    const out = await handler(mkRow(), { tool: 'search' }, mkCall()) as {
+      status: string; result: { content: Array<{ text: string }> };
+    };
+
+    expect(out.status).toBe('ok');
+    expect(out.result.content[0]!.text).toBe('the real answer');
+    const callId = (JSON.parse(server.calls.find((c) => c.body?.includes('"tools/call"'))!.body!) as { id: number }).id;
+    await vi.waitFor(() => {
+      const reply = server.calls.find((c) => c.body !== undefined && 'result' in JSON.parse(c.body));
+      expect(reply && JSON.parse(reply.body!)).toEqual({ jsonrpc: '2.0', id: callId, result: {} });
+      expect(reply!.headers['mcp-session-id']).toBe('SESS-1');
+    });
+  });
+
+  it('starts a new session when the server answers 404 to the old one, and sends the call again once', async () => {
+    // The server restarted or the session expired: from 2025-03-26 a 404 to a
+    // request carrying `Mcp-Session-Id` obliges the client to start a new
+    // session. Until 2026-10-25 the dead id stayed pooled for five minutes.
+    let lost = false;
+    const server = handshakeServer((call, request) => (lost && call.headers['mcp-session-id'] === 'SESS-1'
+      ? new Response(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Session not found' } }), {
+          status: 404, headers: { 'content-type': 'application/json' },
+        })
+      : new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: 'hit' }] } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })));
+    const handler = createConnectionMcpHandler({ decodeAuth: async () => ({ type: 'none' }), fetchImpl: server.fetch });
+
+    await expect(handler(mkRow(), { tool: 'search' }, mkCall())).resolves.toMatchObject({ status: 'ok' });
+    lost = true;
+    await expect(handler(mkRow(), { tool: 'search' }, mkCall())).resolves.toMatchObject({ status: 'ok' });
+
+    expect(server.initializes()).toBe(2);
+    const toolCalls = server.calls.filter((c) => c.body?.includes('"tools/call"'));
+    expect(toolCalls.map((c) => c.headers['mcp-session-id'])).toEqual(['SESS-1', 'SESS-1', 'SESS-2']);
+  });
+
+  it('starts only one new session when that one is refused too', async () => {
+    const server = handshakeServer(() => new Response(
+      JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Session not found' } }),
+      { status: 404, headers: { 'content-type': 'application/json' } },
+    ));
+    const handler = createConnectionMcpHandler({ decodeAuth: async () => ({ type: 'none' }), fetchImpl: server.fetch });
+
+    await expect(handler(mkRow(), { tool: 'search' }, mkCall())).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    expect(server.initializes()).toBe(2);
+  });
+
+  it('sends no version header after settling on 2024-11-05, which defines none', async () => {
+    const server = handshakeServer((_call, request) => new Response(
+      JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { content: [] } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ), { version: '2024-11-05' });
+    const handler = createConnectionMcpHandler({ decodeAuth: async () => ({ type: 'none' }), fetchImpl: server.fetch });
+
+    await handler(mkRow(), { tool: 'search' }, mkCall());
+
+    const toolCall = server.calls.find((c) => c.body?.includes('"tools/call"'))!;
+    expect(toolCall.headers['mcp-protocol-version']).toBeUndefined();
+    expect(toolCall.headers['mcp-session-id']).toBe('SESS-1');
   });
 
   it('refuses a result whose resultType it cannot consume', async () => {
@@ -1903,6 +2015,47 @@ describe('connection.mcp handler — websocket transport', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('connection.mcp handler — stdio transport', () => {
+  it('answers a server ping on the session and never takes it for the result', async () => {
+    // A stdio server numbers its own requests from the same small integers, so
+    // a `ping` sharing the call's id is ordinary (the official SDK v1.32.2
+    // server, driven for real 2026-10-25). Until then the ping resolved the call
+    // with an empty result, and with no answer the server waited out its timeout.
+    const sent: Array<{ jsonrpc?: string; id?: unknown; method?: string; result?: unknown }> = [];
+    let deliver: (data: string) => void = () => {};
+    const send = (message: unknown): void => { queueMicrotask(() => deliver(JSON.stringify(message))); };
+    const handle: McpStreamHandle = {
+      send: (data) => {
+        const frame = JSON.parse(data) as { id?: number; method?: string };
+        sent.push(frame);
+        if (frame.method === 'server/discover') {
+          send({ jsonrpc: '2.0', id: frame.id, error: { code: -32601, message: 'Method not found' } });
+        } else if (frame.method === 'initialize') {
+          send({ jsonrpc: '2.0', id: frame.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 's', version: '1' } } });
+        } else if (frame.method === 'tools/call') {
+          send({ jsonrpc: '2.0', id: frame.id, method: 'ping' });
+          send({ jsonrpc: '2.0', id: frame.id, result: { content: [{ type: 'text', text: 'the real answer' }] } });
+        }
+      },
+      onMessage: (listener) => { deliver = listener; },
+      onClose: () => {},
+      onError: () => {},
+      close: () => {},
+    };
+    const handler = createConnectionMcpHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      spawnStdioMcp: async () => handle,
+    });
+
+    const out = await handler(stdioRow(), { tool: 'search' }, mkCall()) as {
+      status: string; result: { content: Array<{ text: string }> };
+    };
+
+    expect(out.status).toBe('ok');
+    expect(out.result.content[0]!.text).toBe('the real answer');
+    const callId = sent.find((f) => f.method === 'tools/call')!.id;
+    expect(sent).toContainEqual({ jsonrpc: '2.0', id: callId, result: {} });
+  });
+
   it('spawns a child, discovers the modern era, dispatches tools/call, returns the ok shape', async () => {
     const { deps, stdio } = stdioDeps(() => ({ result: { items: [1, 2, 3] } }));
     const handler = createConnectionMcpHandler(deps);

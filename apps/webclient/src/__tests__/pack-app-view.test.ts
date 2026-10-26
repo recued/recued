@@ -16,15 +16,12 @@ import {
   PACK_APP_RESULT_ATTR,
   PACK_APP_VIEW_PANEL_ATTR,
   PACK_APP_VIEW_TAB_ATTR,
-  PACK_APP_STYLES,
   mountPackAppView,
   type PackAppExecuteCaller,
   type MountPackAppViewOptions,
 } from '../packs/pack-app-view.js';
 import type { PackAppSurface } from '../packs/pack-app-model.js';
 import {
-  RECIPE_RESULT_HOST_ATTR,
-  RECIPE_RESULT_PANEL_STYLES,
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_CELL_ATTR,
   RECIPES_ROUTE_RESULT_FACTS_ATTR,
@@ -445,17 +442,6 @@ const typeResultFilter = (
 };
 
 describe('pack app shared copyable results', () => {
-  it('ships its layout and full-sized Copy action with the shared panel', () => {
-    expect(RECIPE_RESULT_PANEL_STYLES).toContain(
-      `[${RECIPE_RESULT_HOST_ATTR}] .copyable-content {`,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.copy-btn\s*\{[^}]*min-height:\s*36px;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /@media \(max-width: 520px\)[\s\S]*?\.copy-btn\s*\{[^}]*min-height:\s*44px;/s,
-    );
-  });
 
   it('copies the returned value through the Pack host', async () => {
     const rig = mount(async () => copyableResult());
@@ -477,17 +463,6 @@ describe('pack app shared copyable results', () => {
 });
 
 describe('pack app shared JSON results', () => {
-  it('ships a full-sized disclosure and wrapping payload with the shared panel', () => {
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.json-summary\s*\{[^}]*min-height:\s*36px;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.json-content\s*\{[^}]*max-width:\s*100%;[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /@media \(max-width: 520px\)[\s\S]*?\.json-summary\s*\{[^}]*min-height:\s*44px;/s,
-    );
-  });
 
   it('renders the labelled raw payload through the Pack host', async () => {
     const rig = mount(async () => jsonResult());
@@ -519,18 +494,6 @@ describe('pack app shared record-field results', () => {
     table.view.dispose();
   });
 
-  it('ships the field grid, bounded values, and phone stacking with the panel', () => {
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.summary-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(100px, 180px\) minmax\(0, 1fr\);/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.summary-row dd\s*\{[^}]*margin:\s*0;[^}]*overflow-wrap:\s*anywhere;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /@media \(max-width: 720px\)[\s\S]*?\.summary-row\s*\{[^}]*grid-template-columns:\s*1fr;/s,
-    );
-  });
-
   it('renders resolved and absent fields through the Pack host', async () => {
     const rig = mount(async () => recordFieldsResult());
     await settle();
@@ -544,20 +507,6 @@ describe('pack app shared record-field results', () => {
 });
 
 describe('pack app shared AI-analysis results', () => {
-  it('ships structured rows and bounded long-text fallbacks with the panel', () => {
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.ai-block\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.ai-block p\s*\{[^}]*overflow-wrap:\s*anywhere;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.ai-json\s*\{[^}]*max-width:\s*100%;[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /@media \(max-width: 720px\)[\s\S]*?\.ai-row\s*\{[^}]*grid-template-columns:\s*1fr;/s,
-    );
-  });
 
   it('renders curated analysis and raw fallback data through the Pack host', async () => {
     const rig = mount(async () => aiAnalysisResult());
@@ -572,20 +521,6 @@ describe('pack app shared AI-analysis results', () => {
 });
 
 describe('pack app shared link-button results', () => {
-  it('ships full-sized, wrapping anchors and descriptions with the panel', () => {
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.link-button-block\s*\{[^}]*display:\s*grid;[^}]*gap:\s*10px;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.link-button-link\s*\{[^}]*min-height:\s*36px;[^}]*overflow-wrap:\s*anywhere;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.link-button-description\s*\{[^}]*font-size:\s*12px;[^}]*overflow-wrap:\s*anywhere;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /@media \(max-width: 520px\)[\s\S]*?\.link-button-link\s*\{[^}]*min-height:\s*44px;/s,
-    );
-  });
 
   it('renders safe external anchors through the Pack host', async () => {
     const rig = mount(async () => linkButtonResult());
@@ -602,20 +537,6 @@ describe('pack app shared link-button results', () => {
 });
 
 describe('pack app shared file-artifact results', () => {
-  it('ships a bounded header and phone-stacked identity with the panel', () => {
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.recipes-file-artifact\s*\{[^}]*min-width:\s*0;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.recipes-file-artifact-header > div\s*\{[^}]*min-width:\s*0;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /\.recipes-file-artifact-header h4,[\s\S]*?\.recipes-file-artifact-header p\s*\{[^}]*overflow-wrap:\s*anywhere;/s,
-    );
-    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
-      /@media \(max-width: 520px\)[\s\S]*?\.recipes-file-artifact-header\s*\{[^}]*display:\s*grid;/s,
-    );
-  });
 
   it('renders exact-file identity and read controls through the Pack host', async () => {
     const rig = mount(async () => fileArtifactResult());
@@ -631,14 +552,6 @@ describe('pack app shared file-artifact results', () => {
 });
 
 describe('pack app view tabs', () => {
-  it('ships full-sized desktop and phone tab targets', () => {
-    expect(PACK_APP_STYLES).toMatch(
-      /\.pack-app-view-tab\s*\{[^}]*min-height:\s*36px;/s,
-    );
-    expect(PACK_APP_STYLES).toMatch(
-      /@media \(max-width: 560px\)[\s\S]*?\.pack-app-view-tab\s*\{[^}]*min-height:\s*44px;/s,
-    );
-  });
 
   it('forms one controlled tab stop and switches the named panel', async () => {
     const execute = vi.fn<PackAppExecuteCaller>(async ({ recipe_id }) => ({

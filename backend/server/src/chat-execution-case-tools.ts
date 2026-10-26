@@ -48,6 +48,7 @@ export {
   OUTCOME_REPORT_TOOL_NAME,
   REQUEST_DISSECTION_TOOL_NAME,
 } from './execution-case-vocabulary.js';
+import { forwardedRegistryHooks } from './registry-forwarding.js';
 
 export const OUTCOME_REPORT_TOOL_ENTRY: ToolEntry = {
   name: OUTCOME_REPORT_TOOL_NAME,
@@ -645,6 +646,7 @@ export const wrapRegistryWithExecutionCaseTools = (
       }
       return inner.dispatch(name, args, context);
     },
+    ...forwardedRegistryHooks(inner),
     subscribeRefresh: (callback) => inner.subscribeRefresh(callback),
   };
 };

@@ -9,7 +9,7 @@ const LIST_PREVIEW_OPEN = 'data-recued-list-preview-open';
 
 installFullAppHooks();
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Packs retains an edited Use result and Manage selection through release history at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(

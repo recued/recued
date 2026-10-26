@@ -47,9 +47,21 @@ const OUTRANKED_BY: Record<AssetContributionKind, string> = {
  * created the asset, and its type supplied its reminders and settings (D-325
  * §4.4). Only the server writes the owner rank with this ref. */
 const fromType = (source: AssetFactSource): boolean => source.kind === 'owner' && source.ref.startsWith('type:');
+/** A value an AI wrote down from a chat or from an AI app the owner connected. At the
+ * owner's rank it is a reading the owner approved the write of (D-325, 2026-10-25), which
+ * they did not type; only the server writes the owner rank with these refs. */
+const fromAi = (source: AssetFactSource): string | null =>
+  source.ref.startsWith('chat:') ? 'a chat' : source.ref.startsWith('mcp:') ? 'an AI app' : null;
+const fromWords = (source: AssetFactSource): string => {
+  if (source.ref.startsWith('reception:')) return 'From a request that came in';
+  if (fromType(source)) return 'From its type';
+  const ai = fromAi(source);
+  if (ai && source.kind === 'owner') return `From ${ai}, approved by you`;
+  if (ai && source.kind === 'extracted') return `From ${ai}`;
+  return FROM[source.kind];
+};
 export const assetSourceWords = (source: AssetFactSource): { from: string; rank: string } => ({
-  from: `${source.ref.startsWith('reception:') ? 'From a request that came in' : fromType(source) ? 'From its type' : FROM[source.kind]}, ${new Date(source.at)
-    .toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`,
+  from: `${fromWords(source)}, ${new Date(source.at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`,
   rank: OUTRANKED_BY[source.kind],
 });
 

@@ -592,6 +592,30 @@ describe('durable Chat action recovery', () => {
     );
   });
 
+  it('encrypts the names a proposal records, bound to that proposal', async () => {
+    // D-329 — the names of the records a held write names (`value_labels`), for its card.
+    const db = new Database(':memory:');
+    ensureChatSchema(db);
+    const key = new Uint8Array(32);
+    key.fill(5);
+    const getKey = (): Uint8Array => key;
+    seedSession(db, getKey);
+    const store = createSqliteChatPlanStore(db, getKey);
+    const names = { id: { 'asset-1': 'Family car' } };
+    await store.put(proposal({ plan_id: 'plan-named', value_labels: names }));
+    await store.put(proposal({ plan_id: 'plan-other', created_at: 2_500 }));
+    const raw = db.prepare('SELECT value_labels_encrypted FROM chat_plans WHERE plan_id = ?')
+      .get('plan-named') as { value_labels_encrypted: string };
+    expect(raw.value_labels_encrypted).not.toContain('Family car');
+    expect((await store.get('plan-named'))!.value_labels).toEqual(names);
+    expect((await store.get('plan-other'))!.value_labels).toBeUndefined();
+    // Moved onto another proposal they do not decrypt, and that card shows its ids.
+    db.prepare('UPDATE chat_plans SET value_labels_encrypted = ? WHERE plan_id = ?').run(raw.value_labels_encrypted, 'plan-other');
+    const moved = await store.get('plan-other');
+    expect(moved).toMatchObject({ plan_id: 'plan-other', args: proposal().args });
+    expect(moved!.value_labels).toBeUndefined();
+  });
+
   it('can close running to unknown without a key when terminal detail cannot encrypt', async () => {
     const db = new Database(':memory:');
     ensureChatSchema(db);

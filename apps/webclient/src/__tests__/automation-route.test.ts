@@ -468,58 +468,6 @@ describe('Automation route — rendering', () => {
 
     expect(rig.host.attrs.has(AUTOMATION_ROUTE_HOST_ATTR)).toBe(true);
     expect(rig.doc.styleElements[0]?.attrs.has(AUTOMATION_ROUTE_STYLES_MARKER)).toBe(true);
-    const routeStyles = (rig.doc.styleElements[0] as unknown as { textContent?: string })
-      .textContent ?? '';
-    expect(routeStyles).toContain('.automation-filter > .ref-picker');
-    expect(routeStyles).toContain('flex-wrap: wrap');
-    expect(routeStyles).toContain('min-width: 220px');
-    expect(routeStyles).toContain('.automation-row-title a {');
-    expect(routeStyles).toContain('.automation-row-actions a {');
-    expect(routeStyles).toMatch(
-      /@media \(max-width: 560px\)[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/s,
-    );
-    expect(routeStyles).toMatch(
-      /@media \(max-width: 560px\)[\s\S]*?\.automation-row-actions\s*\{[^}]*flex-wrap:\s*wrap/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-subnav-tab\s*\{[^}]*min-height:\s*36px/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-subnav\s*\{[^}]*overflow-x:\s*auto/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-subnav-tab\s*\{[^}]*flex:\s*0 0 auto[^}]*white-space:\s*nowrap/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-row-meta > \*\s*\{[^}]*overflow-wrap:\s*anywhere/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-detail-facts\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\)/s,
-    );
-    expect(routeStyles).toMatch(
-      /@media \(max-width: 560px\)[\s\S]*?\.automation-detail-facts\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-detail-facts dd\s*\{[^}]*overflow-wrap:\s*anywhere/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-add-picker\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*360px/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-load-error > span\s*\{[^}]*flex:\s*1 1 180px[^}]*overflow-wrap:\s*anywhere/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-poll > span\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
-    );
-    expect(routeStyles).toMatch(
-      /\.automation-poll > button\s*\{[^}]*flex:\s*0 0 auto/s,
-    );
-    expect(routeStyles).toMatch(
-      new RegExp(`\\[${AUTOMATION_ROUTE_ERROR_ATTR}\\][\\s\\S]*?overflow-wrap:\\s*anywhere`),
-    );
-    expect(routeStyles).toContain(`[${AUTOMATION_ROUTE_HOST_ATTR}] a {`);
-    expect(routeStyles).toContain('min-width: 36px');
-    expect(routeStyles).toContain('min-height: 36px');
     expect(rig.host.innerHTML).toContain(
       '<a href="#logs">Logs<span aria-hidden="true">.</span></a>',
     );

@@ -15,6 +15,7 @@ import {
   qualifyWorkEntityId,
   RECUED_BUILTIN_SOURCE_ID,
   tier1WriteStaysInRecued,
+  type ApprovalValueLabels,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type Checkpoint,
@@ -36,6 +37,7 @@ import { createRecipeStore } from '../recipe-store.js';
 import { createGatedActionStore, type GatedActionRecord } from '../gated-action-store.js';
 import { createMcpActionStore, type McpActionRecord } from '../mcp-action-store.js';
 import { createPreflightResumer } from '../preflight-resumer.js';
+import { HELD_FOR_APPROVAL_MESSAGE } from '../run-result-agent-projection.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import Database from 'better-sqlite3';
 import { createWriteRuleStore, type WriteRuleStore } from '../storage/write-rule-store.js';
@@ -52,6 +54,10 @@ const harness = (opts: {
   granted?: (op: string) => boolean;
   throwOnRun?: boolean;
   writeRules?: WriteRuleStore;
+  /** The registry's `checkBeforeAsking`: what a call's own arguments refuse it for. */
+  check?: (name: string, args: unknown) => ChatDispatchResult | null;
+  /** The registry's `askValueLabels`: the names of the records a call names. */
+  labels?: (name: string, args: unknown) => ApprovalValueLabels | undefined;
 } = {}) => {
   let clock = NOW;
   const calls: Array<{ name: string; args: unknown; ctx: ChatDispatchContext }> = [];
@@ -64,6 +70,8 @@ const harness = (opts: {
       if (opts.throwOnRun) throw new Error('provider went away');
       return { ok: true, result: { created: true, event_id: 'evt-1' } };
     },
+    ...(opts.check !== undefined ? { checkBeforeAsking: async (name: string, args: unknown) => opts.check!(name, args) } : {}),
+    ...(opts.labels !== undefined ? { askValueLabels: async (name: string, args: unknown) => opts.labels!(name, args) } : {}),
     subscribeRefresh: () => () => undefined,
   };
   const checkpoints = new Map<string, Checkpoint>();
@@ -130,6 +138,10 @@ describe('D-329 A — an AI app\'s Tier-1 write is held', () => {
     expect(res.isError).not.toBe(true);
     expect(res.structuredContent).toMatchObject({ status: 'awaiting_approval', awaiting_approval: true, tool: 'calendar.create',
       action_status: 'awaiting_approval', action_query_tool: 'recued_actionStatus' });
+    // ⚠ Model-facing (chat-prompt log 2026-10-25l), pinned as text: the door says when to check.
+    expect(res.structuredContent?.message).toBe(`${HELD_FOR_APPROVAL_MESSAGE} Do not call recued_actionStatus `
+      + 'while you wait: until the user answers, it only reports awaiting_approval. When the user says they '
+      + 'have answered, call recued_actionStatus once with this action_ref to learn the outcome.');
     const [checkpoint] = [...h.checkpoints.values()];
     expect(checkpoint!.raw_op).toMatchObject({ tier1_tool: 'calendar.create', op_id: 'calendar.create', operation: 'calendar.create',
       catalog_slug: TIER1_HOLD_CATALOG_SLUG, connection_name: '', op_args: EVENT, risk_tier: 'write' });
@@ -157,6 +169,44 @@ describe('D-329 A — an AI app\'s Tier-1 write is held', () => {
     await h.call('calendar.search', {});
     expect(h.calls.map((c) => c.name)).toEqual(['calendar.search']);
     expect(h.checkpoints.size).toBe(0);
+    // Nobody approved it, so it carries no owner's approval.
+    expect(h.calls[0]!.ctx.owner_approved).toBeUndefined();
+  });
+});
+
+describe('D-329 A — a write its own arguments refuse is not put to the owner', () => {
+  it('answers the app with the refusal: no checkpoint, no ask, nothing run', async () => {
+    // ⛔ Live (2026-10-25): an approved asset create then refused `body`.
+    const h = harness({ check: (_name, args) => ((args as { summary?: string }).summary === ''
+      ? { ok: false, reason: 'invalid_args', detail: 'calendar.create: `summary` must not be empty' } : null) });
+    const res = await h.call('calendar.create', { ...EVENT, summary: '' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain('`summary` must not be empty');
+    expect(h.checkpoints.size).toBe(0);
+    expect(h.asks).toEqual([]);
+    expect(h.calls).toEqual([]);
+    // A call it lets through is held as before.
+    expect((await h.call('calendar.create', EVENT)).structuredContent).toMatchObject({ status: 'awaiting_approval' });
+    expect(h.asks).toHaveLength(1);
+  });
+});
+
+describe('D-329 A — the ask names the records a call names', () => {
+  it('records the names the registry gives on the hold, and the ask reads them', async () => {
+    const h = harness({ labels: (name, args) => name === 'calendar.create' && (args as { summary?: string }).summary === 'Dentist'
+      ? { summary: { Dentist: 'Dr Okafor, the dentist' } } : undefined });
+    await h.call('calendar.create', EVENT);
+    const [checkpoint] = [...h.checkpoints.values()];
+    expect(checkpoint!.preflight_context?.value_labels).toEqual({ summary: { Dentist: 'Dr Okafor, the dentist' } });
+    expect(h.asks[0]!.message.text).toContain('Dr Okafor, the dentist');
+    // What runs is still what the app sent.
+    expect(checkpoint!.raw_op!.op_args).toEqual(EVENT);
+  });
+
+  it('holds with no names when the registry gives none, or its lookup throws', async () => {
+    const h = harness({ labels: () => { throw new Error('store went away'); } });
+    expect((await h.call('calendar.create', EVENT)).structuredContent).toMatchObject({ status: 'awaiting_approval' });
+    expect([...h.checkpoints.values()][0]!.preflight_context?.value_labels).toBeUndefined();
   });
 });
 
@@ -167,7 +217,9 @@ describe('D-329 A — approving runs it', () => {
     const [checkpoint] = [...h.checkpoints.values()];
     await h.resumer.resumeRun(checkpoint!, {});
     expect(h.calls).toHaveLength(1);
-    expect(h.calls[0]).toMatchObject({ name: 'calendar.create', args: EVENT, ctx: { channel: 'mcp_wire', mcp_token_id: 'tok-owner-cli' } });
+    // D-325 — the owner answered the ask, so an asset reading it writes is their own sample.
+    expect(h.calls[0]).toMatchObject({ name: 'calendar.create', args: EVENT,
+      ctx: { channel: 'mcp_wire', mcp_token_id: 'tok-owner-cli', owner_approved: true } });
     const action = await h.mcpActionStore.getOwned(res.structuredContent!.action_ref as string, 'tok-owner-cli');
     expect(action).toMatchObject({ status: 'completed', result: { created: true, event_id: 'evt-1' } });
     // A second answer finds the checkpoint claimed and runs nothing.
@@ -254,13 +306,33 @@ describe('D-329 A — the hold\'s shape and words', () => {
 
   it('words a held task in the owner\'s words with its details', () => {
     const ask = buildPreflightAsk({ checkpoint: held(), context: { raw_op: { op_id: 'work.create' }, tool_slug: 'work.create', risk_tier: 'write' } });
-    expect(ask.message.title).toBe('Approve: Add a task, note or more');
+    // The kind of thing it adds, not the tool's own title (2026-10-25).
+    expect(ask.message.title).toBe('Approve: Add a task');
     expect(ask.message.text.split('\n').slice(0, 3)).toEqual([
-      'An AI agent wants to add a task, note or more.',
+      'An AI agent wants to add a task.',
       'Write actions change your data in Recued, so Recued held it for you.',
       'Technical: tool work.create.',
     ]);
     expect(ask.message.text).toContain('Call the dentist');
+  });
+
+  it('names the thing an update changes as the owner knows it, never by its id', () => {
+    // ⛔ Live (2026-10-25): "id: we1:asset:recued.asset:local:e1a798e8…", so with two cars the
+    // owner could not tell which one they were approving.
+    const id = 'we1:asset:recued.asset:local:e1a798e8-8cb9-4cc1-89ed-e532efa2aa04';
+    const update = held({ tier1_tool: 'work.update', op_id: 'work.update', operation: 'work.update',
+      op_args: { kind: 'asset', id, readings: { odometer: { value: 12400, unit: 'km' } } } });
+    const ask = buildPreflightAsk({
+      checkpoint: { ...update, preflight_context: { value_labels: { id: { [id]: 'Family car' } } } } as Checkpoint,
+      context: { raw_op: { op_id: 'work.update' }, tool_slug: 'work.update', risk_tier: 'write' },
+    });
+    expect(ask.message.title).toBe('Approve: Change a thing you own');
+    expect(ask.message.text.split('\n')[0]).toBe('An AI agent wants to change a thing you own.');
+    expect(ask.message.text).toContain('id: Family car');
+    expect(ask.message.text).not.toContain('e1a798e8');
+    // With no name recorded (an older hold), the id is still shown.
+    expect(buildPreflightAsk({ checkpoint: update, context: { raw_op: { op_id: 'work.update' }, tool_slug: 'work.update', risk_tier: 'write' } })
+      .message.text).toContain('e1a798e8');
   });
 
   it('names who proposed it: the owner\'s chat, their messenger or email chat, else an AI agent', () => {
@@ -269,18 +341,18 @@ describe('D-329 A — the hold\'s shape and words', () => {
       context: { raw_op: { op_id: 'work.create' }, tool_slug: 'work.create', risk_tier: 'write' },
     }).message.text.split('\n')[0];
     expect(opening({ channel: 'chat', actor: 'user_self', chat_session_id: 's', user_id: 'local' }))
-      .toBe('Your chat wants to add a task, note or more.');
+      .toBe('Your chat wants to add a task.');
     expect(opening({ channel: 'messenger', actor: 'user_self', vendor: 'slack', from: 'U1' }))
-      .toBe('Your Slack chat wants to add a task, note or more.');
+      .toBe('Your Slack chat wants to add a task.');
     expect(opening({ channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'me@example.com' }))
-      .toBe('Your email chat wants to add a task, note or more.');
+      .toBe('Your email chat wants to add a task.');
     expect(opening({ channel: 'messenger', actor: 'user_self', vendor: 'carrier-pigeon', from: 'x' }))
-      .toBe('Your chat wants to add a task, note or more.');
+      .toBe('Your chat wants to add a task.');
     // Under a contract, the chat is not the owner's: a household member's, or a customer's.
     expect(opening({ channel: 'messenger', actor: 'contracted_user', vendor: 'telegram', from: '42', contract_id: 'k' }))
-      .toBe('An AI agent wants to add a task, note or more.');
+      .toBe('An AI agent wants to add a task.');
     expect(opening({ channel: 'chat', actor: 'contracted_user', chat_session_id: 's', user_id: 'u', contract_id: 'k' }))
-      .toBe('An AI agent wants to add a task, note or more.');
+      .toBe('An AI agent wants to add a task.');
   });
 });
 
@@ -397,6 +469,7 @@ describe('D-329 §3.4 — an AI app\'s approvals teach it a rule', () => {
     const h = harness({ writeRules });
     const res = await h.call('calendar.create', EVENT);
     expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.ctx.owner_approved).toBe(true);
     expect(h.checkpoints.size).toBe(0);
     expect(res.structuredContent).not.toMatchObject({ status: 'awaiting_approval' });
     // Spent: the next one asks.

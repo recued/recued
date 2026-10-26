@@ -14,10 +14,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WORK_ENTITY_LONG_TEXT_FIELD } from '../work-entity-searchable-text.js';
 
 import {
+  ASSET_SEARCH_TEXT_REINDEX_ID,
   createWorkEntityStore,
   ensureWorkEntitySchema,
   type WorkEntityStore,
 } from '../storage/work-entity-store.js';
+import { indexRecord } from '@recued/fts';
 
 const NOW = 1_700_000_000_000;
 let db: Database.Database;
@@ -358,5 +360,58 @@ describe('work-entity FTS — the MIGRATION path, which no write-path test reach
     const store2 = createWorkEntityStore(db);
     // Rebuilt AND under the porter tokenizer — the plural proves which one ran.
     expect(store2.searchIdsByText('note', 'Peregrines', 20)).toEqual(['k-note']);
+  });
+});
+
+describe('work-entity FTS — what an asset is found by (D-325, 2026-10-25)', () => {
+  /** A bike with every kind of value an asset holds, the hidden ones included. */
+  const writeBike = (): void => {
+    store.writeAsset({ id: 'bike', source_id: src('asset'), name: 'Road bike', source: { kind: 'owner', ref: 'fixture' },
+      anchors: [{ kind: 'place', name: 'the garage', address: '12 Oak Street', latitude: 51.5, longitude: -0.1 },
+        { kind: 'identifier', scheme: 'vin', value: 'WVW123' }],
+      attributes: { brand: 'Trek', frame_size: '56 cm', wheels: 700, tubeless: true, electric: false, document_details: 'P1234567' },
+      serial_number: 'SN999', document_number: 'DOC555', exact_address: '9 Elm Road' }, NOW);
+  };
+  const finds = (query: string, s2: WorkEntityStore = store): string[] => s2.searchIdsByText('asset', query, 20);
+  const shared = ['garage', 'Trek', 'frame size', '56 cm', '700', 'tubeless', 'WVW123', 'vin'];
+  const hidden = ['electric', 'Oak', '51.5', 'P1234567', 'SN999', 'DOC555', 'Elm'];
+
+  it('by where it is kept, its details and its identifiers, never by what stays hidden', () => {
+    writeBike();
+    for (const query of shared) expect(finds(query), query).toEqual(['bike']);
+    for (const query of hidden) expect(finds(query), query).toEqual([]);
+  });
+
+  it('the walker indexes an asset as its write does, from the raw blob', () => {
+    writeBike();
+    db.exec('DROP TABLE IF EXISTS work_entity_fts');
+    ensureWorkEntitySchema(db);
+    const s2 = createWorkEntityStore(db);
+    for (const query of shared) expect(finds(query, s2), query).toEqual(['bike']);
+    for (const query of hidden) expect(finds(query, s2), query).toEqual([]);
+  });
+
+  it('a move re-indexes it: the old place no longer finds it', () => {
+    writeBike();
+    store.writeAsset({ id: 'bike', source_id: src('asset'), source: { kind: 'owner', ref: 'fixture' },
+      anchors: [{ kind: 'place', name: 'the shed' }] }, NOW + 1);
+    expect(finds('garage')).toEqual([]);
+    expect(finds('shed')).toEqual(['bike']);
+  });
+
+  it('⛔ an asset indexed by its name alone is re-indexed once per server, and never again', () => {
+    writeBike();
+    // A server from before: the bike indexed by its name, and the re-index never run.
+    indexRecord(db, 'work_entity_fts', 'asset.bike', 'Road bike');
+    db.prepare('DELETE FROM data_repairs WHERE repair_id = ?').run(ASSET_SEARCH_TEXT_REINDEX_ID);
+    expect(finds('garage')).toEqual([]);
+    ensureWorkEntitySchema(db);
+    expect(finds('garage')).toEqual(['bike']);
+    expect(JSON.parse((db.prepare('SELECT summary FROM data_repairs WHERE repair_id = ?')
+      .get(ASSET_SEARCH_TEXT_REINDEX_ID) as { summary: string }).summary)).toEqual({ assets: 1 });
+    // Once: a later boot leaves a diverged entry as it is.
+    indexRecord(db, 'work_entity_fts', 'asset.bike', 'Road bike');
+    ensureWorkEntitySchema(db);
+    expect(finds('garage')).toEqual([]);
   });
 });

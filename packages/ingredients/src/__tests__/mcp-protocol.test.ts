@@ -7,10 +7,14 @@ import {
   MCP_SUPPORTED_PROTOCOL_VERSIONS,
   decodeMcpHttpHeaderValue,
   encodeMcpHttpHeaderValue,
+  handshakeMcpHttpHeaders,
   hasModernMcpClientCapabilities,
+  isMcpServerMessage,
   isModernMcpProtocolError,
   mcpHttpHeaderBindingsFromSchema,
   mcpNameHeaderSource,
+  mcpServerRequestReply,
+  mergeMcpHttpHeaders,
   modernMcpHttpHeaders,
   modernMcpToolArgumentHeaders,
   readMcpRequestProtocolVersion,
@@ -262,6 +266,41 @@ describe('Recued MCP protocol policy', () => {
       ok: true,
       tools: ['valid'],
       descriptors: [{ name: 'valid' }],
+    });
+  });
+});
+
+describe('MCP client wire helpers', () => {
+  it('names the settled revision in a header only for the revisions that define one', () => {
+    // The header arrived in 2025-06-18; 2024-11-05 and 2025-03-26 have none.
+    expect(handshakeMcpHttpHeaders('2025-11-25')).toEqual({ 'MCP-Protocol-Version': '2025-11-25' });
+    expect(handshakeMcpHttpHeaders('2025-06-18')).toEqual({ 'MCP-Protocol-Version': '2025-06-18' });
+    expect(handshakeMcpHttpHeaders('2025-03-26')).toEqual({});
+    expect(handshakeMcpHttpHeaders(MCP_LEGACY_PROTOCOL_VERSION)).toEqual({});
+    expect(handshakeMcpHttpHeaders(undefined)).toEqual({});
+  });
+
+  it('merges header sets by case-insensitive name, the later one winning', () => {
+    const merged = mergeMcpHttpHeaders(
+      { 'Content-Type': 'application/json', Authorization: 'Bearer x' },
+      { 'content-type': 'application/json; charset=utf-8' },
+    );
+    expect(merged).toEqual({ 'content-type': 'application/json; charset=utf-8', Authorization: 'Bearer x' });
+    // ⇒ so fetch can never join two spellings into one header.
+    expect(new Headers(merged).get('content-type')).toBe('application/json; charset=utf-8');
+  });
+
+  it('tells a request from the server apart from a reply carrying the same id', () => {
+    expect(isMcpServerMessage({ jsonrpc: '2.0', id: 1, method: 'ping' })).toBe(true);
+    expect(isMcpServerMessage({ jsonrpc: '2.0', method: 'notifications/progress' })).toBe(true);
+    expect(isMcpServerMessage({ jsonrpc: '2.0', id: 1, result: {} })).toBe(false);
+    expect(isMcpServerMessage({ jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'x' } })).toBe(false);
+  });
+
+  it('answers a ping empty and refuses what this client never declared', () => {
+    expect(mcpServerRequestReply(3, 'ping')).toEqual({ jsonrpc: '2.0', id: 3, result: {} });
+    expect(mcpServerRequestReply('s-1', 'sampling/createMessage')).toEqual({
+      jsonrpc: '2.0', id: 's-1', error: { code: -32601, message: 'Method not found: sampling/createMessage' },
     });
   });
 });

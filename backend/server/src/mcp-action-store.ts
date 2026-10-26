@@ -22,6 +22,14 @@ import type Database from 'better-sqlite3';
 export const MCP_ACTION_STATUS_TOOL_NAME = 'recued_actionStatus';
 export const MCP_ACTION_NOTIFICATION_METHOD = 'notifications/recued/action-status';
 export const MCP_ACTION_TABLE = 'mcp_async_actions';
+/** What `recued_actionStatus` says while an action waits for the owner. ⚠ Model-facing
+ *  (chat-prompt log 2026-10-25l): the last sentence is what stops an app checking again and
+ *  again inside one turn. A model told only "waiting" called it four times in a row. */
+export const MCP_ACTION_AWAITING_STATUS_MESSAGE =
+  'Waiting for owner approval outside the MCP client. Do not check again until the user says they have answered.';
+/** The same, for a resumed action held again at its next approval. */
+export const MCP_ACTION_NEXT_GATE_STATUS_MESSAGE =
+  'The resumed action reached another owner-approval gate. Do not check again until the user says they have answered.';
 
 /** Final results are a continuation aid, not an archive. */
 export const MCP_ACTION_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -407,8 +415,7 @@ export const createMcpActionStore = (
             ) return null;
             return {
               status: 'awaiting_approval',
-              status_message:
-                input.status_message ?? 'Waiting for owner approval outside the MCP client.',
+              status_message: input.status_message ?? MCP_ACTION_AWAITING_STATUS_MESSAGE,
               approval_round:
                 input.checkpoint_id !== undefined
                 && current.current_checkpoint_id !== undefined
@@ -434,8 +441,7 @@ export const createMcpActionStore = (
           tool_name: input.tool_name,
           kind: input.kind,
           status: 'awaiting_approval',
-          status_message:
-            input.status_message ?? 'Waiting for owner approval outside the MCP client.',
+          status_message: input.status_message ?? MCP_ACTION_AWAITING_STATUS_MESSAGE,
           approval_round: 1,
           ...(input.checkpoint_id !== undefined
             ? { current_checkpoint_id: input.checkpoint_id }
@@ -497,8 +503,7 @@ export const createMcpActionStore = (
           ) return null;
           return {
             status: 'awaiting_approval',
-            status_message:
-              status_message ?? 'The resumed action reached another owner-approval gate.',
+            status_message: status_message ?? MCP_ACTION_NEXT_GATE_STATUS_MESSAGE,
             approval_round:
               checkpoint_id !== undefined
               && current.current_checkpoint_id !== undefined

@@ -49,7 +49,7 @@ export const permissionRegressionImpact = (db: Database.Database, contractId: st
   if (recipes.ids().length > 1000) incomplete = true;
   for (const item of automations.slice(0, 1000)) {
     if (matched.has(item.recipe_id) || item.contract_id === contractId) add({ kind: item.kind, id: item.id, label: item.label,
-      detail: item.contract_id === contractId ? 'Bound to this agreement.' : 'Uses a recipe that mentions a changed permission; its caller may differ.' });
+      detail: item.contract_id === contractId ? 'Bound to this contract.' : 'Uses a recipe that mentions a changed permission; its caller may differ.' });
   }
   if (automations.length > 1000) incomplete = true;
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='preapproval_dependencies' AND type='table'").get()) {
@@ -59,7 +59,7 @@ export const permissionRegressionImpact = (db: Database.Database, contractId: st
       WHERE q.scope IN ('contract_grant','contract_definition') AND json_extract(q.segments_json,'$[0]')=?
         AND e.state IN ('prepared','active','running','held','in_doubt') ORDER BY e.proposal_id LIMIT 1001`).all(contractId) as Array<{ proposal_id: string; state: string }>;
     for (const row of rows.slice(0, 1000)) add({ kind: 'review', id: row.proposal_id, label: 'Reviewed execution',
-      detail: `Retains this agreement as a dependency (${row.state}). A change can invalidate its saved authority.` });
+      detail: `Retains this contract as a dependency (${row.state}). A change can invalidate its saved authority.` });
     if (rows.length > 1000) incomplete = true;
   }
   return { entries, total, truncated: incomplete || total > entries.length, coverage: [

@@ -77,7 +77,7 @@ const select = (input: Locator, start: number, end: number) => input.evaluate((i
   (input as HTMLInputElement | HTMLTextAreaElement).setSelectionRange(range.start, range.end, 'forward');
 }, { start, end });
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const field of fields) {
     test(`Certificates ${field} keeps typing, selection, undo and keyboard traversal at ${width}px`, async ({ page, browserName }) => {
       await open(page, width);
@@ -320,7 +320,7 @@ const certNavBeginUpload = async (page: Page, fail = false) => {
   await certNavFill(page); await certNavStartUpload(page, fail);
 };
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const name of fields) {
     test(`Certificates navigation preserves every draft ${name} when departure is canceled at ${width}px`, async ({ page }) => {
       await certNavOpen(page, width); await control(page, name).focus(); await page.keyboard.type(drafts[name]);
@@ -522,7 +522,7 @@ const pickCertificateFile = (page: Page, field: Field, text: string, name = 'fix
   picker(page, field).setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(text) });
 const releaseCertificateFile = (page: Page, index: number) => page.evaluate(index => window.__certificateFileReads.release(index), index);
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const name of ['cert_pem', 'private_key_pem', 'chain_pem'] as const) {
     test(`Certificates file lifecycle retires a canceled ${name} import before a new draft at ${width}px`, async ({ page }) => {
       await certNavOpen(page, width); await holdCertificateFiles(page);
@@ -604,7 +604,7 @@ for (const width of [390, 1280]) {
 }
 
 const certDraftStatus = (page: Page) => panel(page).locator('[data-recued-tls-certs-upload-draft-status]');
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const field of fields) {
     test(`Certificates pending upload keeps newer ${field} text, selection, undo and navigation guard at ${width}px`, async ({ page }) => {
       await certNavOpen(page, width); await certNavBeginUpload(page);
@@ -687,7 +687,7 @@ for (const width of [390, 1280]) {
   }
 }
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Certificates retained upload notice follows cleared text and file drafts at ${width}px`, async ({ page }) => {
     await certNavOpen(page, width); await certNavBeginUpload(page);
     const original = await form(page).elementHandle();

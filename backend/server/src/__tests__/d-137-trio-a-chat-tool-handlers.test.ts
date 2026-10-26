@@ -69,10 +69,12 @@ const buildRecipe = (
 // Deliberately hardcoded (a pin, not an import). D-177 rule-5 slice E (5.g)
 // appended the capability-truthful posture + approval-card affordance.
 // 2026-10-04 added where approvals are answered (the model had been inventing it).
+// 2026-10-25 dropped "sends a message or changes something outside Recued" (D-329
+// holds writes to the owner's own records).
 const AWAITING_APPROVAL_MESSAGE =
   "This action is paused and is now queued for the user's approval before it can run. "
-  + 'This is the expected, successful outcome for an action that sends a message or '
-  + 'changes something outside Recued — it is NOT a failure. The action is already '
+  + "This is the expected, successful outcome for an action that needs the user's "
+  + 'approval — it is NOT a failure. The action is already '
   + 'queued; do NOT call this tool again or resend it. Let the user know the action '
   + 'needs their approval before it can proceed. Approvals are answered in the Recued '
   + 'app, from the bell at the top of the page (Attention), which also opens the '

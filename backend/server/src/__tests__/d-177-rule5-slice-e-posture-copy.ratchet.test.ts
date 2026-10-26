@@ -132,6 +132,10 @@ describe('D-177 rule 5 slice E — 5.g posture copy ratchet', () => {
       'Approvals are answered in the Recued app, from the bell at the top of the page',
     );
     expect(HELD_FOR_APPROVAL_MESSAGE).not.toContain('Contracts');
+    // 2026-10-25 — it no longer says what KIND of action is held. "Sends a message or
+    // changes something outside Recued" was false for D-329's holds (writes to the
+    // owner's own records), whose own tool says it "never leaves this machine".
+    expect(HELD_FOR_APPROVAL_MESSAGE).not.toContain('outside Recued');
   });
 
   it('the posture never promises model-side granting vocabulary', () => {

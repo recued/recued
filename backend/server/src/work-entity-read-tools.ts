@@ -125,6 +125,7 @@ import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
 import { situationSourceReadOp } from './situations/event-visibility.js';
+import { eventWhenOnTurnClock } from './chat-clock.js';
 import {
   projectWorkEntitySourceRow,
   type ProjectedWorkEntityUpsert,
@@ -541,6 +542,8 @@ export interface WorkEntityToolItem extends Partial<Pick<Asset, 'name' | 'class_
   // pointer to an event holding it. Emitted as a pair or not at all.
   slot_start_at?: number;
   slot_end_at?: number;
+  /** The slot on the turn's clock (`withSlotWhen`). */
+  slot_when?: string;
   monetary_amount?: string;
   monetary_currency?: string;
   counterparty_contact_id?: string;
@@ -784,6 +787,20 @@ const holderNameFor = (
   if (!scope || !mayNameHolders(deps, scope)) return undefined;
   if (scope.limited && !scope.allows({ collection: 'contact', id })) return undefined;
   return deps.personName?.(id);
+};
+
+/** A booking's slot on the turn's clock, beside the epoch-ms pair it is read
+ *  from: `2026-11-14 08:00 – 2026-11-21 18:00 (UTC+00:00)`, as `calendar.search`
+ *  writes an event's `when`. Absent without the pair, or when the dispatch carries
+ *  no zone (an MCP caller keeps its own clock).
+ *
+ *  ⛔ Left to convert the pair itself, the model named the wrong month: in the
+ *  family-trip run (2026-10-25) a booking of November 14–21 was "September 14–21"
+ *  in one answer and "December 14–21, 2026" in another, of the 6 that read it. */
+const withSlotWhen = (item: WorkEntityToolItem, zone: string | undefined): WorkEntityToolItem => {
+  if (item.slot_start_at === undefined || item.slot_end_at === undefined) return item;
+  const when = eventWhenOnTurnClock({ start_at: item.slot_start_at, end_at: item.slot_end_at }, zone);
+  return when === undefined ? item : { ...item, slot_when: when };
 };
 
 /** A search result names an asset's holder as `work.read` does, so two records
@@ -1350,6 +1367,7 @@ const assetsFoundByHolder = (
   if (!mayNameHolders(deps, scope)) return { rows: [], truncated: false };
   const held = resolver.listAssetsWithHolder(DISCOVERY_SCAN_CAP);
   const names = new Map<string, string | undefined>();
+  const typeTerms = new Map<string, readonly string[]>();
   const named = held.flatMap((row) => {
     const holder = row._kind === 'asset' ? row.holder_contact : undefined;
     if (holder === undefined) return [];
@@ -1358,7 +1376,11 @@ const assetsFoundByHolder = (
     return name === undefined ? [] : [{ row, name }];
   });
   const rows = resolver
-    .matchTextsByQuery(named.map(({ row, name }) => assetSearchableText(row, name)), query)
+    .matchTextsByQuery(named.map(({ row, name }) => {
+      const classId = row._kind === 'asset' ? row.class_id : undefined;
+      if (classId && !typeTerms.has(classId)) typeTerms.set(classId, resolver.assetTypeSearchTerms?.(classId) ?? []);
+      return assetSearchableText(row, name, typeTerms.get(classId ?? '') ?? []);
+    }), query)
     .map((i) => named[i]?.row)
     .filter((row): row is WorkEntity => row !== undefined);
   return { rows, truncated: held.length >= DISCOVERY_SCAN_CAP };
@@ -1757,11 +1779,12 @@ export const runWorkEntitySearchTool = async (
   // ONE clamp for the whole result, derived from how many rows it carries, and
   // applied identically to local rows and live read-through items.
   const longTextClamp = listLongTextClamp(pageCandidates.length);
-  let items = pageCandidates.map((candidate) =>
+  let items = pageCandidates.map((candidate) => withSlotWhen(
     candidate.kind === 'local'
       ? withHolderName(deps, scope, candidate.row, projectItem(candidate.row, { clampLongText: longTextClamp }))
-      : clampItemLongText(candidate.item, longTextClamp)
-  );
+      : clampItemLongText(candidate.item, longTextClamp),
+    ctx.time_zone,
+  ));
 
   // Freshness verdicts for the query's scope — same filter composition
   // as the rows (the CRUD handler precedent). Null = sync substrate
@@ -2075,10 +2098,10 @@ export const runWorkEntityReadTool = async (
         return {
           ok: true,
           result: {
-            entity: projectReadThroughItem(live.projected, now, {
+            entity: withSlotWhen(projectReadThroughItem(live.projected, now, {
               clampLongText: false,
               longOverride: live.long,
-            }),
+            }), ctx.time_zone),
             found: true,
             source_freshness: freshness,
             plan,
@@ -2161,7 +2184,7 @@ export const runWorkEntityReadTool = async (
     has_read_op: described.has_read_op,
   });
 
-  const item = qualifyItem(row, projectItem(row, { clampLongText: false, assetDetail: true }));
+  const item = withSlotWhen(qualifyItem(row, projectItem(row, { clampLongText: false, assetDetail: true })), ctx.time_zone);
   if (item.holder_contact !== undefined) {
     const name = holderNameFor(deps, scope, item.holder_contact); if (name !== undefined) item.holder_name = name;
   }

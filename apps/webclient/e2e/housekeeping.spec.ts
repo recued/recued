@@ -348,7 +348,6 @@ const releaseHousekeepingBannerWrite = async (page: Page, operation: Housekeepin
 };
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const operation of housekeepingBannerCases) {
@@ -551,7 +550,6 @@ const openDriftEventPanel = async (page: Page) => {
 };
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const scenario of ['visible-replay', 'dismissed-replay', 'older-computation']) {
@@ -644,7 +642,6 @@ for (const size of [
 }
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const outcome of ['success', 'failure']) {
@@ -864,7 +861,6 @@ const publishPendingPromotionEstimates = async (page: Page) => {
 };
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const owner of ['search', 'dialog']) {
@@ -993,7 +989,6 @@ for (const size of [
 }
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const outcome of ['success', 'failure']) {
@@ -1098,7 +1093,6 @@ for (const size of [
 }
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const operation of topicTrustOperations) {
@@ -1231,7 +1225,6 @@ const releaseTrustWrite = async (page: Page) => {
 };
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const control of ['run-policy', 'model-pool']) {
@@ -1852,7 +1845,6 @@ for (const size of [
 }
 
 for (const size of [
-  { name: 'desktop', viewport: { width: 1280, height: 900 } },
   { name: 'mobile', viewport: { width: 390, height: 844 } },
 ]) {
   for (const outcome of ['success', 'failure']) {

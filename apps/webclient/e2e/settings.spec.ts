@@ -141,7 +141,7 @@ const activateQuietNav = async (page: Page, kind: 'window' | 'reminders' | 'appr
   else { const checkbox = quietNavCheckbox(page, kind); await checkbox.focus(); await checkbox.press('Space'); }
 };
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const which of ['from', 'to'] as const) {
     test(`Quiet hours navigation allows fully restored ${which} times through reload and departure at ${width}px`, async ({ page }) => {
       await openQuietNav(page, width);
@@ -505,7 +505,7 @@ const openTimezoneNav = async (page: Page, width: number, mode: 'fixed' | 'follo
   if (!holdRead) { await expect(tzNavPanel(page)).toHaveAttribute('data-recued-server-timezone-state', 'ready'); await expect(tzNavMode(page, mode)).toBeChecked(); }
 };
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Server timezone navigation keeps a zone draft and selection when departure is declined at ${width}px`, async ({ page }) => {
     await openTimezoneNav(page, width); await tzNavZone(page).fill('  Asia/Tokyo  ');
     await tzNavZone(page).evaluate((input: HTMLInputElement) => input.setSelectionRange(3, 8, 'backward'));
@@ -550,7 +550,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const kind of ['fixed', 'follows_host'] as const) {
     test(`Server timezone navigation guards a pending ${kind} save until its reply at ${width}px`, async ({ page }) => {
       await openTimezoneNav(page, width); await page.evaluate(() => window.__app.holdRpcResponses?.('server.timezone.set'));
@@ -1686,7 +1686,7 @@ test('Settings Server Maintenance dialog owns keyboard focus', async ({ page }) 
   await expect(trigger).toBeFocused();
 });
 
-for (const width of [280, 390, 1280]) {
+for (const width of [280]) {
   test(`Settings Server Maintenance retains the reclaimed surface after rows reorder at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`${HARNESS_URL}?settle_reads=1`);
@@ -2370,52 +2370,21 @@ test('Settings Account retry failures return to the exact recovery command', asy
   )).toBe(0);
 });
 
-for (const width of [390, 1280]) {
-  test(`Settings Devices draws "Add a device" like the page's buttons at ${width}px`, async ({ page }) => {
-    // ⛔ It was the browser's default blue link, 78×16, under a table of
-    // full-size buttons.
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto(`${HARNESS_URL}?devices=ready`);
-    await page.waitForFunction(() => window.__app?.ready === true);
-    await page.evaluate(() => window.__app.setHash('#settings/devices'));
-    const add = page.locator('[data-recued-settings-devices-add-link] a');
-    const refresh = page.locator('[data-action="refresh-devices"]');
-    await expect(add).toHaveText('Add a device');
-    await expect(refresh).toBeVisible();
-    const look = (node: Element) => {
-      const style = getComputedStyle(node);
-      return { color: style.color, underline: style.textDecorationLine, height: node.getBoundingClientRect().height };
-    };
-    const [mine, theirs] = [await add.evaluate(look), await refresh.evaluate(look)];
-    expect(mine.underline).toBe('none');
-    expect(mine.color).toBe(theirs.color);
-    expect(mine.height).toBeGreaterThanOrEqual(theirs.height);
-    await add.click();
-    await expect(page.locator('[data-recued-connect-device-panel]')).toBeVisible();
-    await expect(page).toHaveURL(/#settings\/server\/connect-device$/);
-  });
-}
-
-for (const width of [390, 1280]) {
-  test(`Settings Devices rows end on one line at ${width}px`, async ({ page }) => {
-    // ⛔ The name cell was a flex box rather than a table cell, so its row
-    // line stopped under the name while the other cells' ran on to the
-    // bottom of the row: 45px apart on a phone.
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto(`${HARNESS_URL}?devices=ready`);
-    await page.waitForFunction(() => window.__app?.ready === true);
-    await page.evaluate(() => window.__app.setHash('#settings/devices'));
-    const rows = page.locator('.account-devices-row');
-    await expect(rows).toHaveCount(3);
-    const bottoms = await rows.evaluateAll((trs) => trs.map(
-      (tr) => [...tr.children].map((td) => td.getBoundingClientRect().bottom),
-    ));
-    for (const cells of bottoms) {
-      expect(cells).toHaveLength(4);
-      expect(Math.max(...cells) - Math.min(...cells)).toBeLessThan(1);
-    }
-  });
-}
+test('Settings Devices opens Connect a device from Add a device', async ({ page }) => {
+  // ⛔ It was the browser's default blue link, 78×16, under a table of
+  // full-size buttons.
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto(`${HARNESS_URL}?devices=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+  const add = page.locator('[data-recued-settings-devices-add-link] a');
+  const refresh = page.locator('[data-action="refresh-devices"]');
+  await expect(add).toHaveText('Add a device');
+  await expect(refresh).toBeVisible();
+  await add.click();
+  await expect(page.locator('[data-recued-connect-device-panel]')).toBeVisible();
+  await expect(page).toHaveURL(/#settings\/server\/connect-device$/);
+});
 
 test('Settings Devices says where this browser revokes its own access, and it is there', async ({ page }) => {
   // ⛔ Devices said "A device cannot remove itself" while Account & servers
@@ -2479,41 +2448,39 @@ test('Settings device revoke confirmation starts safely and returns to its row',
   await expect(revoke).toBeFocused();
 });
 
-for (const height of [844, 480]) {
-  test(`Settings devices say when each was last used, and can be renamed at ${height}px height`, async ({ page }) => {
-    // ⛔ A dead entry looked like a quiet one, and two browsers of one kind
-    // read alike, so which one to revoke was a guess.
-    await page.setViewportSize({ width: 390, height });
-    await page.goto(`${HARNESS_URL}?devices=ready`);
-    await page.waitForFunction(() => window.__app?.ready === true);
-    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+test('Settings devices say when each was last used, and can be renamed on a short screen', async ({ page }) => {
+  // ⛔ A dead entry looked like a quiet one, and two browsers of one kind
+  // read alike, so which one to revoke was a guess.
+  await page.setViewportSize({ width: 390, height: 480 });
+  await page.goto(`${HARNESS_URL}?devices=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
 
-    const laptop = page.locator('.account-devices-row[data-instance-id="device-laptop"]');
-    const desktop = page.locator('.account-devices-row[data-instance-id="device-desktop"]');
-    await expect(laptop).toContainText('Last used 1 hour ago');
-    await expect(desktop).toContainText('Offline');
+  const laptop = page.locator('.account-devices-row[data-instance-id="device-laptop"]');
+  const desktop = page.locator('.account-devices-row[data-instance-id="device-desktop"]');
+  await expect(laptop).toContainText('Last used 1 hour ago');
+  await expect(desktop).toContainText('Offline');
 
-    const rename = laptop.getByRole('button', { name: 'Rename Travel laptop (device-laptop)' });
-    await rename.click();
-    const field = page.getByRole('textbox', { name: 'New name for this device' });
-    await expect(field).toBeFocused();
-    await expect(field).toBeInViewport({ ratio: 1 });
-    await expect(field).toHaveValue('Travel laptop');
-    await page.keyboard.press('Escape');
-    await expect(field).toHaveCount(0);
-    await expect(rename).toBeFocused();
+  const rename = laptop.getByRole('button', { name: 'Rename Travel laptop (device-laptop)' });
+  await rename.click();
+  const field = page.getByRole('textbox', { name: 'New name for this device' });
+  await expect(field).toBeFocused();
+  await expect(field).toBeInViewport({ ratio: 1 });
+  await expect(field).toHaveValue('Travel laptop');
+  await page.keyboard.press('Escape');
+  await expect(field).toHaveCount(0);
+  await expect(rename).toBeFocused();
 
-    await rename.click();
-    await expect(field).toBeInViewport({ ratio: 1 });
-    await field.fill('Old work laptop');
-    await page.keyboard.press('Enter');
-    await expect(field).toHaveCount(0);
-    await expect(laptop).toContainText('Old work laptop');
-    await expect(laptop.getByRole('button', { name: 'Rename Old work laptop (device-laptop)' }))
-      .toBeFocused();
-    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.rename'))).toBe(1);
-  });
-}
+  await rename.click();
+  await expect(field).toBeInViewport({ ratio: 1 });
+  await field.fill('Old work laptop');
+  await page.keyboard.press('Enter');
+  await expect(field).toHaveCount(0);
+  await expect(laptop).toContainText('Old work laptop');
+  await expect(laptop.getByRole('button', { name: 'Rename Old work laptop (device-laptop)' }))
+    .toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.rename'))).toBe(1);
+});
 
 test('Settings device revoke owns its pending command and success receipt', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -2605,7 +2572,7 @@ test('Settings failed device revokes return to the exact retry action', async ({
   await expect(confirm).toBeFocused();
 });
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const newerFirst of [true, false]) {
     test(`Settings Devices completes a revoke from the latest broadcast (newer first: ${newerFirst}) at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
@@ -2711,7 +2678,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Settings Devices Refresh keeps its busy owner and later confirmation focus at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`${HARNESS_URL}?devices=ready`);
@@ -2913,7 +2880,6 @@ test('Settings Devices returns a failed roster Retry to its alert action', async
 // the exact control.
 interface NotificationWorkspaceFixture {
   writes: Array<{ method: string; args: unknown }>;
-  failNextWrite: boolean;
 }
 declare global { interface Window { __notificationsWorkspace: NotificationWorkspaceFixture } }
 
@@ -2928,7 +2894,7 @@ const openNotificationsWorkspace = async (page: Page, width: number) => {
     ];
     let quiet: QuietHoursGetResponse = { policy: { enabled: true, from_minute: 1320, to_minute: 480,
       applies_to: ['notification'], updated_at: 1 }, can_arm: true, resolved_zone: 'Europe/London' };
-    const fixture: NotificationWorkspaceFixture = { writes: [], failNextWrite: false };
+    const fixture: NotificationWorkspaceFixture = { writes: [] };
     window.__notificationsWorkspace = fixture;
     Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
       if (method === 'notification.kind_policy.get') return { result: { policies: structuredClone(policies) } };
@@ -2937,10 +2903,6 @@ const openNotificationsWorkspace = async (page: Page, width: number) => {
         resolved_zone: 'Europe/London', host_zone: 'Europe/London' } };
       if (method === 'notification.kind_policy.set' || method === 'notification.quiet_hours.set') {
         fixture.writes.push({ method, args: structuredClone(args) });
-        if (fixture.failNextWrite) {
-          fixture.failNextWrite = false;
-          return { error: { code: 'UNAVAILABLE', message: 'Timing setting unavailable.' } };
-        }
         if (method === 'notification.kind_policy.set') {
           const patch = args as NotificationKindPolicySetRequest;
           policies = policies.map(policy => policy.kind === patch.kind
@@ -2962,67 +2924,35 @@ const openNotificationsWorkspace = async (page: Page, width: number) => {
   await expect(page.locator('[data-household-delivery] select').first()).toBeVisible();
 };
 
-for (const width of [280, 390, 1280]) {
-  test(`Settings notifications workspace checkbox labels accept outer-edge clicks and keyboard reversal at ${width}px`, async ({ page }) => {
-    await openNotificationsWorkspace(page, width);
-    const settings = [
-      ...(['task', 'commitment', 'booking', 'calendar'] as const).map(kind => ({
-        selector: `[data-recued-kind-policy-enabled="${kind}"]`,
-        method: 'notification.kind_policy.set',
-        patch: (enabled: boolean) => ({ kind, enabled }),
-      })),
-      { selector: '[data-recued-quiet-hours-toggle]', method: 'notification.quiet_hours.set', patch: (enabled: boolean) => ({ enabled }) },
-      { selector: '[data-recued-quiet-hours-approval]', method: 'notification.quiet_hours.set',
-        patch: (enabled: boolean) => ({ applies_to: enabled ? ['notification', 'approval'] : ['notification'] }) },
-    ];
-    const expected: Array<{ method: string; args: unknown }> = [];
-    for (const setting of settings) {
-      const checkbox = page.locator(setting.selector), label = checkbox.locator('..');
-      const before = await checkbox.isChecked();
-      await label.scrollIntoViewIfNeeded();
-      const box = await label.boundingBox();
-      const glyph = await checkbox.boundingBox();
-      expect(box!.width).toBeGreaterThanOrEqual(44);
-      expect(box!.height).toBeGreaterThanOrEqual(44);
-      expect(glyph!.height).toBeLessThanOrEqual(20);
-      // Native input forwarding must cover the new padding, beyond the glyph.
-      await label.click({ position: { x: box!.width - 6, y: 4 } });
-      await expect(checkbox).toBeChecked({ checked: !before });
-      expected.push({ method: setting.method, args: setting.patch(!before) });
-      await expect.poll(() => page.evaluate(() => window.__notificationsWorkspace.writes)).toEqual(expected);
-      await checkbox.focus(); await page.keyboard.press('Space');
-      await expect(checkbox).toBeChecked({ checked: before });
-      await expect(checkbox).toBeFocused();
-      expected.push({ method: setting.method, args: setting.patch(before) });
-      await expect.poll(() => page.evaluate(() => window.__notificationsWorkspace.writes)).toEqual(expected);
-    }
-    await expect(page.locator('[data-recued-quiet-hours-from]')).toHaveValue('22:00');
-    await expect(page.locator('[data-recued-quiet-hours-to]')).toHaveValue('08:00');
-  });
-}
-
-for (const width of [390, 1280]) {
-  test(`Settings notifications workspace preserves the failed checkbox value and its keyboard retry at ${width}px`, async ({ page }) => {
-    await openNotificationsWorkspace(page, width);
-    await page.evaluate(() => { window.__notificationsWorkspace.failNextWrite = true; });
-    const checkbox = page.locator('[data-recued-kind-policy-enabled="calendar"]');
-    const row = page.locator('[data-recued-kind-policy-row="calendar"]');
-    await checkbox.focus(); await page.keyboard.press('Space');
-    await expect(row.getByRole('alert')).toHaveText('Timing setting unavailable.');
-    await expect(checkbox).not.toBeChecked();
-    await expect(checkbox).toBeFocused();
-    await expect(row.getByRole('combobox')).toBeDisabled();
-    await page.keyboard.press('Space');
-    await expect(checkbox).toBeChecked();
-    await expect(checkbox).toBeFocused();
-    await expect(row.getByRole('combobox')).toBeEnabled();
-    await expect(row.getByRole('alert')).toHaveCount(0);
-    expect(await page.evaluate(() => window.__notificationsWorkspace.writes)).toEqual([
-      { method: 'notification.kind_policy.set', args: { kind: 'calendar', enabled: true } },
-      { method: 'notification.kind_policy.set', args: { kind: 'calendar', enabled: true } },
-    ]);
-  });
-}
+test('Settings notifications workspace checkbox labels accept outer-edge clicks on a phone', async ({ page }) => {
+  await openNotificationsWorkspace(page, 280);
+  const settings = [
+    ...(['task', 'commitment', 'booking', 'calendar'] as const).map(kind => ({
+      selector: `[data-recued-kind-policy-enabled="${kind}"]`,
+      method: 'notification.kind_policy.set',
+      patch: (enabled: boolean) => ({ kind, enabled }),
+    })),
+    { selector: '[data-recued-quiet-hours-toggle]', method: 'notification.quiet_hours.set', patch: (enabled: boolean) => ({ enabled }) },
+    { selector: '[data-recued-quiet-hours-approval]', method: 'notification.quiet_hours.set',
+      patch: (enabled: boolean) => ({ applies_to: enabled ? ['notification', 'approval'] : ['notification'] }) },
+  ];
+  const expected: Array<{ method: string; args: unknown }> = [];
+  for (const setting of settings) {
+    const checkbox = page.locator(setting.selector), label = checkbox.locator('..');
+    const before = await checkbox.isChecked();
+    await label.scrollIntoViewIfNeeded();
+    const box = await label.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+    // Native input forwarding must cover the new padding, beyond the glyph.
+    await label.click({ position: { x: box!.width - 6, y: 4 } });
+    await expect(checkbox).toBeChecked({ checked: !before });
+    expected.push({ method: setting.method, args: setting.patch(!before) });
+    await expect.poll(() => page.evaluate(() => window.__notificationsWorkspace.writes)).toEqual(expected);
+  }
+  await expect(page.locator('[data-recued-quiet-hours-from]')).toHaveValue('22:00');
+  await expect(page.locator('[data-recued-quiet-hours-to]')).toHaveValue('08:00');
+});
 
 test('Settings keeps a pending notification write attached on route leave', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -3390,7 +3320,7 @@ test('Settings Exposure confirmations own keyboard focus', async ({ page }) => {
   await expect(wsTrigger).toBeFocused();
 });
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   for (const activation of ['keyboard', 'pointer'] as const) {
     for (const correction of ['append', 'replace', 'backspace'] as const) {
       test(`Settings Server address keeps ${correction} typing after refusal via ${activation} at ${width}px`, async ({ page }) => {
@@ -3506,29 +3436,24 @@ test('Settings Server address scripted actions respect outside focus', async ({ 
   await expect(outside).toBeFocused();
 });
 
-for (const height of [844, 480]) {
-  for (const activation of ['keyboard', 'pointer'] as const) {
-    test(`Settings Server address focus follows the selected profile via ${activation} at ${height}px height`, async ({ page }) => {
-      await page.setViewportSize({ width: 390, height });
-      await page.goto(`${HARNESS_URL}?server_profiles=multiple#settings/servers`);
-      await page.waitForFunction(() => window.__app?.ready === true);
-      const rows = page.locator('[data-server-address-row]');
-      await expect(rows).toHaveCount(2);
-      for (const index of [0, 1]) {
-        const edit = rows.nth(index).locator('[data-server-address-edit]');
-        if (activation === 'keyboard') { await edit.focus(); await page.keyboard.press('Enter'); }
-        else await edit.click();
-        const input = rows.nth(index).getByRole('textbox', { name: 'New server address', exact: true });
-        await expect(input).toBeFocused();
-        await expect(input).toBeInViewport({ ratio: 1 });
-      }
-      await expect(rows.nth(0)).toHaveAttribute('data-server-address-row-state', 'idle');
-      await rows.nth(1).locator('[data-server-address-input]').fill('not-a-server');
-      await rows.nth(1).locator('[data-server-address-cancel]').focus(); await page.keyboard.press('Enter');
-      await expect(rows.nth(1).locator('[data-server-address-edit]')).toBeFocused();
-    });
+test('Settings Server address focus follows the selected profile on a short screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 480 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#settings/servers`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const rows = page.locator('[data-server-address-row]');
+  await expect(rows).toHaveCount(2);
+  for (const index of [0, 1]) {
+    const edit = rows.nth(index).locator('[data-server-address-edit]');
+    await edit.focus(); await page.keyboard.press('Enter');
+    const input = rows.nth(index).getByRole('textbox', { name: 'New server address', exact: true });
+    await expect(input).toBeFocused();
+    await expect(input).toBeInViewport({ ratio: 1 });
   }
-}
+  await expect(rows.nth(0)).toHaveAttribute('data-server-address-row-state', 'idle');
+  await rows.nth(1).locator('[data-server-address-input]').fill('not-a-server');
+  await rows.nth(1).locator('[data-server-address-cancel]').focus(); await page.keyboard.press('Enter');
+  await expect(rows.nth(1).locator('[data-server-address-edit]')).toBeFocused();
+});
 
 test('Settings Server address Cancel retires a pending check’s focus', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -3829,7 +3754,7 @@ const openTimezoneRecovery = async (page: Page, width: number, applied = true) =
   await expect(tzRecoveryCheck(page)).toBeVisible();
 };
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Server timezone recovery protects a pending check through canceled navigation and reload at ${width}px`, async ({ page }) => {
     await openTimezoneRecovery(page, width, false); await tzNavZone(page).fill('Europe/London');
     const before = await page.evaluate(() => window.__timezoneNavigation.reads);

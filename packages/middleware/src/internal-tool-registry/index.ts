@@ -35,6 +35,7 @@ import {
   TIER1_TOOL_DESCRIPTORS,
   TIER1_TOOL_NAME_SET,
   TIER1_TOOL_NAMES,
+  type ApprovalValueLabels,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type ConnectionMcpAnnotationState,
@@ -166,6 +167,13 @@ export interface CreateInternalToolRegistryOptions {
   /** Per-Tier-1 handler overrides. Missing entries fall back to the
    *  not-implemented stub. */
   tier1Handlers?: Partial<Record<Tier1ToolName, Tier1Handler>>;
+  /** D-329 — a Tier-1 write's check of its own arguments, run before the owner is asked
+   *  to approve it (`checkBeforeAsking`): the refusal its handler would answer with, or
+   *  `null` when it would run. A tool without one is asked about as before. */
+  tier1Checks?: Partial<Record<Tier1ToolName, (args: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult | null>>>;
+  /** D-329 — per Tier-1 write, how the owner knows the records a held call names, by their
+   *  names (`askValueLabels`). A tool without one is asked about with its ids. */
+  tier1AskLabels?: Partial<Record<Tier1ToolName, (args: unknown, ctx: ChatDispatchContext) => Promise<ApprovalValueLabels | undefined>>>;
   /** ⛔⛔ D-228 slice 5 — THE CONTRACT GATE for Tier-1 primitives, injected
    *  because `packages/` may never import `backend/` (the public boundary) and
    *  the op-admission gate is server-side. The host passes a closure over
@@ -416,6 +424,40 @@ export const createInternalToolRegistry = (
     return tier3.find((entry) => entry.name === name) ?? null;
   };
 
+  const tier1Blocked = (name: string): ChatDispatchResult => ({
+    ok: false,
+    reason: 'classification_blocked',
+    detail:
+      `'${name}' is turned off for this contract. `
+      + 'Re-enable it in Settings → Contracts → Ops, or tell the user it is unavailable.',
+  });
+
+  /** D-329 — a Tier-1 write's own refusal before anyone is asked to approve it, behind the
+   *  channel invariants and the contract gate a dispatch has: what the call would be
+   *  refused for, or `null` when it would run or its tool has no check. */
+  const checkBeforeAsking = async (
+    name: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ): Promise<ChatDispatchResult | null> => {
+    const check = tier1Index.has(name) ? options.tier1Checks?.[name as Tier1ToolName] : undefined;
+    if (!check) return null;
+    const channelError = assertChannelInvariants(ctx);
+    if (channelError) return channelError;
+    if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) return tier1Blocked(name);
+    return check(args, ctx);
+  };
+
+  // Names are for the owner's ask alone, so a lookup that fails leaves the ids.
+  const askValueLabels = async (
+    name: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ): Promise<ApprovalValueLabels | undefined> => {
+    const labels = tier1Index.has(name) ? options.tier1AskLabels?.[name as Tier1ToolName] : undefined;
+    return labels ? labels(args, ctx).catch(() => undefined) : undefined;
+  };
+
   const dispatch = async (
     name: string,
     args: unknown,
@@ -428,15 +470,7 @@ export const createInternalToolRegistry = (
     if (t1) {
       // D-228 slice 5 — the contract decides before the handler runs. Absent
       // callback ⇒ no contract substrate on this host (see the option's doc).
-      if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) {
-        return {
-          ok: false,
-          reason: 'classification_blocked',
-          detail:
-            `'${name}' is turned off for this contract. `
-            + 'Re-enable it in Settings → Contracts → Ops, or tell the user it is unavailable.',
-        };
-      }
+      if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) return tier1Blocked(name);
       const handler = tier1Handlers[name as Tier1ToolName];
       return handler(args, ctx);
     }
@@ -484,6 +518,8 @@ export const createInternalToolRegistry = (
     listByTier,
     getByName,
     dispatch,
+    checkBeforeAsking,
+    askValueLabels,
     subscribeRefresh,
   };
 };

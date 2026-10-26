@@ -121,6 +121,11 @@ export interface Ledger {
  */
 export interface PiiRestoreAuthority {
   readonly ledger: Ledger;
+  /** A person alias the packet exposed, keyed by the form a model writes when it
+   *  drops the prefix (`Person3` → `pii.Person3`). Only an alias whose bare form
+   *  appears nowhere else in the packet: a `Person3` the owner or a record wrote
+   *  is real text and stays as written. */
+  readonly unprefixed_persons?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -2272,6 +2277,28 @@ export const derivePiiRestoreAuthority = (
     }
   }
 
+  // A model sometimes drops a person alias's prefix ("Person3's passport"), and
+  // the owner read it so: 5 of 11 answers in a live family-trip run (2026-10-25).
+  // Within one request a bare `Person3` can only mean the `pii.Person3` it was
+  // shown, unless the packet also holds `Person3` as text of its own (any case,
+  // anywhere but after `pii.`) or two exposed aliases share that form.
+  const literal = new Set<string>();
+  for (const match of serializedProtectedPacket.matchAll(/person(\d+)(?!\d)/gi)) {
+    const at = match.index ?? 0;
+    if (!/pii\.$/i.test(serializedProtectedPacket.slice(Math.max(0, at - 4), at))) literal.add(`Person${match[1]}`);
+  }
+  const bareForms = new Map<string, string[]>();
+  for (const [key, entry] of byKindBaseAlias) {
+    const base = key.slice(key.indexOf('::') + 2);
+    const person = /^(?:cap\d*_)?pii\.(Person\d+)$/.exec(base);
+    if (entry.kind !== 'name' || person === null) continue;
+    bareForms.set(person[1]!, [...(bareForms.get(person[1]!) ?? []), base]);
+  }
+  const unprefixed_persons = new Map<string, string>();
+  for (const [form, bases] of bareForms) {
+    if (bases.length === 1 && !literal.has(form)) unprefixed_persons.set(form, bases[0]!);
+  }
+
   return Object.freeze({
     ledger: {
       scope_id: ledger.scope_id,
@@ -2285,6 +2312,7 @@ export const derivePiiRestoreAuthority = (
       reservedSlotKeys: new Set<string>(),
       preScanLiterals: new Map(),
     },
+    ...(unprefixed_persons.size > 0 ? { unprefixed_persons } : {}),
   });
 };
 
@@ -2313,22 +2341,43 @@ export const derivePiiRestoreAuthority = (
  */
 export const restoreInString = (ledger: Ledger, text: string): string => {
   if (typeof text !== 'string' || text.length === 0) return text;
-  return text.replace(EXPOSED_ALIAS_TOKEN_PATTERN, (match) => {
-    const exact = lookupAliasReal(ledger, match);
-    if (exact !== undefined) return exact;
-    const canonical = toCanonicalCasing(match);
-    if (canonical !== match) {
-      const ci = lookupAliasReal(ledger, canonical);
-      if (ci !== undefined) return ci;
-    }
-    return match;
-  });
+  return text.replace(EXPOSED_ALIAS_TOKEN_PATTERN, (match) => restoreAliasToken(ledger, match));
 };
 
+const restoreAliasToken = (ledger: Ledger, match: string): string => {
+  const exact = lookupAliasReal(ledger, match);
+  if (exact !== undefined) return exact;
+  const canonical = toCanonicalCasing(match);
+  if (canonical !== match) {
+    const ci = lookupAliasReal(ledger, canonical);
+    if (ci !== undefined) return ci;
+  }
+  return match;
+};
+
+/** A person alias written without its `pii.` prefix: a whole token, never part
+ *  of a word, an address, a path or a fragment (`Person3.ana`). */
+const UNPREFIXED_PERSON_TOKEN = '(?<![A-Za-z0-9_.@/-])Person\\d+(?![A-Za-z0-9_@]|\\.[A-Za-z0-9])';
+/** The exposed alias grammar plus that form, so one pass restores both. */
+const EXPOSED_OR_UNPREFIXED_PATTERN = new RegExp(`${EXPOSED_ALIAS_TOKEN_PATTERN.source}|${UNPREFIXED_PERSON_TOKEN}`, 'gi');
+
+/** As `restoreInString` over the request's own ledger, and a bare `Person3` the
+ *  request can only have meant as `pii.Person3` (`unprefixed_persons`) restores
+ *  with it. Still ONE pass: a restored value is never scanned again. */
 export const restoreInStringWithAuthority = (
   authority: PiiRestoreAuthority,
   text: string,
-): string => restoreInString(authority.ledger, text);
+): string => {
+  const unprefixed = authority.unprefixed_persons;
+  if (unprefixed === undefined || unprefixed.size === 0) return restoreInString(authority.ledger, text);
+  if (typeof text !== 'string' || text.length === 0) return text;
+  return text.replace(EXPOSED_OR_UNPREFIXED_PATTERN, (match) => {
+    const alias = unprefixed.get(match);
+    return alias !== undefined
+      ? lookupAliasReal(authority.ledger, alias) ?? match
+      : restoreAliasToken(authority.ledger, match);
+  });
+};
 
 const toCanonicalCasing = (alias: string): string => {
   // Try to re-case `pii.person1`/`PII.PERSON1` → `pii.Person1` etc. so the
@@ -2771,7 +2820,7 @@ export const restoreArgs = <T>(ledger: Ledger, args: T): T => {
 export const restoreArgsWithAuthority = <T>(
   authority: PiiRestoreAuthority,
   args: T,
-): T => restoreArgs(authority.ledger, args);
+): T => walk(args, (s) => restoreInStringWithAuthority(authority, s)) as T;
 
 /**
  * KEY-AWARE restore — un-aliases both object KEYS and string values. Symmetric
@@ -2798,7 +2847,7 @@ export const restoreArgsAndKeys = <T>(ledger: Ledger, args: T): T => {
 export const restoreArgsAndKeysWithAuthority = <T>(
   authority: PiiRestoreAuthority,
   args: T,
-): T => restoreArgsAndKeys(authority.ledger, args);
+): T => walk(args, (s) => restoreInStringWithAuthority(authority, s), (key) => restoreKeyString(authority.ledger, key)) as T;
 
 /** Inverse of `aliasKeyString` — un-alias a JSON object KEY in ONE regex pass.
  *  Uses the broader exposure boundary so an alias embedded after an identifier

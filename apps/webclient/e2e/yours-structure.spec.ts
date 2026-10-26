@@ -138,15 +138,18 @@ test('Class editor keeps its entity origin through nested preset rule steps', as
   const action = card.getByRole('button', { name: 'Edit class', exact: true });
   await action.click(); await form.getByRole('button', { name: 'Cancel', exact: true }).click(); await expect(action).toBeFocused();
   await action.click();
+  await form.getByLabel('Search keywords', { exact: true }).fill('Travel, trip, travel');
   const addRule = form.getByRole('button', { name: 'Add preset rule', exact: true });
   for (const title of ['Review equipment warranty', 'Inspect equipment']) {
     await addRule.click(); await form.getByLabel('Title', { exact: true }).fill(title);
     await form.getByLabel('Asset date', { exact: true }).selectOption('warranty_ends_on');
     await form.getByRole('button', { name: 'Keep rule in draft', exact: true }).click(); await expect(addRule).toBeFocused();
+    await expect(form.getByLabel('Search keywords', { exact: true })).toHaveValue('travel, trip');
   }
   await form.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(action).toBeFocused(); await expect(card).toContainText('Review equipment warranty');
   await action.click();
+  await expect(form.getByLabel('Search keywords', { exact: true })).toHaveValue('travel, trip');
   const presetRule = (title: string) => form.getByRole('article').filter({ has: page.getByRole('heading', { name: title, exact: true }) })
     .getByRole('button', { name: 'Edit preset rule', exact: true });
   await presetRule('Inspect equipment').click(); await form.getByLabel('Title', { exact: true }).fill('Inspect annually');

@@ -247,7 +247,7 @@ const pendingListFocusByDocument = new WeakMap<Document, string>();
 // MCP client snippets (pure helpers — consumed by the delta-2 Connect tab)
 // ════════════════════════════════════════════════════════════════
 
-const TOKEN_PLACEHOLDER = '<this agreement\'s key>';
+const TOKEN_PLACEHOLDER = '<this contract\'s key>';
 
 export interface McpClientSnippet {
   readonly id: 'claude' | 'claude-code' | 'cursor' | 'cline' | 'codex' | 'custom';
@@ -1291,7 +1291,7 @@ const nextDoorTypes = (
  *  as the box's tooltip, because a greyed-out tick with no reason reads as a
  *  third state of the box rather than a locked one. */
 const LAST_DOOR_LOCKED_HINT =
-  'One way in has to stay on. To stop this agreement, use Revoke.';
+  'One way in has to stay on. To stop this contract, use Revoke.';
 
 const formatDateTime = (ts: number): string =>
   formatClientDateTime(ts, { invalidText: String(ts) });
@@ -1392,8 +1392,12 @@ interface TabSpec {
 // public form / vendor endpoint it was minted for — so the Connect tab (MCP
 // link + one-time access code) would be meaningless and misleading on it.
 // Its Ops/Entities tabs ARE the grantable-rows surface (D-207 §5.2).
+/** An AI app's contract: not your own chat's, not a customer template, not a derived door. */
+const isAppContractRow = (row: ContractRowVM): boolean =>
+  !(row.is_self || isCustomerTemplateRow(row) || anonymousDoorType(row) !== null);
+
 const tabsFor = (row: ContractRowVM): ReadonlyArray<TabSpec> =>
-  row.is_self || isCustomerTemplateRow(row) || anonymousDoorType(row) !== null
+  !isAppContractRow(row)
     ? [
         { id: 'ops', label: 'Ops' },
         { id: 'entities', label: 'Entities' },
@@ -1723,15 +1727,15 @@ export const bootstrapContractsRoute = (
     const section = doc.createElement('details');
     section.setAttribute(CONTRACTS_ROUTE_RULES_ATTR, '');
     const summary = doc.createElement('summary');
-    summary.textContent = 'Rules for every agreement';
+    summary.textContent = 'Rules for every contract';
     section.appendChild(summary);
     section.appendChild(makeEl(
       doc,
       'p',
       'contracts-section-copy',
-      'A rule applies to every agreement at once, and to you when you choose "You". Use one '
+      'A rule applies to every contract at once, and to you when you choose "You". Use one '
         + 'to stop something everywhere, or to always be asked first. To change what one '
-        + 'agreement may do, open it and use Ops, Entities and Recipes.',
+        + 'contract may do, open it and use Ops, Entities and Recipes.',
     ));
     const host = doc.createElement('div');
     section.appendChild(host);
@@ -1886,7 +1890,7 @@ export const bootstrapContractsRoute = (
       if (submitting) return;
       const name = nameInput.value.trim();
       if (name.length === 0) {
-        setError('Give this agreement a name.');
+        setError('Give this contract a name.');
         nameInput.focus({ preventScroll: true });
         return;
       }
@@ -1982,14 +1986,14 @@ export const bootstrapContractsRoute = (
       doc,
       'p',
       'contracts-section-copy contracts-intro',
-      'An agreement says who or what can reach Recued, and which tools and things '
+      'A contract says who or what can reach Recued, and which tools and things '
         + 'they can use.',
     );
     body.appendChild(intro);
 
     const listTabs = makeEl(doc, 'nav', 'contracts-list-tabs');
     listTabs.setAttribute('role', 'tablist');
-    listTabs.setAttribute('aria-label', 'Kinds of agreement');
+    listTabs.setAttribute('aria-label', 'Kinds of contract');
     listTabs.setAttribute('aria-orientation', 'horizontal');
     const tabLabels: Record<ContractsListTab, string> = {
       'built-in': 'Built-in',
@@ -2059,7 +2063,7 @@ export const bootstrapContractsRoute = (
         doc,
         'p',
         undefined,
-        `Recued could not load some of your agreements: ${loadErrorMessage}`,
+        `Recued could not load some of your contracts: ${loadErrorMessage}`,
       );
       note.setAttribute(CONTRACTS_ROUTE_ERROR_ATTR, '');
       body.appendChild(note);
@@ -2200,7 +2204,7 @@ export const bootstrapContractsRoute = (
 
     if (activeListTab === 'built-in') {
       panel.appendChild(
-        makeEl(doc, 'h2', 'contracts-section-title', 'Agreements Recued makes itself'),
+        makeEl(doc, 'h2', 'contracts-section-title', 'Contracts Recued makes itself'),
       );
       panel.appendChild(
         makeEl(
@@ -2215,7 +2219,7 @@ export const bootstrapContractsRoute = (
       list.setAttribute(CONTRACTS_ROUTE_LIST_ATTR, '');
       appendRows(list, [SELF_ROW, ...rows]);
       panel.appendChild(list);
-      appendPager(panel, 'No agreements you look after', ' agreements you look after');
+      appendPager(panel, 'No contracts you look after', ' contracts you look after');
     } else {
       const isCustomer = activeListTab === 'customer';
       panel.appendChild(
@@ -2223,7 +2227,7 @@ export const bootstrapContractsRoute = (
           doc,
           'h2',
           'contracts-section-title',
-          isCustomer ? 'Customer templates' : 'Other agreements',
+          isCustomer ? 'Customer templates' : 'Other contracts',
         ),
       );
       panel.appendChild(
@@ -2234,7 +2238,7 @@ export const bootstrapContractsRoute = (
           isCustomer
             ? 'A template says what a customer may do and read. Recued copies it when you give someone '
               + 'access. The customers themselves live under Seller.'
-            : 'Agreements for AI apps, other programs, shared keys, and anything '
+            : 'Contracts for AI apps, other programs, shared keys, and anything '
               + 'else that reaches Recued.',
         ),
       );
@@ -2259,7 +2263,7 @@ export const bootstrapContractsRoute = (
             'contracts-section-copy',
             isCustomer
               ? 'No customer templates yet.'
-              : 'No other agreements on this page.',
+              : 'No other contracts on this page.',
           ),
         );
       } else {
@@ -2271,7 +2275,7 @@ export const bootstrapContractsRoute = (
 
       appendPager(
         panel,
-        isCustomer ? 'No customer templates' : 'No other agreements',
+        isCustomer ? 'No customer templates' : 'No other contracts',
       );
     }
 
@@ -2379,10 +2383,10 @@ export const bootstrapContractsRoute = (
     back.setAttribute('href', listTabRoute(parentListTab));
     back.textContent = `← Back to ${
       parentListTab === 'built-in'
-        ? 'Agreements Recued makes itself'
+        ? 'Contracts Recued makes itself'
         : parentListTab === 'customer'
-          ? 'Customer agreements'
-          : 'Other agreements'
+          ? 'Customer contracts'
+          : 'Other contracts'
     }`;
     back.addEventListener('click', (event) => {
       const click = event as MouseEvent | undefined;
@@ -2423,7 +2427,7 @@ export const bootstrapContractsRoute = (
         doc,
         'p',
         undefined,
-        `Recued could not load some of your agreements: ${loadErrorMessage}`,
+        `Recued could not load some of your contracts: ${loadErrorMessage}`,
       );
       note.setAttribute(CONTRACTS_ROUTE_ERROR_ATTR, '');
       detail.appendChild(note);
@@ -2783,7 +2787,7 @@ export const bootstrapContractsRoute = (
         wrap.appendChild(btn);
       } else if (revokeArmed) {
         wrap.appendChild(
-          makeEl(doc, 'span', 'contracts-revoke-prompt', 'Turn this agreement off?'),
+          makeEl(doc, 'span', 'contracts-revoke-prompt', 'Turn this contract off?'),
         );
         const confirm = makeEl(doc, 'button', undefined, 'Confirm');
         confirm.setAttribute('type', 'button');
@@ -2842,7 +2846,7 @@ export const bootstrapContractsRoute = (
       pendingHeadFocusAttr = null;
       clearChildren(head);
       const summary = makeEl(doc, 'section', 'contracts-detail-summary');
-      summary.setAttribute('aria-label', 'Agreement summary');
+      summary.setAttribute('aria-label', 'Contract summary');
       const identity = makeEl(doc, 'div', 'contracts-detail-identity');
       summary.appendChild(identity);
       const nextDetailHeading = makeEl(
@@ -2886,8 +2890,8 @@ export const bootstrapContractsRoute = (
         appendDoorControls(accessBody);
       }
       const lifecycle = makeEl(doc, 'section', 'contracts-detail-lifecycle');
-      lifecycle.setAttribute('aria-label', 'Agreement actions');
-      lifecycle.appendChild(makeEl(doc, 'h3', undefined, 'Agreement actions'));
+      lifecycle.setAttribute('aria-label', 'Contract actions');
+      lifecycle.appendChild(makeEl(doc, 'h3', undefined, 'Contract actions'));
       controls.appendChild(lifecycle);
       head.appendChild(controls);
       // Revoke kill-switch — any non-revoked ordinary contract (mirrors
@@ -2964,8 +2968,8 @@ export const bootstrapContractsRoute = (
           doc,
           'p',
           'contracts-section-copy',
-          'Connect an AI app as this agreement: create its key, then paste it into the '
-            + 'app with one of the setups below. The app can do only what this agreement allows.',
+          'Connect an AI app as this contract: create its key, then paste it into the '
+            + 'app with one of the setups below. The app can do only what this contract allows.',
         ),
       );
       if (canMountContractCredential) {
@@ -2980,10 +2984,10 @@ export const bootstrapContractsRoute = (
           // for it would keep its own tool list with nothing on this page to set
           // it. Its existing key can still be turned off.
           createBlockedReason: !isKeyAuthorityContract(row)
-            ? 'This agreement was made before an agreement could hold its own key, so it '
-              + 'cannot get a new one. To connect an app, make a new agreement.'
+            ? 'This contract was made before a contract could hold its own key, so it '
+              + 'cannot get a new one. To connect an app, make a new contract.'
             : row.lifecycle_state !== 'active'
-              ? 'This agreement is off, so it cannot have a key.'
+              ? 'This contract is off, so it cannot have a key.'
               : null,
           runList: opts.permissionsListInboundTokensCaller as ContractKeyListCaller,
           runIssue: opts.permissionsIssueInboundTokenCaller as ContractKeyIssueCaller,
@@ -3002,7 +3006,7 @@ export const bootstrapContractsRoute = (
           doc,
           'div',
           undefined,
-          'This server cannot connect agreements yet.',
+          'This server cannot connect contracts yet.',
         );
         note.setAttribute(CONTRACTS_ROUTE_UNAVAILABLE_ATTR, '');
         host.appendChild(note);
@@ -3029,6 +3033,7 @@ export const bootstrapContractsRoute = (
           ? { explicitGrantRowsOnly: true }
           : {}),
         ...(isKeyAuthorityContract(row) ? { keyAgreement: true } : {}),
+        ...(isAppContractRow(row) && !isKeyAuthorityContract(row) ? { keyKeepsItsTools: true } : {}),
         runGrantRead: opts.grantReadCaller as GrantReadCaller,
         runGrantWrite: opts.grantWriteCaller as GrantWriteCaller,
         ...(opts.grantCatalogOperationsCaller !== undefined
@@ -3161,7 +3166,7 @@ export const bootstrapContractsRoute = (
   };
 
   // ── initial loading placeholder ──
-  const loading = makeEl(doc, 'p', undefined, 'Loading your agreements…');
+  const loading = makeEl(doc, 'p', undefined, 'Loading your contracts…');
   loading.setAttribute(CONTRACTS_ROUTE_LOADING_ATTR, '');
   body.appendChild(loading);
 

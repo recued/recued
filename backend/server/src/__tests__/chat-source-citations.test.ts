@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { deriveSubDEK } from '@recued/crypto';
 import { chatSourceCitationsOf, type ChatPriorToolCall } from '@recued/contracts';
-import { answerSourceCitations, priorSourceReads, sourceCitation, sourceReadVersion } from '../chat-source-citations.js';
+import { answerSourceCitations, priorSourceReads, sourceCitation, sourceCitationHint, sourceReadVersion } from '../chat-source-citations.js';
 import { composeChatMainTurnPromptParts } from '../chat-turn-executor.js';
 import { briefAsPriorToolCall } from '../chat-rolling-brief.js';
 import { createMetaFieldPrivacyResolver } from '../meta-field-privacy-resolver.js';
@@ -20,6 +20,41 @@ const databases: Database.Database[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 describe('sources bound to an answer', () => {
+  it('keeps native asset time roles beside evidence without replacing a known observation or save time', () => {
+    const entity = { kind: 'asset', attributes: { length: 'about 25 meters' },
+      created_at: 100, updated_at: 400, field_sources: { 'readings.length': { kind: 'owner', ref: 'owner', at: 300 } },
+      readings: { length: { value: 31, unit: 'm', as_of: 0, evidence: [] } }, observations: {} };
+    const citation = sourceCitation({ kind: 'asset', asset_id: ASSET_ID }, 'Hose', sourceReadVersion(entity), 500);
+    const result = { found: true, entity, ...sourceCitationHint(citation) };
+    const body = JSON.parse(composeChatMainTurnPromptParts({ available_tools: [], content: { chat_tail: [], user_message: 'Which times are observations?' },
+      prior_tool_calls: [{ tool_name: 'work.read', tier: 1, args: { kind: 'asset', id: ASSET_ID }, status: 'ok', result,
+        started_at: 499, completed_at: 500 }] }).body);
+    expect(body.prior_tool_calls[0].result.entity).toEqual(entity);
+    expect(body.prior_tool_calls[0].result.read_version).toBe(sourceReadVersion(entity));
+    const hint = body.prior_tool_calls[0].result.citation_hint;
+    expect(hint).toContain('field_sources.*.at records fact provenance');
+    expect(hint).toContain('readings.*.as_of or observations.*.as_of');
+    expect(hint).toContain('Do not say there are no timestamps');
+    expect(hint).not.toContain('observation time is unknown');
+  });
+
+  it('keeps written and explicitly observed dates intact through the file packet and retained-reference guidance', () => {
+    const text = 'Measured 24 meters on 2018-09-10. Note written on 2019-11-12.';
+    const result = { status: 'read', body: text, next_offset: null, ...sourceCitationHint(file) };
+    const packet = { available_tools: [], source_citations: [asset, file],
+      content: { chat_tail: [{ role: 'assistant' as const, content: `[file](#source/${file.id})` }], user_message: 'Which date belongs to the observation?' },
+      prior_tool_calls: [{ tool_name: 'document.read', tier: 1 as const, args: { file_ref: FILE_REF }, status: 'ok' as const, result,
+        started_at: 1000, completed_at: 1001 }] };
+    const body = JSON.parse(composeChatMainTurnPromptParts(packet).body);
+    expect(body.prior_tool_calls[0].result.body).toBe(text);
+    expect(body.prior_tool_calls[0].result.read_version).toBe(file.read_version);
+    expect(body.prior_tool_calls[0].result.citation_hint).toContain('Preserve an explicitly stated observation date separately from the written date');
+    expect(body.prior_source_reads.guidance).toContain('unless the text dates the observation itself');
+    expect(body.prior_source_reads.guidance).not.toContain('field_sources');
+    expect(JSON.parse(composeChatMainTurnPromptParts({ ...packet,
+      content: { ...packet.content, chat_tail: [] }, prior_tool_calls: [] }).body)).not.toHaveProperty('prior_source_reads');
+  });
+
   it('carries the identity and kind of relevant earlier reads without asserting old values as current', () => {
     const updated = sourceCitation({ kind: 'asset', asset_id: ASSET_ID }, asset.label, sourceReadVersion({ length: 'around 31 meters' }), 1002);
     const text = `[old](#source/${asset.id}) [now](#source/${updated.id}) [note](#source/${file.id})`;
@@ -69,6 +104,8 @@ describe('sources bound to an answer', () => {
     expect(result.note).toContain('An earlier asset value is not a document statement');
     expect(result.note).toContain('attributes is descriptive, not a typed reading');
     expect(result.note).toContain('structured readings entry');
+    expect(result.note).toContain('name that missing time specifically');
+    expect(result.note).toContain('save/provenance or document-written times may still be present');
     expect(result.note).toContain('Do not repeat bulk reads');
     expect(result.note).toContain('Do not perform them again');
     expect(result.findings).toEqual((brief.result as Record<string, unknown>).findings);

@@ -30,7 +30,9 @@ const tokens = (value: string): string[] => [...new Set(value.toLocaleLowerCase(
  * title sharing any meaningful word, and a place whose every word it says. */
 export const situationText = (query: Pick<SituationQuery, 'text' | 'surface'>) => {
   const all = tokens(query.text ?? ''); const words = new Set(all);
+  const meaningful = new Set(all.filter(word => [...word].length >= 2 && !PROSE_FUNCTION_WORDS.has(word)));
   return {
+    hits: (value: string): number => tokens(value).filter(word => meaningful.has(word)).length,
     title: (title: string): boolean => {
       if (!query.text) return true;
       if (query.surface === 'prefetch') return tokens(title).some(word => [...word].length >= 2 && !PROSE_FUNCTION_WORDS.has(word) && words.has(word));
@@ -44,13 +46,15 @@ export const situationText = (query: Pick<SituationQuery, 'text' | 'surface'>) =
 };
 type SituationText = ReturnType<typeof situationText>;
 const MAX_FACTS = 20_000;
-/** A fact about a person the question names or asks for outranks one that only a shared
- * word brought in: "Open Maya Chen's passport" ranks her passport above two others the
- * word matched, which scored the same and were ordered by their group's hashed id, so
- * hers was missing from 4 of 6 prefetches. 500 keeps the tiers a score already has: an
- * ordinary item stays below every floor clock (at most 725 against at least 865), and a
- * named floor clock above every other one (at least 1,365 against at most 1,225). */
+/** Person/consequence priorities keep their original weights for untargeted
+ * surfaces. Text queries use wider tiers: floor, named person, literal name,
+ * then bounded distinct keyword hits; time/origin ranking breaks ties. A long
+ * keyword list can never lift an ordinary item above a floor or a named person. */
 const NAMED_PERSON_BONUS = 500;
+const TEXT_FLOOR_BONUS = 10_000;
+const TEXT_PERSON_BONUS = 5_000;
+const TEXT_NAME_BONUS = 2_500;
+const KEYWORD_HIT_BONUS = 500;
 /** A source holds more records than one read may. The owner keeps the rest of
  * the result with the source named in `partial`; a scoped contract is refused,
  * so no partial result or private count reaches it. */
@@ -81,6 +85,9 @@ export interface SituationSource {
   read(query: SituationQuery, signal?: AbortSignal, context?: SituationReadContext, only?: ReadonlySet<string>): Promise<readonly SituationFact[]> | readonly SituationFact[];
   /** Without an index the source is read whole. */
   index?: SituationSourceIndex;
+  /** Extra source-owned retrieval text. Built fresh behind source grants for
+   * each query; it explains text relevance without changing saved facts. */
+  textMatcher?(query: SituationQuery): { candidates: Iterable<string>; matches(fact: SituationFact): boolean; keywordHits?(fact: SituationFact): number };
 }
 export interface SituationReadContext {
   grants: ReadGrantChecker;
@@ -95,6 +102,8 @@ export interface SituationReadContext {
   /** Host-only view policy, after grants and the inference limit, before item
    * and cluster caps. Return a reordered subset of supplied objects, or null. */
   projectClusterItems?: (items: readonly SituationItem[]) => readonly SituationItem[] | null;
+  /** Host-only opt-in for the ordinary owner Chat prefetch. */
+  citeAssetDetails?: true;
   signal?: AbortSignal;
 }
 export interface SituationQueryDeps {
@@ -160,9 +169,9 @@ const whoVerdict = (people: readonly string[], asked: readonly AskedPerson[]): S
   return found === asked.length ? 'match' : found ? 'near' : asked.every(person => person.known) ? 'outside' : 'unknown';
 };
 const itemOf = (fact: SituationFact, reasons: Set<SituationReason>, query: SituationQuery, window: SituationWindow, text: SituationText,
-  asked: readonly AskedPerson[]): SituationItem => ({
+  asked: readonly AskedPerson[], textMatch: boolean): SituationItem => ({
   ref: fact.ref, kind: fact.kind,
-  what: dimension(fact.title, text.title(fact.title) ? 'match' : 'outside', fact),
+  what: dimension(fact.title, textMatch ? 'match' : 'outside', fact),
   when: dimension(fact.when, timeVerdict(fact.last_time ? fact.last_time_comparison ?? fact.when : fact.when, window), fact),
   where: dimension(fact.place, query.place && fact.place ? (query.place.key === fact.place.key ? 'match' : 'outside')
     : query.surface === 'prefetch' && query.text && fact.place && text.place(fact.place.name) ? 'match' : 'unknown', fact),
@@ -219,6 +228,8 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     if (context.signal?.aborted) throw context.signal.reason ?? new Error('Situation query aborted');
   };
   const sources = deps.sources.filter(source => allowed(source.verb_op, source.grant_collection ?? source.collection));
+  const textMatchers = new Map(query.text?.trim() ? sources.flatMap(source => source.textMatcher
+    ? [[source, source.textMatcher(query)] as const] : []) : []);
   const namedPeople = query.surface === 'prefetch' && query.text && contactAccess && allowed(contactAccess.verb_op, contactAccess.collection)
     ? (deps.namedPeople?.(query.text, context) ?? []).filter(person => personAllowed(person.id)) : [];
   const namedIds = new Set(namedPeople.map(person => person.id));
@@ -255,7 +266,8 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     const classes = deps.relationClasses?.() ?? [];
     let seeded: SituationFact[] = [];
     for (const source of sources) {
-      seeded = seeded.concat(await load(source, source.index ? source.index.seed(query, people, context) : 'all'));
+      const ids = source.index ? source.index.seed(query, people, context) : 'all';
+      seeded = seeded.concat(await load(source, ids === 'all' ? ids : new Set([...ids, ...textMatchers.get(source)?.candidates ?? []])));
       if (source.index?.relations) seeded = seeded.concat(await load(source, source.index.relations(context, classes)));
     }
     // A clock's fact merges into the record it stands for, so both are read.
@@ -362,6 +374,20 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   }
   const selected = new Map<string, Set<SituationReason>>();
   const querySubjects = new Set((query.subjects ?? []).map(refKey));
+  const hasText = Boolean(query.text?.trim());
+  const textMatches = new Map<SituationFact, { matches: boolean; direct: boolean; keywordHits: number }>();
+  const textMatch = (fact: SituationFact) => {
+    let match = textMatches.get(fact);
+    if (match) return match;
+    const direct = text.title(fact.title);
+    let keywordHits = 0; let extra = false;
+    if (hasText) for (const source of sources) {
+      if (source.collection !== fact.ref.collection) continue;
+      const matcher = textMatchers.get(source); if (!matcher?.matches(fact)) continue;
+      extra = true; keywordHits = Math.max(keywordHits, Math.min(2, matcher.keywordHits?.(fact) ?? 1));
+    }
+    match = { direct, matches: direct || extra, keywordHits }; textMatches.set(fact, match); return match;
+  };
   const add = (fact: SituationFact, reason: SituationReason): void => {
     const key = refKey(fact.ref); const reasons = selected.get(key) ?? new Set(); reasons.add(reason); selected.set(key, reasons);
   };
@@ -372,7 +398,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     const named = querySubjects.has(refKey(fact.ref)) || fact.subjects.some(ref => querySubjects.has(refKey(ref)))
       || Boolean(query.place && fact.place?.key === query.place.key)
       || fact.people.some(id => askedIds.has(id) || namedIds.has(id))
-      || Boolean(query.text?.trim() && (text.title(fact.title)
+      || Boolean(query.text?.trim() && (textMatch(fact).matches
         || (query.surface === 'prefetch' && fact.place && text.place(fact.place.name))));
     // Prefetch must match the message; a general overdue item alone isn't a hit.
     if (query.surface === 'prefetch' && !named) continue;
@@ -425,12 +451,18 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   }
   const groups = new Map<number, SituationFact[]>();
   picked.forEach((fact, index) => { const key = root(index); const group = groups.get(key) ?? []; group.push(fact); groups.set(key, group); });
+  const mentionedPeople = query.surface === 'prefetch' ? namedPeople.map(person => ({ entry: person.name, ids: new Set([person.id]), known: true })) : [];
+  const projectedPeople = [...askedPeople, ...mentionedPeople];
   const scores = new Map<SituationFact, number>();
   const score = (fact: SituationFact): number => {
     const prior = scores.get(fact); if (prior !== undefined) return prior;
     const proposed = deps.rank?.(fact) ?? 1; const factor = Number.isFinite(proposed) ? Math.max(fact.consequence === 'floor' ? 1 : 0.5, Math.min(1.5, proposed)) : 1;
     const named = fact.people.some(id => askedIds.has(id) || namedIds.has(id));
-    const value = (fact.consequence === 'floor' ? 1000 : 0) + (named ? NAMED_PERSON_BONUS : 0) + factor * ((fact.basis === 'inferred' ? 0 : 100)
+    const relevance = hasText ? textMatch(fact) : undefined;
+    const value = (fact.consequence === 'floor' ? hasText ? TEXT_FLOOR_BONUS : 1000 : 0)
+      + (named ? hasText ? TEXT_PERSON_BONUS : NAMED_PERSON_BONUS : 0)
+      + (relevance?.direct ? TEXT_NAME_BONUS : (relevance?.keywordHits ?? 0) * KEYWORD_HIT_BONUS)
+      + factor * ((fact.basis === 'inferred' ? 0 : 100)
       + (fact.updated_at > (query.changed_since ?? current) ? 50 : 0) - Math.min(90, Math.abs((fact.when?.from ?? window.from) - window.from) / DAY));
     scores.set(fact, value); return value;
   };
@@ -460,7 +492,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     const supplied = (projecting ? admitted : admitted.slice(0, maxItems)).map(fact => {
       const reasons = selected.get(refKey(fact.ref))!;
       if (collisions ? collisions.has(fact) : fact.when && group.some(other => other !== fact && other.when && intersects(fact.when!, other.when))) reasons.add('collides');
-      return itemOf(fact, reasons, query, window, text, askedPeople);
+      return itemOf(fact, reasons, query, window, text, projectedPeople, textMatch(fact).matches);
     });
     const projected = context.projectClusterItems ? context.projectClusterItems(supplied) : supplied;
     if (projected === null || !projected.length) return [];

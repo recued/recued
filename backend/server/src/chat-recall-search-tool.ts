@@ -33,6 +33,7 @@ import {
 } from './chat-recall-scope.js';
 import { insertToolEntryAfterTier1 } from './chat-tools-search.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
+import { forwardedRegistryHooks } from './registry-forwarding.js';
 
 export const RECALL_SEARCH_TOOL_NAME = 'recall.search';
 
@@ -1284,6 +1285,7 @@ export const wrapRegistryWithRecallSearch = (
       name === RECALL_SEARCH_TOOL_NAME
         ? handler(args, ctx)
         : inner.dispatch(name, args, ctx),
+    ...forwardedRegistryHooks(inner),
     subscribeRefresh: (callback) => inner.subscribeRefresh(callback),
   };
 };

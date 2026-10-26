@@ -25,6 +25,7 @@
  *  no cross-cloud sync (D-097 / D-168 — D-168 retired the legacy
  *  SYNC_OBJECTS substrate). */
 
+import type { ApprovalValueLabels } from './ask-detail-label.js';
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
 import type { CollectionPlatform } from './collections.js';
 import type { ContactPrivacyMark, ContactRelationship, MailingAddress } from './contact.js';
@@ -37,6 +38,7 @@ import type { DependencyReadAdmission } from './work-entity-dependency-admission
 // see the omission.
 import { WORK_ENTITY_KINDS } from './work-entities.js';
 import { SITUATION_QUERY_SCHEMA, SITUATION_TOOL_MAX_ITEMS } from './situation.js';
+import { ASSET_SEARCH_TERMS } from './asset-search-terms.js';
 
 // ────────────────────────────────────────────────────────────────
 // D-137 § A.1.1 — InternalToolRegistry: tier discriminator + closed
@@ -507,6 +509,11 @@ export interface ChatDispatchContext {
    *  the model reads a date instead of converting epoch ms, which it gets wrong.
    *  Absent on mcp_wire: an external agent keeps its own clock. */
   time_zone?: string;
+  /** D-325 / D-329 — set by the server, never from a caller: this call runs because the
+   *  owner approved it, by answering its ask or by a standing write rule they accepted.
+   *  An asset reading it writes is then the owner's own sample, at their rank (their
+   *  ruling of 2026-10-25). Absent, a write keeps the AI's own rank. */
+  owner_approved?: true;
 }
 
 /** § A.1.1 — discriminated dispatch result. `ok: true` carries the
@@ -651,6 +658,23 @@ export interface InternalToolRegistry {
     args: unknown,
     ctx: ChatDispatchContext,
   ): Promise<ChatDispatchResult>;
+  /** D-329 — what a write would be refused for by its own arguments, asked before the
+   *  owner is asked to approve it; `null` when it would run, or the tool has no check.
+   *  The chat and the MCP door call it before holding a write, so a call that cannot
+   *  run is never put to the owner. */
+  checkBeforeAsking?(
+    name: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ): Promise<ChatDispatchResult | null>;
+  /** D-329 — how the owner knows the records a held write names (its `id`, a
+   *  `belongs_to`): by their own names, recorded on its ask and its card and never shown to
+   *  the AI. `undefined` when it names none the tool can read. */
+  askValueLabels?(
+    name: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ): Promise<ApprovalValueLabels | undefined>;
   subscribeRefresh(callback: () => void): () => void;
 }
 
@@ -2160,6 +2184,15 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'recipe.schedule': 'schedule',
 };
 
+const ASSET_KEYWORD_ARG_SCHEMA = {
+  description: 'This asset\'s extra search keywords: up to 32 terms, 80 characters each and 2048 characters total. Accepts an array or comma/newline-separated text. Replaces the additions; read current additions with work.read and merge to add words. Null or an empty list clears additions; type keywords remain. Keywords aid retrieval, never change facts or reminder rules.',
+  anyOf: [
+    { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 80 } },
+    { type: 'string', maxLength: 2048 },
+    { type: 'null' },
+  ],
+};
+
 /** P1 placeholder descriptor table — one entry per `Tier1ToolName`.
  *  Closed at substrate level (the type union enforces exhaustivity).
  *  Per-primitive landings update each entry in place. */
@@ -2503,7 +2536,8 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         query: {
           type: 'string',
           description:
-            'Words to find in the title or body/description. Case-insensitive, and ALL '
+            'Words to find in the title or body/description; an asset is also found by where '
+            + 'it is kept, its details, its identifiers and who holds it. Case-insensitive, and ALL '
             + 'your words must appear, in any order — plurals and other endings match their '
             + 'stem, so "weekly reports" finds "Weekly report". Matching is by WHOLE WORD: '
             + 'a fragment of a word finds nothing (`estrel` does not find `Kestrel`), so pass '
@@ -2579,7 +2613,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.type': {
     name: 'work.type',
     description:
-      "What a type of thing the user owns keeps (a passport, a car): its `dates`, whether it needs its holder, and the reminders those dates send. Call it before `work.create` of an asset. With no `type`, lists the types.",
+      "What a type of thing the user owns keeps (a passport, a car): its `dates`, whether it needs its holder, the reminders those dates send, and its default `search_keywords`. Call it before `work.create` of an asset. With no `type`, lists the types.",
     arg_schema: {
       type: 'object',
       required: ['kind'],
@@ -2604,7 +2638,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           type: 'string',
           enum: ['task', 'note', 'commitment', 'project', 'asset'],
           description:
-            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person — say who promised with `direction`. `project` = a container other tasks hang under. `asset` = a thing they own, such as a passport.',
+            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person — say who promised with `direction`. `project` = a container other tasks hang under. `asset` = a thing they own, such as a passport or a bike; a type is optional.',
         },
         title: {
           type: 'string',
@@ -2614,7 +2648,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         body: {
           type: 'string',
           description:
-            "Longer detail. REQUIRED for `note` (it is the note). Optional for a task, and for a project it is the project's description — omit when the title already says it all. A commitment has none.",
+            "Longer detail. REQUIRED for `note` (it is the note). Optional for a task, and for a project it is the project's description — omit when the title already says it all. A commitment has none; for an asset, a note about it.",
         },
         due_at: {
           type: 'number',
@@ -2643,9 +2677,14 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           description:
             'Commitments only. Optional — the other person\'s email address, when the user gave it or a contact search found it. Never invent one.',
         },
-        type: { type: 'string', description: 'Assets only — its type, from `work.type`.' },
+        type: { type: 'string', description: 'Assets only — its type, from `work.type`; omit when none fits.' },
         dates: { type: 'object', description: 'Assets only — the dates the user gave, as YYYY-MM-DD under its type\'s names.' },
         holder_email: { type: 'string', description: 'Assets only — the email of whose it is, when its type needs a holder.' },
+        attributes: { type: 'object', description: 'Assets only — the details the user gave, by name: {"brand": "Trek", "frame_size": "56 cm"}. Add search keywords with {"search_terms": ["family visit", "London"]}.',
+          properties: { [ASSET_SEARCH_TERMS]: ASSET_KEYWORD_ARG_SCHEMA } },
+        place: { type: 'string', description: 'Assets only — where it is kept, as the user said it ("the garage").' },
+        belongs_to: { type: 'string', description: 'Assets only — the id, from `work.search`, of the thing it is part of or covers, such as the car a policy covers. It is kept where that is, and follows it when it is sold or retired.' },
+        readings: { type: 'object', description: 'Assets only — readings by its type\'s names: {"odometer": {"value": 12400, "unit": "km"}}; add `as_of` (YYYY-MM-DD, or a time with its offset) unless read just now.' },
       },
     },
     classification: TIER1_CLASSIFICATIONS['work.create'],
@@ -2697,16 +2736,16 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.update': {
     name: 'work.update',
     description:
-      "Change something already in the user's work graph: mark a task done, move a task's deadline, a project's target date or a promise's date, retitle it, or edit a note's text. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
+      "Change something already in the user's work graph: mark a task done, move a task's deadline, a project's target date or a promise's date, retitle it, edit a note's text, or record what the user says about a thing they own. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
     arg_schema: {
       type: 'object',
       required: ['kind', 'id'],
       properties: {
-        kind: { type: 'string', enum: ['task', 'note', 'commitment', 'project'], description: 'REQUIRED — the kind of the row being changed, as `work.search` reported it.' },
+        kind: { type: 'string', enum: ['task', 'note', 'commitment', 'project', 'asset'], description: 'REQUIRED — the kind of the row being changed, as `work.search` reported it.' },
         id: { type: 'string', description: 'REQUIRED — the id of the row to change, exactly as `work.search` returned it.' },
         done: { type: 'boolean', description: 'Tasks only. `true` marks the task complete, `false` reopens it. Send it ALONE — not alongside title/body/due_at.' },
-        title: { type: 'string', description: 'Optional new one-line subject. For a commitment, what was promised.' },
-        body: { type: 'string', description: "Optional new detail: a note's text, a task's detail, a project's description. A commitment has none." },
+        title: { type: 'string', description: 'Optional new one-line subject. For a commitment, what was promised; for an asset, its name.' },
+        body: { type: 'string', description: "Optional new detail: a note's text, a task's detail, a project's description, a note about an asset. A commitment has none." },
         due_at: { type: 'number', description: 'Tasks only. Optional new deadline, Unix ms. Set only when the user gave one.' },
         clear_due_at: { type: 'boolean', description: 'Tasks only. `true` removes the deadline — only when the user asked for that. Never with `due_at`.' },
         target_completion_at: { type: 'string', format: 'date', description: "Projects only. The project's new target date, YYYY-MM-DD — a day, not a time. Set only when the user gave one." },
@@ -2714,6 +2753,12 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         state: { type: 'string', description: "Tasks and projects only. A task's free-form pipeline state (e.g. 'blocked'); a project's is one of active / paused / completed / archived. It does NOT mark anything done — use `done` for that." },
         promised_for_at: { type: 'string', description: 'Commitments only. When it is promised for: a day as YYYY-MM-DD, or an exact time as ISO 8601 with its offset. Set only when the user gave one.' },
         clear_promised_for_at: { type: 'boolean', description: 'Commitments only. `true` removes the promised date — only when the user asked for that. Never with `promised_for_at`.' },
+        readings: { type: 'object', description: 'Assets only — a new reading, as in `work.create`, under a name the asset has and in its unit.' },
+        dates: { type: 'object', description: 'Assets only — YYYY-MM-DD under names the asset has.' },
+        attributes: { type: 'object', description: 'Assets only — details to add or change: {"colour": "blue"}; `null` removes one. Both user and AI may edit search keywords with {"search_terms": ["family visit", "London"]}, including user-entered keywords. Other user-entered facts remain protected.',
+          properties: { [ASSET_SEARCH_TERMS]: ASSET_KEYWORD_ARG_SCHEMA } },
+        place: { type: 'string', description: 'Assets only — where it is kept now.' },
+        belongs_to: { type: 'string', description: 'Assets only — the id of the thing it is part of or covers, as in `work.create`.' },
       },
     },
     classification: TIER1_CLASSIFICATIONS['work.update'],
@@ -3356,6 +3401,9 @@ export interface ChatPlanProposal {
    *  `lapsed_at` — the hold expired unanswered (`preflight.stale_after_days`), so the proposal
    *  was cancelled with nothing run: no one said no, no one answered in time. */
   hold?: { run_id: string; lapsed_at?: number };
+  /** D-329 — how the owner knows the records `args` names, by their names as they were when
+   *  it was proposed (an approval's `value_labels`). Display only: `args` is what runs. */
+  value_labels?: ApprovalValueLabels;
 }
 
 /** Durable lifecycle receipt for the single dispatch that consumed a plan.

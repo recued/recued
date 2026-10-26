@@ -7,6 +7,61 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.25 — 2026-10-25
+
+Your AI now keeps the things you own up to date. It adds a thing with its details and where it
+is kept, records a reading such as a car's mileage, says what a thing is part of, and never
+changes what you typed yourself. Search finds a thing by where it is kept, a detail or an
+identifier, and by search keywords you can edit. An approval names the thing it changes, and an
+AI app connected to Recued is told to check a waiting change once you have answered.
+
+### Added
+
+- **Search keywords for what you own.** A type of thing you own can have search keywords, and
+  each thing can have more of its own, so asking the chat to plan a trip finds your passports.
+  The chat can add or change a thing's extra keywords, with your approval.
+- **Your AI adds a thing with its details.** It keeps what you said about it: its details, such
+  as brand or size, where it is kept, and a note, with or without a type.
+- **Your AI records a reading and changes what you own.** It records a reading, such as a car's
+  mileage, and can rename a thing it added, change its details or say where it is kept now. It
+  never changes what you typed, and Yours says which values came from a chat or an AI app.
+- **Your AI says what a thing is part of**, such as the car a policy covers. The thing is then
+  kept where that one is, and when that one is sold, its parts go with it.
+- **An answer links the saved values it used.** When the chat answers from what Yours keeps,
+  such as a passport's expiry date or a car's mileage, the Sources list under the answer shows
+  each saved value, and each opens the thing in Yours.
+
+### Changed
+
+- **An approval names the thing it changes**, such as "Family car", instead of an id, and its
+  title says what kind of change it is, such as "Tick a task off".
+- **Search finds a thing by where it is kept**, by a detail such as its brand, or by an
+  identifier such as a car's VIN.
+- **An AI app checks a waiting change once, after you answer.** Before, an app could check it
+  again and again while it waited.
+- **An older contract says what its switches cannot do.** An AI app refused a tool on a contract
+  made before 26.10.24 is told that switching the tool on cannot give it to that contract's key,
+  and the contract's Ops tab says the same. Make a new contract to give an app another AI tool.
+- **Contracts are called contracts** again, in the web app and in the server's messages.
+
+### Fixed
+
+- **AI apps on the newest MCP version see Recued's tools**, and MCP servers built on the
+  official SDKs connect: Recued finds their tools, answers their pings, and reconnects at once
+  when one restarts.
+- **A change that cannot work is never put to you.** When the chat or an AI app asks for a change
+  its own request cannot make, it is told why at once and can fix it.
+- **Trips read right.** A trip's passport checks carry its first and last day, a trip with no
+  travellers named says nothing was checked and asks who is travelling, and a booking's dates are
+  given on your clock.
+- **A person's name reads as their name** even when the AI writes its stand-in without the
+  prefix.
+- **The chat checks a saved value before it reuses it.** If you changed it since the chat read
+  it, the chat reads it again and rewrites the answer, and "reread the asset" reads it again.
+  The AI is told which date is which: when a reading was taken, and when it was saved.
+- **One detail of a thing a search found can be looked up on its own**, instead of the AI
+  being told the thing was not available.
+
 ## 26.10.24 — 2026-10-24
 
 When your AI wants to change something, the approval now reaches you wherever

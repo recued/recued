@@ -51,7 +51,7 @@ export const createPermissionRegressionHost = (deps: PermissionRegressionHostDep
       ? deps.db.prepare('SELECT lineage FROM preapproval_state WHERE singleton=1').pluck().get() : null;
     const supported = targetSupported && typeof lineage === 'string' && lineage.length > 0;
     const available = catalog();
-    return { catalog: available.slice(0, 2000), catalog_truncated: available.length > 2000, supported, ...(supported ? {} : { reason: 'Open an active ordinary agreement with an MCP door. Derived doors, customer contracts and owner-wide grants use their own controls.' }),
+    return { catalog: available.slice(0, 2000), catalog_truncated: available.length > 2000, supported, ...(supported ? {} : { reason: 'Open an active ordinary contract with an MCP door. Derived doors, customer contracts and owner-wide grants use their own controls.' }),
       grants, credentials: credentials.map(item => ({ id: item.token_id, label: item.label, active: isMcpInboundTokenActive(item, now()) })),
       live_digest: digest({ definition, grants, lineage }) };
   };
@@ -87,10 +87,10 @@ export const createPermissionRegressionHost = (deps: PermissionRegressionHostDep
         const authority = createApprovalResumeAuthorityResolver({ manifests, inboundTokenStore: deps.inbound, contractOverlay: overlay, opAdmissionGate: gate, now });
         return document.cases.map(item => {
           const token = deps.inbound.getTokenById(item.credential_id);
-          if (!token || token.contract_id !== contractId || !isMcpInboundTokenActive(token, now())) return { verdict: 'deny', detail: 'The selected credential is missing, inactive or bound to another agreement.' };
+          if (!token || token.contract_id !== contractId || !isMcpInboundTokenActive(token, now())) return { verdict: 'deny', detail: 'The selected credential is missing, inactive or bound to another contract.' };
           const source: ExecutionSource = { channel: 'mcp', actor: 'contracted_user', agent_id: 'permission-tests', tool_call_id: item.id,
             mcp_token_id: token.token_id, contract_id: contractId };
-          if (!overlay.isContractLive(contractId) || overlay.permitsDoorType?.(contractId, 'mcp') !== true || gate.isFrozenByPause(source)) return { verdict: 'deny', detail: 'The agreement or MCP door is inactive, or the server is paused.' };
+          if (!overlay.isContractLive(contractId) || overlay.permitsDoorType?.(contractId, 'mcp') !== true || gate.isFrozenByPause(source)) return { verdict: 'deny', detail: 'The contract or MCP door is inactive, or the server is paused.' };
           if (item.target.kind !== 'operation') {
             const checker = overlay.resolveReadGrantChecker?.(source);
             if (!checker) return { verdict: 'unsupported', detail: 'The read-grant checker is unavailable.' };

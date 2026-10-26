@@ -222,13 +222,24 @@ describe('D-325 one situation tool and independent bounded prefetch', () => {
     await createSituationPrefetch({ getAccess: () => createSituationAccess({ contracts, query, now: () => at, isVaultUnlocked: () => true }), budget_ms: 10 }).prompt!(ctx);
     expect(parts).toEqual([]); expect(read.length).toBeLessThanOrEqual(2);
   });
-  it('gives each group a row before any group gets a second', async () => {
-    // A group of three filled the block, and the group it pushed out can be the one the message names.
+  it('gives each group a floor row before any group gets a second row', async () => {
+    // 2026-10-24v: Ana's group of three (her passport's clock, its entry check, the trip) filled the
+    // block and pushed out the floor clock of the passport the message named.
     const trip = { collection: 'asset', id: 'trip' };
-    const { access } = drive([fact('t1', { subjects: [trip], consequence: 'floor' }), fact('t2', { subjects: [trip], consequence: 'floor' }),
-      fact('t3', { subjects: [trip], consequence: 'floor' }), fact('other')]);
+    const { access } = drive([fact('t1', { subjects: [trip], consequence: 'floor' }), fact('t2', { subjects: [trip] }),
+      fact('t3', { subjects: [trip] }), fact('other', { consequence: 'floor' })]);
     const parts = await prefetch(access, 'Passport');
-    expect(parts[0]!.payload.map(row => (row.ref as { id: string }).id)).toEqual(['t1', 'other', 't2']);
+    const ids = parts[0]!.payload.map(row => (row.ref as { id: string }).id);
+    expect(new Set(ids.slice(0, 2))).toEqual(new Set(['t1', 'other'])); expect(ids[2]).toBe('t2');
+  });
+  it('gives a group\'s second floor item a row before another group\'s ordinary item', async () => {
+    // Live family-trip run, 2026-10-25: the trip's two short passports were floor items in one group,
+    // and the second lost its row to two ordinary items of another trip, matched on the word "trip".
+    const lisbon = { collection: 'booking', id: 'lisbon' }; const tokyo = { collection: 'booking', id: 'tokyo' };
+    const { access } = drive([fact('s1', { subjects: [lisbon], consequence: 'floor' }), fact('s2', { subjects: [lisbon], consequence: 'floor' }),
+      fact('a3', { subjects: [lisbon] }), fact('b1', { subjects: [tokyo] }), fact('c1')]);
+    const parts = await prefetch(access, 'Passport');
+    expect(parts[0]!.payload.map(row => (row.ref as { id: string }).id)).toEqual(['s1', 's2', 'a3']);
   });
   it('ranks a named person first among items of their kind, and never above another floor clock', async () => {
     // Floor clocks: Ana's due now (1,100), Lena's and Maya's next year (1,010 each, before Maya's

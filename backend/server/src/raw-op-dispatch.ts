@@ -97,6 +97,7 @@ import {
   TIER1_HOLD_CATALOG_SLUG,
   deriveDispatchScope,
   executionSourceContractId,
+  ownerApprovesCallsOf,
   isDoorDispatchSource,
   executionSourceHasContract,
   isExternallyExposableIngredient,
@@ -108,6 +109,7 @@ import {
   routePlatformRecordOperationArgs,
   routeQualifiedWorkEntityOperationArgs,
   stampPlatformRecordIds,
+  type ApprovalValueLabels,
 } from '@recued/contracts';
 import {
   deriveChannelSessionId,
@@ -1215,6 +1217,9 @@ interface RawOpHoldInput {
   runId?: string;
   /** D-329 — the chat session a held chat write came from (`RawOpCheckpoint.tier1_session_id`). */
   tier1SessionId?: string;
+  /** D-329 — how the owner knows the records the call names, shown on its ask and card
+   *  (`PreflightCheckpointContext.value_labels`). Display only. */
+  valueLabels?: ApprovalValueLabels;
 }
 
 /** Resolve the `raw_op` session-grant offer for a hold — the `(mcp ×
@@ -1308,6 +1313,7 @@ const buildRawOpHold = async (
       ...(ctx.authorization_provenance !== undefined
         ? { authorization_provenance: ctx.authorization_provenance }
         : {}),
+      ...(hold.valueLabels !== undefined ? { value_labels: hold.valueLabels } : {}),
     },
     raw_op: {
       ...(hold.tier1Tool !== undefined ? { tier1_tool: hold.tier1Tool } : {}),
@@ -1460,6 +1466,7 @@ export const holdTier1Call = (
     correlationId?: string;
     runId?: string;
     sessionId?: string;
+    valueLabels?: ApprovalValueLabels;
   },
 ): Promise<RawOpDispatchOutcome> => buildRawOpHold(deps, {
   opId: call.tool,
@@ -1472,6 +1479,7 @@ export const holdTier1Call = (
   ...(call.correlationId !== undefined ? { correlationId: call.correlationId } : {}),
   ...(call.runId !== undefined ? { runId: call.runId } : {}),
   ...(call.sessionId !== undefined ? { tier1SessionId: call.sessionId } : {}),
+  ...(call.valueLabels !== undefined ? { valueLabels: call.valueLabels } : {}),
   tier1Tool: call.tool,
 }, { risk_tier: 'write' });
 
@@ -1688,14 +1696,19 @@ const dispatchResumedTier1Call = async (
   // A chat's call runs as the chat ran it, in its session (`work.create` records its origin
   // from `session_id`, `memory.write` its conversation); an AI app's as its wire did.
   const session_id = raw.tier1_session_id ?? (source.channel === 'chat' ? source.chat_session_id : undefined);
+  // D-325 — the owner answered this ask: an AI app's, or their own chat's (a chat under a
+  // contract keeps the plain card and is never held). An asset reading the call writes is
+  // then their own sample.
+  const approved = ownerApprovesCallsOf(source) ? { owner_approved: true as const } : {};
   const ctx: ChatDispatchContext = source.channel === 'mcp'
-    ? { channel: 'mcp_wire', mcp_token_id: source.mcp_token_id, execution_source: source, ...snapshot }
+    ? { channel: 'mcp_wire', mcp_token_id: source.mcp_token_id, execution_source: source, ...snapshot, ...approved }
     : {
         channel: 'internal_function_call',
         ...(session_id !== undefined ? { session_id } : {}),
         ...(source.channel === 'chat' && source.turn_id !== undefined ? { turn_id: source.turn_id } : {}),
         execution_source: source,
         ...snapshot,
+        ...approved,
       };
   let result: Awaited<ReturnType<typeof registry.dispatch>>;
   try {

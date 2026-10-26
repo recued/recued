@@ -12,7 +12,8 @@
  *  only symptom is a record that is findable from one Source and not another.
  *
  *  An asset is also matched by its holder's name, which a search adds for the
- *  caller that may read it (`assetSearchableText`) and the index never holds.
+ *  caller that may read it (`assetSearchableText`) and the index never holds,
+ *  and by the values it can share with other things (`assetSharedValues`).
  *
  *  ⚠ The long-text field is per-kind and `booking` HAS NONE — its `title` is a
  *  short label and it carries no prose column. That is the same reasoning
@@ -21,7 +22,7 @@
  *  indexes at WRITE time from the write input), so the two are kept in step by
  *  `work-entity-searchable-text.test.ts` rather than by a shared call. */
 
-import type { WorkEntityKind } from '@recued/contracts';
+import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_SEARCH_TERMS, assetSearchTerms, type WorkEntityKind } from '@recued/contracts';
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -36,6 +37,39 @@ const previewLaneStrings = (blob: unknown): string[] => {
     : blob;
   if (!isRecord(parsed) || !isRecord(parsed.preview)) return [];
   return Object.values(parsed.preview).filter((v): v is string => typeof v === 'string');
+};
+
+/** D-325 (2026-10-25) — what several things can have in common, so that one search finds
+ *  every one: where it is kept (a place's name), each detail by its name and value, and
+ *  each identifier with its scheme (a car's VIN, and the policy that names it). A detail
+ *  set to `false` says the thing is NOT that, so it adds nothing.
+ *
+ *  ⛔ Never an address or coordinates, a document's details, or the numbers the chat keeps
+ *  from its model (`document_number`, `serial_number`, `exact_address`): an index answers
+ *  every caller alike. Reads a materialized asset, or the raw row's `data_blob` that the
+ *  reindex walker reads. */
+const assetSharedValues = (row: Readonly<Record<string, unknown>>): string[] => {
+  let data: unknown = row;
+  if (typeof row.data_blob === 'string') {
+    try { data = JSON.parse(row.data_blob); } catch { data = null; }
+  }
+  if (!isRecord(data)) return [];
+  const values: string[] = [];
+  for (const anchor of Array.isArray(data.anchors) ? data.anchors : []) {
+    if (!isRecord(anchor)) continue;
+    if (anchor.kind === 'place' && typeof anchor.name === 'string') values.push(anchor.name);
+    if (anchor.kind === 'identifier' && typeof anchor.scheme === 'string' && typeof anchor.value === 'string') {
+      values.push(`${anchor.scheme} ${anchor.value}`);
+    }
+  }
+  for (const [name, value] of Object.entries(isRecord(data.attributes) ? data.attributes : {})) {
+    if (name === ASSET_DOCUMENT_DETAILS_ATTRIBUTE) continue;
+    if (name === ASSET_SEARCH_TERMS) { values.push(...assetSearchTerms(value)); continue; }
+    const words = name.replaceAll('_', ' ');
+    if (value === true) values.push(words);
+    else if (typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value))) values.push(`${words} ${value}`);
+  }
+  return values;
 };
 
 /** The prose column each kind carries, or `null` where the kind has none.
@@ -74,6 +108,7 @@ export const WORK_ENTITY_TITLE_FIELD: Readonly<Record<WorkEntityKind, string | n
 export const workEntitySearchableText = (
   kind: WorkEntityKind,
   row: { readonly title?: string | null } & Readonly<Record<string, unknown>>,
+  typeSearchTerms: readonly string[] = [],
 ): string => {
   const parts: string[] = [];
   const titleField = WORK_ENTITY_TITLE_FIELD[kind];
@@ -95,6 +130,7 @@ export const workEntitySearchableText = (
   // returns one because it must choose what to DISPLAY; an index has no such
   // constraint, and a record should be findable by any of its text. */
   for (const text of previewLaneStrings(row.source_extension_blob)) parts.push(text);
+  if (kind === 'asset') parts.push(...assetSharedValues(row), ...typeSearchTerms);
   // Newline, not space: it cannot occur mid-token, so two fields can never
   // fuse into a phrase that neither contains ("Kestrel ring" + "04 notes"
   // must not answer a phrase query for "ring 04 notes").
@@ -112,7 +148,8 @@ export const workEntitySearchableText = (
 export const assetSearchableText = (
   asset: object,
   holderName: string,
-): string => [workEntitySearchableText('asset', asset as Readonly<Record<string, unknown>>), holderName]
+  typeSearchTerms: readonly string[] = [],
+): string => [workEntitySearchableText('asset', asset as Readonly<Record<string, unknown>>, typeSearchTerms), holderName]
   .filter((part) => part.length > 0).join('\n');
 
 /** The FTS key for one record. Dotted so `packages/fts`'s `scope: '<kind>.*'`

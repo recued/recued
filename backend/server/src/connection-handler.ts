@@ -162,6 +162,7 @@ import {
   createEnsureFreshAuth,
   composeApiUrl,
   MCP_TOOL_LIST_PROBE_MAX_PAGES,
+  fetchOriginPinned,
   parseMcpToolListPage,
   probeMcpLegacySseTools,
   probeMcpPushSupport,
@@ -175,6 +176,7 @@ import type { StdioSpawn, WsConnect } from '@recued/ingredients';
 import {
   MCP_LEGACY_PROTOCOL_VERSION,
   MCP_MODERN_PROTOCOL_VERSION,
+  handshakeMcpHttpHeaders,
   isModernMcpProtocolError,
   modernMcpHttpHeaders,
   modernMcpRequestMeta,
@@ -2739,18 +2741,24 @@ const probeConnection = async (
     headers: Record<string, string>,
     body: Record<string, unknown>,
     timeoutMs = probeTimeoutMs,
-  ): Promise<{ httpStatus: number; envelope?: Record<string, unknown> }> => {
+  ): Promise<{ httpStatus: number; envelope?: Record<string, unknown>; sessionId?: string }> => {
     const response = await fetchTimed(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
     }, timeoutMs);
+    const shaped = response as typeof response & {
+      headers?: Headers;
+      text?: () => Promise<string>;
+    };
+    // The session a handshake-era server mints at `initialize`; every later request
+    // must echo it, or a stateful server answers 400 "No valid session ID provided".
+    const minted = typeof shaped.headers?.get === 'function'
+      ? shaped.headers.get('mcp-session-id') ?? undefined
+      : undefined;
+    const session = minted !== undefined ? { sessionId: minted } : {};
     try {
-      if (typeof body.id !== 'number') return { httpStatus: response.status };
-      const shaped = response as typeof response & {
-        headers?: Headers;
-        text?: () => Promise<string>;
-      };
+      if (typeof body.id !== 'number') return { httpStatus: response.status, ...session };
       const parsed = shaped.headers?.get !== undefined && typeof shaped.text === 'function'
         ? (await readMcpHttpEnvelope(response as unknown as Response, body.id)).envelope
         : await response.json();
@@ -2758,12 +2766,13 @@ const probeConnection = async (
         return {
           httpStatus: response.status,
           envelope: parsed as unknown as Record<string, unknown>,
+          ...session,
         };
       }
     } catch {
       // An unrecognized/empty 4xx response is the legacy-era fallback signal.
     }
-    return { httpStatus: response.status };
+    return { httpStatus: response.status, ...session };
   };
   const probeApi = async (
     auth: ConnectionAuth,
@@ -2959,7 +2968,11 @@ const probeConnection = async (
     }
 
     headers['Content-Type'] = 'application/json';
-    headers.Accept = 'application/json';
+    // Streamable HTTP (2025-03-26 on) requires a client to accept both; an SDK
+    // server answers `initialize` with 406 otherwise. This sent `application/json`
+    // alone until 2026-10-25, so the check reached no such server and fell back to
+    // the 2024 transport, reporting "unreachable" while dispatch worked.
+    headers.Accept = 'application/json, text/event-stream';
     try {
       const discoverHeaders = {
         ...headers,
@@ -3017,9 +3030,18 @@ const probeConnection = async (
           ? selectMcpLegacyInitializeVersion(initialize.envelope?.result)
           : undefined;
         if (selectedLegacy !== undefined) {
+          // Every request after the handshake echoes the session the server minted,
+          // and from 2025-06-18 names the revision it settled on.
+          requestHeaders = {
+            ...headers,
+            ...(initialize.sessionId !== undefined
+              ? { 'Mcp-Session-Id': initialize.sessionId }
+              : {}),
+            ...handshakeMcpHttpHeaders(selectedLegacy),
+          };
           await fetchTimed(url.toString(), {
             method: 'POST',
-            headers,
+            headers: requestHeaders,
             body: JSON.stringify({
               jsonrpc: '2.0',
               method: 'notifications/initialized',
@@ -3101,20 +3123,41 @@ const probeConnection = async (
               // that bypasses auth injection, the bounded-origin fetcher and
               // the probe deadline. `fetchTimed` is what the rest of this
               // probe uses and is what carries all three.
-              push = await probeMcpPushSupport(
-                (async (input, init) => {
-                  const headers = init?.headers as Record<string, string> | undefined;
-                  const response = await fetchTimed(
+              //
+              // ⛔⛔ BUT NOT THE BOUNDED FETCHER FOR THE STREAM ITSELF IN PRODUCTION.
+              // A listen stream stays open by design: the server acknowledges at
+              // once and then holds the stream for notifications. The bounded
+              // production fetcher reads a body to its END, so it waited out the
+              // whole probe (10 s against the official SDK v2 server, which had
+              // acknowledged in 1 ms) and recorded `listen_error` for a server
+              // that does push. Production therefore streams, as the 2024 SSE
+              // probe above does: pinned to the endpoint's origin, under the
+              // probe's deadline, with the same auth-bearing headers; the push
+              // probe's own reader stops at the acknowledgement. The injected
+              // fixture seam keeps `fetchTimed`, so a test double is never
+              // bypassed for the real network.
+              const pushFetch = deps.fetcher === undefined
+                ? (async (input, init) => fetchOriginPinned(
+                    deps.resolveFetch ?? globalThis.fetch.bind(globalThis),
                     typeof input === 'string' ? input : String(input),
-                    {
-                      method: init?.method ?? 'POST',
-                      ...(headers !== undefined ? { headers } : {}),
-                      ...(typeof init?.body === 'string' ? { body: init.body } : {}),
-                    },
-                    remainingProbeMs(),
-                  );
-                  return response as unknown as Response;
-                }) as typeof fetch,
+                    { ...init, signal: init?.signal ?? AbortSignal.timeout(remainingProbeMs()) },
+                    url.origin,
+                  )) as typeof fetch
+                : (async (input, init) => {
+                    const headers = init?.headers as Record<string, string> | undefined;
+                    const response = await fetchTimed(
+                      typeof input === 'string' ? input : String(input),
+                      {
+                        method: init?.method ?? 'POST',
+                        ...(headers !== undefined ? { headers } : {}),
+                        ...(typeof init?.body === 'string' ? { body: init.body } : {}),
+                      },
+                      remainingProbeMs(),
+                    );
+                    return response as unknown as Response;
+                  }) as typeof fetch;
+              push = await probeMcpPushSupport(
+                pushFetch,
                 url.toString(),
                 requestHeaders,
                 remainingProbeMs(),

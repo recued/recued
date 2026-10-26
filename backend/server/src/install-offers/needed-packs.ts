@@ -29,6 +29,7 @@ import {
 
 import type { MarketplaceCatalogue } from './catalogue.js';
 import { FIRST_CATALOGUE_WAIT_MS } from './source.js';
+import { forwardedRegistryHooks } from '../registry-forwarding.js';
 
 /** The packs a refusal names as data: `details.missing_packs` of a
  *  `pack_not_installed` error, the shape the run and the schedule both throw.
@@ -167,6 +168,7 @@ export const wrapRegistryWithNeededPackOffers = (
     list: () => inner.list(),
     listByTier: (tier) => inner.listByTier(tier),
     getByName: (name) => inner.getByName(name),
+    ...forwardedRegistryHooks(inner),
     subscribeRefresh: (callback) => inner.subscribeRefresh(callback),
     dispatch: async (name, args, ctx) => {
       const result = await inner.dispatch(name, args, ctx);

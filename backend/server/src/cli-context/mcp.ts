@@ -682,6 +682,12 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
             ? {
                 boundContractId: initialBoundContractId,
                 boundContractActive: true,
+                // D-327 — which refusal fits this key: its contract's switches, or a new contract.
+                ...(() => {
+                  const reads = executeDepsBundle.executeDeps.contractOverlay
+                    ?.readsKeyToolsFromContract?.(initialBoundContractId);
+                  return reads === undefined ? {} : { keyReadsContractTools: reads };
+                })(),
                 mcpRecipeCallbackAuthorize: (pointer) =>
                   pointer.target_token_id === tokenRecord.token_id
                   && pointer.target_contract_id === initialBoundContractId

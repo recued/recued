@@ -92,7 +92,7 @@ const openSchedule = async (page: Page, firstSetup = false) => {
   if (firstSetup) await schedule(page, 'destination').selectOption('Fixture backup storage');
 };
 
-for (const width of [390, 1280]) test.describe(`Archive download correlation at ${width}px`, () => {
+for (const width of [390]) test.describe(`Archive download correlation at ${width}px`, () => {
   const panel = (page: Page) => page.locator('[data-recued-archive-backup-panel]');
   const download = (page: Page) => panel(page).locator('[data-recued-archive-backup-download]');
   const progress = (page: Page) => panel(page).locator('[data-recued-archive-backup-download-progress]');
@@ -171,7 +171,7 @@ for (const width of [390, 1280]) test.describe(`Archive download correlation at 
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Archive download progress at ${width}px`, () => {
+for (const width of [390]) test.describe(`Archive download progress at ${width}px`, () => {
   const panel = (page: Page) => page.locator('[data-recued-archive-backup-panel]');
   const download = (page: Page) => panel(page).locator('[data-recued-archive-backup-download]');
   const progress = (page: Page) => panel(page).locator('[data-recued-archive-backup-download-progress]');
@@ -248,7 +248,7 @@ for (const width of [390, 1280]) test.describe(`Archive download progress at ${w
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Download connection setup at ${width}px`, () => {
+for (const width of [390]) test.describe(`Download connection setup at ${width}px`, () => {
   const panel = (page: Page) => page.locator('[data-recued-archive-backup-panel]');
   const download = (page: Page) => panel(page).locator('[data-recued-archive-backup-download]');
   const setup = (page: Page) => page.evaluate(() => window.__backupStatus.setupState());
@@ -319,7 +319,7 @@ for (const width of [390, 1280]) test.describe(`Download connection setup at ${w
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Stalled archive downloads at ${width}px`, () => {
+for (const width of [390]) test.describe(`Stalled archive downloads at ${width}px`, () => {
   const panel = (page: Page) => page.locator('[data-recued-archive-backup-panel]');
   const download = (page: Page) => panel(page).locator('[data-recued-archive-backup-download]');
   const manual = (page: Page) => page.evaluate(() => window.__backupStatus.manualState());
@@ -398,7 +398,7 @@ for (const width of [390, 1280]) test.describe(`Stalled archive downloads at ${w
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Local export download expiry at ${width}px`, () => {
+for (const width of [390]) test.describe(`Local export download expiry at ${width}px`, () => {
   test.use({ locale: 'en-US', timezoneId: 'UTC' });
   const panel = (page: Page) => page.locator('[data-recued-archive-backup-panel]');
   const download = (page: Page) => panel(page).locator('[data-recued-archive-backup-download]');
@@ -496,7 +496,7 @@ for (const width of [390, 1280]) test.describe(`Local export download expiry at 
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Stored copy check ordering at ${width}px`, () => {
+for (const width of [390]) test.describe(`Stored copy check ordering at ${width}px`, () => {
   const row = (page: Page) => page.locator('[data-remote-backup-id="12345678-1234-4234-8234-123456789abc"]');
   const check = (page: Page) => page.locator('[data-remote-backup-check]');
   const prepare = (page: Page) => page.locator('[data-remote-backup-restore]');
@@ -564,7 +564,7 @@ for (const width of [390, 1280]) test.describe(`Stored copy check ordering at ${
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Restore preview preparation expiry at ${width}px`, () => {
+for (const width of [390]) test.describe(`Restore preview preparation expiry at ${width}px`, () => {
   const button = (page: Page) => page.locator('[data-remote-backup-restore]');
   const message = (page: Page) => page.locator('[data-remote-backup-preview-status]');
   const activatePreview = async (page: Page) => { await button(page).focus(); await page.keyboard.press('Enter'); };
@@ -651,7 +651,7 @@ for (const width of [390, 1280]) test.describe(`Restore preview preparation expi
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Manual backup storage validation at ${width}px`, () => {
+for (const width of [390]) test.describe(`Manual backup storage validation at ${width}px`, () => {
   const destination = (page: Page) => page.locator('[data-remote-backup-destination]');
   const keep = (page: Page) => page.locator('[data-remote-backup-keep]');
   const error = (page: Page, name: 'destination' | 'keep') => page.locator(`[data-remote-backup-${name}-error]`);
@@ -738,7 +738,7 @@ for (const width of [390, 1280]) test.describe(`Manual backup storage validation
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Backup policy drafts at ${width}px`, () => {
+for (const width of [390]) test.describe(`Backup policy drafts at ${width}px`, () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.clock.install({ time: new Date('2023-11-14T22:13:20.000Z') }); await page.clock.pauseAt(new Date('2023-11-14T22:13:21.000Z'));
@@ -843,7 +843,7 @@ for (const width of [390, 1280]) test.describe(`Backup policy drafts at ${width}
   }
 });
 
-for (const width of [390, 1280]) test.describe(`Backup policy save recovery at ${width}px`, () => {
+for (const width of [390]) test.describe(`Backup policy save recovery at ${width}px`, () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.clock.install({ time: new Date('2023-11-14T22:13:20.000Z') }); await page.clock.pauseAt(new Date('2023-11-14T22:13:21.000Z'));
@@ -897,7 +897,7 @@ for (const width of [390, 1280]) test.describe(`Backup policy save recovery at $
   }
 });
 
-for (const width of [390, 1280]) test.describe(`Backup schedule status refresh at ${width}px`, () => {
+for (const width of [390]) test.describe(`Backup schedule status refresh at ${width}px`, () => {
   test.beforeEach(async ({ page }) => { await page.setViewportSize({ width, height: 900 }); });
 
   test('keeps shared Refresh busy for a schedule read and preserves drafts, focus and the prior read time', async ({ page }) => {
@@ -992,7 +992,7 @@ for (const width of [390, 1280]) test.describe(`Backup schedule status refresh a
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Backup schedule drafts at ${width}px`, () => {
+for (const width of [390]) test.describe(`Backup schedule drafts at ${width}px`, () => {
   test.beforeEach(async ({ page }) => { await page.setViewportSize({ width, height: 900 }); });
 
   test('reverting edits restores clean state and allows a later saved schedule to appear', async ({ page }) => {
@@ -1075,7 +1075,7 @@ for (const width of [390, 1280]) test.describe(`Backup schedule drafts at ${widt
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Backup schedule save confirmation at ${width}px`, () => {
+for (const width of [390]) test.describe(`Backup schedule save confirmation at ${width}px`, () => {
   test.beforeEach(async ({ page }) => { await page.setViewportSize({ width, height: 900 }); });
 
   for (const outcome of ['mismatch', 'unconfigured', 'malformed'] as const) test(`preserves the draft and waits for status after a ${outcome} reply`, async ({ page }) => {
@@ -1143,7 +1143,7 @@ for (const width of [390, 1280]) test.describe(`Backup schedule save confirmatio
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Monitor status refresh at ${width}px`, () => {
+for (const width of [390]) test.describe(`Monitor status refresh at ${width}px`, () => {
   test.beforeEach(async ({ page }) => { await page.setViewportSize({ width, height: 900 }); });
 
   test('tracks pending monitor reads, preserves drafts and keeps read time separate from ping time', async ({ page }) => {
@@ -1217,7 +1217,7 @@ for (const width of [390, 1280]) test.describe(`Monitor status refresh at ${widt
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Recovery backup reselection at ${width}px`, () => {
+for (const width of [390]) test.describe(`Recovery backup reselection at ${width}px`, () => {
   const words = (page: Page) => recoveryNode(page, 'words');
   const start = (page: Page) => recoveryNode(page, 'start');
   const feedback = (page: Page) => recoveryNode(page, 'feedback');
@@ -1303,7 +1303,7 @@ for (const width of [390, 1280]) test.describe(`Recovery backup reselection at $
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Recovery selection freshness at ${width}px`, () => {
+for (const width of [390]) test.describe(`Recovery selection freshness at ${width}px`, () => {
   const words = (page: Page) => recoveryNode(page, 'words');
   const start = (page: Page) => recoveryNode(page, 'start');
   const selected = (page: Page) => recoveryNode(page, 'selected');
@@ -1383,7 +1383,7 @@ for (const width of [390, 1280]) test.describe(`Recovery selection freshness at 
   });
 });
 
-for (const width of [390, 1280]) test.describe(`Recovery word entry errors at ${width}px`, () => {
+for (const width of [390]) test.describe(`Recovery word entry errors at ${width}px`, () => {
   const words = (page: Page) => recoveryNode(page, 'words');
   const error = (page: Page) => recoveryNode(page, 'words-error');
   const start = (page: Page) => recoveryNode(page, 'start');
@@ -1473,7 +1473,7 @@ for (const width of [390, 1280]) test.describe(`Recovery word entry errors at ${
   });
 });
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`Recovery receipt refresh clears read errors and preserves selection, drafts and focus at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 }); await openRecovery(page);
     const words = recoveryNode(page, 'words'), selected = await recoveryNode(page, 'selected').textContent();

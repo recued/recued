@@ -603,6 +603,13 @@ export const executionSourceContractId = (
   return typeof id === 'string' ? id : undefined;
 };
 
+/** D-325 — whether the owner, unrestricted, approves a write called from this source: an
+ *  AI app's, whose asks go to the owner, or one from the owner's own chat or messenger. A
+ *  chat under a contract approves its own card, as a household member or a self-restricted
+ *  session does, and that is not the owner's approval. */
+export const ownerApprovesCallsOf = (source: ExecutionSource): boolean =>
+  source.channel === 'mcp' || (source.actor === 'user_self' && executionSourceContractId(source) === undefined);
+
 /** True when the `ExecutionSource` carries a `contract_id`. The single
  *  condition governing `contract_snapshot` presence on a commit (D-161
  *  N.4): a commit carries a snapshot iff its source carries a

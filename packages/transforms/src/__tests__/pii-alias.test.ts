@@ -31,6 +31,8 @@ import {
   holdsPiiAliasToken,
   derivePiiRestoreAuthority,
   restoreInStringWithAuthority,
+  restoreArgsWithAuthority,
+  restoreArgsAndKeysWithAuthority,
   cloneLedger,
   commitLedger,
   restrictStagedLedgerToRestoreAuthority,
@@ -2094,6 +2096,89 @@ describe('D-227 — an email whose local part renders a known name carries that 
   });
 });
 
+
+describe('a person alias the model wrote without its prefix', () => {
+  // Live family-trip run, 2026-10-25: 5 of 11 answers named a traveller as
+  // "Person3", and the owner read "Person3's passport expires January 10".
+  const family = () => {
+    const ledger = createLedger('unprefixed-person');
+    const daniel = getOrAllocate(ledger, 'name', 'Daniel Okafor').alias_value;
+    const samuel = getOrAllocate(ledger, 'name', 'Samuel Bello').alias_value;
+    return { ledger, daniel, samuel };
+  };
+
+  it('restores it when the request showed only the prefixed alias', () => {
+    const { ledger, daniel, samuel } = family();
+    expect([daniel, samuel]).toEqual(['pii.Person1', 'pii.Person2']);
+    const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows: [{ who: [daniel] }, { who: [samuel] }] }));
+    expect(restoreInStringWithAuthority(authority, "Person1's passport expires January 10; Person2's (pii.Person2) February 5."))
+      .toBe("Daniel Okafor's passport expires January 10; Samuel Bello's (Samuel Bello) February 5.");
+    // The chat restores the whole reply, its tool calls included.
+    expect(restoreArgsWithAuthority(authority, { response: '**Person1** and Person2.', tool_calls: [{ tool: 'memory.write', args: { text: 'Person2 renews' } }] }))
+      .toEqual({ response: '**Daniel Okafor** and Samuel Bello.', tool_calls: [{ tool: 'memory.write', args: { text: 'Samuel Bello renews' } }] });
+    expect(restoreArgsAndKeysWithAuthority(authority, { to: 'Person1' })).toEqual({ to: 'Daniel Okafor' });
+  });
+
+  it('restores it to the name when the request also showed that person\'s address', () => {
+    // The address `pii.Person1@d1.invalid` has `pii.Person1` as its local half;
+    // that is the email's row, not a second person sharing the form.
+    const ledger = createLedger('unprefixed-with-address');
+    getOrAllocate(ledger, 'name', 'Sarah Chen');
+    const email = aliasIdentifierField(ledger, 'email', 'sarah.chen@example.com');
+    expect(email).toBe('pii.Person1@d1.invalid');
+    for (const rows of [[{ who: ['pii.Person1'], email }], [{ email }]]) {
+      const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows }));
+      expect(restoreInStringWithAuthority(authority, `Person1 wrote from ${email}`)).toBe('Sarah Chen wrote from sarah.chen@example.com');
+    }
+  });
+
+  it('leaves it as written when the request also holds that bare form as text, in any case', () => {
+    const { ledger, daniel } = family();
+    for (const typed of ['Who is Person1?', 'see PERSON1 in the sheet', 'salesperson1', 'a/Person1']) {
+      const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ user_message: typed, rows: [{ who: [daniel] }] }));
+      expect(restoreInStringWithAuthority(authority, 'Person1 is on file')).toBe('Person1 is on file');
+      expect(restoreInStringWithAuthority(authority, 'pii.Person1 is on file')).toBe('Daniel Okafor is on file');
+    }
+  });
+
+  it('leaves it when the request never showed that alias, or showed two that share the form', () => {
+    const { ledger, daniel } = family();
+    const one = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows: [{ who: [daniel] }] }));
+    expect(restoreInStringWithAuthority(one, 'Person1 and Person2')).toBe('Daniel Okafor and Person2');
+    const siblings = createLedger('unprefixed-siblings');
+    expect(aliasIdentifierField(siblings, 'name', 'Pat Lee')).toBe('pii.Person1');
+    expect(scanContent(siblings, 'PAT LEE').text).toBe('cap_pii.Person1');
+    const both = derivePiiRestoreAuthority(siblings, JSON.stringify({ rows: ['pii.Person1', 'cap_pii.Person1'] }));
+    expect(restoreInStringWithAuthority(both, 'Person1 called')).toBe('Person1 called');
+  });
+
+  it('takes only a whole token', () => {
+    const { ledger, daniel } = family();
+    const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows: [{ who: [daniel] }] }));
+    for (const text of ['Person12', 'xPerson1', 'Person1x', 'Person1_id', 'Person1.ana', 'a/Person1', 'Person1@d1.invalid', 'person1']) {
+      expect(restoreInStringWithAuthority(authority, text)).toBe(text);
+    }
+    for (const [text, restored] of [['(Person1)', '(Daniel Okafor)'], ['Person1.', 'Daniel Okafor.'], ['Person1, then', 'Daniel Okafor, then']]) {
+      expect(restoreInStringWithAuthority(authority, text)).toBe(restored);
+    }
+  });
+
+  it('stays one pass: a restored value is never scanned again', () => {
+    // A contact really named "Person2" is aliased like any name, so the packet holds
+    // only its alias; the bare `Person2` the model writes still means pii.Person2.
+    const ledger = createLedger('unprefixed-one-pass');
+    expect(getOrAllocate(ledger, 'name', 'Person2').alias_value).toBe('pii.Person1');
+    expect(getOrAllocate(ledger, 'name', 'Samuel Bello').alias_value).toBe('pii.Person2');
+    const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows: ['pii.Person1', 'pii.Person2'] }));
+    expect(restoreInStringWithAuthority(authority, 'pii.Person1 and Person2')).toBe('Person2 and Samuel Bello');
+  });
+
+  it('is the request authority only: the session ledger restore keeps a bare form as written', () => {
+    const { ledger } = family();
+    expect(restoreInString(ledger, 'Person1 and pii.Person1')).toBe('Person1 and Daniel Okafor');
+    expect(restoreArgs(ledger, { text: 'Person1' })).toEqual({ text: 'Person1' });
+  });
+});
 
 describe('D-326 — an address is aliased together with the contact it belongs to', () => {
   /** The owner's data says whose an address is; the request supplies the lookup,

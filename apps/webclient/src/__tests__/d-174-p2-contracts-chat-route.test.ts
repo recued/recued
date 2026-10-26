@@ -556,7 +556,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(rows[1]!.getAttribute(CONTRACTS_ROUTE_ANONYMOUS_ATTR)).toBe('');
     expect(allText(rows[1]!)).toContain('only what you allow');
     expect(collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0]?.textContent)
-      .toBe('Showing 1–1 of 1 agreements you look after');
+      .toBe('Showing 1–1 of 1 contracts you look after');
   });
 
   it('never renders an inverted range when an older caller ignores category filters', async () => {
@@ -570,7 +570,7 @@ describe('D-174 contracts route — list → detail shell', () => {
 
     const status = collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0];
     expect(status?.textContent).toBe(
-      'No agreements you look after on this page',
+      'No contracts you look after on this page',
     );
     expect(status?.textContent).not.toContain('1–0');
   });

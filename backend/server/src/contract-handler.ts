@@ -991,7 +991,7 @@ const ensureOptionalKeyAuthority = (
   if (grant_kind !== undefined) {
     throw new RpcError(
       'bad_request',
-      `${method}: key_authority names a standing agreement, so it cannot be minted with grant_kind '${grant_kind}'`,
+      `${method}: key_authority names a standing contract, so it cannot be minted with grant_kind '${grant_kind}'`,
     );
   }
   return value;
@@ -1232,7 +1232,7 @@ const handleContractSetLimits = async (
     // Limits cannot bring a revoked agreement back; revocation is final.
     throw new RpcError(
       'bad_request',
-      `${method}: agreement '${contract_id}' is revoked, so its limits cannot change`,
+      `${method}: contract '${contract_id}' is revoked, so its limits cannot change`,
       400,
       method,
     );
@@ -1241,7 +1241,7 @@ const handleContractSetLimits = async (
   if (def === null) {
     throw new RpcError(
       'not_found',
-      `${method}: no editable standing agreement '${contract_id}'`,
+      `${method}: no editable standing contract '${contract_id}'`,
       404,
       method,
     );

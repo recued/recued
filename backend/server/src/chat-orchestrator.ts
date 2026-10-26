@@ -94,6 +94,7 @@ import {
   type ChatDispatchChannel,
   type ChatDispatchContext,
   type ChatDispatchResult,
+  type ChatSourceCitation,
   type ChatDataDiagnosisContext,
   type ChatMessage,
   type ChatModelHint,
@@ -127,6 +128,7 @@ import {
   isTier1ToolName,
   executionSourceHasContract,
   executionSourceContractId,
+  ownerApprovesCallsOf,
 } from '@recued/contracts';
 import { planApproval as planApprovalModule, piiEgress } from '@recued/gateway';
 import {
@@ -221,6 +223,7 @@ import {
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 import { fitCatalogModeToBudget } from './chat-context-budget.js';
 import { SITUATION_PREFETCH_MIDDLEWARE_ID } from './situations/prefetch.js';
+import { registerSituationPrefetchSourceCapture } from './situations/prefetch-source-citations.js';
 import { PROMPT_CACHE_MIDDLEWARE_ID } from '@recued/middleware-prompt-cache';
 // D-167 P5 S4 — the always-on PII bookend hooks + the wire-seam enactment.
 // `pii-protect` (first `prompt`) / `pii-restore` (last `update`) bracket the
@@ -877,6 +880,8 @@ export interface ChatOrchestratorDeps {
   currentAssetAttachment?: CurrentAssetAttachment;
   /** Authorized local version probe; returns no new source values to Chat. */
   revalidateAssetRead?: (id: string, version: string, ctx: ChatDispatchContext) => Promise<boolean>;
+  /** Exact scoped native version check; returns no source values to Chat. */
+  revalidateProjectionRead?: (source: Extract<ChatSourceCitation, { kind: 'asset_projection' }>, ctx: ChatDispatchContext) => Promise<boolean>;
   /** Per-pair chat session/message store. */
   chatStore: ChatStore;
   /** D-269 step 1 — the server's own resolved IANA zone for the `current_date`
@@ -1144,6 +1149,8 @@ export interface ChatOrchestratorDeps {
     readonly session_id: string;
     readonly execution_source: ExecutionSource;
     readonly contract_snapshot?: ContractSnapshot;
+    /** How the owner knows the records it names, for its ask (`ChatPlanProposal.value_labels`). */
+    readonly value_labels?: import('@recued/contracts').ApprovalValueLabels;
   }) => Promise<{ readonly held: true } | { readonly held: false; readonly reason: string }>;
   /** D-329 §3.4 — spend one use of a live write rule that stands in for this Tier-1 write's
    *  ask (`useWriteRule`). Absent, or no rule ⇒ the write is held as above. */
@@ -2681,6 +2688,8 @@ export const createChatOrchestrator = (
     // original plan card from execution truth rather than `chat.send` ack.
     let consumedPlanId: string | undefined;
     let consumedResourceReview: import("@recued/contracts").ResourceReview | undefined;
+    // Set when a standing write rule the owner accepted stands in for the ask.
+    let ruledWrite = false;
     let confirmedLocalExecution: Extract<ChatPlanExecutionReceipt, { status: 'completed' }> | undefined;
     const savePlanExecution = async (execution: ChatPlanExecutionReceipt) => {
       const saved = await persistPlanExecution(consumedPlanId, execution);
@@ -2706,6 +2715,7 @@ export const createChatOrchestrator = (
           ...(internalDispatchCtx.contract_snapshot !== undefined
             ? { contract_snapshot: internalDispatchCtx.contract_snapshot }
             : {}),
+          ...(proposal.value_labels !== undefined ? { value_labels: proposal.value_labels } : {}),
         });
       } catch (error) {
         console.error(
@@ -2916,6 +2926,7 @@ export const createChatOrchestrator = (
         );
         // Fall through to normal dispatch below.
       } else if (ruledBy !== undefined) {
+        ruledWrite = true;
         void safeLogActivity(
           deps.auditLog,
           'write_rule_used',
@@ -2924,6 +2935,25 @@ export const createChatOrchestrator = (
         );
         // Fall through to normal dispatch below, with no card: the rule is the yes.
       } else {
+        // D-329 — a call its own arguments refuse is not put to the owner: they would
+        // approve it and then read that it did not run. The model reads the refusal now
+        // and can call again (an AI sent an asset's details as `body`, live 2026-10-25).
+        if (!sameTurnPending && pendingHeld === undefined) {
+          const refused = await deps.registry.checkBeforeAsking?.(tool_name, arg_values, internalDispatchCtx);
+          if (refused) {
+            safeBroadcast(deps.broadcast, {
+              kind: 'chat.tool_call_completed',
+              session_id,
+              turn_id,
+              tool_name,
+              tier,
+              status: 'error',
+              reason: refused.ok ? 'execution_error' : refused.reason,
+              detail: refused.ok ? '' : refused.detail ?? '',
+            });
+            return refused;
+          }
+        }
         // No consumable approval — pause behind a card. Re-emit the
         // same turn's still-proposed plan for reconnect /
         // multi-client coherence (a late-surfacing client still sees
@@ -2953,6 +2983,14 @@ export const createChatOrchestrator = (
         if (!reEmit) {
           const resourceReview = deps.getResourceReview?.()?.capture(tool_name, arg_values as Record<string, unknown>);
           if (resourceReview) proposal.resource_review = resourceReview;
+          // D-329 — the records it names, by their names, for its card and its ask. A lookup
+          // that fails leaves the ids: the names are for the owner's eyes, never a gate.
+          try {
+            const valueLabels = await deps.registry.askValueLabels?.(tool_name, arg_values, internalDispatchCtx);
+            if (valueLabels !== undefined) proposal = { ...proposal, value_labels: valueLabels };
+          } catch (error) {
+            console.warn(`[chat] the names for ${tool_name}'s approval were not read`, error);
+          }
           // Stored WITH its hold, before the hold is raised: an ask may be out from
           // the moment it is, and a proposal without the link would also be approvable
           // as a plain card, so the write could run twice.
@@ -2993,6 +3031,7 @@ export const createChatOrchestrator = (
           args_hash: proposal.args_hash,
           created_at: proposal.created_at,
           ...(proposal.hold !== undefined ? { held: true as const } : {}),
+          ...(proposal.value_labels !== undefined ? { value_labels: proposal.value_labels } : {}),
         });
         const result: ChatDispatchResult = {
           ok: false,
@@ -3199,7 +3238,11 @@ export const createChatOrchestrator = (
           : withResourceReview(consumedResourceReview, () => {
               if (consumedPlanId) captureResourceReview(deps.getResourceReview?.(), tool_name,
                 arg_values as Record<string, unknown>, consumedResourceReview, true);
-              const dispatch = () => deps.registry.dispatch(tool_name, arg_values, internalDispatchCtx!);
+              // D-325 — the owner's own yes, never a household member's under a contract:
+              // an asset reading the call writes is then the owner's own sample.
+              const ownerApproved = (consumedPlanId !== undefined || ruledWrite) && ownerApprovesCallsOf(source);
+              const dispatch = () => deps.registry.dispatch(tool_name, arg_values,
+                ownerApproved ? { ...internalDispatchCtx!, owner_approved: true } : internalDispatchCtx!);
               return consumedPlanId && consumedResourceReview && deps.planApprovalStore?.runLocalMutation
                 ? deps.planApprovalStore.runLocalMutation(consumedPlanId, turn_id, source,
                     () => {
@@ -3443,6 +3486,10 @@ export const createChatOrchestrator = (
       });
     const chatInputTokenBudget = resolveTurnInputTokenBudget();
     const streamState = new Map<string, unknown>();
+    const prefetchSourceCapture = params.execution_source.channel === 'chat' && params.execution_source.actor === 'user_self'
+      && !executionSourceHasContract(params.execution_source) && picker_target === 'self' && !params.read_only
+      && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id
+      ? registerSituationPrefetchSourceCapture(streamState) : undefined;
     if (params.continuation_of_turn_id !== undefined) {
       streamState.set(SPAN_ANCHOR_EXPLICIT_CONTINUATION_STATE_KEY, {
         origin_turn_id: params.continuation_of_turn_id,
@@ -3596,13 +3643,14 @@ export const createChatOrchestrator = (
       // returns the raw executor), so no unrequested raw warehouse PII egresses
       // and their raw records never enter the JSON packet. See `aliasChatAiInput`
       // + D-160.
-      const prefetchEntityParts = ctx.prompt
+      let prefetchEntityParts = ctx.prompt
         .parts()
         .filter(
           (part): part is EntityPromptPart =>
             part.role === 'entity'
             && (part.source === PROMPT_CACHE_MIDDLEWARE_ID || part.source === SITUATION_PREFETCH_MIDDLEWARE_ID),
         );
+      if (prefetchSourceCapture) prefetchEntityParts = [...prefetchSourceCapture.retain(prefetchEntityParts)];
       // ENACT (N.9): the `catalog` before-turn hook DECIDED `available_tools`
       // off the seeded picker target. Fall back to an empty list defensively
       // — in practice the hook always runs (always wired + seeded), so this
@@ -3675,6 +3723,7 @@ export const createChatOrchestrator = (
               piiPlan,
               (p) => {
                 egressPrompts.push(p);
+                prefetchSourceCapture?.observe(p);
               },
               prefetchEntityParts,
               undefined,
@@ -3762,6 +3811,17 @@ export const createChatOrchestrator = (
           registry: deps.registry,
           ...(params.assert_active ? { assertActive: params.assert_active } : {}),
           ...(directOwnerRecallSurface && deps.currentAssetAttachment ? { currentAssetAttachment: deps.currentAssetAttachment } : {}),
+          ...(prefetchSourceCapture ? { currentProjectionSources: () => prefetchSourceCapture.sources() } : {}),
+          ...(directOwnerRecallSurface && deps.revalidateProjectionRead ? {
+            revalidateProjectionRead: async (source: Extract<ChatSourceCitation, { kind: 'asset_projection' }>, zone: string) => {
+              params.assert_active?.();
+              const unchanged = await deps.revalidateProjectionRead!(source, buildInternalDispatchCtx(
+                session_id, turn_id, params.execution_source, params.contract_snapshot,
+                params.dispatch_depth, streamState, zone));
+              params.assert_active?.();
+              return unchanged;
+            },
+          } : {}),
           ...(directOwnerRecallSurface && deps.revalidateAssetRead ? {
             revalidateAssetRead: async (id: string, version: string, zone: string) => {
               params.assert_active?.();
@@ -3874,7 +3934,8 @@ export const createChatOrchestrator = (
           now,
         },
       );
-      capturedTurnResult = result;
+      capturedTurnResult = { ...result, ...(prefetchSourceCapture?.sources().length
+        ? { prefetch_source_citations: prefetchSourceCapture.sources() } : {}) };
 
       // DECIDE → write `state`: stash the after-turn inputs the `update`
       // hooks consume — but ONLY when the turn produced an `AIOutput`. The
@@ -4522,7 +4583,7 @@ export const createChatOrchestrator = (
       ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
       retained_alias_candidates: getRetainedCandidates(),
       ...(assistantProvenance ? { provenance: assistantProvenance } : {}),
-      source_citations: answerSourceCitations(picker_target, turnResult.tool_results, streamSessionStore.sourceCitations(input.session_id), assistantContent),
+      source_citations: answerSourceCitations(picker_target, turnResult.tool_results, streamSessionStore.sourceCitations(input.session_id), assistantContent, turnResult.prefetch_source_citations),
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
@@ -4749,7 +4810,7 @@ export const createChatOrchestrator = (
         execution_source: inbound.source, turn_id, ts: Math.max(now(), inbound.ts + 1),
         ...(result?.tool_calls ? { tool_calls: result.tool_calls } : {}),
         ...(result?.provenance ? { provenance: result.provenance } : {}),
-        source_citations: answerSourceCitations(picker_target, result?.tool_results, streamSessionStore.sourceCitations(session_id), text),
+        source_citations: answerSourceCitations(picker_target, result?.tool_results, streamSessionStore.sourceCitations(session_id), text, result?.prefetch_source_citations),
         // D-323 — the offers the turn's calls came back with, as a web app
         // turn's answer carries them; the messenger bridge and the email door
         // send them as plain lines. (A messenger answer carried none until

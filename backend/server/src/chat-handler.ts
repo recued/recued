@@ -2349,19 +2349,19 @@ export const handleInboundTokenIssue = async (
       throw new RpcError('bad_request', `chat.inbound_token.issue: ${why}`, 400);
     };
     if (!keyAgreement.live) {
-      refuse(`agreement '${keyAgreementId}' is not active, so it cannot have a key`);
+      refuse(`contract '${keyAgreementId}' is not active, so it cannot have a key`);
     }
     if (Object.values(validation.value.grants).some((allowed) => allowed)) {
       refuse(
-        `agreement '${keyAgreementId}' gives its key its permissions — grant tools on the `
-          + 'agreement (Ops, Entities, Recipes), not on the key',
+        `contract '${keyAgreementId}' gives its key its permissions — grant tools on the `
+          + 'contract (Ops, Entities, Recipes), not on the key',
       );
     }
     if (validation.value.chat_mode !== null) {
-      refuse(`a key for agreement '${keyAgreementId}' takes no chat setting of its own`);
+      refuse(`a key for contract '${keyAgreementId}' takes no chat setting of its own`);
     }
     if (validation.value.contract_limits !== undefined) {
-      refuse(`limits for agreement '${keyAgreementId}' live on the agreement, not on its key`);
+      refuse(`limits for contract '${keyAgreementId}' live on the contract, not on its key`);
     }
     // ⚠ Check-then-insert with no await between them, so no other issuance can
     // land in the gap on this single-threaded store.
@@ -2369,7 +2369,7 @@ export const handleInboundTokenIssue = async (
     if (deps.inboundTokenStore.listTokens().some((token) =>
       token.contract_id === keyAgreementId && isMcpInboundTokenActive(token, nowMs))) {
       refuse(
-        `agreement '${keyAgreementId}' already has a key — one agreement has one key, `
+        `contract '${keyAgreementId}' already has a key — one contract has one key, `
           + 'so turn the old one off first',
       );
     }
@@ -2676,8 +2676,8 @@ export const handleInboundTokenUpdateGrants = async (
   if (prior.contract_id !== undefined && deps.keyAgreement?.(prior.contract_id) != null) {
     throw new RpcError(
       'bad_request',
-      `chat.inbound_token.update_grants: token '${token_id}' takes its permissions from agreement `
-        + `'${prior.contract_id}' — change them on the agreement (Ops, Entities, Recipes)`,
+      `chat.inbound_token.update_grants: token '${token_id}' takes its permissions from contract `
+        + `'${prior.contract_id}' — change them on the contract (Ops, Entities, Recipes)`,
       400,
     );
   }
@@ -2889,8 +2889,8 @@ export const handleInboundTokenUpdateContract = async (
     if (id !== undefined && deps.keyAgreement?.(id) != null) {
       throw new RpcError(
         'bad_request',
-        `chat.inbound_token.update_contract: agreement '${id}' keeps its own key — `
-          + 'create a key on the agreement instead of moving one',
+        `chat.inbound_token.update_contract: contract '${id}' keeps its own key — `
+          + 'create a key on the contract instead of moving one',
         400,
       );
     }

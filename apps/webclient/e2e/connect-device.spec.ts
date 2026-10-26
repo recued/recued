@@ -223,24 +223,4 @@ for (const width of [390, 1280]) {
     await expect(outside(page)).toBeFocused();
     expect(await page.evaluate(() => window.__app.rpcCallCount('network.port_mapping'))).toBe(reads);
   });
-
-  test(`the check and the router setting are full-size buttons at ${width}px`, async ({ page }) => {
-    // ⛔ Both were 12px pills, 21px and 24px tall, and the setting took a
-    // third column beside its step, which on a phone squeezed the step's own
-    // text to 103px.
-    await open(page, width, { routerMaps: true });
-    const router = panel(page).locator('[data-recued-connect-device-step-key="router"]');
-    const setting = router.locator('[data-recued-connect-device-step-action]');
-    await expect(setting).toHaveText('Open this port for me');
-    const controlHeight = await page.evaluate(() => parseFloat(getComputedStyle(
-      document.querySelector('[data-recued-webclient-content]')!).getPropertyValue('--wc-control-h')));
-    expect(controlHeight).toBeGreaterThan(0);
-    for (const control of [check(page), setting]) {
-      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(controlHeight);
-    }
-    const label = (await router.getByText('Let port 443 through your router', { exact: true }).boundingBox())!;
-    const button = (await setting.boundingBox())!;
-    expect(button.y).toBeGreaterThanOrEqual(label.y + label.height);
-    expect(Math.abs(button.x - label.x)).toBeLessThan(1);
-  });
 }

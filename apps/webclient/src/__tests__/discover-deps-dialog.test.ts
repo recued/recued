@@ -455,7 +455,7 @@ describe('mountRecipeInstallDialog — per-dep grant scope (§7.1/§7.2)', () =>
     });
   });
 
-  it('choosing Everyone else you have an agreement with sends install_scope.scope all_other_contracts', async () => {
+  it('choosing Everyone else you have a contract with sends install_scope.scope all_other_contracts', async () => {
     const { dialog, installPack } = setup();
     dialog.open(recipe, [connDep('salesforce')]);
     dialog.setDepScope('salesforce', 'all_other_contracts');

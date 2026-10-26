@@ -702,7 +702,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       for (const rule of own.rules) { const row = card(node, rule.title, undefined, ['class-draft-rule', rule.id]); label(row, `${rule.title}: remind before`, `before-${rule.id}`, scheduleText(rule));
         button(row, 'Edit preset rule', origin => editRule(rule, origin)); button(row, 'Remove preset rule', () => { const preset = draft(node); open({ type: 'class', creating, preset: { ...preset, rules: preset.rules.filter(row => row.id !== rule.id) } }); dirty = true; }); }
       button(node, 'Add preset rule', origin => editRule(undefined, origin));
-      el('p', 'This saves a preset. Existing assets keep their own rows until you accept applying it.', node); formActions(node); return;
+      el('p', 'Search keywords apply to assets of this type immediately. Existing assets keep their own fact and reminder rows until you accept applying the preset.', node); formActions(node); return;
     }
     if (value.type === 'occasion') {
       const own = value.occasion;

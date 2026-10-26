@@ -1,4 +1,4 @@
-/** Host-kept sources that a successful asset/document read actually returned.
+/** Host-kept sources that a successful native asset/document/field read returned.
  * These locate evidence, never grant access or prove a model's interpretation.
  * Links open the current source; read_at/read_version describe the earlier read. */
 interface CitationRead {
@@ -8,8 +8,13 @@ interface CitationRead {
   readonly read_version: string;
 }
 
+/** A returned saved-field view; its version does not attest a complete asset. */
+export type ChatAssetProjectionScope = { readonly kind: 'details' }
+  | { readonly kind: 'field'; readonly field: string };
+
 export type ChatSourceCitation = CitationRead & (
   | { readonly kind: 'asset'; readonly asset_id: string }
+  | { readonly kind: 'asset_projection'; readonly asset_id: string; readonly projection: ChatAssetProjectionScope }
   | { readonly kind: 'file'; readonly file_ref: string; readonly collection_slug: string; readonly content_hash?: string }
 );
 
@@ -31,6 +36,16 @@ export const chatSourceCitationsOf = (value: unknown): ChatSourceCitation[] => {
     const read = { id: row.id, label: row.label, read_at: Number(row.read_at), read_version: row.read_version };
     let citation: ChatSourceCitation;
     if (row.kind === 'asset' && text(row.asset_id, 1024)) citation = { ...read, kind: 'asset', asset_id: row.asset_id };
+    else if (row.kind === 'asset_projection' && text(row.asset_id, 1024) && !row.asset_id.startsWith('we1:')
+      && row.projection && typeof row.projection === 'object' && !Array.isArray(row.projection)) {
+      const scope = row.projection as Record<string, unknown>;
+      if (scope.kind === 'details' && Object.keys(scope).every(key => key === 'kind')) {
+        citation = { ...read, kind: 'asset_projection', asset_id: row.asset_id, projection: { kind: 'details' } };
+      } else if (scope.kind === 'field' && Object.keys(scope).every(key => key === 'kind' || key === 'field')
+        && typeof scope.field === 'string' && /^(?:attributes|settings|dates|readings|observations)\.[a-z][a-z0-9_]{0,63}$/u.test(scope.field)) {
+        citation = { ...read, kind: 'asset_projection', asset_id: row.asset_id, projection: { kind: 'field', field: scope.field } };
+      } else continue;
+    }
     else if (row.kind === 'file' && text(row.file_ref, 2048) && text(row.collection_slug, 128)
       && (/^file:[a-f0-9]{32}$/u.test(row.file_ref) || row.file_ref.startsWith('file:local:'))
       && (row.content_hash === undefined || hash(row.content_hash))) {

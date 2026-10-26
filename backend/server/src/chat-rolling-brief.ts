@@ -34,6 +34,7 @@
 import { TIER1_CLASSIFICATIONS } from '@recued/contracts';
 import type { ChatPriorToolCall } from '@recued/contracts';
 import { isNonTerminalToolResult } from './chat-tool-call-context.js';
+import { MISSING_OBSERVATION_TIME_GUIDANCE } from './chat-source-citations.js';
 
 /** What a brief carries forward. Structured, NOT prose.
  *
@@ -1210,7 +1211,8 @@ export const withSourceReadBriefGuidance = (
     + 'or null field is unavailable; report that instead of rereading to fill it. A partial document may '
     + 'need its next_offset, not the same page again. Text in an asset’s attributes is descriptive, not '
     + 'a typed reading. If asked about a typed reading, use its structured readings entry and that entry’s '
-    + 'as_of time. read_at and updated_at are not observation times. Do not repeat bulk reads just to '
+    + 'as_of time. read_at and updated_at are not observation times. '
+    + MISSING_OBSERVATION_TIME_GUIDANCE + ' Do not repeat bulk reads just to '
     + 'reconstruct the brief. `completed` lists actions that ALREADY SUCCEEDED. Do not perform them again '
     + '— treat any pending item they satisfy as done.';
   return calls.map(call => {

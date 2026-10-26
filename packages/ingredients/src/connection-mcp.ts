@@ -96,9 +96,13 @@ import {
   MCP_LEGACY_PROTOCOL_VERSION,
   MCP_MODERN_PROTOCOL_VERSION,
   MCP_NEGOTIATION_PROBE_TIMEOUT_MS,
+  handshakeMcpHttpHeaders,
+  isMcpServerMessage,
   isModernMcpProtocolError,
   mcpHttpHeaderBindingsFromSchema,
   mcpProtocolEra,
+  mcpServerRequestReply,
+  mergeMcpHttpHeaders,
   modernMcpHttpHeaders,
   modernMcpRequestMeta,
   modernMcpToolArgumentHeaders,
@@ -240,11 +244,28 @@ const consumeMcpSse = async (
 
 /** Read either legal modern HTTP response representation: one JSON object or
  * a response-scoped SSE stream. Notifications on SSE are skipped until the
- * final response carrying `expectedId` arrives. */
+ * final response carrying `expectedId` arrives.
+ *
+ * A request the server sends on that stream (it names a `method`) is never
+ * taken for the response, even with the same id: servers number their own
+ * requests, and a `ping` sharing Recued's id used to resolve the call with an
+ * empty result while the real answer was dropped. It goes to
+ * `onServerRequest`, whose caller can post the answer back. */
 export const readMcpHttpEnvelope = async (
   response: Response,
   expectedId: number,
+  onServerRequest?: (request: { id: string | number; method: string }) => void,
 ): Promise<McpHttpEnvelopeRead> => {
+  const isOurResponse = (candidate: JsonRpcResponse): boolean => {
+    if (isMcpServerMessage(candidate)) {
+      const { id, method } = candidate;
+      if (onServerRequest !== undefined && (typeof id === 'string' || typeof id === 'number')) {
+        onServerRequest({ id, method });
+      }
+      return false;
+    }
+    return candidate.jsonrpc === '2.0' && candidate.id === expectedId;
+  };
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
   if (!contentType.includes('text/event-stream')) {
     const read = await readBoundedResponseText(response);
@@ -266,7 +287,7 @@ export const readMcpHttpEnvelope = async (
       if (data === '') continue;
       try {
         const candidate = JSON.parse(data) as JsonRpcResponse;
-        if (candidate.jsonrpc === '2.0' && candidate.id === expectedId) {
+        if (isOurResponse(candidate)) {
           return { envelope: candidate, byteLength: read.byteLength };
         }
       } catch {
@@ -283,7 +304,7 @@ export const readMcpHttpEnvelope = async (
     } catch {
       return false;
     }
-    if (candidate.jsonrpc === '2.0' && candidate.id === expectedId) {
+    if (isOurResponse(candidate)) {
       envelope = candidate;
       return true;
     }
@@ -684,12 +705,23 @@ class McpStreamSession {
   /** Route one inbound frame to its waiting request by JSON-RPC id.
    *  Unparseable frames, notifications (no numeric id), and responses to
    *  already-settled requests are ignored — a multiplexed socket sees
-   *  all three legitimately. */
+   *  all three legitimately.
+   *
+   *  ⛔ A request FROM the server (it names a `method`) is answered, never
+   *  routed. Servers number their own requests from the same small integers,
+   *  so a server's `ping` id 1 used to resolve this client's request id 1 with
+   *  the ping itself (an empty result), the real answer arriving later to
+   *  nobody; and with no answer the server waited out its own timeout. */
   private routeMessage(data: string): void {
     let msg: JsonRpcResponse;
     try {
       msg = JSON.parse(data) as JsonRpcResponse;
     } catch {
+      return;
+    }
+    if (isMcpServerMessage(msg)) {
+      const { id, method } = msg;
+      if (typeof id === 'string' || typeof id === 'number') this.answerServerRequest(id, method);
       return;
     }
     if (typeof msg.id !== 'number') return;
@@ -698,6 +730,18 @@ class McpStreamSession {
     this.pending.delete(msg.id);
     clearTimeout(waiter.timer);
     waiter.resolve(msg);
+  }
+
+  /** Best-effort: a channel that cannot take the answer is failing anyway, and
+   *  its own close/error listener reports that. */
+  private answerServerRequest(id: string | number, method: string): void {
+    if (this.closed) return;
+    try {
+      const sent = this.handle.send(JSON.stringify(mcpServerRequestReply(id, method)));
+      if (sent) void sent.catch(() => { /* see above */ });
+    } catch {
+      // see above
+    }
   }
 
   /** Tear down on close / error: reject every in-flight request with a
@@ -2145,6 +2189,7 @@ export const createConnectionMcpHandler = (
               ...(initialized.sessionId !== undefined
                 ? { 'Mcp-Session-Id': initialized.sessionId }
                 : {}),
+              ...handshakeMcpHttpHeaders(selected),
             },
             body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
             signal: AbortSignal.timeout(
@@ -2212,6 +2257,8 @@ export const createConnectionMcpHandler = (
     params: Record<string, unknown>,
     call: ResolvedCall,
     ctx?: ConnectionHandlerCtx,
+    /** Set on the one retry after the server ended this call's session. */
+    afterSessionLoss = false,
   ): Promise<unknown> => {
     // Lazy reaper — every dispatch entry prunes idle clients before
     // taking its own slot. Cheap when the pool is small; correct.
@@ -2363,6 +2410,8 @@ export const createConnectionMcpHandler = (
       if (client.httpSessionId !== undefined) {
         headers['Mcp-Session-Id'] = client.httpSessionId;
       }
+      // From 2025-06-18 every request after `initialize` names the revision.
+      Object.assign(headers, handshakeMcpHttpHeaders(protocolVersion));
     } else {
       Object.assign(headers, modernMcpHttpHeaders(method, jsonRpcParams));
     }
@@ -2466,6 +2515,20 @@ export const createConnectionMcpHandler = (
     // ────────────── HTTP status classification ──────────────
     if (!response.ok) {
       finishResponse();
+      // From 2025-03-26, a 404 to a request that carried `Mcp-Session-Id` means the
+      // server has ended that session (it restarted, or the session expired), and
+      // the client MUST start a new one. The server ran nothing, so the request goes
+      // again once, on a fresh session. Until 2026-10-25 the dead id stayed pooled
+      // and every call failed until the idle reaper dropped the entry 5 minutes later.
+      if (
+        response.status === 404
+        && isLegacyEra
+        && client.httpSessionId !== undefined
+        && !afterSessionLoss
+      ) {
+        if (clientPool.get(record.pk) === client) clientPool.delete(record.pk);
+        return dispatch(record, params, call, ctx, true);
+      }
       if (response.status === 401 || response.status === 403) {
         throw new IngredientError(
           'OAUTH_EXPIRED',
@@ -2498,7 +2561,17 @@ export const createConnectionMcpHandler = (
     let envelope: JsonRpcResponse;
     let measuredBytes: number;
     try {
-      const read = await readMcpHttpEnvelope(response, requestId);
+      const read = await readMcpHttpEnvelope(response, requestId, (serverRequest) => {
+        // A handshake-era server may ask something of the client mid-call, most often
+        // a `ping`. The transport takes the answer as its own POST. Best-effort: the
+        // call does not wait on it.
+        void fetchOriginPinned(fetchImpl, url.toString(), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(mcpServerRequestReply(serverRequest.id, serverRequest.method)),
+          signal: AbortSignal.timeout(MCP_NEGOTIATION_PROBE_TIMEOUT_MS),
+        }, url.origin).then(discardResponseBody, () => { /* best-effort */ });
+      });
       measuredBytes = read.byteLength;
       envelope = read.envelope;
     } catch (e) {
@@ -2765,11 +2838,11 @@ export const probeMcpPushSupport = async (
     try {
       return await fetchImpl(endpoint, {
         method: 'POST',
-        headers: {
-          ...headers,
-          'content-type': 'application/json',
-          ...modernMcpHttpHeaders(method, params),
-        },
+        headers: mergeMcpHttpHeaders(
+          headers,
+          { 'Content-Type': 'application/json' },
+          modernMcpHttpHeaders(method, params),
+        ),
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: `push-probe-${method}`,
@@ -2909,11 +2982,11 @@ export const openMcpListenStream = async (
   try {
     response = await fetchImpl(endpoint, {
       method: 'POST',
-      headers: {
-        ...headers,
-        'content-type': 'application/json',
-        ...modernMcpHttpHeaders('subscriptions/listen', params),
-      },
+      headers: mergeMcpHttpHeaders(
+        headers,
+        { 'Content-Type': 'application/json' },
+        modernMcpHttpHeaders('subscriptions/listen', params),
+      ),
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 'listen',

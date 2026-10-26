@@ -131,6 +131,44 @@ describe('MCP held-action continuation surface', () => {
       .not.toHaveProperty('com.recued/async-actions');
   });
 
+  // ⚠ Model-facing (chat-prompt log 2026-10-25l) — pinned as text, not imported. Told only
+  // that its action was queued, a model checked recued_actionStatus four times running in
+  // one turn, while nothing could change until the user answered.
+  it('tells the app to check once, after the user answers: in the held answer and while it waits', async () => {
+    const actions = createMcpActionStore(createInMemoryCollection<McpActionRecord>(), {
+      newActionRef: () => 'mcpact_once',
+    });
+    const held = (store: typeof actions | undefined) => _testing.handleToolCall(
+      { name: heldTool.name, arguments: {} },
+      deps(actions, {
+        mcpActionStore: store,
+        internalRegistry: registry(async () => ({
+          ok: true,
+          run_id: 'run-once',
+          run_held: { kind: 'approval' },
+          result: { status: 'awaiting_approval', awaiting_approval: true, message: 'Queued.' },
+        })),
+      }),
+    ) as Promise<{ structuredContent: Record<string, unknown> }>;
+    const status = async () => ((await _testing.handleToolCall(
+      { name: MCP_ACTION_STATUS_TOOL_NAME, arguments: { action_ref: 'mcpact_once' } },
+      deps(actions),
+    )) as { structuredContent: Record<string, unknown> }).structuredContent.status_message;
+
+    // No action_ref could be attached ⇒ nothing to check, so nothing is said about it.
+    expect((await held(undefined)).structuredContent.message).toBe('Queued.');
+    expect((await held(actions)).structuredContent.message).toBe('Queued. Do not call recued_actionStatus '
+      + 'while you wait: until the user answers, it only reports awaiting_approval. When the user says they '
+      + 'have answered, call recued_actionStatus once with this action_ref to learn the outcome.');
+    expect(await status()).toBe(
+      'Waiting for owner approval outside the MCP client. Do not check again until the user says they have answered.');
+
+    await actions.markRunning('run-once');
+    await actions.markAwaiting('run-once', 'cp-next');
+    expect(await status()).toBe(
+      'The resumed action reached another owner-approval gate. Do not check again until the user says they have answered.');
+  });
+
   it('attaches one opaque action_ref and returns its eventual final result', async () => {
     const actions = createMcpActionStore(createInMemoryCollection<McpActionRecord>(), {
       newActionRef: () => 'mcpact_e2e',

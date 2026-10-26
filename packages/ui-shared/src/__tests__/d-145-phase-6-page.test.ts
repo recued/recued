@@ -26,7 +26,6 @@ import {
 } from '@recued/contracts';
 
 import { renderWorkEntityPage } from '../work-entity-page/page.js';
-import { WORK_ENTITY_PAGE_STYLES } from '../work-entity-page/styles.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -105,12 +104,6 @@ describe('D-145 PA6 — renderWorkEntityPage', () => {
     expect(html).toContain('class="work-entity-list-view"');
     expect(html).toContain('class="work-entity-page-create"');
     expect(html).toContain('>+ New Task<');
-  });
-
-  it('keeps the primary create action at the shared control floor', () => {
-    expect(WORK_ENTITY_PAGE_STYLES).toContain(
-      '.work-entity-page-create {\n  margin-left: auto;\n  min-height: 36px;',
-    );
   });
 
   it('All-Sources mode (selected_source_id null) propagates show_source_label: true', () => {

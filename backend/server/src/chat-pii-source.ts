@@ -99,6 +99,7 @@ const CORE_ENTITY_FIELDS: ReadonlyMap<
     // Read-time context: an asset's own fields, and a trip's country and days.
     ['details', 'json_object'],
     ['trip', 'json_object'],
+    ['citation_source', 'json_object'],
     ['cluster_id', 'string'],
     ['ambiguous', 'boolean'],
   ])],

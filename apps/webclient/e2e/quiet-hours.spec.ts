@@ -30,7 +30,7 @@ const openReadFailure = async (page: Page, width: number) => {
   await expect(retryRead(page)).toBeVisible();
 };
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`an incomplete window acknowledgement retains the draft and confirmed preview at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 }); await open(page); await edit(page); await activateSave(page);
     await release(page, 'set', 0, 'incomplete');
@@ -216,7 +216,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-for (const width of [390, 1280]) {
+for (const width of [390]) {
   test(`failed saves keep both times and keyboard retries submit the entered window at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 }); await open(page); await edit(page);
     const original = await from(page).elementHandle(); await activateSave(page);

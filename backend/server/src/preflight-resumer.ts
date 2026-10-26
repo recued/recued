@@ -71,7 +71,7 @@ import {
 import { recordWriteRuleAnswer } from './write-rules.js';
 import { projectRunResultForAgent } from './run-result-agent-projection.js';
 import { finishResumedRun } from './resumed-run-finishers.js';
-import type { McpActionStore } from './mcp-action-store.js';
+import { MCP_ACTION_NEXT_GATE_STATUS_MESSAGE, type McpActionStore } from './mcp-action-store.js';
 import {
   gatedActionHandoffFromResult,
   type GatedActionRecord,
@@ -556,7 +556,7 @@ const settleRecipeMcpAction = async (
         anchor?.commit_status === 'awaiting_approval'
           ? anchor.checkpoint_id
           : undefined,
-        'The resumed action reached another owner-approval gate.',
+        MCP_ACTION_NEXT_GATE_STATUS_MESSAGE,
       );
       return;
     }

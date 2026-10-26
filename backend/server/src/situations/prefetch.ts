@@ -2,6 +2,9 @@ import type { Middleware, TurnContext } from '@recued/middleware';
 import { SITUATION_CONTEXT_MAX_BYTES, type SituationItem } from '@recued/contracts';
 import type { SituationAccess } from './access.js';
 import { situationItemForModel } from './model-projection.js';
+import { ASSET_PROJECTION_CITATION_GUIDANCE } from '../chat-source-citations.js';
+import { situationPrefetchSourceCapture } from './prefetch-source-citations.js';
+import { situationText } from './query.js';
 
 export const SITUATION_PREFETCH_MIDDLEWARE_ID = 'situation-prefetch';
 /** A guard against a lookup that never ends, not a latency target: a missed lookup
@@ -12,7 +15,7 @@ export const SITUATION_PREFETCH_BUDGET_MS = 2_000;
 export const SITUATION_PREFETCH_MAX_BYTES = SITUATION_CONTEXT_MAX_BYTES;
 const stripMarkers = (value: unknown): unknown => Array.isArray(value) ? value.map(stripMarkers)
   : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== '__entity').map(([key, item]) => [key, stripMarkers(item)])) : value;
-type PrefetchRow = SituationItem & { cluster_id: string; ambiguous?: boolean };
+type PrefetchRow = SituationItem & { cluster_id: string; ambiguous?: boolean; citation_source?: Record<string, unknown> } & Record<string, unknown>;
 /** An asset's details give way before its item does: first to the names of
  * what they held, then entirely. A row is never dropped for its details. */
 const leaner = (row: PrefetchRow): PrefetchRow[] => {
@@ -32,27 +35,39 @@ const coverage = (shown: number, matched: number, partial: boolean): string => {
     + (partial ? 'Some sources were too large to search in full, so more may match.\n' : '');
 };
 const PREFETCH_HEADER = 'Matching situations already on file, with values and source references. Reasons and verdicts explain relevance; set aside matches irrelevant to the request. '
-  + 'An ambiguous name has several records: ask which one before acting. Unknown is not outside.\n';
+  + 'An ambiguous name has several records: ask which one before acting. Unknown is not outside. '
+  + 'A record’s holder does not identify the speaker. Apply personal travel-document constraints only when the traveller is established by the request or supplied context; otherwise ask who is travelling.\n';
+const headerFor = (rows: readonly Record<string, unknown>[]): string => PREFETCH_HEADER
+  + (rows.some(row => row.citation_source) ? 'The citation_source in each JSON row covers only /details in that row. '
+    + ASSET_PROJECTION_CITATION_GUIDANCE + '\n' : '');
 const lineOf = (row: unknown): string => JSON.stringify(stripMarkers(row));
 /** The bytes of a block showing every one of `rows`, counted as the renderer counts them. */
-const blockBytes = (rows: readonly unknown[], matched: number, partial: boolean): number =>
-  Buffer.byteLength(PREFETCH_HEADER + coverage(rows.length, matched, partial), 'utf8')
+const blockBytes = (rows: readonly Record<string, unknown>[], matched: number, partial: boolean): number =>
+  Buffer.byteLength(headerFor(rows) + coverage(rows.length, matched, partial), 'utf8')
   + rows.reduce<number>((sum, row) => sum + Buffer.byteLength(lineOf(row), 'utf8') + 1, 0);
 export const renderSituationPrefetch = (payload: readonly Record<string, unknown>[], matched: number, partial: boolean): string => {
   if (!payload.length) return '';
-  const header = PREFETCH_HEADER;
-  const lines: string[] = []; const sizes: number[] = []; let bytes = Buffer.byteLength(header, 'utf8');
-  for (const row of payload) {
-    const line = lineOf(row); const size = Buffer.byteLength(line, 'utf8') + 1;
+  // Keep the original data selection before spending bytes on source metadata.
+  // Aliases can expand: repeat the calculation on the actual protected rows.
+  const kept: Array<{ row: Record<string, unknown>; source: unknown }> = [];
+  let bytes = Buffer.byteLength(PREFETCH_HEADER, 'utf8');
+  for (const original of payload) {
+    const { citation_source: source, ...row } = original;
+    const size = Buffer.byteLength(lineOf(row), 'utf8') + 1;
     if (bytes + size > SITUATION_PREFETCH_MAX_BYTES) continue;
-    lines.push(line); sizes.push(size); bytes += size;
+    kept.push({ row, source }); bytes += size;
   }
-  // The coverage line counts against the cap: a row gives way to it and is counted.
-  let note = coverage(lines.length, matched, partial);
-  while (lines.length && bytes + Buffer.byteLength(note, 'utf8') > SITUATION_PREFETCH_MAX_BYTES) {
-    lines.pop(); bytes -= sizes.pop()!; note = coverage(lines.length, matched, partial);
+  while (kept.length && bytes + Buffer.byteLength(coverage(kept.length, matched, partial), 'utf8') > SITUATION_PREFETCH_MAX_BYTES) {
+    bytes -= Buffer.byteLength(lineOf(kept.pop()!.row), 'utf8') + 1;
   }
-  return lines.length ? header + note + lines.join('\n') : '';
+  const rows = kept.map(entry => entry.row);
+  for (const [index, entry] of kept.entries()) {
+    if (!entry.source) continue;
+    const enriched = { ...entry.row, citation_source: entry.source };
+    const candidate = rows.map((row, position) => position === index ? enriched : row);
+    if (blockBytes(candidate, matched, partial) <= SITUATION_PREFETCH_MAX_BYTES) rows[index] = enriched;
+  }
+  return rows.length ? headerFor(rows) + coverage(rows.length, matched, partial) + rows.map(lineOf).join('\n') : '';
 };
 export const createSituationPrefetch = (deps: {
   getAccess: () => SituationAccess | undefined;
@@ -75,17 +90,24 @@ export const createSituationPrefetch = (deps: {
     let outcome = 'miss'; let hits = 0; let matchedTotal = 0;
     try {
       const timeout = new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, budget); });
-      const result = await Promise.race([access.prefetch(message, ctx.source, controller.signal), timeout]);
+      const capture = situationPrefetchSourceCapture(ctx.state);
+      const result = await Promise.race([access.prefetch(message, ctx.source, controller.signal, Boolean(capture)), timeout]);
       if (!result || controller.signal.aborted || performance.now() - started > budget) { outcome = 'timeout'; return; }
       // Everything the message matched, shown or not; the rows below are at most three of it.
       const matched = result.omitted + result.clusters.reduce((sum, cluster) => sum + cluster.items.length, 0);
       const partial = Boolean(result.partial?.length);
       const ambiguous = new Set(result.ambiguous.flatMap(entry => entry.choices.map(ref => JSON.stringify([ref.collection, ref.id]))));
       const payload: Record<string, unknown>[] = [];
-      // One row from each group before a second from any: a group of three filled the
-      // block, and the group it pushed out of view can be the one the message names.
-      const queues = result.clusters.map(cluster => cluster.items.map(item => ({ cluster_id: cluster.id, item: situationItemForModel(item, deps.personName) })));
-      for (let depth = 0; payload.length < 3 && queues.some(queue => depth < queue.length); depth += 1) for (const queue of queues) {
+      // Keep the query's consequence/person/name priorities across groups, too.
+      // Round-robin only inside each tier: weaker keyword hits must not push a
+      // literal name or a named person's second item out of the three-row block.
+      const text = situationText({ text: message, surface: 'prefetch' });
+      const queues = result.clusters.map(cluster => cluster.items.map(item => ({ cluster_id: cluster.id, floor: item.consequence === 'floor',
+        person: ['match', 'near'].includes(item.who.verdict), direct: text.title(item.what.value ?? ''),
+        item: situationItemForModel(item, deps.personName) })));
+      const tiers = [true, false].flatMap(floor => [true, false].flatMap(person => [true, false].map(direct =>
+        queues.map(queue => queue.filter(entry => entry.floor === floor && entry.person === person && entry.direct === direct)))));
+      for (const tier of tiers) for (let depth = 0; payload.length < 3 && tier.some(queue => depth < queue.length); depth += 1) for (const queue of tier) {
         const next = queue[depth]; if (!next || payload.length >= 3) continue;
         const { cluster_id, item } = next;
         const row: PrefetchRow = { ...item, cluster_id,
@@ -101,6 +123,10 @@ export const createSituationPrefetch = (deps: {
         payload.push(fitting as unknown as Record<string, unknown>);
       }
       if (!payload.length) return;
+      for (const row of payload) {
+        const hint = capture?.describe(row as unknown as SituationItem);
+        if (hint) row.citation_source = hint;
+      }
       // The rows go unmarked: the chat checks each contribution (`chat-pii-source.ts`)
       // and refuses a producer's own `__entity` marker, so the egress gather stamps
       // `situation_item` on each row, and that schema tags the ids of its refs.

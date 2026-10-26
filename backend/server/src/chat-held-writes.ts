@@ -27,8 +27,7 @@
 import {
   isChatDispatchReason,
   isExecutionSource,
-  isTier1ToolName,
-  TIER1_TOOL_GUIDE,
+  tier1CallTitle,
   type ChatDispatchReason,
   type ChatMessage,
   type ChatPlanExecutionReceipt,
@@ -180,7 +179,7 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
     }
     if (plan === undefined) return false;
     const at = now();
-    const title = isTier1ToolName(plan.tool) ? TIER1_TOOL_GUIDE[plan.tool].title : undefined;
+    const title = tier1CallTitle(plan.tool, plan.args);
     const source = isExecutionSource(settled.execution_source) ? settled.execution_source : undefined;
     if (isExpiredSettlement(settled)) {
       // Nothing ran: the card says it expired, and the chat hears it, as a refusal is told.
@@ -282,7 +281,7 @@ export const createHeldPlanAskAnswerer = (
 export const createHoldTier1Write = (
   getDeps: () => RawOpDispatchDeps | undefined,
 ): NonNullable<ChatOrchestratorDeps['holdTier1Write']> =>
-  async ({ tool, args, plan_id, run_id, session_id, execution_source, contract_snapshot }) => {
+  async ({ tool, args, plan_id, run_id, session_id, execution_source, contract_snapshot, value_labels }) => {
     const deps = getDeps();
     if (deps === undefined) return { held: false, reason: 'execute_deps_unavailable' };
     const outcome = await holdTier1Call(deps, {
@@ -293,6 +292,7 @@ export const createHoldTier1Write = (
       correlationId: plan_id,
       runId: run_id,
       sessionId: session_id,
+      ...(value_labels !== undefined ? { valueLabels: value_labels } : {}),
     });
     return outcome.kind === 'held'
       ? { held: true }

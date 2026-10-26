@@ -392,10 +392,10 @@ const PANEL_COPY = {
   connect_modal_title: 'Connect an AI app to this server',
   connect_modal_subtitle:
     'Paste one of these into your AI app. Put a real key where the placeholder is. Keys come '
-    + 'from an agreement.',
+    + 'from a contract.',
   connect_modal_note:
     'Being able to reach it is not the same as being allowed in. What the app may do is set '
-    + 'by its agreement, not by this page.',
+    + 'by its contract, not by this page.',
   connect_modal_close: 'Close',
   public_mcp_enable: 'Let AI apps in from outside…',
   public_mcp_revoke: 'Shut AI apps out again',

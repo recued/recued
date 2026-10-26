@@ -132,7 +132,7 @@ import { createSituationNamedPeople, createSituationPeopleFor } from '../situati
 import { recordDigestResponse } from '../situations/measures.js';
 import { buildSituationSources, situationSourceAccess } from '../situations/sources.js';
 import { createAssetClassStore } from '../situations/asset-classes.js';
-import { relateTravelDocuments, travelDocumentsVisible } from '../situations/travel-document-relations.js';
+import { asksWhoTravels, relateTravelDocuments, travelDocumentsVisible } from '../situations/travel-document-relations.js';
 import { createReminderStore } from '../storage/reminder-store.js';
 import { createCalendarTable } from '../collections/calendar/calendar-table.js';
 import { createCollectionTable } from '../collections/table.js';
@@ -886,8 +886,8 @@ export const composeCollectionContext = (
   const querySituation = db && workEntityStore ? createSituationQuery({
     sourceForCollection: situationSourceAccess,
     ...(contactStore ? { namedPeople: createSituationNamedPeople(contactStore), peopleFor: createSituationPeopleFor(contactStore) } : {}),
-    relate: (facts, _query, context) => [...relateTravelDocuments(facts, createAssetClassStore(db).list().flatMap(preset => preset.travel_validity ?? []), serverTimeZone(),
-      travelDocumentsVisible(context, situationSourceAccess('asset'))), ...(proactiveLearning?.related(facts) ?? [])],
+    relate: (facts, query, context) => [...relateTravelDocuments(facts, createAssetClassStore(db).list().flatMap(preset => preset.travel_validity ?? []), serverTimeZone(),
+      travelDocumentsVisible(context, situationSourceAccess('asset')), asksWhoTravels(query)), ...(proactiveLearning?.related(facts) ?? [])],
     ...(proactiveLearning ? { rank: fact => proactiveLearning.rank(fact), relationClasses: () => proactiveLearning.relationClasses() } : {}),
     sources: [...buildSituationSources({ db, work: workEntityStore, reminders: createReminderStore(db),
       ...(contactStore ? { contacts: contactStore } : {}), ...(options.mailFactStore ? { mailFacts: options.mailFactStore } : {}),

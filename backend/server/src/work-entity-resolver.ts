@@ -104,6 +104,7 @@ export interface WorkEntityResolver {
    *  `matchTextsByQuery`. The read tool's read-through half runs through this
    *  so live items and local rows are judged by ONE matcher. */
   matchTextsByQuery(texts: readonly string[], query: string): number[];
+  assetTypeSearchTerms?(classId: string | undefined): readonly string[];
   /** The store's index-wide spelling check — see `WorkEntityStore.checkSpelling`.
    *  Empty where the store cannot check. */
   checkSpelling(query: string): FtsWordCheck[];
@@ -325,6 +326,7 @@ export const createWorkEntityResolver = (
     listAssetsWithHolder,
     countByKind,
     matchTextsByQuery,
+    assetTypeSearchTerms: classId => store.assetTypeSearchTerms?.(classId) ?? [],
     checkSpelling: (query: string): FtsWordCheck[] => store.checkSpelling?.(query) ?? [],
     readEntity,
     readEntityBySourceIdentity,

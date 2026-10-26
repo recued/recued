@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
-import { validateAssetClassPreset, type Asset, type AssetClassPreset, type AssetRule } from '@recued/contracts';
+import { ASSET_SEARCH_TERMS, assetSearchTerms, validateAssetClassPreset, type Asset, type AssetClassPreset, type AssetRule } from '@recued/contracts';
+import { reindexAssetTypeSearchTerms } from '../storage/work-entity-store.js';
 
 const expiry = (id: string, title: string, field: string, floor: boolean, before: AssetRule['schedule']['before'], notice = false): AssetRule => ({
   id, title, enabled: true, muted: false, pinned: false, when: { kind: 'expiry', field }, consequence: floor ? 'floor' : 'routine',
@@ -26,7 +27,9 @@ export const STARTER_ASSET_CLASSES: readonly AssetClassPreset[] = [
   ...[['passport', 'Passport', [month(6), month(3), month(1)]], ['id_card', 'ID card', [month(3), month(1)]],
     ['visa', 'Visa', [month(3), month(1)]], ['driving_licence', 'Driving licence', [month(3), month(1)]]] .map(([id, name, before]) =>
     preset(id as string, name as string, ['expires_on', 'issued_on'], [expiry('renew', 'Renew', 'expires_on', true, before as AssetRule['schedule']['before'])],
-      { fields: { dates: { expires_on: null, issued_on: null }, readings: {}, observations: {}, settings: { sensitive: true } } })),
+      { ...(['passport', 'visa'].includes(id as string) ? { version: 2 } : {}),
+        fields: { dates: { expires_on: null, issued_on: null }, readings: {}, observations: {}, settings: { sensitive: true,
+          ...(['passport', 'visa'].includes(id as string) ? { [ASSET_SEARCH_TERMS]: ['trip', 'travel', 'holiday', 'international', 'overseas'] } : {}) } } })),
   // §4.13 — the key rule is the notice deadline: the renewal date minus the notice
   // period (a month until the owner edits it). A renewal moves both; v1 typed it.
   preset('insurance_policy', 'Insurance policy', ['renews_on'], [expiry('renew', 'Review cover', 'renews_on', true, [month(1)]),
@@ -52,13 +55,17 @@ export const createAssetClassStore = (db: Database.Database) => {
     const row = db.prepare('SELECT value FROM asset_class_presets WHERE id=?').get(id) as { value: string } | undefined;
     return row ? JSON.parse(row.value) : null;
   };
-  const register = (value: AssetClassPreset): boolean => {
+  const register = (value: AssetClassPreset): boolean => db.transaction(() => {
     validateAssetClass(value); const old = get(value.id);
     if (old && old.origin !== value.origin) throw new Error('The class belongs to a different source');
     if (old && old.version >= value.version) return false;
     db.prepare('INSERT INTO asset_class_presets(id,version,origin,value) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,value=excluded.value')
-      .run(value.id, value.version, value.origin, JSON.stringify(value)); return true;
-  };
+      .run(value.id, value.version, value.origin, JSON.stringify(value));
+    if (JSON.stringify(assetSearchTerms(old?.fields.settings[ASSET_SEARCH_TERMS])) !== JSON.stringify(assetSearchTerms(value.fields.settings[ASSET_SEARCH_TERMS]))) {
+      reindexAssetTypeSearchTerms(db, value.id);
+    }
+    return true;
+  })();
   for (const item of STARTER_ASSET_CLASSES) register(item);
   return {
     get, register,
@@ -76,23 +83,30 @@ export const createAssetClassStore = (db: Database.Database) => {
       db.transaction(() => {
         for (const item of presets) register(item);
         for (const row of db.prepare('SELECT id FROM asset_class_presets WHERE origin=?').all(origin) as { id: string }[]) {
-          if (!ids.has(row.id)) db.prepare('DELETE FROM asset_class_presets WHERE id=?').run(row.id);
+          if (!ids.has(row.id)) { db.prepare('DELETE FROM asset_class_presets WHERE id=?').run(row.id); reindexAssetTypeSearchTerms(db, row.id); }
         }
       })();
     },
     removePack(slug: string): void {
-      for (const row of db.prepare('SELECT id,origin FROM asset_class_presets').all() as { id: string; origin: string }[]) {
-        if (row.origin.startsWith('pack:') && row.origin.slice(row.origin.indexOf('/') + 1) === slug) db.prepare('DELETE FROM asset_class_presets WHERE id=?').run(row.id);
-      }
+      db.transaction(() => {
+        for (const row of db.prepare('SELECT id,origin FROM asset_class_presets').all() as { id: string; origin: string }[]) {
+          if (row.origin.startsWith('pack:') && row.origin.slice(row.origin.indexOf('/') + 1) === slug) {
+            db.prepare('DELETE FROM asset_class_presets WHERE id=?').run(row.id); reindexAssetTypeSearchTerms(db, row.id);
+          }
+        }
+      })();
     },
     list: (): AssetClassPreset[] => (db.prepare('SELECT value FROM asset_class_presets ORDER BY id').all() as { value: string }[]).map(row => JSON.parse(row.value)),
     saveOwner(value: AssetClassPreset, create = false): void {
       if (value.origin !== 'owner') throw new Error('Save an owner copy to edit a pack class');
       if (create) {
-        const preset = { ...value, version: 1 }; validateAssetClass(preset);
-        const result = db.prepare('INSERT INTO asset_class_presets(id,version,origin,value) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING')
-          .run(preset.id, preset.version, preset.origin, JSON.stringify(preset));
-        if (!result.changes) throw new Error('This class id already exists. Choose a different id or edit the existing class.');
+        db.transaction(() => {
+          const preset = { ...value, version: 1 }; validateAssetClass(preset);
+          const result = db.prepare('INSERT INTO asset_class_presets(id,version,origin,value) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING')
+            .run(preset.id, preset.version, preset.origin, JSON.stringify(preset));
+          if (!result.changes) throw new Error('This class id already exists. Choose a different id or edit the existing class.');
+          reindexAssetTypeSearchTerms(db, preset.id);
+        })();
         return;
       }
       const old = get(value.id);
@@ -101,7 +115,7 @@ export const createAssetClassStore = (db: Database.Database) => {
     },
     deleteOwner(id: string): void {
       if (get(id)?.origin !== 'owner') throw new Error('Only an owner class can be removed');
-      db.prepare('DELETE FROM asset_class_presets WHERE id=?').run(id);
+      db.transaction(() => { db.prepare('DELETE FROM asset_class_presets WHERE id=?').run(id); reindexAssetTypeSearchTerms(db, id); })();
     },
   };
 };

@@ -728,6 +728,9 @@ export type ServerEvent =
        *  the ask every approval channel shows and runs it at once, with no message to send.
        *  An older client ignores it and still offers "Continue in Chat", which re-proposes. */
       held?: true;
+      /** D-329 — how the owner knows the records `args` names (`ChatPlanProposal.value_labels`).
+       *  An older client ignores it and shows the ids. */
+      value_labels?: import('./ask-detail-label.js').ApprovalValueLabels;
       cursor: number;
     }
   | {

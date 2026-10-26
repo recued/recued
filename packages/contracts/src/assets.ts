@@ -1,6 +1,7 @@
 /** D-325 — durable things, typed clocks and ranked facts. Classes are presets;
  * neither classes nor free-text attributes are a rule language. */
 import type { SourceRowIdentity, CommitmentExpiryPolicy } from './work-entities.js';
+import { ASSET_SEARCH_TERMS, parseAssetSearchTerms } from './asset-search-terms.js';
 
 export const ASSET_STATUSES = ['active', 'lent', 'sold', 'lost', 'retired'] as const;
 export type AssetStatus = typeof ASSET_STATUSES[number];
@@ -311,5 +312,9 @@ export const validateAsset = (asset: Asset): void => {
     || !timestamp(value.as_of) || !['purchase', 'appraisal', 'insured', 'estimate', 'market'].includes(value.basis) || !Array.isArray(value.evidence)) fail('values', 'invalid dated value');
   for (const value of asset.values) evidence(value.evidence, 'values.evidence');
   if (!record(asset.attributes) || !record(asset.settings)) fail('attributes', 'attributes and settings must be objects');
+  for (const group of ['attributes', 'settings'] as const) {
+    try { parseAssetSearchTerms(asset[group][ASSET_SEARCH_TERMS]); }
+    catch (error) { fail(`${group}.${ASSET_SEARCH_TERMS}`, (error as Error).message); }
+  }
   json(asset, 'asset');
 };

@@ -14,6 +14,7 @@
  *  reschedules). The first describe block is what notices.
  */
 
+import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import type { ExecutionSource } from '@recued/contracts';
 import {
@@ -23,7 +24,8 @@ import {
 } from '@recued/contracts';
 // The orchestrator reaches it the same way (`planApproval as planApprovalModule`).
 import { planApproval } from '@recued/gateway';
-import { buildChatTier1Handlers } from '../chat-tool-handlers.js';
+import { buildChatTier1Handlers, calendarAskLabels } from '../chat-tool-handlers.js';
+import { createCalendarTable } from '../collections/calendar/calendar-table.js';
 import type { ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { createReadGrantChecker } from '../read-grant-checker.js';
 
@@ -218,5 +220,27 @@ describe('calendar.update — a patch, and never an empty one', () => {
     const res = await h['calendar.update']!({ source_id: 'evt-1', summary: 'X' }, ctx());
     expect(res.ok).toBe(false);
     expect((res as { reason: string }).reason).not.toBe('classification_blocked');
+  });
+});
+
+describe('calendar.update — the event its ask names (D-329, 2026-10-25)', () => {
+  it('names the event by its title and when it is on the turn\'s clock, never by its id', async () => {
+    const db = new Database(':memory:');
+    const table = createCalendarTable({ db, slug: 'local' });
+    const start = Date.UTC(2026, 9, 27, 14);
+    table.upsert({ size_bytes: 0, event: { source_id: 'evt-1', ical_uid: 'uid-1', calendar_id: 'local', summary: 'Dentist',
+      start_at: start, end_at: start + 3_600_000, timezone: 'UTC', is_all_day: false, status: 'confirmed',
+      created_at: start, updated_at: start } } as never);
+    const withCalendar = { ...deps(), getCollectionRegistry: () => ({ list: () => [{ slug: 'local', platform: 'calendar', table }] }) } as never;
+    const named = await calendarAskLabels(withCalendar, { source_id: 'evt-1', start_at: start + 86_400_000 },
+      { execution_source: ownerSource, time_zone: 'Europe/Dublin' } as never);
+    expect(named).toEqual({ source_id: { 'evt-1': expect.stringMatching(/^Dentist, .+\(UTC\+00:00\)$/u) } });
+    // The MCP wire keeps no clock: the title alone.
+    expect(await calendarAskLabels(withCalendar, { source_id: 'evt-1' }, { channel: 'mcp_wire', mcp_token_id: 't' } as never))
+      .toEqual({ source_id: { 'evt-1': 'Dentist' } });
+    // Another calendar's event, or none: the id is shown.
+    expect(await calendarAskLabels(withCalendar, { source_id: 'evt-1', calendar_id: 'google-work' }, ctx())).toBeUndefined();
+    expect(await calendarAskLabels(withCalendar, { source_id: 'evt-9' }, ctx())).toBeUndefined();
+    db.close();
   });
 });

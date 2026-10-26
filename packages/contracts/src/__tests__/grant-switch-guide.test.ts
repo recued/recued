@@ -19,6 +19,7 @@ import {
   TIER1_TOOL_GUIDE,
   grantSwitchText,
   toolsNeedingSwitch,
+  tier1CallTitle,
 } from '../grant-switch-guide.js';
 import { collectionGrantEntry, primitiveGrantEntry } from '../grant-entry.js';
 import { SITUATION_HISTORY_COLLECTIONS } from '../grant-resolve.js';
@@ -134,5 +135,25 @@ describe('grant switch guide — lookups', () => {
       { tool: 'work.create', when: 'to add things you own' },
     ]);
     expect(toolsNeedingSwitch('core.mail.send')).toEqual([]);
+  });
+});
+
+describe('tier1CallTitle — one call of an AI tool, in the owner\'s words', () => {
+  it('names the kind of thing a work tool adds or changes', () => {
+    expect(tier1CallTitle('work.create', { kind: 'task', title: 'Call the dentist' })).toBe('Add a task');
+    expect(tier1CallTitle('work.create', { kind: 'asset', title: 'Road bike' })).toBe('Add a thing you own');
+    expect(tier1CallTitle('work.update', { kind: 'asset', id: 'a1', readings: {} })).toBe('Change a thing you own');
+    expect(tier1CallTitle('work.update', { kind: 'commitment', id: 'c1' })).toBe('Change a commitment');
+    expect(tier1CallTitle('work.update', { kind: 'task', id: 't1', done: true })).toBe('Tick a task off');
+    expect(tier1CallTitle('work.update', { kind: 'task', id: 't1', done: false })).toBe('Change a task');
+  });
+
+  it('keeps the tool\'s own title where the call names no kind it knows, or the tool has none', () => {
+    expect(tier1CallTitle('work.create', {})).toBe('Add a task, note or more');
+    expect(tier1CallTitle('work.update', { kind: 'booking' })).toBe('Change a task, note or more');
+    expect(tier1CallTitle('work.update', null)).toBe('Change a task, note or more');
+    expect(tier1CallTitle('calendar.create', { kind: 'task' })).toBe('Add a calendar event');
+    expect(tier1CallTitle('mail.send', {})).toBeUndefined();
+    expect(tier1CallTitle('toString', {})).toBeUndefined();
   });
 });
