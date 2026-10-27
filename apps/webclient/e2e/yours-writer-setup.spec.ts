@@ -18,13 +18,19 @@ const changes = (page: Page) => page.evaluate(() => window.__writerSetup.state.c
 
 test('Yours reviews the source and field scope before creating updates, then controls the same automation', async ({ page }) => {
   await open(page, '', true);
+  await expect(page.getByRole('heading', { name: 'Review automatic updates', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Source type', { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-writer-review]')).toContainText('84%');
   expect(await changes(page)).toEqual([]);
   await page.getByRole('button', { name: 'Approve and start updates', exact: true }).click();
   const status = page.locator('[data-writer-setup]');
+  await expect(page.getByRole('heading', { name: 'Automatic updates', exact: true })).toBeVisible();
   await expect(status).toContainText('Scheduled');
   await expect(status).toContainText('Kept your manual entry');
   await expect(status).toContainText('Last accepted:');
+  const receipt = status.locator('[data-writer-receipt]'); await receipt.locator('summary').click();
+  await expect(receipt).toContainText('Submitted'); await expect(receipt).toContainText('Observed');
+  await page.getByRole('button', { name: 'Refresh status', exact: true }).click(); await expect(receipt).toHaveJSProperty('open', true);
   const submitted = (await changes(page))[0]!;
   expect(submitted.action).toBe('configure');
   if (submitted.action !== 'configure') throw new Error('Expected explicit configuration approval');
@@ -77,6 +83,10 @@ test('refresh recovers a saved edit after a lost reply and clears the already-sa
   await page.getByRole('button', { name: 'Approve and start updates', exact: true }).click();
   await expect(page.locator('[data-writer-setup]')).toContainText('Scheduled');
   await page.getByRole('button', { name: 'Review setup', exact: true }).click();
+  await page.locator('form').getByRole('button', { name: 'Review setup', exact: true }).click();
+  await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
+  await expect(page.locator('[data-writer-review]')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Back to source selection', exact: true }).click();
   await page.getByLabel('Check frequency', { exact: true }).selectOption('30');
   await page.locator('form').getByRole('button', { name: 'Review setup', exact: true }).click();
   await page.getByRole('button', { name: 'Approve and start updates', exact: true }).click();

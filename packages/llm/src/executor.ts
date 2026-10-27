@@ -1,4 +1,4 @@
-import { isAIBatchMode, isBatchCapableAISlug, isCoreSlug, normalizePiiFields } from '@recued/contracts';
+import { isAIBatchMode, isBatchCapableAISlug, isCoreSlug, isLlmRetryTime, normalizePiiFields } from '@recued/contracts';
 import type {
   AIBatchEntry,
   IngredientManifest,
@@ -59,7 +59,7 @@ import {
 } from './endpoint-capabilities.js';
 import { estimateConservativeMessagesTokens } from './context-budget.js';
 import { resolveLLMTimeoutMs } from './timeout.js';
-import { buildAvailability } from './availability.js';
+import { buildAvailability, describeLLMAvailability } from './availability.js';
 import { matchLLM, type ForceLayer, type PinnedSlot } from './match.js';
 import type { QuotaTracker } from './quota.js';
 
@@ -548,13 +548,35 @@ export const executeLLM = async (
 
   const { requires, forceLayer, pinSlot, allowUpgrade, strategy } = describeLLMMatch(manifest, input, deps);
 
-  const availability = deps.preBuiltAvailability ?? await buildAvailability({
+  const availabilityDeps = {
     config: deps.config,
     quota: deps.quota,
     tabProbe: deps.tabProbe,
     budgetStatus: deps.budgetStatus,
     webChatSupported: deps.webChatSupported,
-  });
+  };
+  const availability = deps.preBuiltAvailability ?? await buildAvailability(availabilityDeps);
+  const matchRequest = {
+    requires, allowUpgrade, forceLayer,
+    ...(pinSlot ? { pinSlot } : {}),
+    ...(requireModalities ? { requireModalities } : {}),
+  };
+  const withRetryTime = (failure: LLMError): LLMError => {
+    // A caller-owned snapshot may impose availability policy we cannot refresh.
+    if (deps.preBuiltAvailability) return failure;
+    try {
+      // Read-only: no adapter, request registration, match event, cursor write
+      // or injected RNG consumption. A ready source means no wait is required.
+      matchLLM(matchRequest, { config: deps.config, availability: describeLLMAvailability(availabilityDeps),
+        quota: deps.quota, strategy, rng: () => 0 });
+    } catch (error) {
+      if (error instanceof LLMError && isLlmRetryTime(error.details?.retry_at)) {
+        return new LLMError(failure.code, failure.message,
+          { ...(failure.details ?? {}), retry_at: error.details.retry_at }, failure.retryable);
+      }
+    }
+    return failure;
+  };
 
   const rejectSet = new Set<string>();
   const MAX_WALKS = 3;
@@ -564,11 +586,7 @@ export const executeLLM = async (
     let match: Match;
     try {
       match = matchLLM(
-        {
-          requires, allowUpgrade, forceLayer,
-          ...(pinSlot ? { pinSlot } : {}),
-          ...(requireModalities ? { requireModalities } : {}),
-        },
+        matchRequest,
         { config: deps.config, availability, quota: deps.quota, strategy, rejectSet, rng: deps.rng },
       );
     } catch (e) {
@@ -582,6 +600,9 @@ export const executeLLM = async (
         && rejectSet.size === 0
         && e instanceof LLMError
         && e.code === 'AI_LLM_UNAVAILABLE'
+        // A capable source in cooldown is temporarily blocked, not missing
+        // the modality. Preserve the matcher's recovery information.
+        && !(Array.isArray(e.details?.cooldown_sources) && e.details.cooldown_sources.length > 0)
       ) {
         throw new LLMError(
           'AI_MODALITY_UNSUPPORTED',
@@ -601,12 +622,12 @@ export const executeLLM = async (
       // and there is no provider error to surface — fall through.)
       if (rejectSet.size > 0 && lastError) {
         const noMatch = e instanceof Error ? e.message : String(e);
-        throw new LLMError(
+        throw withRetryTime(new LLMError(
           lastError.code,
           `${lastError.message} — and no fallback LLM source matched after the failed source was excluded (${noMatch})`,
           { ...(lastError.details ?? {}), fallback_unavailable: noMatch, exhausted_sources: rejectSet.size },
           false,
-        );
+        ));
       }
       throw e;
     }
@@ -748,11 +769,11 @@ export const executeLLM = async (
     }
   }
 
-  throw lastError ?? new LLMError(
+  throw withRetryTime(lastError ?? new LLMError(
     'AI_LLM_UNAVAILABLE',
     `Cascade exhausted after ${MAX_WALKS} walks`,
     { walks: MAX_WALKS },
-  );
+  ));
 };
 
 /** F7b (s13 spot-run) — strip BYOK + free-pool secrets from a `Match` before

@@ -5,16 +5,17 @@ export const mountAssetSummary = (host: HTMLElement, asset: Asset, summary?: You
   recordFact?: (fact: YoursAssetSummary['missing'][number]) => void) => {
   const doc = host.ownerDocument; const node = doc.createElement('div'); node.dataset.yoursAssetSummary = asset.id; host.append(node);
   const line = (text: string) => { const p = doc.createElement('p'); p.textContent = text; node.append(p); return p; };
-  if (asset.sync_state !== 'live') line('Source unavailable; these facts may be out of date.');
+  if (asset.sync_state !== 'live') line('Source unavailable; these facts may be out of date.').dataset.yoursStatusKind = 'unavailable';
   if (!summary || summary.asset_id !== asset.id) { line('Summary unavailable. Open the asset for details.'); return; }
-  line(summary.open_tasks ? `${summary.open_tasks} open task${summary.open_tasks === 1 ? '' : 's'}` : 'No open tasks');
+  const count = line(summary.open_tasks ? `${summary.open_tasks} open task${summary.open_tasks === 1 ? '' : 's'}` : 'No open tasks'); count.className = 'yours-summary-count';
   const due = summary.next_due;
   if (due) {
     const label = due.estimated ? 'Estimated due' : due.state === 'overdue' ? 'Overdue' : due.state === 'today' ? 'Due today' : 'Next due';
-    line(`${label}: ${due.title} · ${due.on}${due.estimated && due.state !== 'upcoming' ? ` · ${due.state === 'today' ? 'today' : 'overdue'}` : ''}`);
-  } else line(!['active', 'lent'].includes(asset.status) ? 'Rules inactive for this asset.' : !summary.active_rules ? 'No active rules.' : 'No due date known.');
+    const dueLine = line(`${label}: ${due.title} · ${due.on}${due.estimated && due.state !== 'upcoming' ? ` · ${due.state === 'today' ? 'today' : 'overdue'}` : ''}`);
+    dueLine.dataset.yoursStatusKind = due.state; node.insertBefore(dueLine, count);
+  } else count.append(` · ${!['active', 'lent'].includes(asset.status) ? 'Rules inactive for this asset.' : !summary.active_rules ? 'No active rules.' : 'No due date known.'}`);
   if (summary.missing.length) {
-    line(`Missing facts (${summary.missing.length}):`);
+    line(`Missing facts (${summary.missing.length}):`).dataset.yoursStatusKind = 'missing';
     const facts = (parent: HTMLElement, rows: YoursAssetSummary['missing']) => {
       const list = doc.createElement('ul'); list.dataset.yoursMissingFacts = ''; parent.append(list);
       for (const fact of rows) {

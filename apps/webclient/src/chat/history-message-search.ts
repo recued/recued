@@ -5,6 +5,7 @@ import type {
   ChatMessageSearchResult,
   ChatHistoryFilters,
 } from '@recued/contracts';
+import { appendHistoryHighlights } from './history-highlights.js';
 
 export const HISTORY_MESSAGE_RESULT_ATTR = 'data-recued-chat-history-message';
 export const HISTORY_MESSAGE_MORE_ATTR = 'data-recued-chat-history-message-more';
@@ -17,6 +18,7 @@ export const createHistoryMessageSearch = (opts: {
   search: (request: ChatMessageSearchRequest) => Promise<ChatMessageSearchResult>;
   open: (sessionId: string, messageId: string) => void;
   isOpening: (messageId: string) => boolean;
+  sessionTitle?: (sessionId: string) => string | undefined;
 }) => {
   const doc = opts.document;
   let root: HTMLElement | null = null;
@@ -68,7 +70,7 @@ export const createHistoryMessageSearch = (opts: {
       if (opts.isOpening(match.message_id)) button.setAttribute('aria-busy', 'true');
       const heading = doc.createElement('span');
       heading.className = 'chat-session-title';
-      heading.textContent = match.title || 'Untitled chat';
+      appendHistoryHighlights(doc, heading, opts.sessionTitle?.(match.session_id) ?? (match.title || 'Untitled chat'), query);
       button.appendChild(heading);
       const meta = doc.createElement('span');
       meta.className = 'chat-session-meta';
@@ -83,7 +85,7 @@ export const createHistoryMessageSearch = (opts: {
       const snippet = doc.createElement('span');
       snippet.className = 'chat-history-message-snippet';
       // Message text is untrusted content, never markup or executable links.
-      snippet.textContent = match.snippet;
+      appendHistoryHighlights(doc, snippet, match.snippet, query);
       button.appendChild(snippet);
       button.addEventListener('click', () => opts.open(match.session_id, match.message_id));
       root.appendChild(button);

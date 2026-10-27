@@ -3017,6 +3017,7 @@ export const createWorkEntityStore = (
       ON CONFLICT(asset_id,field,as_of) DO UPDATE SET value=excluded.value`).run(id, field, reading.as_of, JSON.stringify(reading));
   };
   const writeAsset: WorkEntityStore['writeAsset'] = (input, now = Date.now(), options = {}) => db.transaction(() => {
+    consumeScheduledLocalAuthority(db);
     if (input.preset_application && input.source?.kind !== 'owner') throw new AssetValidationError('A preset application requires a direct owner action');
     if (!input.source || !['owner', 'confirmed_document', 'extracted'].includes(input.source.kind)
       || typeof input.source.ref !== 'string' || !input.source.ref.trim()) throw new AssetValidationError('An explicit fact source is required', 'source');
@@ -5008,3 +5009,4 @@ export {
   TABLE_FOR_KIND,
 };
 export const ALL_SYNC_STATES = SYNC_STATES;
+import { consumeScheduledLocalAuthority } from '../scheduled-local-authority-context.js';

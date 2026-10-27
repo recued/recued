@@ -9,6 +9,7 @@ import { createConversationFilesView, type ConversationFilesCaller } from './con
 import { CHAT_DELIVERY_STYLES, createChatDeliveryView, type ChatDeliveryClient } from './delivery-view.js';
 import { createMessengerSessionList, CHAT_MESSENGER_LIST_STYLES } from './messenger-session-list.js';
 import { createHistoryFilters, HISTORY_FILTER_ATTR, CHAT_HISTORY_FILTER_STYLES } from './history-filters.js';
+import { createHistoryRename, CHAT_HISTORY_RENAME_STYLES, RENAME_SESSION_ATTR } from './history-rename.js';
 import { readMailWorkChatPrompt } from '../mail/mail-work-investigation.js';
 import {
   DAY_MS,
@@ -18,6 +19,8 @@ import {
   isChatToolCallRecord,
   type ListPageFields,
   type ListPageRequest,
+  type ChatSessionRenameRequest,
+  type ChatSessionRenameResult,
 } from '@recued/contracts';
 import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
@@ -41,6 +44,8 @@ import {
 } from '@recued/ui-shared';
 import { createComposerAttachments } from './composer-attachments.js';
 import { createHistoryMessageSearch, HISTORY_MESSAGE_RESULT_ATTR } from './history-message-search.js';
+import { appendHistoryHighlights } from './history-highlights.js';
+import { captureTranscriptPosition, restoreTranscriptPosition, transcriptAtBottom, type TranscriptPosition } from './transcript-position.js';
 import {
   browserVoiceCaptureFactory,
   createVoiceComposer,
@@ -490,6 +495,7 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient {
   ): Promise<ChatThreadSnapshot>;
   (method: 'chat.messages.search', payload: ChatMessageSearchRequest): Promise<ChatMessageSearchResult>;
   (method: 'chat.session.create'): Promise<{ session_id: string }>;
+  (method: 'chat.session.rename', payload: ChatSessionRenameRequest): Promise<ChatSessionRenameResult>;
   (
     method: 'chat.session.create',
     payload: { title?: string; creation_id?: string },
@@ -900,6 +906,16 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-title {
   line-height: 1.35;
 }
+[${CHAT_ROUTE_HOST_ATTR}] [${CHAT_ROUTE_SESSION_ROW_ATTR}] .chat-session-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-clear-active { justify-self: start; font-size: 12px; }
+[${CHAT_ROUTE_HOST_ATTR}] [data-chat-latest][hidden],
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-clear-active[hidden] { display: none !important; }
+[${CHAT_ROUTE_HOST_ATTR}] mark { background: color-mix(in srgb, var(--accent) 24%, transparent); color: inherit; border-radius: 2px; }
 [${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] {
   position: relative;
   align-self: start;
@@ -910,7 +926,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
      opening the final row creates real scroll range instead of clipping the
      actions below the list viewport. The toggle handler below then reveals
      the reserved menu with block-nearest scrolling. */
-  padding-bottom: 112px;
+  padding-bottom: 160px;
 }
 [${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] > summary {
   display: grid;
@@ -1157,9 +1173,18 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 76ch;
 }
+[${CHAT_ROUTE_MESSAGE_ATTR}] .chat-message-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 26px; }
+[${CHAT_ROUTE_MESSAGE_ATTR}] .chat-message-reply { border: 0; background: transparent; color: var(--muted); padding: 4px 8px; font-size: 12px; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) {
+  [${CHAT_ROUTE_MESSAGE_ATTR}] .chat-message-reply { opacity: 0; }
+  [${CHAT_ROUTE_MESSAGE_ATTR}]:hover .chat-message-reply,
+  [${CHAT_ROUTE_MESSAGE_ATTR}]:focus-within .chat-message-reply { opacity: 1; }
+}
+@media (pointer: coarse) { [${CHAT_ROUTE_MESSAGE_ATTR}] .chat-message-reply { min-width: 44px; min-height: 44px; } }
 [${CHAT_ROUTE_LATE_RESULT_ATTR}],
 [${CHAT_ROUTE_TOOL_DETAILS_ATTR}] {
   min-width: 0;
@@ -2733,6 +2758,7 @@ export const CHAT_ROUTE_STYLES = [
   CHAT_ROUTE_CHROME_STYLES,
   CHAT_MESSENGER_LIST_STYLES,
   CHAT_HISTORY_FILTER_STYLES,
+  CHAT_HISTORY_RENAME_STYLES,
   CHAT_DELIVERY_STYLES,
   CHAT_QUEUE_STYLES,
   CHAT_QUOTED_REPLY_STYLES,
@@ -3749,7 +3775,7 @@ export const bootstrapChatRoute = (
   // ordinary re-renders must not bounce an in-progress draft back into it.
   let historyLandingActive = opts.initialLanding === 'history';
   let mobileHistoryOpen = false;
-  let historyFiltersOpen = !(doc.defaultView?.matchMedia?.('(max-width: 820px)').matches ?? false);
+  let historyFiltersOpen = false;
   const historyPanelId = `recued-chat-history-${crypto.randomUUID()}`;
   let pendingRecoveryDraft =
     opts.initialRecoveryDraft !== undefined
@@ -3791,10 +3817,43 @@ export const bootstrapChatRoute = (
   });
   const historyMessageSearch = createHistoryMessageSearch({
     document: doc,
+    sessionTitle: sessionId => state.sessions.find(session => session.id === sessionId)?.title,
     search: (request) => opts.conn('chat.messages.search', request),
     isOpening: (messageId) => openingSessionId !== null && openingHistoryMessageId === messageId,
     open: (sessionId, messageId) => {
       void openHistorySession(sessionId, false, 'row', messageId);
+    },
+  });
+  const historyRename = createHistoryRename({
+    document: doc, root: () => routeRoot,
+    rename: async request => {
+      const precedingList = sessionListInFlight ? sessionListRequest : null;
+      try {
+        const result = await opts.conn('chat.session.rename', request);
+        // A list read already out before this write can still carry its old
+        // title if the broadcast was missed. Supersede just that read with a
+        // canonical refresh; a broadcast-triggered newer read already does so.
+        if (precedingList !== null && precedingList === sessionListRequest && sessionListInFlight) void loadSessions(true);
+        return result;
+      }
+      catch (error) {
+        if ((error as { code?: string } | null)?.code === 'conflict') void loadSessions(true);
+        throw error;
+      }
+    },
+    changed: () => renderPreservingHandoffFocus(),
+    renamed: (request, result) => {
+      // A newer title broadcast can beat this request's reply. Preserve it.
+      const patch = <T extends { id: string; title?: string }>(session: T): T => session.id === request.session_id
+        && ((session.title ?? null) === request.expected_title || session.title === result.title) ? { ...session, title: result.title } : session;
+      state = { ...state, sessions: state.sessions.map(patch), thread: { ...state.thread,
+        session: state.thread.session ? patch(state.thread.session) : null } };
+      historyAnnouncement = 'Chat renamed.';
+    },
+    focusRow: sessionId => {
+      const row = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`))
+        .find(node => node.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === sessionId);
+      (row && !row.closest('[hidden]') ? row : routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`))?.focus?.({ preventScroll: true });
     },
   });
   let openingSessionId: string | null = null;
@@ -4050,6 +4109,7 @@ export const bootstrapChatRoute = (
     });
   };
   let sessionListRequest = 0;
+  let sessionListInFlight = false;
   let pendingSubmission: { key: string; id: string } | null = null;
   let draftCreationId: string | null = null;
   const sendDispatches = new Set<string | null>();
@@ -4772,13 +4832,31 @@ export const bootstrapChatRoute = (
    *  that failed to clear is a cosmetic wrong, and blocking a turn's settle on
    *  it — or surfacing an error banner for it — would trade that for a real
    *  one. The next open re-stamps it anyway. */
+  const viewingLatest = (sessionId: string): boolean => {
+    const scroller = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_MESSAGES_ATTR}]`);
+    return doc.visibilityState !== 'hidden' && scroller != null
+      && state.thread.session?.id === sessionId && !state.thread.has_more_after
+      && (typeof scroller.clientHeight !== 'number' || scroller.clientHeight > 0 && transcriptAtBottom(scroller));
+  };
   const markSessionSeen = async (sessionId: string): Promise<void> => {
+    if (!viewingLatest(sessionId)) return;
+    const tail = state.thread.messages.at(-1)?.id;
+    if (tail === undefined || seenTailMessages.get(sessionId) === tail || pendingSeenTails.has(sessionId)) return;
+    const count = state.sessions.find(session => session.id === sessionId)?.message_count;
+    pendingSeenTails.set(sessionId, tail);
+    let confirmed = false;
     try {
       await opts.conn('chat.session.mark_seen', { session_id: sessionId });
+      confirmed = true;
     } catch {
       /* cosmetic; the next `chat.session.get` stamps it */
+    } finally {
+      pendingSeenTails.delete(sessionId);
     }
     if (disposed) return;
+    // An unavailable acknowledgement remains eligible on the next scroll or
+    // visibility change. A pending request coalesces scrolls, not failures.
+    if (confirmed) rememberSeenTail(sessionId, tail);
     // ⛔ NO LIST REFETCH, AND NO EXTRA RENDER. Two shipped assertions caught
     // why: several surfaces paint a one-shot `role="status"` / `aria-live`
     // announcement — a settled verification, a Data review landing — and
@@ -4791,14 +4869,17 @@ export const bootstrapChatRoute = (
     // just marked this session seen, and equal counts read as "not unread" —
     // stale-but-equal is exactly as correct as fresh-and-equal here, and the
     // next genuine refresh replaces both halves together.
-    state = {
+    if (confirmed && count !== undefined) state = {
       ...state,
       sessions: state.sessions.map((session) =>
         session.id === sessionId
-          ? { ...session, last_seen_message_count: session.message_count }
+          ? { ...session, last_seen_message_count: Math.max(session.last_seen_message_count ?? 0, Math.min(count, session.message_count)) }
           : session,
       ),
     };
+    // A newer durable message can arrive while the acknowledgement is out.
+    // Inspect that tail separately after the current request has settled.
+    if (state.thread.session?.id === sessionId && state.thread.messages.at(-1)?.id !== tail) void markSessionSeen(sessionId);
   };
 
   /** A tracked turn reached a terminal state — completed, or failure-painted.
@@ -4812,11 +4893,13 @@ export const bootstrapChatRoute = (
     const turns = turnsInFlightBySession.get(sessionId);
     if (!turns?.delete(turnId)) return;
     if (turns.size === 0) turnsInFlightBySession.delete(sessionId);
-    if (sessionId === state.thread.session?.id) {
+    if (viewingLatest(sessionId)) {
       // Settled in the chat on screen. ⛔ TELL THE SERVER, or walking away
       // from a chat you watched answer marks it unread — the message count it
       // was stamped with at open is now two behind.
-      void markSessionSeen(sessionId);
+      // The subscriber commits the completed message after this callback.
+      // Coalescing against its old tail would forget the reply just watched.
+      queueMicrotask(() => { if (!disposed) void markSessionSeen(sessionId); });
       return;
     }
     // Settled behind the owner's back. The refresh is what carries the mark
@@ -5077,12 +5160,10 @@ export const bootstrapChatRoute = (
     return true;
   };
 
-  // Activity disclosure — per-turn collapse memory (§ B.8.7 default
-  // visible + collapse-all per turn). View-local like scroll position:
-  // keyed by the rendered row's id (turn_id while in-flight, message id
-  // after the swap — a collapse during streaming re-expands on the
-  // authoritative row), survives re-renders, dies with the tab.
-  const collapsedActivity = new Set<string>();
+  // Owner disclosure choices survive repaints. Live progress and problems
+  // start expanded; completed successful calls start quiet.
+  const activityExpansion = new Map<string, boolean>();
+  const expandedSourceDetails = new Set<string>();
   const expandedMailWorkContexts = new Set<string>();
   const expandedAssetContexts = new Set<string>();
 
@@ -5090,22 +5171,21 @@ export const bootstrapChatRoute = (
     host: HTMLElement,
     rows: ReadonlyArray<ChatActivityRow>,
     key: string,
+    live = false,
   ): void => {
     if (rows.length === 0) return;
     const block = doc.createElement('div');
     block.setAttribute(CHAT_ROUTE_ACTIVITY_ATTR, '');
-    const expanded = !collapsedActivity.has(key);
+    const needsAttention = rows.some(row => row.kind === 'tool' && row.status === 'error');
+    const ongoing = rows.some(row => row.kind === 'tool' && row.status === 'started');
+    const expanded = activityExpansion.get(key) ?? (live || ongoing || needsAttention);
     const toggle = doc.createElement('button');
     toggle.type = 'button';
     toggle.setAttribute(CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR, '');
     toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    toggle.textContent = `${expanded ? '▾' : '▸'} Activity (${rows.length})`;
+    toggle.textContent = `${expanded ? '▾' : '▸'} Activity (${rows.length})${needsAttention && !expanded ? ' · Needs attention' : ''}`;
     toggle.addEventListener('click', () => {
-      if (collapsedActivity.has(key)) {
-        collapsedActivity.delete(key);
-      } else {
-        collapsedActivity.add(key);
-      }
+      activityExpansion.set(key, !expanded);
       renderPreservingHandoffFocus();
     });
     block.appendChild(toggle);
@@ -5174,7 +5254,7 @@ export const bootstrapChatRoute = (
 
   const renderMessage = (
     host: HTMLElement,
-    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations'>,
+    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'turn_id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations'>,
     activity: ReadonlyArray<ChatActivityRow> = [],
     pendingText?: string,
   ): HTMLElement => {
@@ -5195,15 +5275,16 @@ export const bootstrapChatRoute = (
       };
       role.textContent += ` · ${labels[message.tool_call.state]}`;
     }
-    row.appendChild(role);
+    const messageHeading = doc.createElement('div'); messageHeading.className = 'chat-message-heading';
+    messageHeading.appendChild(role); row.appendChild(messageHeading);
     const quoteSession = state.thread.session?.id;
     if (message.reply_to && quoteSession) row.appendChild(buildChatQuote(doc, message.reply_to,
       id => { void openHistorySession(quoteSession, false, 'row', id); }));
-    // Activity sits between the role label and the content on BOTH the
-    // in-flight scaffold and the completed row (§ B.8.7 "between the
-    // user message and the AI response") so the tool rows hold their
-    // place through the message_complete swap.
-    renderActivity(row, activity, message.id);
+    // Live progress stays above the answer; retained successful activity is
+    // available below it without interrupting reading.
+    const activityKey = message.turn_id
+      ?? [...completedMessageIdsByTurn].find(([, id]) => id === message.id)?.[0] ?? message.id;
+    if (pendingText !== undefined) renderActivity(row, activity, activityKey, true);
     const content = doc.createElement('div');
     content.className = 'chat-message-content';
     content.setAttribute(CHAT_ROUTE_ANSWER_CONTENT_ATTR, '');
@@ -5262,7 +5343,8 @@ export const bootstrapChatRoute = (
       }
     }
     row.appendChild(content);
-    const sources = buildAnswerSources(doc, message, quoteSession);
+    const sources = buildAnswerSources(doc, message, quoteSession, { open: expandedSourceDetails.has(message.id),
+      changed(open) { if (open) expandedSourceDetails.add(message.id); else expandedSourceDetails.delete(message.id); } });
     if (sources) row.appendChild(sources);
     if (message.attachments?.length) {
       const attachments = doc.createElement('ul'); attachments.setAttribute('data-chat-attachments', '');
@@ -5295,6 +5377,7 @@ export const bootstrapChatRoute = (
       }
       row.appendChild(attachments);
     }
+    if (pendingText === undefined) renderActivity(row, activity, activityKey);
     host.appendChild(row);
     return row;
   };
@@ -8198,7 +8281,7 @@ export const bootstrapChatRoute = (
       send.setAttribute('aria-describedby', CHAT_ROUTE_AI_UNAVAILABLE_ID);
     }
     send.addEventListener('click', () => {
-      void sendMessage(composerDraft);
+      void sendMessage(composerDraft, true);
     });
     input.addEventListener('keydown', (event) => {
       if (
@@ -8757,6 +8840,24 @@ export const bootstrapChatRoute = (
   };
 
   let renderedSessionId: string | null = null;
+  const readingPositions = new Map<string, TranscriptPosition>();
+  const seenTailMessages = new Map<string, string>();
+  const pendingSeenTails = new Map<string, string>();
+  const rememberSeenTail = (sessionId: string, tail: string): void => {
+    seenTailMessages.delete(sessionId); seenTailMessages.set(sessionId, tail);
+    if (seenTailMessages.size > 50) seenTailMessages.delete(seenTailMessages.keys().next().value!);
+  };
+  let pendingReadingPosition: { sessionId: string; position: TranscriptPosition } | null = null;
+  let latestReadInFlight = false;
+  const rememberReadingPosition = (): TranscriptPosition | undefined => {
+    const sessionId = state.thread.session?.id;
+    const scroller = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_MESSAGES_ATTR}]`);
+    if (!sessionId || !scroller || !(scroller.clientHeight > 0)) return sessionId ? readingPositions.get(sessionId) : undefined;
+    const position = captureTranscriptPosition(scroller, state.thread.has_more_after);
+    readingPositions.delete(sessionId); readingPositions.set(sessionId, position);
+    if (readingPositions.size > 50) readingPositions.delete(readingPositions.keys().next().value!);
+    return position;
+  };
   let followFirstTranscriptFor: string | null = null;
 
   const render = (): void => {
@@ -8815,6 +8916,7 @@ export const bootstrapChatRoute = (
     historyToggle.addEventListener('click', () => {
       if (pendingDraftGuard !== null) { focusDraftGuard(); return; }
       if (historyActionInFlight()) { focusHistoryActionOwner(); return; }
+      rememberReadingPosition();
       mobileHistoryOpen = !showHistory;
       render();
       if (mobileHistoryOpen) {
@@ -9012,12 +9114,25 @@ export const bootstrapChatRoute = (
       filterPanel.className = 'chat-history-filter-panel';
       if (historyFiltersOpen) filterPanel.setAttribute('open', '');
       const filterSummary = doc.createElement('summary');
-      filterSummary.textContent = 'Filters';
+      filterSummary.setAttribute('data-chat-history-filter-summary', '');
+      filterSummary.textContent = historyFilters.summary();
       filterPanel.appendChild(filterSummary);
       const filterControls = doc.createElement('div');
       historyFilters.mount(filterControls);
       filterPanel.appendChild(filterControls);
       browse.appendChild(filterPanel);
+      const clearActiveFilters = doc.createElement('button'); clearActiveFilters.type = 'button';
+      clearActiveFilters.className = 'chat-session-action chat-history-clear-active';
+      clearActiveFilters.setAttribute('data-chat-history-filter-clear', '');
+      clearActiveFilters.textContent = 'Clear active filters';
+      clearActiveFilters.addEventListener('click', () => { historyFilters.clear(); filterSummary.focus({ preventScroll: true }); });
+      browse.appendChild(clearActiveFilters);
+      const updateFilterSummary = (): void => {
+        filterSummary.textContent = historyFilters.summary();
+        clearActiveFilters.hidden = filterPanel.open || !(hasChatHistoryFilters(historyFilters.filters()) || historyFilters.scope() === 'current');
+      };
+      filterPanel.addEventListener('toggle', updateFilterSummary);
+      updateFilterSummary();
 
       const results = doc.createElement('div');
       results.className = 'chat-history-results';
@@ -9025,7 +9140,11 @@ export const bootstrapChatRoute = (
         messengerList.beginRender();
         clearChildren(results);
         const query = historyQuery.trim().toLocaleLowerCase();
-        const matching = state.sessions.filter((session) => {
+        const editingSession = historyRename.session();
+        const sessions = editingSession && !state.sessions.some(session => session.id === editingSession.id)
+          ? [...state.sessions, editingSession] : state.sessions;
+        const matching = sessions.filter((session) => {
+          if (session.id === editingSession?.id) return true;
           if (query.length === 0) return true;
           return sessionTitle(session).toLocaleLowerCase().includes(query)
             || session.id.toLocaleLowerCase().includes(query);
@@ -9078,13 +9197,12 @@ export const bootstrapChatRoute = (
             }
             const title = doc.createElement('span');
             title.className = 'chat-session-title';
-            title.textContent = sessionTitle(session);
+            appendHistoryHighlights(doc, title, sessionTitle(session), historyQuery);
             row.appendChild(title);
             const meta = doc.createElement('span');
             meta.className = 'chat-session-meta';
             const messages = `${session.message_count} message${session.message_count === 1 ? '' : 's'}`;
-            meta.textContent =
-              `${messages} · ${formatSessionRecency(session.last_active_at, (opts.now ?? Date.now)())}`;
+            meta.textContent = formatSessionRecency(session.last_active_at, (opts.now ?? Date.now)());
             row.appendChild(meta);
             // One status line, in priority order: what this click is doing
             // now, then what the chat is doing without you. A session cannot
@@ -9103,9 +9221,14 @@ export const bootstrapChatRoute = (
               status.className = 'chat-session-status';
               status.setAttribute(CHAT_ROUTE_SESSION_STATUS_ATTR, rowStatus.attr);
               status.textContent = rowStatus.copy;
+              if (hasComposerDraft(session.id)) {
+                status.appendChild(doc.createTextNode(' · '));
+                const draft = doc.createElement('span'); draft.setAttribute('data-chat-session-draft', ''); draft.textContent = 'Draft';
+                status.appendChild(draft);
+              }
               row.appendChild(status);
             }
-            if (hasComposerDraft(session.id)) {
+            if (hasComposerDraft(session.id) && rowStatus === null) {
               const draft = doc.createElement('span');
               draft.className = 'chat-session-status';
               draft.setAttribute('data-chat-session-draft', '');
@@ -9134,10 +9257,13 @@ export const bootstrapChatRoute = (
             actionDetails.appendChild(summary);
             const menu = doc.createElement('div');
             menu.className = 'chat-session-action-menu';
+            const messageCount = doc.createElement('small'); messageCount.className = 'chat-route-muted';
+            messageCount.textContent = messages; menu.appendChild(messageCount);
             messengerList.mount(row, menu, session.id);
-            actionDetails.addEventListener('toggle', () => {
+            const revealHistoryActions = (): void => {
               if (actionDetails.isConnected === false) return;
               if (!actionDetails.open) {
+                actionDetails.style.paddingBottom = '';
                 if (openHistoryActions === actionDetails) {
                   openHistoryActions = null;
                 }
@@ -9146,10 +9272,18 @@ export const bootstrapChatRoute = (
               dismissOpenComposerActions(false);
               const previous = openHistoryActions;
               openHistoryActions = actionDetails;
+              const menuBounds = menu.getBoundingClientRect?.();
+              if (menuBounds && Number.isFinite(menuBounds.height)) actionDetails.style.paddingBottom = `${Math.ceil(menuBounds.height) + 8}px`;
               if (previous !== null && previous !== actionDetails) {
                 previous.open = false;
               }
               menu.scrollIntoView?.({ block: 'nearest' });
+            };
+            actionDetails.addEventListener('toggle', revealHistoryActions);
+            // Native toggle events arrive after the click. Measure this opening
+            // synchronously so a last-row menu is reachable on its first frame.
+            summary.addEventListener('click', event => {
+              event.preventDefault(); actionDetails.open = !actionDetails.open; revealHistoryActions();
             });
             actionDetails.addEventListener('keydown', (event) => {
               if (event.key !== 'Escape' || !actionDetails.open) return;
@@ -9170,7 +9304,12 @@ export const bootstrapChatRoute = (
               : 'Export JSON';
             const historyActionLocked =
               openingSessionId !== null
+              || historyRename.session() !== null
               || (sessionAction !== null && sessionAction.kind !== 'error');
+            const renameButton = doc.createElement('button'); renameButton.type = 'button'; renameButton.className = 'chat-session-action';
+            renameButton.setAttribute(RENAME_SESSION_ATTR, session.id); renameButton.textContent = 'Rename'; renameButton.disabled = historyActionLocked;
+            renameButton.addEventListener('click', () => { dismissOpenHistoryActions(false); historyRename.open(session); });
+            menu.appendChild(renameButton);
             if (exportingThisSession) {
               exportButton.setAttribute('aria-disabled', 'true');
               exportButton.setAttribute('aria-busy', 'true');
@@ -9204,6 +9343,7 @@ export const bootstrapChatRoute = (
             menu.appendChild(deleteButton);
             actionDetails.appendChild(menu);
             item.appendChild(actionDetails);
+            historyRename.mount(item, session.id);
 
             if (
               sessionAction?.sessionId === session.id
@@ -9287,6 +9427,7 @@ export const bootstrapChatRoute = (
           results.appendChild(section);
         }
         refreshHistoryFilters = (): void => {
+          updateFilterSummary();
           const unavailable = historyFilterUnavailable();
           let total = 0;
           let retainedFocus = false;
@@ -9294,7 +9435,7 @@ export const bootstrapChatRoute = (
             const matches = !unavailable && matchesHistoryFilters(entry.session);
             if (matches) total++;
             const focused = entry.item.contains?.(doc.activeElement) ?? false;
-            entry.item.hidden = !matches && !focused;
+            entry.item.hidden = !matches && !focused && historyRename.session()?.id !== entry.session.id;
             retainedFocus ||= !matches && focused;
           }
           for (const section of new Set(rowFilters.map(entry => entry.section))) {
@@ -9307,7 +9448,7 @@ export const bootstrapChatRoute = (
           // Unchanged polling results must not repeat live announcements.
           if (count.textContent !== countText) count.textContent = countText;
           empty.hidden = total > 0 || !!unavailable;
-          empty.textContent = query ? 'No chat names match. Matching messages are below.' : 'No chats match what you picked.';
+          empty.textContent = query ? 'No chat names match.' : 'No chats match what you picked.';
           updateHistorySearchScope();
         };
         refreshHistoryFilters();
@@ -9318,10 +9459,10 @@ export const bootstrapChatRoute = (
         renderHistoryResults();
       });
       renderHistoryResults();
-      browse.appendChild(results);
       const messageResults = doc.createElement('section');
       historyMessageSearch.mount(messageResults);
       browse.appendChild(messageResults);
+      browse.appendChild(results);
     }
     const historyAnnouncer = doc.createElement('div');
     updateHistorySearchScope();
@@ -9512,6 +9653,10 @@ export const bootstrapChatRoute = (
       threadTitle.setAttribute('tabindex', '-1');
       threadTitle.textContent = sessionTitle(state.thread.session);
       threadHeader.appendChild(threadTitle);
+      const latest = doc.createElement('button'); latest.type = 'button'; latest.className = 'wc-button';
+      latest.setAttribute('data-chat-latest', ''); latest.textContent = latestReadInFlight ? 'Loading latest…' : 'Latest';
+      latest.setAttribute('aria-label', 'Go to latest messages'); latest.setAttribute('aria-disabled', String(latestReadInFlight));
+      latest.addEventListener('click', () => { latest.focus({ preventScroll: true }); void goToLatest(); }); threadHeader.appendChild(latest);
       const button = filesButton(); if (button) threadHeader.appendChild(button);
       // ⛔ ONE grid item for the header and the running note. The thread is a
       //   grid whose `1fr` row is simply its SECOND child — the message list
@@ -9685,7 +9830,7 @@ export const bootstrapChatRoute = (
           if (detail) deliveryHost.appendChild(detail);
           messageRow.appendChild(deliveryHost);
           if (state.thread.quoted_replies_available === true) {
-            const reply = doc.createElement('button'); reply.type = 'button'; reply.textContent = 'Reply';
+            const reply = doc.createElement('button'); reply.type = 'button'; reply.textContent = 'Reply'; reply.className = 'chat-message-reply';
             reply.setAttribute('data-chat-reply-action', message.id);
             reply.setAttribute('data-chat-reply-control', 'select');
             reply.addEventListener('click', () => {
@@ -9697,7 +9842,7 @@ export const bootstrapChatRoute = (
               dataVerificationDiagnosisDraft = null;
               renderPreservingHandoffFocus(); focusComposer(true);
             });
-            messageRow.appendChild(reply);
+            (messageRow.querySelector('.chat-message-heading') ?? messageRow).appendChild(reply);
           }
         }
         if (sourceTurn === null && message.role === 'assistant') {
@@ -9898,14 +10043,28 @@ export const bootstrapChatRoute = (
       `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
     ) as HTMLElement | null | undefined;
     if (scroller != null && typeof scroller.scrollHeight === 'number') {
-      if (scrollBefore !== null) {
+      if (pendingReadingPosition?.sessionId === sessionId && scroller.clientHeight > 0) {
+        restoreTranscriptPosition(scroller, pendingReadingPosition.position);
+        pendingReadingPosition = null;
+      } else if (scrollBefore !== null && scrollBefore.clientHeight > 0) {
         scroller.scrollTop = nextThreadScrollTop(scrollBefore, scroller.scrollHeight, scroller.clientHeight);
+      } else if (sessionId !== null && readingPositions.has(sessionId) && scroller.clientHeight > 0) {
+        restoreTranscriptPosition(scroller, readingPositions.get(sessionId)!);
       } else if (sessionId !== null && followFirstTranscriptFor === sessionId) {
         // An empty Chat has no transcript at send time. Consume the send's
         // follow intent when it first appears, under either ack/event order.
         scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       }
       followFirstTranscriptFor = null;
+      const updateLatest = (acknowledge = true): void => {
+        if (!scroller.isConnected || state.thread.session?.id !== sessionId) return;
+        const latest = routeRoot.querySelector<HTMLElement>('[data-chat-latest]');
+        if (latest) latest.hidden = scroller.clientHeight <= 0 || !state.thread.has_more_after && transcriptAtBottom(scroller);
+        if (acknowledge && sessionId !== null) void markSessionSeen(sessionId);
+      };
+      scroller.addEventListener('scroll', () => updateLatest(), { passive: true });
+      updateLatest(false);
+      queueMicrotask(() => updateLatest());
     }
   };
 
@@ -9943,6 +10102,7 @@ export const bootstrapChatRoute = (
       const page = await opts.conn('chat.session.get', {
         session_id: sessionId,
         limit: CHAT_HISTORY_WINDOW,
+        mark_seen: false,
         ...(direction === 'older' ? { before: cursor } : { after: cursor }),
       });
       if (disposed) return;
@@ -10083,7 +10243,16 @@ export const bootstrapChatRoute = (
   };
 
   const renderPreservingHandoffFocus = (): void => {
+    const renameFocus = historyRename.captureFocus();
     const active = doc.activeElement as HTMLElement | null | undefined;
+    const latestFocused = active?.hasAttribute?.('data-chat-latest') === true;
+    const threadTitleFocused = active?.hasAttribute?.(CHAT_ROUTE_THREAD_TITLE_ATTR) === true;
+    const filterSummaryFocused = active?.hasAttribute?.('data-chat-history-filter-summary') === true;
+    const filterClearFocused = active?.hasAttribute?.('data-chat-history-filter-clear') === true;
+    const sourceDetailsFocused = active?.hasAttribute?.('data-chat-source-details-toggle') === true;
+    const focusedSourceId = active?.getAttribute?.('data-chat-answer-source') ?? null;
+    const focusedSourceMessage = sourceDetailsFocused || focusedSourceId !== null
+      ? active?.closest?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`)?.getAttribute(CHAT_ROUTE_MESSAGE_ATTR) : null;
     const draftGuardFocused = active?.hasAttribute?.(CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR) === true;
     const focusedDraftGuardAction = active?.getAttribute?.(HISTORY_DRAFT_GUARD_ACTION_ATTR) ?? null;
     const focusedDeleteConfirmSessionId = active?.getAttribute?.(CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR) ?? null;
@@ -10153,7 +10322,9 @@ export const bootstrapChatRoute = (
           sessionId: activeHistoryActionsSessionId,
           open: activeHistoryActions?.open === true,
           control:
-            active?.getAttribute?.(CHAT_ROUTE_SESSION_EXPORT_ATTR)
+            active?.getAttribute?.(RENAME_SESSION_ATTR) === activeHistoryActionsSessionId
+              ? 'rename' as const
+              : active?.getAttribute?.(CHAT_ROUTE_SESSION_EXPORT_ATTR)
               === activeHistoryActionsSessionId
               ? 'export' as const
               : active?.getAttribute?.(CHAT_ROUTE_SESSION_DELETE_ATTR)
@@ -10181,7 +10352,9 @@ export const bootstrapChatRoute = (
       ? historySearch.selectionDirection
       : null;
     render();
-    if (inputFocused) {
+    if (renameFocus) {
+      historyRename.restoreFocus(renameFocus);
+    } else if (inputFocused) {
       focusComposer(true);
       const nextInput = routeRoot.querySelector?.(
         `[${CHAT_ROUTE_INPUT_ATTR}]`,
@@ -10219,6 +10392,21 @@ export const bootstrapChatRoute = (
         `[${CHAT_ROUTE_MODEL_PICKER_ATTR}]`,
       ) as HTMLElement | null | undefined;
       nextModelPicker?.focus?.({ preventScroll: true });
+    } else if (latestFocused || threadTitleFocused) {
+      const latest = routeRoot.querySelector<HTMLElement>('[data-chat-latest]');
+      if (latestFocused && latest && !latest.hidden) latest.focus({ preventScroll: true }); else focusOpenThread();
+    } else if (sourceDetailsFocused || focusedSourceId !== null) {
+      const row = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${CHAT_ROUTE_MESSAGE_ATTR}]`))
+        .find(candidate => candidate.getAttribute(CHAT_ROUTE_MESSAGE_ATTR) === focusedSourceMessage);
+      const link = focusedSourceId === null ? undefined : Array.from(row?.querySelectorAll<HTMLElement>('[data-chat-answer-source]') ?? [])
+        .find(candidate => candidate.getAttribute('data-chat-answer-source') === focusedSourceId);
+      const control = link ?? row?.querySelector<HTMLElement>('[data-chat-source-details-toggle]');
+      if (control) control.focus({ preventScroll: true }); else focusOpenThread();
+    } else if (filterSummaryFocused || filterClearFocused) {
+      const clear = routeRoot.querySelector<HTMLElement>('[data-chat-history-filter-clear]');
+      const control = filterClearFocused && clear && !clear.hidden ? clear
+        : routeRoot.querySelector<HTMLElement>('[data-chat-history-filter-summary]');
+      control?.focus({ preventScroll: true });
     } else if (focusedReplyControl) {
       const control = Array.from(routeRoot.querySelectorAll?.<HTMLElement>('[data-chat-reply-control]') ?? []).find(
         candidate => candidate.getAttribute('data-chat-reply-control') === focusedReplyControl
@@ -10275,7 +10463,7 @@ export const bootstrapChatRoute = (
         queryable.querySelectorAll?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`) ?? [],
       ).find(
         (candidate) => candidate.getAttribute(CHAT_ROUTE_MESSAGE_ATTR)
-          === focusedActivityMessageId,
+          === (completedMessageIdsByTurn.get(focusedActivityMessageId) ?? focusedActivityMessageId),
       );
       const nextToggle = nextMessage?.querySelector?.(
         `[${CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR}]`,
@@ -10332,7 +10520,9 @@ export const bootstrapChatRoute = (
         const summary = nextActions.querySelector('summary') as
           | HTMLElement
           | null;
-        const requested = focusedHistoryActions.control === 'export'
+        const requested = focusedHistoryActions.control === 'rename'
+          ? nextActions.querySelector(`[${RENAME_SESSION_ATTR}]`) as HTMLElement | null
+          : focusedHistoryActions.control === 'export'
           ? nextActions.querySelector(
               `[${CHAT_ROUTE_SESSION_EXPORT_ATTR}]`,
             ) as HTMLElement | null
@@ -10463,6 +10653,7 @@ export const bootstrapChatRoute = (
 
   const loadSessions = async (background = false): Promise<void> => {
     const request = ++sessionListRequest;
+    sessionListInFlight = true;
     messengerList.beginRead();
     if (!background) {
       state = { ...state, phase: 'loading', error: null };
@@ -10530,6 +10721,8 @@ export const bootstrapChatRoute = (
       } else {
         render();
       }
+    } finally {
+      if (request === sessionListRequest) sessionListInFlight = false;
     }
   };
 
@@ -10670,11 +10863,16 @@ export const bootstrapChatRoute = (
     returnMessageId: string | null = null,
     returnPlanId: string | null = null,
     discardDraft = false,
+    resumeReading = true,
   ): Promise<boolean> => {
     if (historyActionInFlight()) {
       focusHistoryActionOwner();
       return false;
     }
+    rememberReadingPosition();
+    const resume = resumeReading && returnMessageId === null && returnPlanId === null
+      ? readingPositions.get(sessionId) : undefined;
+    const aroundMessageId = returnMessageId ?? (resume && !resume.atLatest ? resume.messageId : undefined);
     if (workInvestigationDraft !== undefined && sessionId !== workInvestigationDraft.sessionId) {
       initialWorkSubmission = undefined;
     }
@@ -10701,7 +10899,7 @@ export const bootstrapChatRoute = (
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
         limit: CHAT_HISTORY_WINDOW,
-        ...(returnMessageId !== null ? { around_message_id: returnMessageId } : {}),
+        ...(aroundMessageId !== undefined && aroundMessageId !== null ? { around_message_id: aroundMessageId } : {}),
       });
       const bufferedEvents = finishThreadSnapshotLoad(
         sessionId,
@@ -10759,7 +10957,15 @@ export const bootstrapChatRoute = (
       planTargetChecking = false;
       planTargetUnverified = false;
       restoreInitialDraft();
-      render();
+      pendingReadingPosition = { sessionId, position: returnMessageId !== null || returnPlanId !== null
+        ? { atLatest: false, messageId: returnMessageId ?? undefined, offset: 0, scrollTop: 0 }
+        : resume ?? { atLatest: true, offset: 0, scrollTop: 0 } };
+      if (aroundMessageId === undefined || aroundMessageId === null) {
+        const tail = snapshot.messages.at(-1)?.id; if (tail) rememberSeenTail(sessionId, tail);
+        state = { ...state, sessions: state.sessions.map(session => session.id === sessionId
+          ? { ...session, last_seen_message_count: session.message_count } : session) };
+      }
+      if (switchingDraft) render(); else renderPreservingHandoffFocus();
       if (highlightedPlanId !== null) {
         focusPlanLanding(highlightedPlanId);
       } else if (highlightedMessageId !== null) {
@@ -10785,7 +10991,7 @@ export const bootstrapChatRoute = (
         requestedPlanId = previousLanding.requestedPlanId;
         landingTargetReady = previousLanding.landingTargetReady;
       }
-      render();
+      renderPreservingHandoffFocus();
       return false;
     }
   };
@@ -11110,6 +11316,7 @@ export const bootstrapChatRoute = (
     // its load here would silently bounce the user back to the old session
     // when reconnect and navigation overlap.
     if (threadSnapshotLoad?.kind === 'navigation') return;
+    const reading = rememberReadingPosition();
     const snapshotGeneration = beginThreadSnapshotLoad(sessionId, 'recovery');
     try {
       // ⛔ RESET BEFORE THE LOAD, not after it. Switching sessions must not
@@ -11122,14 +11329,16 @@ export const bootstrapChatRoute = (
         session_id: sessionId,
         // Keep the old target available without re-decrypting the full chat.
         limit: CHAT_HISTORY_WINDOW,
-        ...(requestedMessageId !== null ? { around_message_id: requestedMessageId } : {}),
+        mark_seen: false,
+        ...((requestedMessageId ?? (reading && !reading.atLatest ? reading.messageId : undefined))
+          ? { around_message_id: requestedMessageId ?? reading!.messageId! } : {}),
       });
       if (disposed || threadSnapshotLoad?.generation !== snapshotGeneration
         || state.activeSessionId !== sessionId) return;
       // An anchored window can omit a turn that completed while disconnected.
       // Recover the bounded recent tail as well, retaining a pager for the gap.
       const latestSnapshot = snapshot.has_more_after === true
-        ? await opts.conn('chat.session.get', { session_id: sessionId, limit: CHAT_HISTORY_WINDOW })
+        ? await opts.conn('chat.session.get', { session_id: sessionId, limit: CHAT_HISTORY_WINDOW, mark_seen: false })
         : undefined;
       const bufferedEvents = finishThreadSnapshotLoad(
         sessionId,
@@ -11250,6 +11459,7 @@ export const bootstrapChatRoute = (
         planTargetChecking = false;
       }
       planTargetUnverified = false;
+      if (reading) pendingReadingPosition = { sessionId, position: reading };
       renderPreservingHandoffFocus();
       if (
         !composerHasFocus()
@@ -11295,10 +11505,38 @@ export const bootstrapChatRoute = (
   // BLANK draft — "New chat while blank → no-op" (§D.L1). Returning from
   // a conversation restores the parked new-chat draft; resetting that draft
   // itself still requires the explicit discard guard.
+  const goToLatest = async (): Promise<void> => {
+    const sessionId = state.thread.session?.id;
+    if (!sessionId || latestReadInFlight || threadSnapshotLoad !== null || loadingOlder || loadingNewer) return;
+    if (!state.thread.has_more_after) {
+      const scroller = routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_MESSAGES_ATTR}]`);
+      if (scroller) scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      requestedMessageId = null; requestedPlanId = null; highlightedMessageId = null;
+      pendingReadingPosition = { sessionId, position: { atLatest: true, offset: 0, scrollTop: 0 } };
+      renderPreservingHandoffFocus();
+      opts.onAddressChange?.(serializeShellRoute('chat', 'session', sessionId), 'push');
+      rememberReadingPosition();
+      void markSessionSeen(sessionId);
+      focusOpenThread();
+      return;
+    }
+    latestReadInFlight = true; renderPreservingHandoffFocus();
+    try {
+      const opened = await openSession(sessionId, null, null, false, false);
+      if (opened && !disposed) {
+        opts.onAddressChange?.(serializeShellRoute('chat', 'session', sessionId), 'push');
+      }
+    } finally {
+      latestReadInFlight = false;
+      if (!disposed) renderPreservingHandoffFocus();
+    }
+  };
+
   const startNewChat = (
     discardProtectedDraft = false,
     addressMode?: 'push' | 'replace',
   ): void => {
+    rememberReadingPosition();
     if (historyActionInFlight()) {
       focusHistoryActionOwner();
       return;
@@ -11720,7 +11958,7 @@ export const bootstrapChatRoute = (
     }
   };
 
-  const sendMessage = async (message: string): Promise<void> => {
+  const sendMessage = async (message: string, fromComposer = false): Promise<void> => {
     // A pending deletion retains the draft and its send intent until it settles.
     if (composerDeletionInFlight()) return;
     // A manual send (including a failed attempt) consumes the entry intent.
@@ -11763,7 +12001,7 @@ export const bootstrapChatRoute = (
     const sendButtonBeforeSend = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_SEND_ATTR}]`,
     );
-    const composerOwnedFocus = activeBeforeSend === composerInputBeforeSend
+    const composerOwnedFocus = fromComposer || activeBeforeSend === composerInputBeforeSend
       || activeBeforeSend === sendButtonBeforeSend;
     // A send click adopts even an auto-seeded prompt as the owner's work. If
     // transport fails, the retained draft must be protected on navigation.
@@ -12219,6 +12457,17 @@ export const bootstrapChatRoute = (
             turnsAwaitingVerification.delete(evt.session_id);
             changed = true;
           }
+          if (evt.kind === 'chat.session_changed' && (event as { field?: unknown }).field === 'title'
+            && typeof evt.session_id === 'string') {
+            const title = (event as { value?: unknown }).value;
+            if (typeof title === 'string' && title.length > 0) {
+              // The broadcast names this exact session. Keep list/search
+              // metadata current even when the accompanying refresh fails.
+              nextState = { ...nextState, sessions: nextState.sessions.map(session => session.id === evt.session_id
+                ? { ...session, title } : session) };
+              changed = true;
+            }
+          }
           if (
             state.phase === 'ready'
             && evt.kind === 'chat.session_changed'
@@ -12226,9 +12475,8 @@ export const bootstrapChatRoute = (
             && (event as { field?: unknown }).field !== 'tool_call'
             && (event as { field?: unknown }).field !== 'queue' && (event as { field?: unknown }).field !== 'message' && (event as { field?: unknown }).field !== 'delivery'
           ) {
-            // Titles, archive state, and their updated recency are list
-            // projections. Re-read them quietly so returning-user history
-            // stays current across this tab and other paired clients.
+            // Reconcile the remaining list metadata quietly. Title broadcasts
+            // above do not need to wait for this read to become visible.
             void loadSessions(true);
           }
           // A call that waited has settled, usually minutes after its reply and
@@ -12534,6 +12782,11 @@ export const bootstrapChatRoute = (
     handleActionDisclosurePointerDown,
     true,
   );
+  const acknowledgeVisibleTail = (): void => {
+    const sessionId = state.thread.session?.id;
+    if (!disposed && sessionId) void markSessionSeen(sessionId);
+  };
+  doc.addEventListener('visibilitychange', acknowledgeVisibleTail);
   opts.root.appendChild(routeRoot);
   render();
   const focusRecoveryAfterInitialLoad = pendingRecoveryDraft !== null;
@@ -12705,6 +12958,7 @@ export const bootstrapChatRoute = (
       || modelSourceWriteSessions.size > 0
       || sessionAction?.kind === 'export-busy'
       || sessionAction?.kind === 'delete-busy'
+      || historyRename.pending()
       || createOverlay?.hasInFlightWork() === true
       || mailComposeMount?.hasInFlightWork() === true,
     inFlightWorkPrompt: () =>
@@ -12726,6 +12980,7 @@ export const bootstrapChatRoute = (
       filePickerAbort?.abort();
       conversationFiles?.dispose();
       historyMessageSearch.dispose();
+      historyRename.dispose();
       queueView.dispose(); deliveryView.dispose(); messengerList.dispose(); historyFilters.dispose();
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
       // running would keep a socket open against a surface nobody is watching.
@@ -12744,6 +12999,7 @@ export const bootstrapChatRoute = (
         handleActionDisclosurePointerDown,
         true,
       );
+      doc.removeEventListener('visibilitychange', acknowledgeVisibleTail);
       cancelConnectedSourcePoll();
       connectedSourceStatusGeneration += 1;
       mailComposeRequestGeneration += 1;

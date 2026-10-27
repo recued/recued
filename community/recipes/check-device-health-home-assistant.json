@@ -1,0 +1,415 @@
+{
+  "recipe_id": "check-device-health-home-assistant",
+  "version": 2,
+  "chat_exposed": true,
+  "ttl": 60,
+  "metadata": {
+    "name": "Home Assistant device health",
+    "description": "Use “Home Assistant device health” in Recued. Lists devices with a low battery and devices that have been unavailable for a while, with how long each has been offline. Read-only: nothing in Home Assistant is changed.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "home-assistant"
+    ],
+    "variant_group": "check-device-health",
+    "tags": [
+      "home-assistant",
+      "smart-home",
+      "devices",
+      "battery",
+      "health",
+      "digest",
+      "pack:home-assistant"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "battery_threshold": {
+      "label": "Low battery below (%)",
+      "type": "number",
+      "default": 20
+    },
+    "unavailable_hours": {
+      "label": "Unavailable for at least (hours)",
+      "type": "number",
+      "default": 6
+    },
+    "ignore_domains": {
+      "label": "Kinds of entity to leave out",
+      "type": "array",
+      "default": [
+        "media_player",
+        "update",
+        "button",
+        "event",
+        "scene"
+      ],
+      "help": "Kinds that often read unavailable without a fault, such as a TV that is off."
+    },
+    "row_limit": {
+      "label": "Max rows per table",
+      "type": "number",
+      "default": 25
+    },
+    "notify_when_found": {
+      "label": "Notify when something needs attention",
+      "type": "boolean",
+      "default": false,
+      "help": "Turn on for a scheduled run."
+    },
+    "channels": {
+      "label": "Notification channels",
+      "type": "array",
+      "options": [
+        "@notification_channels"
+      ],
+      "optional": true
+    }
+  },
+  "requires": [
+    "read_connection_home_assistant",
+    "notification_send"
+  ],
+  "depends_on": [
+    "recued-core.home-assistant"
+  ],
+  "steps": [
+    {
+      "id": "states_raw",
+      "op": "recued-core.home-assistant.state.list",
+      "args": {}
+    },
+    {
+      "id": "states",
+      "transform": "default",
+      "value": "{{step.states_raw.result}}",
+      "fallback": []
+    },
+    {
+      "id": "entity_count",
+      "transform": "count",
+      "input": "{{step.states}}"
+    },
+    {
+      "id": "states_with_domain",
+      "transform": "map",
+      "array": "{{step.states}}",
+      "apply": "split",
+      "field": "entity_id",
+      "delimiter": ".",
+      "output_field": "entity_parts"
+    },
+    {
+      "id": "watched",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "field": "entity_parts.0",
+      "operator": "not_in",
+      "value": "{{config.ignore_domains}}"
+    },
+    {
+      "id": "low_percent",
+      "transform": "filter",
+      "array": "{{step.watched}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "attributes.device_class", "operator": "equal", "value": "battery" },
+        { "field": "attributes.unit_of_measurement", "operator": "equal", "value": "%" },
+        { "field": "state", "operator": "not_in", "value": ["unknown", "unavailable", ""] },
+        { "field": "state", "operator": "less", "value": "{{config.battery_threshold}}" }
+      ]
+    },
+    {
+      "id": "low_percent_keyed",
+      "transform": "map",
+      "array": "{{step.low_percent}}",
+      "apply": "replace",
+      "field": "entity_parts.1",
+      "pattern": "_battery_level",
+      "replacement": "",
+      "output_field": "device_key"
+    },
+    {
+      "id": "low_percent_keyed_short",
+      "transform": "map",
+      "array": "{{step.low_percent_keyed}}",
+      "apply": "replace",
+      "field": "device_key",
+      "pattern": "_battery",
+      "replacement": "",
+      "output_field": "device_key"
+    },
+    {
+      "id": "low_percent_keys",
+      "transform": "pluck",
+      "array": "{{step.low_percent_keyed_short}}",
+      "field": "device_key"
+    },
+    {
+      "id": "low_percent_valued",
+      "transform": "map",
+      "array": "{{step.low_percent}}",
+      "apply": "to_number",
+      "field": "state",
+      "output_field": "level_value"
+    },
+    {
+      "id": "low_percent_rows",
+      "transform": "map",
+      "array": "{{step.low_percent_valued}}",
+      "expression": {
+        "name": "{{item.attributes.friendly_name}}",
+        "level": "{{item.state}}",
+        "level_value": "{{item.level_value}}",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "low_attribute",
+      "transform": "filter",
+      "array": "{{step.watched}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "attributes.battery_level", "operator": "is_not_null" },
+        { "field": "attributes.battery_level", "operator": "less", "value": "{{config.battery_threshold}}" },
+        { "field": "entity_parts.1", "operator": "not_in", "value": "{{step.low_percent_keys}}" }
+      ]
+    },
+    {
+      "id": "low_attribute_rows",
+      "transform": "map",
+      "array": "{{step.low_attribute}}",
+      "expression": {
+        "name": "{{item.attributes.friendly_name}}",
+        "level": "{{item.attributes.battery_level}}",
+        "level_value": "{{item.attributes.battery_level}}",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "low_numeric_rows",
+      "transform": "flatten",
+      "array": ["{{step.low_percent_rows}}", "{{step.low_attribute_rows}}"]
+    },
+    {
+      "id": "low_numeric_sorted",
+      "transform": "sort",
+      "array": "{{step.low_numeric_rows}}",
+      "fields": [{ "field": "level_value", "direction": "asc" }]
+    },
+    {
+      "id": "low_flag",
+      "transform": "filter",
+      "array": "{{step.watched}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "entity_parts.0", "operator": "equal", "value": "binary_sensor" },
+        { "field": "attributes.device_class", "operator": "equal", "value": "battery" },
+        { "field": "state", "operator": "equal", "value": "on" }
+      ]
+    },
+    {
+      "id": "low_flag_keyed",
+      "transform": "map",
+      "array": "{{step.low_flag}}",
+      "apply": "replace",
+      "field": "entity_parts.1",
+      "pattern": "_battery_low",
+      "replacement": "",
+      "output_field": "device_key"
+    },
+    {
+      "id": "low_flag_keyed_short",
+      "transform": "map",
+      "array": "{{step.low_flag_keyed}}",
+      "apply": "replace",
+      "field": "device_key",
+      "pattern": "_battery",
+      "replacement": "",
+      "output_field": "device_key"
+    },
+    {
+      "id": "low_flag_unlisted",
+      "transform": "filter",
+      "array": "{{step.low_flag_keyed_short}}",
+      "field": "device_key",
+      "operator": "not_in",
+      "value": "{{step.low_percent_keys}}"
+    },
+    {
+      "id": "low_flag_rows",
+      "transform": "map",
+      "array": "{{step.low_flag_unlisted}}",
+      "expression": {
+        "name": "{{item.attributes.friendly_name}}",
+        "level": "Low",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "low_rows_all",
+      "transform": "flatten",
+      "array": ["{{step.low_flag_rows}}", "{{step.low_numeric_sorted}}"]
+    },
+    {
+      "id": "low_count",
+      "transform": "count",
+      "input": "{{step.low_rows_all}}"
+    },
+    {
+      "id": "unavailable",
+      "transform": "filter",
+      "array": "{{step.watched}}",
+      "field": "state",
+      "operator": "equal",
+      "value": "unavailable"
+    },
+    {
+      "id": "unavailable_aged",
+      "transform": "map",
+      "array": "{{step.unavailable}}",
+      "apply": "date_diff",
+      "field": "last_changed",
+      "to": "now",
+      "unit": "hours",
+      "output_field": "hours_unavailable"
+    },
+    {
+      "id": "unavailable_long",
+      "transform": "filter",
+      "array": "{{step.unavailable_aged}}",
+      "field": "hours_unavailable",
+      "operator": "greater_or_equal",
+      "value": "{{config.unavailable_hours}}"
+    },
+    {
+      "id": "unavailable_dated",
+      "transform": "map",
+      "array": "{{step.unavailable_long}}",
+      "apply": "date_format",
+      "field": "last_changed",
+      "format": "YYYY-MM-DD HH:mm",
+      "output_field": "since"
+    },
+    {
+      "id": "unavailable_sorted",
+      "transform": "sort",
+      "array": "{{step.unavailable_dated}}",
+      "fields": [{ "field": "hours_unavailable", "direction": "desc" }]
+    },
+    {
+      "id": "unavailable_rows_all",
+      "transform": "map",
+      "array": "{{step.unavailable_sorted}}",
+      "expression": {
+        "name": "{{item.attributes.friendly_name}}",
+        "since": "{{item.since}}",
+        "hours": "{{item.hours_unavailable}}",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "unavailable_count",
+      "transform": "count",
+      "input": "{{step.unavailable_rows_all}}"
+    },
+    {
+      "id": "low_table_rows",
+      "transform": "slice",
+      "array": "{{step.low_rows_all}}",
+      "start": 0,
+      "end": "{{config.row_limit}}"
+    },
+    {
+      "id": "low_table",
+      "transform": "to_table",
+      "array": "{{step.low_table_rows}}",
+      "columns": [
+        { "field": "name", "label": "Device" },
+        { "field": "level", "label": "Battery %" },
+        { "field": "entity_id", "label": "Entity" }
+      ]
+    },
+    {
+      "id": "unavailable_table_rows",
+      "transform": "slice",
+      "array": "{{step.unavailable_rows_all}}",
+      "start": 0,
+      "end": "{{config.row_limit}}"
+    },
+    {
+      "id": "unavailable_table",
+      "transform": "to_table",
+      "array": "{{step.unavailable_table_rows}}",
+      "columns": [
+        { "field": "name", "label": "Device" },
+        { "field": "since", "label": "Unavailable since" },
+        { "field": "hours", "label": "Hours" },
+        { "field": "entity_id", "label": "Entity" }
+      ]
+    },
+    {
+      "id": "finding_count",
+      "transform": "math",
+      "expression": "{{step.low_count}} + {{step.unavailable_count}}"
+    },
+    {
+      "id": "has_findings",
+      "transform": "compare",
+      "left": "{{step.finding_count}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "status_text",
+      "transform": "ternary",
+      "if": "{{step.has_findings}}",
+      "then": "Something needs attention",
+      "else": "Every device looks healthy"
+    },
+    {
+      "id": "notify_enabled",
+      "transform": "compare",
+      "left": "{{config.notify_when_found}}",
+      "operator": "equal",
+      "right": true
+    },
+    {
+      "id": "should_notify",
+      "transform": "all",
+      "conditions": [
+        "{{step.has_findings}} equal true",
+        "{{step.notify_enabled}} equal true"
+      ]
+    },
+    {
+      "id": "notify",
+      "skip_when": "{{step.should_notify}} not_equal true",
+      "op": "core.notification.send",
+      "args": {
+        "channels": "{{config.channels}}",
+        "title": "Home Assistant: {{step.low_count:number}} low battery, {{step.unavailable_count:number}} unavailable",
+        "text": "{{step.low_count:number}} device(s) below {{config.battery_threshold}}% battery and {{step.unavailable_count:number}} unavailable for {{config.unavailable_hours}} hours or more. Open the device health check in Recued for the list."
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Status", "value": "{{step.status_text}}" },
+        { "label": "Low batteries", "value": "{{step.low_count:number}} below {{config.battery_threshold}}%" },
+        { "label": "Unavailable", "value": "{{step.unavailable_count:number}} for {{config.unavailable_hours}} hours or more" },
+        { "label": "Entities checked", "value": "{{step.entity_count:number}}" },
+        { "label": "Scope", "value": "Read-only; nothing in Home Assistant was changed." }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" },
+      { "type": "table", "source": "step.low_table", "label": "Low batteries" },
+      { "type": "table", "source": "step.unavailable_table", "label": "Unavailable devices" },
+      { "type": "json", "source": "step.low_rows_all", "label": "Every low-battery device" },
+      { "type": "json", "source": "step.unavailable_rows_all", "label": "Every unavailable device" }
+    ]
+  }
+}

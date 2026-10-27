@@ -137,6 +137,8 @@ import {
   type TransparencyDecoderUnavailableReason,
   type TransparencyMultiTurnRoundOutcome,
   isTier1ToolName,
+  isLlmRetryTime,
+  formatLlmRetryTime,
 } from '@recued/contracts';
 import { dispatchToolCalls } from '@recued/middleware';
 import { estimateConservativeMessagesTokens, isContextOverflowRejection, LLMError } from '@recued/llm';
@@ -308,13 +310,10 @@ const NO_LLM_SOURCE_MESSAGE =
   'No AI model is available for your current model preference. Open Settings → AI / Models and choose a source — your configured provider, the free pool, or a local model.';
 /** Fail-loud message when the provider refused the turn for SIZE.
  *
- *  ⛔⛔ WITHOUT THIS THE TURN IS SILENTLY EMPTY. `assistantContent` is only
- *  replaced on the no-source path, and a context refusal surfaces as
- *  `AI_TOKEN_BUDGET_EXCEEDED`, which is not a model-source configuration failure —
- *  so it lands in the generic `provider_failure` bucket and the user reads a
- *  blank assistant turn. Same rationale as {@link NO_LLM_SOURCE_MESSAGE}, and
- *  it applies MORE strongly here: a provider outage is not something the owner
- *  can act on, and this is. It also repeats every turn until something changes,
+ *  A context refusal surfaces as `AI_TOKEN_BUDGET_EXCEEDED`. It needs
+ *  actionable guidance beyond the generic provider-failure message, because
+ *  the owner can change the selected model's context window. It repeats
+ *  every turn until something changes,
  *  because the packet size is dominated by the tool catalog, not by the
  *  conversation — so "try a shorter message" is advice that would not work, and
  *  is deliberately not offered.
@@ -338,21 +337,23 @@ const CONTEXT_TOO_LARGE_MESSAGE =
  *  `NO_LLM_SOURCE_MESSAGE`: an actionable sentence beats the silent empty
  *  turn the user otherwise reads as "the assistant said nothing". */
 const EMPTY_AI_OUTPUT_MESSAGE =
-  'The AI model returned an empty reply twice for this turn. Please try again — or switch models in Settings → AI / Models if this keeps happening.';
-/** Fail-loud message for the cap exit (`max_rounds_exhausted`) when the last
- *  planning response has no renderable text: the model spent every loop round
- *  still asking for more tools and never wrote an answer, so the turn would
- *  otherwise ship an EMPTY assistant bubble after every loop round of visible
- *  tool activity — the last silent-ish exit (siblings above cover the
- *  no-source and double-empty turns). Trigger is response-trim-empty ONLY:
- *  `events` feed the after-turn gathers, not the bubble (the orchestrator
- *  streams content only when non-empty), and a NON-empty planning response at
- *  cap ships unchanged — it may be a useful partial answer. Engine-authored,
- *  zero extra model calls (the cap IS the budget guard; a forced final
- *  synthesis here would spend past it on an unobserved failure mode). The
- *  text lands in the next turn's `chat_tail`, so the model reads it on a
- *  follow-up — phrased so neither audience infers the tool results carry
- *  over (chat_tail is content-only; a "continue" turn starts fresh). */
+  'The AI model returned an empty reply twice in a row. Please try again — or switch models in Settings → AI / Models if this keeps happening.';
+const REPEATED_EMPTY_AI_OUTPUT_MESSAGE =
+  'The AI model returned another empty reply after this turn\'s recovery attempt. Please try again — or switch models in Settings → AI / Models if this keeps happening.';
+const EMPTY_CORRECTION_MESSAGE =
+  'The AI model returned an empty reply while correcting its answer. Please try again or narrow the request.';
+const UNVERIFIED_CORRECTION_MESSAGE =
+  'I could not verify the model\'s reply for this turn. Please try again or narrow the request.';
+/** Persist readable context when guided repair cannot fix a malformed reply.
+ *  Raw model output and validation details stay out of saved Chat messages. */
+const INVALID_AI_OUTPUT_MESSAGE =
+  'The AI model returned a reply that could not be read. Please try again.';
+const INVALID_AI_OUTPUT_MID_TURN_MESSAGE =
+  'The AI model returned a reply that could not be read after some tools had already run. Check those results before trying again.';
+/** Saved explanation for `max_rounds_exhausted`: the final permitted model
+ *  call still requested tools. Keep any useful partial answer and append this
+ *  reason so reopened history and the next turn's chat_tail show that work
+ *  remains. No extra synthesis call is allowed past the cap. */
 const TOOL_BUDGET_EXHAUSTED_MESSAGE =
   'The AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.';
 /** Fail-loud message for the trim-livelock exit.
@@ -442,21 +443,27 @@ export class ChatContextLengthError extends Error {
  *  diagnostic must not turn a timeout or HTTP failure into model-setup advice.
  *  Prefix matching also supports older untyped no-config errors without
  *  treating a quoted no-match inside a provider message as configuration. */
-const isNoLlmSourceError = (error: unknown): boolean => {
+const llmFailureReason = (error: unknown): TransparencyDecoderUnavailableReason => {
   if (error instanceof LLMError && (error.code !== 'AI_LLM_UNAVAILABLE'
-    || error.details?.status !== undefined || error.details?.fallback_unavailable !== undefined)) return false;
-  return error instanceof Error && /^(?:no llm source matches|no llm config|AI_LLM_UNAVAILABLE\b)/i.test(error.message);
+    || error.details?.status !== undefined || error.details?.fallback_unavailable !== undefined)) return 'provider_failure';
+  if (error instanceof LLMError && Array.isArray(error.details?.cooldown_sources) && error.details.cooldown_sources.length > 0) return 'cooldown';
+  return error instanceof Error && /^(?:no llm source matches|no llm config|AI_LLM_UNAVAILABLE\b)/i.test(error.message)
+    ? 'no_source' : 'provider_failure';
 };
 /** PB7 — classify a failed main-turn call for the dedicated
  *  `engine.decoder_unavailable` transparency event (the variant the
  *  in-code "renderer can paint 'AI decoder unavailable'" note deferred).
  *  Provider errors were classified at the catch boundary. Output validation
  *  failures carry the model's reply and remain a distinct event reason. */
-const decoderUnavailableReason = (failure: {
+interface ReplyFailure {
   readonly detail: string;
   readonly decoder_reason?: TransparencyDecoderUnavailableReason;
+  readonly retry_at?: number;
   readonly validation_issues?: ReadonlyArray<AIOutputValidationIssue>;
-}): TransparencyDecoderUnavailableReason =>
+  readonly context_overflow?: true;
+  readonly context_trim_livelock?: true;
+}
+const decoderUnavailableReason = (failure: ReplyFailure): TransparencyDecoderUnavailableReason =>
   failure.decoder_reason ?? (failure.validation_issues !== undefined ? 'invalid_output' : 'provider_failure');
 /** The run address a held dispatch carries, which is the PAIR KEY.
  *
@@ -509,27 +516,40 @@ export const retainForReinvoke = (
   return [...older.slice(Math.max(0, older.length - keep)), ...current];
 };
 
-/** Fail-loud message for the mid-loop ABORT exit — a tool-loop reinvoke
- *  FAILED (provider / network / validation error) after at least one
- *  dispatch round ran (the loop's first reinvoke always follows the first
- *  dispatch batch). `assistantContent` still holds the PREVIOUS round's
- *  planning response at that point: stale (written before the final
- *  batch's results existed) and frequently empty — so the turn shipped an
- *  empty bubble after visible tool work, with only the transparency
- *  drawer ('aborted' round + `engine.budget_exceeded`) explaining; the
- *  webclient has no dedicated failure paint (the "decoder unavailable"
- *  rendering mentioned below remains the deferred PB7 follow-on).
- *  Trigger mirrors the cap guard: stale-response-trim-empty ONLY — a
- *  non-empty stale planning response may carry partial synthesis and
- *  ships unchanged. A configuration failure ships `NO_LLM_SOURCE_MESSAGE`
- *  instead; exhausted provider calls keep the provider-failure classification.
- *  No-executor turns never reach the loop (the initial call
- *  fails first), so this never masks the deliberate silent-substrate
- *  path. Like its siblings the text lands in the next turn's
- *  `chat_tail` — phrased so a follow-up model knows the prior attempt
- *  died mid-work without inferring the tool results carry over. */
+/** Saved explanation when a tool-loop reinvoke fails. Keep useful partial
+ *  text and append the failure context so reopened history and the next
+ *  turn's chat_tail do not present an unfinished answer as successful.
+ *  A critique reinvoke can fail before dispatch; only claim tools ran when
+ *  the executor has actual tool results. Raw diagnostics stay internal. */
 const PROVIDER_FAILED_MID_TURN_MESSAGE =
   'The AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.';
+const SOURCE_COOLDOWN_MESSAGE =
+  'The AI source is temporarily paused after a provider failure. Wait a little before trying again.';
+const sourceCooldownMessage = (failure: Parameters<typeof decoderUnavailableReason>[0]): string => {
+  const retryAt = formatLlmRetryTime(failure.retry_at);
+  return retryAt ? `The AI source is temporarily paused after a provider failure. Try again after ${retryAt}.` : SOURCE_COOLDOWN_MESSAGE;
+};
+const providerFailureMessage = (failure: Parameters<typeof decoderUnavailableReason>[0], site: 'initial' | 'tool_loop'): string => {
+  const retryAt = formatLlmRetryTime(failure.retry_at);
+  const message = site === 'tool_loop' ? PROVIDER_FAILED_MID_TURN_MESSAGE : 'The AI provider failed before answering.';
+  return retryAt ? `${message} Try again after ${retryAt}.` : message;
+};
+const failedReplyMessage = (failure: ReplyFailure, toolsRan = false): string => {
+  if (failure.context_trim_livelock) return CONTEXT_TRIM_LIVELOCK_MESSAGE;
+  const reason = decoderUnavailableReason(failure);
+  if (reason === 'no_source') return NO_LLM_SOURCE_MESSAGE;
+  if (reason === 'cooldown') return sourceCooldownMessage(failure)
+    + (toolsRan ? ' Some tools had already run; check their results before trying again.' : '');
+  if (failure.context_overflow) return CONTEXT_TOO_LARGE_MESSAGE
+    + (toolsRan ? ' Some tools had already run; check their results before trying again.' : '');
+  if (reason === 'invalid_output') return toolsRan ? INVALID_AI_OUTPUT_MID_TURN_MESSAGE : INVALID_AI_OUTPUT_MESSAGE;
+  return providerFailureMessage(failure, toolsRan ? 'tool_loop' : 'initial');
+};
+const withStopMessage = (response: string, message: string): string =>
+  response.trim().length > 0 ? `${response}\n\n${message}` : message;
+const failedToolLoopContent = (response: string, failure: Parameters<typeof decoderUnavailableReason>[0], toolsRan = true): string => {
+  return withStopMessage(response, failedReplyMessage(failure, toolsRan));
+};
 
 /** The three documented AIOutput envelope keys — anything else on a decoded
  *  output is a stray key the model invented (preserved through
@@ -2327,9 +2347,6 @@ export const runChatTurn = async (
   // one event that can create or shrink one mid-turn, because the refusal IS
   // how the endpoint's window gets learned.
   let activeInputTokenBudget = inputs.input_token_budget;
-  /** Set by `tryMainTurn`'s catch when the provider refused for size. Read
-   *  once, by the retry gate. */
-  let lastFailureWasContextOverflow = false;
 
   // What the trim ladder dropped, for the length of THIS turn only. The value
   // is the executor's own pre-egress copy, so a slice of it re-enters the
@@ -2693,6 +2710,8 @@ export const runChatTurn = async (
   let sourceFactReadOnly = inputs.prefetch_selected_asset === true && inputs.mail_work === undefined
     && picker_target === 'self' && dispatchPeerName === null;
   const invalidSourceAnswers = new WeakSet<AIOutput>();
+  const outputLengthStops = new WeakSet<AIOutput>();
+  let mainCallCount = 0;
   let sourceFactRepairUsed = false;
   const callMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
@@ -2704,9 +2723,11 @@ export const runChatTurn = async (
         kind: 'failed';
         detail: string;
         decoder_reason?: TransparencyDecoderUnavailableReason;
+        retry_at?: number;
         context_trim_livelock?: true;
         usage?: TokenUsageReport;
         validation_issues?: ReadonlyArray<AIOutputValidationIssue>;
+        context_overflow?: true;
       }
   > => {
     const executeAiCall = deps.executeAiCall;
@@ -3215,6 +3236,7 @@ export const runChatTurn = async (
     // PII-egress guard (`chat-pii-egress.ts`) wraps this `executeAiCall` and
     // aliases every outbound packet — aliasing is the sole PII protection.
     try {
+      mainCallCount += 1;
       const result = await executeAiCall(manifest, aiInput);
       // Executor return is wire-level untrusted. Coerce a real model's
       // envelope deviations (dropped empty `events`/`tool_calls`, omitted
@@ -3226,13 +3248,11 @@ export const runChatTurn = async (
       const validation_issues = validateAIOutput(body);
       if (validation_issues.length > 0) {
         if (result.finish_reason === 'length') {
+          const output: AIOutput = { response: OUTPUT_LENGTH_EXHAUSTED_MESSAGE, events: [], tool_calls: [] };
+          outputLengthStops.add(output);
           return {
             kind: 'ok',
-            output: {
-              response: OUTPUT_LENGTH_EXHAUSTED_MESSAGE,
-              events: [],
-              tool_calls: [],
-            },
+            output,
             ...(result.usage !== undefined ? { usage: result.usage } : {}),
           };
         }
@@ -3283,7 +3303,7 @@ export const runChatTurn = async (
         ...(result.usage !== undefined ? { usage: result.usage } : {}),
       };
     } catch (e) {
-      lastFailureWasContextOverflow = isContextOverflowRejection(e);
+      const contextOverflow = isContextOverflowRejection(e);
       if (
         inputs.propagate_typed_errors === true
         && e !== null
@@ -3301,10 +3321,15 @@ export const runChatTurn = async (
         // budget being present, which is now true on the chat path too.
         throw e;
       }
+      const decoderReason = llmFailureReason(e);
+      const retryAt = (decoderReason === 'cooldown' || decoderReason === 'provider_failure')
+        && e instanceof LLMError && isLlmRetryTime(e.details?.retry_at) ? e.details.retry_at : undefined;
       return {
         kind: 'failed',
         detail: (e as Error)?.message ?? 'main-turn executor failure',
-        decoder_reason: isNoLlmSourceError(e) ? 'no_source' : 'provider_failure',
+        decoder_reason: decoderReason,
+        ...(contextOverflow ? { context_overflow: true as const } : {}),
+        ...(retryAt !== undefined ? { retry_at: retryAt } : {}),
       };
     }
   };
@@ -3355,9 +3380,6 @@ export const runChatTurn = async (
   // last good round on a mid-loop abort).
   let finalAiOutput: AIOutput | undefined;
 
-  // Own flag: the tool loop's `invalidRecoveryUsed` is declared inside the
-  // loop's scope below and governs a different call. One retry each.
-  let initialInvalidRetryUsed = false;
   /** The carry-forward this turn opens with, if any.
    *
    *  ⛔⛔ SEEDED HERE, BEFORE THE FIRST COMPOSITION, AND THE FIRST ATTEMPT PUT
@@ -3463,7 +3485,7 @@ export const runChatTurn = async (
         sourceFactRepairUsed = true; repairFeedback = SOURCE_FACT_REPAIR;
         continue;
       }
-      if (result.kind !== 'ok' || !projectionDemand) return { ...result, ...(usage ? { usage } : {}) };
+      if (result.kind !== 'ok' || outputLengthStops.has(result.output) || !projectionDemand) return { ...result, ...(usage ? { usage } : {}) };
       const before = freshCalls.length;
       const proof = projectionSources();
       const demanded = await projectionDemand.check(JSON.stringify({ response: result.output.response, events: result.output.events, tool_calls: result.output.tool_calls }), proof, async args => {
@@ -3504,6 +3526,15 @@ export const runChatTurn = async (
         ...(sourceCarry ? [sourceCarry] : []), ...freshCalls];
   // A failed current read gets a fixed availability response, while the normal
   // closing fold still captures this turn's owner statements for restart.
+  const emitDecoderFailure = (failure: ReplyFailure, site: 'initial' | 'tool_loop'): void => {
+    // The dedicated cause follows accounting so the live notice shows the
+    // failure reason. Count actual main calls, including bounded repairs.
+    deps.emit({ kind: 'chat.transparency', session_id, turn_id,
+      event: { kind: 'engine.budget_exceeded', total_calls: mainCallCount, total_cost_cents: 0 } });
+    deps.emit({ kind: 'chat.transparency', session_id, turn_id,
+      event: { kind: 'engine.decoder_unavailable', reason: decoderUnavailableReason(failure), site,
+        ...(failure.retry_at !== undefined ? { retry_at: failure.retry_at } : {}) } });
+  };
   let initialResult: Awaited<ReturnType<typeof tryMainTurn>> = sourceReadFailure
     ? { kind: 'ok', output: { response: sourceReadFailure, events: [], tool_calls: [] } }
     : await tryMainTurn(openingPriorToolCalls());
@@ -3546,7 +3577,7 @@ export const runChatTurn = async (
   // so the condition cannot hold twice — there is no loop to cap.
   if (
     initialResult.kind === 'failed'
-    && lastFailureWasContextOverflow
+    && initialResult.context_overflow === true
     && deps.resolveInputTokenBudget !== undefined
   ) {
     const relearned = deps.resolveInputTokenBudget();
@@ -3571,7 +3602,7 @@ export const runChatTurn = async (
     initialResult.kind === 'failed'
     && initialResult.validation_issues !== undefined
   ) {
-    initialInvalidRetryUsed = true;
+
     const initialRetry = await tryMainTurn(
       // ⛔ See the note on the absence retry below — a repair packet must not
       //   carry LESS grounding than the call it is repairing.
@@ -3589,49 +3620,8 @@ export const runChatTurn = async (
     // empty-assistant path stays a quiet substrate signal rather
     // than a noisy failure surface.
     if (deps.executeAiCall) {
-      // Fail LOUD when the matcher found no usable model (no provider configured
-      // for the picked source, or a fail-closed pinned slot that is unavailable
-      // — D-191 `pinSlot`) — an actionable message beats the silent empty turn.
-      if (decoderUnavailableReason(initialResult) === 'no_source') {
-        assistantContent = NO_LLM_SOURCE_MESSAGE;
-      } else if (lastFailureWasContextOverflow) {
-        // ⛔ Read from the CLASSIFIED failure, not from the detail string. The
-        // flag is set by `isContextOverflowRejection`, which keys on the typed
-        // code the provider adapter already assigned at the HTTP boundary — a
-        // second regex over the rendered message would be a weaker copy of a
-        // decision that was already made with the status code in hand.
-        assistantContent = CONTEXT_TOO_LARGE_MESSAGE;
-      }
-      deps.emit({
-        kind: 'chat.transparency',
-        session_id,
-        turn_id,
-        event: {
-          kind: 'engine.budget_exceeded',
-          // ⚠ +1 when the decode retry fired: a turn that made two provider
-          // calls must not report one, or the cost series under-counts exactly
-          // the turns that went wrong.
-          total_calls: initialInvalidRetryUsed ? 2 : 1,
-          total_cost_cents: 0,
-        },
-      });
-      // PB7 — the dedicated failure variant the renderer paints from
-      // (the webclient keeps the LATEST failure-class event per turn,
-      // so this deliberately follows the accounting emit: its copy
-      // tells the failure story, not a budget story). The generic
-      // provider-failure case here still ships an EMPTY body
-      // (deliberate: no tools ran, no activity-then-silence mismatch);
-      // this event is what makes that turn visibly failed.
-      deps.emit({
-        kind: 'chat.transparency',
-        session_id,
-        turn_id,
-        event: {
-          kind: 'engine.decoder_unavailable',
-          reason: decoderUnavailableReason(initialResult),
-          site: 'initial',
-        },
-      });
+      assistantContent = failedReplyMessage(initialResult);
+      emitDecoderFailure(initialResult, 'initial');
     }
   } else {
     let currentAiOutput = initialResult.output;
@@ -3639,19 +3629,14 @@ export const runChatTurn = async (
     // Args-only AIOutput recovery. A decoded-yet-empty initial output
     // (see `isEmptyChatAiOutput` — observed live as `{query, limit}` with
     // no tool name) gets ONE retry carrying explicit parse feedback in the
-    // packet's `output_feedback` field; a second empty result (or a failed
-    // retry) ships `EMPTY_AI_OUTPUT_MESSAGE` instead of the silent empty
-    // turn. Bounded at one attempt — feedback either lands immediately or
+    // packet's `output_feedback` field; a second empty result gets a saved
+    // empty-reply note, while a failed repair keeps its classified cause. Bounded at one attempt — feedback either lands immediately or
     // this becomes the loop the reinvoke-gate work exists to prevent. The
-    // retry is visible in the audit ai.call capture + token usage; no
-    // dedicated transparency event (the fail-loud content IS the surface).
-    let emptyOutputUnrecovered = false;
-    // 0..2 (initial site + loop-final site, each individually bounded at
-    // one) — folded into the loop-abort transparency `total_calls` so the
-    // audit accounting includes every recovery call (codex MEDIUM fold).
-    let recoveryCalls = 0;
+    // retry is visible in audit captures and token usage. Failed repairs
+    // also emit their classified cause after call accounting.
+    let initialReplyStopped = false;
+    let initialStopMessage: string | undefined;
     if (isEmptyChatAiOutput(currentAiOutput)) {
-      recoveryCalls = 1;
       const retryResult = await tryMainTurn(
         openingPriorToolCalls(),
         emptyOutputFeedback(currentAiOutput),
@@ -3659,13 +3644,38 @@ export const runChatTurn = async (
       totalUsage = aggregateTokenUsageReports(totalUsage, retryResult.usage);
       if (retryResult.kind === 'ok') {
         currentAiOutput = retryResult.output;
-        emptyOutputUnrecovered = isEmptyChatAiOutput(currentAiOutput);
+        initialReplyStopped = isEmptyChatAiOutput(currentAiOutput) || outputLengthStops.has(currentAiOutput);
+        if (outputLengthStops.has(currentAiOutput)) initialStopMessage = OUTPUT_LENGTH_EXHAUSTED_MESSAGE;
       } else {
         // Keep the initial (empty) output as the after-turn gather input —
         // its empty `events` make every gather a no-op.
-        emptyOutputUnrecovered = true;
+        initialReplyStopped = true;
+        initialStopMessage = failedReplyMessage(retryResult);
+        emitDecoderFailure(retryResult, 'initial');
       }
     }
+
+    const adoptInitialCorrection = (result: Awaited<ReturnType<typeof tryMainTurn>>): void => {
+      if (result.kind === 'failed') {
+        initialStopMessage = failedReplyMessage(result);
+        emitDecoderFailure(result, 'initial');
+      } else if (isEmptyChatAiOutput(result.output)) {
+        initialStopMessage = EMPTY_CORRECTION_MESSAGE;
+      } else if (inventedValueInReply(result.output, lastPacketBody) || assertedAbsenceWithoutLooking(result.output)) {
+        initialStopMessage = UNVERIFIED_CORRECTION_MESSAGE;
+      } else {
+        currentAiOutput = result.output;
+        if (outputLengthStops.has(currentAiOutput)) {
+          initialReplyStopped = true;
+          initialStopMessage = OUTPUT_LENGTH_EXHAUSTED_MESSAGE;
+        }
+        return;
+      }
+      // A rejected claim is not a useful partial answer. Do not persist its
+      // invented values or run its extraction events after repair is exhausted.
+      initialReplyStopped = true;
+      currentAiOutput = { response: '', events: [], tool_calls: [] };
+    };
 
     // ⛔ CANDIDATE (bench arm) — unverified-absence recovery. OWN budget, bounded
     // at one, placed AFTER the empty-output recovery so the two can never both
@@ -3677,11 +3687,11 @@ export const runChatTurn = async (
     // the user's time, an invented identifier is acted on.
     if (
       !sourceReadFailure
-      && !emptyOutputUnrecovered
+      && !initialReplyStopped
       && !isEmptyChatAiOutput(currentAiOutput)
       && inventedValueInReply(currentAiOutput, lastPacketBody)
     ) {
-      recoveryCalls += 1;
+
       const inventedRetry = await tryMainTurn(
         // ⚠ THIS ONE MOST OF ALL: the retry that exists to stop invented values
         //   was removing the grounding that prevents inventing them.
@@ -3689,14 +3699,14 @@ export const runChatTurn = async (
         buildInventedValueFeedback(),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, inventedRetry.usage);
-      if (inventedRetry.kind === 'ok') currentAiOutput = inventedRetry.output;
+      adoptInitialCorrection(inventedRetry);
     } else if (
       !sourceReadFailure
-      && !emptyOutputUnrecovered
+      && !initialReplyStopped
       && !isEmptyChatAiOutput(currentAiOutput)
       && assertedAbsenceWithoutLooking(currentAiOutput)
     ) {
-      recoveryCalls += 1;
+
       // ⛔⛔ THE CARRY MUST SURVIVE THE REPAIR. This argument was `undefined` on
       //   all four recovery paths — the positional-parameter trap: to supply
       //   `output_feedback` you must write something for `prior_tool_calls`,
@@ -3728,14 +3738,11 @@ export const runChatTurn = async (
         buildUnverifiedAbsenceFeedback(),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, absenceRetry.usage);
-      // ⚠ A FAILED RETRY KEEPS THE ORIGINAL OUTPUT. The absence claim is still a
-      // reply the user can read; replacing it with a fail-loud message would turn
-      // a recoverable annoyance into a lost turn.
-      if (absenceRetry.kind === 'ok') currentAiOutput = absenceRetry.output;
+      adoptInitialCorrection(absenceRetry);
     }
 
-    assistantContent = emptyOutputUnrecovered
-      ? EMPTY_AI_OUTPUT_MESSAGE
+    assistantContent = initialReplyStopped
+      ? initialStopMessage ?? EMPTY_AI_OUTPUT_MESSAGE
       : currentAiOutput.response;
 
     // One-shot turn (no tool_calls) needs no in-function work — the
@@ -3745,7 +3752,7 @@ export const runChatTurn = async (
     // unrecovered-empty guard is load-bearing for CONTENT, not dispatch
     // (an empty output has no tool_calls by definition): it pins that the
     // fail-loud message is never overwritten by a loop synthesis pass.
-    if (!emptyOutputUnrecovered && (currentAiOutput.tool_calls.length > 0 || freshCalls.length > 0 || mailEvidence !== null)) {
+    if (!initialReplyStopped && (currentAiOutput.tool_calls.length > 0 || freshCalls.length > 0 || mailEvidence !== null)) {
       // D-137 Trio #B — cooperative tool loop. Each round = dispatch
       // one batch of tool_calls + reinvoke the main turn with the
       // accumulated prior_tool_calls so the AI synthesises over the
@@ -3833,7 +3840,7 @@ export const runChatTurn = async (
       // feedback. Each is individually bounded at one, so the worst case adds
       // one model call, not a loop.
       let invalidRecoveryUsed = false;
-      let loopEmptyUnrecovered = false;
+      let loopReplyStopped = outputLengthStops.has(currentAiOutput);
       let terminationReason: MultiTurnTerminationReason = 'completed';
       let startedRounds = 0;
       let openRound: { round_index: number; tool_calls_executed: number } | undefined;
@@ -3847,7 +3854,7 @@ export const runChatTurn = async (
         });
       };
 
-      const stopForContextTrim = (result: Awaited<ReturnType<typeof tryMainTurn>>): boolean => {
+      const stopForContextTrim = (result: Awaited<ReturnType<typeof tryMainTurn>>, partialResponse = currentAiOutput.response): boolean => {
         if (result.kind !== 'failed' || result.context_trim_livelock !== true) return false;
         // End only after the whole batch is recorded and its next prompt is
         // fitted. Two confirmed reread losses justify stopping; one can recover.
@@ -3860,7 +3867,7 @@ export const runChatTurn = async (
           + `produced, so further rounds cannot make progress.`,
         );
         terminationReason = 'context_trim_livelock';
-        assistantContent = CONTEXT_TRIM_LIVELOCK_MESSAGE;
+        assistantContent = withStopMessage(partialResponse, CONTEXT_TRIM_LIVELOCK_MESSAGE);
         // Critique runs before a round starts; review can run after it closes.
         // Only an open dispatch round needs a terminal event here.
         completeRound('aborted');
@@ -3900,6 +3907,7 @@ export const runChatTurn = async (
             started_at: critiqueAt,
             completed_at: now(),
           });
+          const responseBeforeCritique = currentAiOutput.response;
           let critiqueReinvoke =
             await tryMainTurn(priorToolCalls.slice());
           totalUsage = aggregateTokenUsageReports(
@@ -3910,7 +3918,7 @@ export const runChatTurn = async (
             critiqueReinvoke.kind === 'ok'
             && isEmptyChatAiOutput(critiqueReinvoke.output)
           ) {
-            recoveryCalls += 1;
+
             critiqueReinvoke = await tryMainTurn(
               priorToolCalls.slice(),
               emptyOutputFeedback(
@@ -3927,17 +3935,15 @@ export const runChatTurn = async (
           if (critiqueReinvoke.kind !== 'ok') {
             toolLoopFailure = { detail: critiqueReinvoke.detail };
             terminationReason = 'aborted';
-            if (currentAiOutput.response.trim().length === 0) {
-              assistantContent = decoderUnavailableReason(critiqueReinvoke) === 'no_source'
-                ? NO_LLM_SOURCE_MESSAGE
-                : PROVIDER_FAILED_MID_TURN_MESSAGE;
-            }
+            assistantContent = failedToolLoopContent(currentAiOutput.response, critiqueReinvoke, toolResultsAccum.length > 0);
+            emitDecoderFailure(critiqueReinvoke, 'tool_loop');
             break toolLoop;
           }
           currentAiOutput = critiqueReinvoke.output;
-          if (isEmptyChatAiOutput(currentAiOutput)) {
-            assistantContent = EMPTY_AI_OUTPUT_MESSAGE;
-            loopEmptyUnrecovered = true;
+          if (isEmptyChatAiOutput(currentAiOutput) || outputLengthStops.has(currentAiOutput)) {
+            assistantContent = withStopMessage(responseBeforeCritique,
+              outputLengthStops.has(currentAiOutput) ? OUTPUT_LENGTH_EXHAUSTED_MESSAGE : EMPTY_AI_OUTPUT_MESSAGE);
+            loopReplyStopped = true;
             break toolLoop;
           }
           assistantContent = currentAiOutput.response;
@@ -4371,7 +4377,7 @@ export const runChatTurn = async (
           && !invalidRecoveryUsed
         ) {
           invalidRecoveryUsed = true;
-          recoveryCalls += 1;
+
           const invalidRetry = await tryMainTurn(
             priorToolCalls.slice(),
             invalidOutputFeedback(effectiveReinvoke.validation_issues),
@@ -4384,7 +4390,7 @@ export const runChatTurn = async (
         if (effectiveReinvoke.kind !== 'ok') {
           toolLoopFailure = { detail: effectiveReinvoke.detail };
           // ⛔ LOG THE CAUSE, BECAUSE THE EMITTED `reason` CANNOT CARRY IT.
-          //   `decoderUnavailableReason` is a three-way classification whose
+          //   `decoderUnavailableReason` is a classification whose
           //   DEFAULT arm is `provider_failure` — returned whenever the failure
           //   has no `validation_issues` or explicit no-source classification.
           //   So a failure with any other cause is stamped
@@ -4405,50 +4411,22 @@ export const runChatTurn = async (
             + effectiveReinvoke.detail.slice(0, 300),
           );
           completeRound('aborted');
-          deps.emit({
-            kind: 'chat.transparency',
-            session_id,
-            turn_id,
-            event: {
-              kind: 'engine.budget_exceeded',
-              // initial call + per-round reinvokes + the empty-output
-              // recovery retry when it fired (codex MEDIUM fold).
-              total_calls: roundIndex + 2 + recoveryCalls,
-              total_cost_cents: 0,
-            },
-          });
-          // PB7 — dedicated failure variant, AFTER the accounting emit
-          // (renderer keeps the latest failure-class event per turn, so
-          // the painted copy is the failure story, not "budget reached").
-          deps.emit({
-            kind: 'chat.transparency',
-            session_id,
-            turn_id,
-            event: {
-              kind: 'engine.decoder_unavailable',
-              reason: decoderUnavailableReason(effectiveReinvoke),
-              site: 'tool_loop',
-            },
-          });
+          emitDecoderFailure(effectiveReinvoke, 'tool_loop');
           terminationReason = 'aborted';
-          // Abort-exit empty-content guard — sibling of the cap-exit
-          // guard below, same trim-based trigger on the STALE output's
-          // raw response (`currentAiOutput` is the last successful
-          // round's output; the failed reinvoke never assigned). A
-          // whitespace-only stale response drops its appended tags,
-          // matching the cap guard. EMPTY_AI_OUTPUT_MESSAGE can never
-          // be overwritten here: an unrecovered-empty output has no
-          // tool_calls, so the loop exits 'completed' before another
-          // reinvoke runs.
-          if (currentAiOutput.response.trim().length === 0) {
-            assistantContent = decoderUnavailableReason(effectiveReinvoke) === 'no_source'
-              ? NO_LLM_SOURCE_MESSAGE
-              : PROVIDER_FAILED_MID_TURN_MESSAGE;
-          }
+          // The failed reply never replaces the last valid output. Preserve
+          // its partial text and save why the turn stopped; whitespace-only
+          // planning gets only the failure message.
+          assistantContent = failedToolLoopContent(currentAiOutput.response, effectiveReinvoke);
           break;
         }
 
+        const responseBeforeReinvoke = currentAiOutput.response;
         currentAiOutput = effectiveReinvoke.output;
+        let loopStopMessage = EMPTY_AI_OUTPUT_MESSAGE;
+        if (outputLengthStops.has(currentAiOutput)) {
+          loopReplyStopped = true;
+          loopStopMessage = OUTPUT_LENGTH_EXHAUSTED_MESSAGE;
+        }
 
         // Loop-final empty recovery. A synthesis reinvoke that decodes
         // EMPTY would otherwise terminate the loop as a silent empty turn
@@ -4465,7 +4443,7 @@ export const runChatTurn = async (
         if (isEmptyChatAiOutput(currentAiOutput)) {
           if (!loopRecoveryUsed) {
             loopRecoveryUsed = true;
-            recoveryCalls += 1;
+
             const loopRetryResult = await tryMainTurn(
               priorToolCalls.slice(),
               emptyOutputFeedback(currentAiOutput, 'tool_loop'),
@@ -4474,29 +4452,34 @@ export const runChatTurn = async (
               totalUsage,
               loopRetryResult.usage,
             );
-            if (stopForContextTrim(loopRetryResult)) break toolLoop;
+            if (stopForContextTrim(loopRetryResult, responseBeforeReinvoke)) break toolLoop;
             if (loopRetryResult.kind === 'ok') {
               currentAiOutput = loopRetryResult.output;
-              loopEmptyUnrecovered = isEmptyChatAiOutput(currentAiOutput);
+              loopReplyStopped = isEmptyChatAiOutput(currentAiOutput) || outputLengthStops.has(currentAiOutput);
+              if (outputLengthStops.has(currentAiOutput)) loopStopMessage = OUTPUT_LENGTH_EXHAUSTED_MESSAGE;
             } else {
               toolLoopFailure = { detail: loopRetryResult.detail };
               // Keep the empty synthesis as the gather input (no-op events),
               // mirroring the initial site's failed-retry handling.
-              loopEmptyUnrecovered = true;
+              loopReplyStopped = true;
+              loopStopMessage = failedReplyMessage(loopRetryResult, toolResultsAccum.length > 0);
+              terminationReason = 'aborted';
+              emitDecoderFailure(loopRetryResult, 'tool_loop');
             }
           } else {
-            loopEmptyUnrecovered = true;
+            loopReplyStopped = true;
+            loopStopMessage = REPEATED_EMPTY_AI_OUTPUT_MESSAGE;
           }
         }
 
-        assistantContent = loopEmptyUnrecovered
-          ? EMPTY_AI_OUTPUT_MESSAGE
+        assistantContent = loopReplyStopped
+          ? withStopMessage(responseBeforeReinvoke, loopStopMessage)
           : currentAiOutput.response;
         // The unrecovered guard is load-bearing for CONTENT only (an empty
         // output has no tool_calls by definition): it pins that the
         // fail-loud message terminates the loop via the !moreTools branch.
         const moreTools =
-          !loopEmptyUnrecovered && currentAiOutput.tool_calls.length > 0;
+          !loopReplyStopped && currentAiOutput.tool_calls.length > 0;
 
         // Cap check AFTER reinvocation. Round outcomes:
         //  - Empty-output recovery failed or was already spent: abort the
@@ -4524,7 +4507,7 @@ export const runChatTurn = async (
         }
         const atCap = chargedRounds >= CHAT_MAIN_TURN_TOOL_LOOP_CAP;
         completeRound(
-          loopEmptyUnrecovered ? 'aborted' : moreTools ? 'continue' : 'completed',
+          loopReplyStopped ? 'aborted' : moreTools ? 'continue' : 'completed',
         );
 
         if (!moreTools) {
@@ -4539,6 +4522,7 @@ export const runChatTurn = async (
           // reviewing is allowed to improve a reply, never to lose it.
           if (
             VERIFY_PASS_MODES.has(process.env.RECUED_VERIFY_PASS ?? '')
+            && !loopReplyStopped
             && !verifyPassUsed
             && currentAiOutput.response.trim().length > 0
           ) {
@@ -4592,32 +4576,24 @@ export const runChatTurn = async (
             if (
               reviewed.kind === 'ok'
               && !isEmptyChatAiOutput(reviewed.output)
+              && !outputLengthStops.has(reviewed.output)
               && (reviewed.output.tool_calls?.length ?? 0) === 0
             ) {
               currentAiOutput = reviewed.output;
               assistantContent = currentAiOutput.response;
             }
           }
-          terminationReason = 'completed';
+          // Failed recovery keeps its classified abort; a valid synthesis
+          // retains the default completed reason.
           break;
         }
 
         if (atCap) {
           terminationReason = 'max_rounds_exhausted';
-          // Cap-exit empty-content guard. `assistantContent` currently
-          // holds the planning response (set above) — when that has no
-          // renderable text the fail-loud message replaces the silent
-          // bubble. Trim-based like `isEmptyChatAiOutput` (a whitespace-
-          // only response also drops its appended tags — engine text
-          // carries none, matching EMPTY_AI_OUTPUT_MESSAGE). The output
-          // itself stays `finalAiOutput` untouched so its events still
-          // drive the after-turn gathers. Cannot collide with the
-          // loop-empty fail-loud: an unrecovered-empty output has no
-          // tool_calls, so that path always exits via `!moreTools`
-          // before this branch.
-          if (currentAiOutput.response.trim().length === 0) {
-            assistantContent = TOOL_BUDGET_EXHAUSTED_MESSAGE;
-          }
+          // A final answer from the last allowed call exits above. Here more
+          // tools remain: retain partial text with the stop reason. Keep the
+          // validated output itself intact for the existing after-turn gathers.
+          assistantContent = withStopMessage(currentAiOutput.response, TOOL_BUDGET_EXHAUSTED_MESSAGE);
           break;
         }
 
@@ -4627,13 +4603,13 @@ export const runChatTurn = async (
 
       // ⛔ A turn that ended because its last packet could not be READ is not a
       // completion. Derived from the FLAG, not from one exit: two separate
-      // `break`s leave the loop with `loopEmptyUnrecovered` set — the
+      // `break`s leave the loop with `loopReplyStopped` set — the
       // `!moreTools` exit and the critique-reinvoke empty exit above — and both
       // previously reported `completed`, making a stalled turn and a finished
       // one indistinguishable to telemetry, to D-219's flow compiler, and to
       // anyone reading a transcript. The `=== 'completed'` guard keeps the more
       // specific reasons (`aborted`, `max_rounds_exhausted`) authoritative.
-      if (loopEmptyUnrecovered && terminationReason === 'completed') {
+      if (loopReplyStopped && terminationReason === 'completed') {
         terminationReason = 'output_unreadable';
       }
 

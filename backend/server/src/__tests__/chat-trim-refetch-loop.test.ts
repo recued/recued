@@ -56,6 +56,8 @@ const runTurn = async (
     invalidPackets?: readonly number[];
     failedPackets?: readonly number[];
     responses?: Readonly<Record<number, string>>;
+    planningResponse?: string;
+    truncatedPackets?: readonly number[];
     critiqueProposal?: RunChatTurnDeps['critiqueProposal'];
   },
 ): Promise<{
@@ -101,6 +103,7 @@ const runTurn = async (
         executeAiCall: async (_m: unknown, input: Record<string, unknown>) => {
           packets.push(String(input['llm.prompt'] ?? ''));
           round += 1;
+          if (options?.truncatedPackets?.includes(round)) return { body: { response: 42 }, finish_reason: 'length' as const };
           if (options?.invalidPackets?.includes(round)) {
             return { body: { response: 42, events: [], tool_calls: [] } };
           }
@@ -111,7 +114,7 @@ const runTurn = async (
           callIndex += 1;
           return next === undefined
             ? { body: { response: 'done', events: [], tool_calls: [] } }
-            : { body: { response: '', events: [], tool_calls: next } };
+            : { body: { response: options?.planningResponse ?? '', events: [], tool_calls: next } };
         },
         registry: {
           list: () => [], listByTier: () => [],
@@ -191,6 +194,16 @@ const expectRoundLifecycle = (
 };
 
 describe('context-trim refetch loop detector', () => {
+  it('keeps a completed draft when an optional review reaches its output limit', async () => {
+    vi.stubEnv('RECUED_VERIFY_PASS', 'neutral');
+    try {
+      const { result, rounds } = await runTurn(undefined, [[READ('n1')]], () => SMALL_READ_RESULT, undefined,
+        { responses: { 2: 'Verified draft answer.' }, truncatedPackets: [3] });
+      expect(rounds).toBe(3);
+      expect((result as { assistant_content: string }).assistant_content).toBe('Verified draft answer.');
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('🔑 fires when the SAME call is re-issued after its result was elided', async () => {
     // Round 1 fetches n1; the trim elides it. Rounds 2 and 3 fetch n1 again.
     const { loops } = await runTurn(sized(2_000), [[READ('n1')], [READ('n1')], [READ('n1')]]);
@@ -200,8 +213,9 @@ describe('context-trim refetch loop detector', () => {
   });
 
   it('emits one valid context-limit stop event after repeated re-read loss', async () => {
-    const { transparencyEvents, rounds } = await runTurn(
+    const { transparencyEvents, rounds, result } = await runTurn(
       sized(2_000), [[READ('n1')], [READ('n1')], [READ('n1')]],
+      resultFor, undefined, { planningResponse: 'I have read part of the notes.' },
     );
     const stops = transparencyEvents.filter((event) =>
       event !== null && typeof event === 'object'
@@ -215,6 +229,9 @@ describe('context-trim refetch loop detector', () => {
       termination_reason: 'context_trim_livelock',
     });
     expect(rounds).toBe(3);
+    const content = (result as { assistant_content: string }).assistant_content;
+    expect(content.startsWith('I have read part of the notes.\n\n')).toBe(true);
+    expect(content).toContain('too large to keep');
   });
 
   it.each([
@@ -247,9 +264,9 @@ describe('context-trim refetch loop detector', () => {
   it('closes the open round when empty-output recovery loses the rereads', async () => {
     const batch = [READ('n1'), READ('n2'), READ('n3')];
     let reads = 0;
-    const { transparencyEvents, loops, rounds, shipped } = await runTurn(
+    const { transparencyEvents, loops, rounds, shipped, result } = await runTurn(
       sized(2_000), [batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
-      undefined, { responses: { 3: '' } },
+      undefined, { responses: { 3: '' }, planningResponse: 'I recovered part of the notes.' },
     );
 
     // The first synthesis saw all three recovered answers. Its recovery
@@ -258,6 +275,7 @@ describe('context-trim refetch loop detector', () => {
       expect.objectContaining({ args, result: SMALL_READ_RESULT }))));
     expect(loops).toHaveLength(1);
     expect(rounds).toBe(3);
+    expect((result as { assistant_content: string }).assistant_content.startsWith('I recovered part of the notes.\n\n')).toBe(true);
     expectRoundLifecycle(transparencyEvents, ['continue', 'aborted'], batch.length, 'context_trim_livelock');
   });
 

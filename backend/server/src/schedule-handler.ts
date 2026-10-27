@@ -44,6 +44,8 @@ import type { EventBus } from './events/bus.js';
 import { emitSchedule } from './events/emit-sites.js';
 
 export interface ScheduleHandlerDeps {
+  localAutomation?: import('./scheduled-local-authority.js').ScheduledLocalAuthority;
+  localAutomationOwner?: (client: WsClient) => string;
   store: ScheduleStore;
   /** D-269 — the server's declared IANA zone, for schedules that carry none.
    *  ⚠ A thunk, read per call: under `follows_host` it is the host clock.
@@ -681,6 +683,7 @@ export const deleteSchedule = (
 // ────────────────────────────────────────────────────────────────
 
 export type ScheduleMethods =
+  | 'schedules.local_writes.review' | 'schedules.local_writes.authorize' | 'schedules.local_writes.revoke'
   | 'schedules.list'
   | 'schedules.create'
   | 'schedules.update'
@@ -692,12 +695,27 @@ export const makeScheduleHandlers = (
   deps: ScheduleHandlerDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ScheduleMethods, WsClient> | undefined => {
   if (!deps) return undefined;
+  const local = (client: WsClient) => {
+    const actor = deps.localAutomationOwner?.(client);
+    if (!actor || !deps.localAutomation) throw new RpcError('forbidden', 'Review scheduled local writes in your paired owner webclient.', 403);
+    return { actor, service: deps.localAutomation };
+  };
   return {
     methods: [
       'schedules.list', 'schedules.create', 'schedules.update', 'schedules.delete',
       'schedules.missed', 'schedules.answerMissed',
+      'schedules.local_writes.review', 'schedules.local_writes.authorize', 'schedules.local_writes.revoke',
     ],
     handlers: {
+      'schedules.local_writes.review': async (args, client) => {
+        const { actor, service } = local(client); return service.review(args.schedule_id, actor);
+      },
+      'schedules.local_writes.authorize': async (args, client) => {
+        const { actor, service } = local(client); return service.authorize(args.schedule_id, args.review_id, actor);
+      },
+      'schedules.local_writes.revoke': async (args, client) => {
+        const { service } = local(client); service.revoke(args.schedule_id); return { revoked: true as const };
+      },
       'schedules.list': async (args) =>
         listSchedules(deps, args as { recipe_id?: string }),
       'schedules.create': async (args) => createSchedule(deps, args),

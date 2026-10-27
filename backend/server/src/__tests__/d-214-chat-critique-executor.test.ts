@@ -65,6 +65,33 @@ const proposed: AIOutput = {
 };
 
 describe('D-214 proposal critique in the real cooperative executor', () => {
+  it.each(['provider', 'invalid_output'] as const)('retains partial planning with a saved %s failure before dispatch', async (cause) => {
+    let calls = 0;
+    const partial = 'I will prepare the report.';
+    const executeAiCall = vi.fn(async () => {
+      if (calls++ === 0) return { body: { ...proposed, response: partial } };
+      if (cause === 'provider') throw new Error('PRIVATE-FAILURE-731');
+      return { body: { response: { private: 'PRIVATE-FAILURE-731' } } };
+    });
+    const dispatchTool = vi.fn(async (): Promise<ChatDispatchResult> => ({ ok: true, result: { sent: true } }));
+    const result = await runChatTurn(input, {
+      executeAiCall, registry, dispatchTool,
+      critiqueProposal: async () => ({ critique: {
+        candidate_pattern: deriveExecutionFlowPattern([{ tool_name: 'mail.send', risk_tier: 'write' }]),
+        support: [], contradictions: [], alternatives: [],
+      } }),
+      emit: () => {}, now: () => 1_000,
+    });
+    const note = cause === 'provider' ? 'The AI provider failed before answering.'
+      : 'The AI model returned a reply that could not be read. Please try again.';
+    expect(result.assistant_content).toBe(`${partial}\n\n${note}`);
+    expect(result.assistant_content).not.toContain('PRIVATE-FAILURE-731');
+    expect(result.assistant_content).not.toContain('tools had already run');
+    expect(executeAiCall).toHaveBeenCalledTimes(2);
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(result.tool_calls ?? []).toHaveLength(0);
+  });
+
   it('reinvokes before dispatch, then sends a repeated proposal through ordinary dispatch', async () => {
     const ordering: string[] = [];
     const prompts: Record<string, unknown>[] = [];
@@ -142,7 +169,7 @@ describe('D-214 proposal critique in the real cooperative executor', () => {
     let round = 0;
     const executeAiCall = vi.fn(async () => ({
       body: round++ === 0
-        ? proposed
+        ? { ...proposed, response: 'I will prepare the report.' }
         : { response: '', events: [], tool_calls: [] },
     }));
     const dispatchTool = vi.fn(async (): Promise<ChatDispatchResult> => ({
@@ -181,6 +208,8 @@ describe('D-214 proposal critique in the real cooperative executor', () => {
       expect.objectContaining({ termination_reason: 'output_unreadable' }),
     ]);
     expect(result.assistant_content).not.toBe('');
+    expect(result.assistant_content.startsWith('I will prepare the report.\n\n')).toBe(true);
+    expect(result.assistant_content).toContain('returned an empty reply twice');
   });
 
   it('adds no model round and no dispatch effect when evidence is absent', async () => {

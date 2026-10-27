@@ -83,7 +83,7 @@ test('Proposal cards expose affected records, triggers and reminder changes with
   await expect(preview).toContainText('Ana’s passport'); await expect(preview).toContainText('issued on');
   await expect(preview).toContainText('Proposed reminders: on the day');
   const timing = route.locator('[data-yours-proposal-preview="schedule-review"]');
-  await expect(timing).toContainText('Current reminders:'); await expect(timing).toContainText('Proposed reminders: 2 weeks before; on the day');
+  await expect(timing).toContainText('Current reminders:'); await expect(timing).toContainText(/Proposed reminders:\s*2 weeks before; on the day/u);
   const reads = await page.evaluate(() => window.__app.rpcCallCount('yours.read'));
   await route.getByRole('button', { name: 'Refresh', exact: true }).click(); await expect(route).toHaveAttribute('aria-busy', 'false');
   expect(await page.evaluate(() => window.__app.rpcCallCount('yours.read'))).toBe(reads + 1);

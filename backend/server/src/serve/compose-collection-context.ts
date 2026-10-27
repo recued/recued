@@ -125,7 +125,7 @@ import { quietHoursEndFor, shouldSuppressForQuietHours } from '@recued/contracts
 import { createSituationStore, type SituationStore } from '../storage/situation-store.js';
 import { occasionRuleSituation, resolveRuleSituation, ruleSituation } from '../situations/rule-situation.js';
 import { createClusterSummary } from '../situations/cluster-summary.js';
-import { createScheduledSituations, type ScheduledSituations } from '../situations/scheduled-situations.js';
+import { createScheduledSituations, mailboxHealthOf, type ScheduledSituations } from '../situations/scheduled-situations.js';
 import { handleNotificationSend } from '../notification-handler.js';
 import { createSituationQuery } from '../situations/query.js';
 import { createSituationNamedPeople, createSituationPeopleFor } from '../situations/named-people.js';
@@ -811,6 +811,7 @@ export const composeCollectionContext = (
       credential: async row => { const auth = await decodeAuthFromStorage(row.auth_ciphertext, { kind: row.kind, name: row.name }, keys?.keyProvider('connection'));
         return auth.type === 'bearer' && typeof auth.token === 'string' && auth.token ? auth.token : null; },
     });
+
     assetReminders = createAssetReminderService({ db, work: workEntityStore, dispatchers: workEntityDispatchers,
       occurrences: assetOccurrences, timeZone: serverTimeZone,
       projectHousehold: () => householdHomeAssistant!.tick(),
@@ -927,10 +928,7 @@ export const composeCollectionContext = (
         overview: () => yours.overview(), send: message => handleNotificationSend({ dispatchers: channelDispatchers ?? {} }, message),
         ...(episodeRuntime ? { retainCited: clusters => episodeRuntime!.retainCited(clusters), memoryAllowed: cluster => episodeRuntime!.memoryAllowed(cluster) } : {}),
         ...(contactStore ? { personName: (id: string) => { const contact = contactStore.getByContactIdResolved(id) ?? contactStore.get(id); return contact ? contact.name ?? contact.email : undefined; } } : {}),
-        mailHealth: () => collectionRegistry.list().filter(collection => collection.platform === 'mail').map(collection => {
-          const health = collection.health(); return { name: collection.slug, last_success_at: health.last_indexed_at,
-            needs_attention: health.error_count_24h > 0 || health.last_indexed_at === 0 || Date.now() - health.last_indexed_at > 86_400_000 || health.auth_state === 'expired' || health.auth_state === 'unauthorized' };
-        }),
+        mailHealth: () => mailboxHealthOf(collectionRegistry.list(), Date.now()),
       }) : undefined;
   if (scheduledSituations) yours!.bindScheduled(scheduledSituations);
   let feedSubscribers: EventTriggersStore | undefined;

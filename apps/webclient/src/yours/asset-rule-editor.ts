@@ -6,12 +6,15 @@ export const parseReminderOffsets = (value: string): AssetRule['schedule']['befo
   return { amount: Number(match[1]), unit: `${match[2]!.replace(/s$/u, '')}s` as 'days' | 'weeks' | 'months' };
 }) : [];
 
+export const ruleOffsetWords = (point: AssetRule['schedule']['before'][number]): string =>
+  `${point.amount} ${point.amount === 1 ? point.unit.replace(/s$/u, '') : point.unit}`;
+
 export const assetRuleWhenWords = (when: AssetRule['when']): string => {
   const field = when.field.replaceAll('_', ' ');
   switch (when.kind) {
-    case 'expiry': return when.offset ? `${when.offset.amount} ${when.offset.unit} before “${field}”` : `On the date in “${field}”`;
-    case 'interval': return `Every ${when.every.amount} ${when.every.unit} after ${field}`;
-    case 'objective': return `As ${field} approaches ${when.target} ${when.unit} (${when.direction === 'rising' ? 'increasing' : 'decreasing'})`;
+    case 'expiry': return when.offset ? `${ruleOffsetWords(when.offset)} before “${field}”` : `On the date in “${field}”`;
+    case 'interval': return `Every ${ruleOffsetWords(when.every)} after ${field}`;
+    case 'objective': return `As ${field} ${when.direction === 'rising' ? 'rises' : 'falls'} toward ${when.target} ${when.unit}`;
     case 'condition': return `When ${field} is ${when.certainty === 'confirmed' ? 'confirmed' : 'possibly'} present`;
   }
 };
@@ -76,7 +79,7 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
   const mode = select(objective, 'After completion', 'mode', [['usage', 'Wait for the next service'], ['condition', 'Wait for the reading to recover']], when?.kind === 'objective' ? when.mode : 'usage');
   const condition = group(host, 'Condition evidence', 'condition');
   const certainty = select(condition, 'Observation certainty', 'certainty', [['confirmed', 'Confirmed'], ['conditional', 'Confirmed or conditional']], when?.kind === 'condition' ? when.certainty : 'confirmed');
-  const before = input(host, 'Remind before (for example 6 months, 1 week)', 'before', own ? own.schedule.before.map(point => `${point.amount} ${point.unit}`).join(', ') : '1 month');
+  const before = input(host, 'Remind before (for example 6 months, 1 week)', 'before', own ? own.schedule.before.map(ruleOffsetWords).join(', ') : '1 month');
   const onDay = check(host, 'On the day', 'on-day', own?.schedule.on_day ?? true);
   const consequence = select(host, 'Consequence', 'consequence', [['routine', 'Routine'], ['floor', 'Safety, legal or travel']], own?.consequence ?? 'routine');
   const expiry = select(host, 'Expiry', 'expiry', [['strict_expire', 'Lapse on the due day'], ['escalate_overdue', 'Keep overdue'], ['indefinite', 'No expiry']], own?.expiry_policy ?? 'strict_expire');
@@ -173,7 +176,7 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
       else if (kind.value === 'expiry') trigger = assetRuleWhenWords({ kind: 'expiry', field: fact.value, ...(offset.value ? { offset: { amount: Number(offset.value), unit: offsetUnit.value as 'days' | 'weeks' | 'months' } } : {}) });
     }
     const reminders = [before.value.trim() ? `${before.value.trim()} before` : '', onDay.checked ? 'on the day' : ''].filter(Boolean).join(', ');
-    const repeats = reaction.value === 'action' && expiry.value !== 'strict_expire' && after.value ? ` Then every ${after.value} ${afterUnit.value} while open.` : '';
+    const repeats = reaction.value === 'action' && expiry.value !== 'strict_expire' && after.value ? ` Then every ${ruleOffsetWords({ amount: Number(after.value), unit: afterUnit.value as 'days' | 'weeks' | 'months' })} while open.` : '';
     preview.textContent = `${!enabled.checked ? 'Rule disabled. ' : own?.muted ? 'Reminders are muted. ' : ''}${trigger}. ${reaction.value === 'action' ? 'Create a task' : reaction.value === 'notice' ? 'Create a notice' : 'Nothing under Due'}${notify.checked ? ' and notify you' : ''}.${reminders ? ` Remind ${reminders}.` : ' No scheduled reminder.'}${repeats}`;
   };
   host.addEventListener('input', updatePreview); host.addEventListener('change', updatePreview); updatePreview();

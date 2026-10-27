@@ -41,6 +41,29 @@ const harness = async (messages: number) => {
 };
 
 describe('handleSessionGet — windowing', () => {
+  it('does not acknowledge newer replies when inspecting an exact message or paging history', async () => {
+    const { store, deps } = await harness(20);
+    for (const position of [
+      { around_message_id: 'm0002' },
+      { before: { ts: 1010, message_id: 'm0010' } },
+      { after: { ts: 1002, message_id: 'm0002' } },
+    ]) {
+      await handleSessionGet(deps, { session_id: 'chat_1', limit: 5, ...position });
+      expect(store.listSessions()[0]?.last_seen_message_count).toBe(0);
+    }
+    await handleSessionGet(deps, { session_id: 'chat_1', limit: 5 });
+    expect(store.listSessions()[0]?.last_seen_message_count).toBe(20);
+  });
+
+  it('allows a quiet tail refresh without changing the legacy complete-read acknowledgement', async () => {
+    const { store, deps } = await harness(5);
+    await handleSessionGet(deps, { session_id: 'chat_1', limit: 5, mark_seen: false });
+    expect(store.listSessions()[0]?.last_seen_message_count).toBe(0);
+    await handleSessionGet(deps, { session_id: 'chat_1' });
+    expect(store.listSessions()[0]?.last_seen_message_count).toBe(5);
+    await expect(handleSessionGet(deps, { session_id: 'chat_1', mark_seen: 'yes' } as never)).rejects.toThrow('mark_seen must be boolean');
+  });
+
   it('returns EVERYTHING when no limit is asked for', async () => {
     const { deps } = await harness(250);
     const result = await handleSessionGet(deps, { session_id: 'chat_1' });

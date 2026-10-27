@@ -304,6 +304,10 @@ export const createYoursFixture = () => {
       ...(input.asset_filter && !legacyFilters ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}),
       ...(input.asset_sphere && !legacySpheres ? { asset_sphere: input.asset_sphere } : {}),
       ...(input.include_asset_summaries === true && !new URLSearchParams(location.search).has('yours_without_asset_summaries') ? { asset_summaries: selected.map(summaryFor) } : {}),
+      ...(input.asset_id === 'passport' && new URLSearchParams(location.search).has('yours_reading_comparisons') ? {
+        reading_comparisons: { asset_id: 'passport', rules: [{ rule_id: 'meter_service', comparison: { kind: 'compared' as const,
+          value: 9000, target: 10000, unit: 'km', observed_at: time, relation: 'below' as const, difference: '1000' } }] },
+      } : {}),
       occurrences: demo && (!input.asset_id || input.asset_id === 'passport') && commitment.lifecycle_state === 'pending' ? [{ id: 'passport-occurrence', asset_id: 'passport', rule_id: 'renew', title: commitment.statement, due_on: '2027-04-17', question: false, commitment, current_ask_id: null, later_until: null, closes_by_proof: true,
         renewal: { field: 'expires_on', current: '2027-04-17' } }] : [],
       // `&yours_proof=1` — a mailbox takes forwarded proof (D-325 §5.3).
@@ -540,6 +544,11 @@ export const createYoursFixture = () => {
         edges: rules.map(node => ({ from: node.ref, to: field, kind: 'uses' })), read_at: Date.now(), freshness: 'current', completeness: 'complete', omitted: [], missing: value === null ? [field] : [] };
       return { result: packet };
     }
+    if (method === 'data.timeline' && new URLSearchParams(location.search).has('yours_timeline')) return { result: { entries: [
+      { ts: time, source: 'collection', kind: 'asset.updated', payload: {} },
+      { ts: time - 60_000, source: 'collection', kind: 'rule.updated', payload: {} },
+      { ts: time - 86_400_000, source: 'memory', kind: 'observation.accepted', payload: {} },
+    ] } };
     if (method === 'yours.read') {
       if ((raw as YoursReadRequest).search !== undefined && assetSearchFailures-- > 0) return { error: { code: 'unavailable', message: 'Asset search unavailable. Try again.' } };
       // P44: a list read must never ask the server to assemble derived episodes.

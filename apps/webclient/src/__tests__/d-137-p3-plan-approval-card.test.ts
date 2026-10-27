@@ -60,6 +60,7 @@ interface FakeEl {
   readonly firstChild: FakeEl | null;
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
+  querySelector(selector: string): FakeEl | null;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
@@ -97,6 +98,11 @@ const makeFakeEl = (tag: string): FakeEl => {
     },
     getAttribute(k) {
       return el.attrs.get(k) ?? null;
+    },
+    // Foreground completions must see the rendered transcript, as they do in the browser.
+    querySelector(selector) {
+      const attribute = /^\[([\w-]+)\]$/u.exec(selector)?.[1];
+      return attribute ? collectByAttr(el, attribute).find(candidate => candidate !== el) ?? null : null;
     },
     appendChild(c) {
       c.parent = el;

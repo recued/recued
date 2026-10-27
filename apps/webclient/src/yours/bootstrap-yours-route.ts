@@ -1,4 +1,4 @@
-import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_STATUSES, PROACTIVE_PROPOSAL_KINDS, assetDocumentDetails, isAssetDate, occasionNextDate, type Asset, type AssetClassPreset, type FileAttachmentSelection,
+import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_STATUSES, HOME_ASSISTANT_WRITER_SETUP, PROACTIVE_PROPOSAL_KINDS, assetDocumentDetails, isAssetDate, occasionNextDate, type Asset, type AssetClassPreset, type FileAttachmentSelection,
   type AssetEvidence, type AssetPatch, type AssetRule, type ContactRecord, type Episode, type EpisodeInput, type Link, type Occasion, type ProactiveProposal,
   type TimelineRequest, type TimelineResponse, type TripDetails, type YoursAssetFilter, type YoursAssetSphere, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
 import type { DataCommitmentCloseCaller } from '../data/bootstrap-data-route.js';
@@ -7,17 +7,17 @@ import { serializeLogsRunAddress, serializeSourceRecordAddress } from '../shell/
 import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { mountAssetFactsEditor } from './asset-facts-editor.js';
-import { assetRuleWhenWords, mountAssetRuleEditor, parseReminderOffsets } from './asset-rule-editor.js';
+import { assetRuleWhenWords, mountAssetRuleEditor, parseReminderOffsets, ruleOffsetWords } from './asset-rule-editor.js';
 import { assetObservationFieldName, mountAssetObservationEditor } from './asset-observation-editor.js';
 import { mountAssetSummary } from './asset-summary.js';
-import { assetEvidenceText, assetSourceWords, changedAssetPatch } from './asset-provenance.js';
+import { assetEvidenceText, changedAssetPatch, renderAssetSource } from './asset-provenance.js';
 import { lastTimeClassName } from './last-time-words.js';
 import { dayAfter, dueOnText, renewalDateWords, taskDueWords } from './due-words.js';
 export { parseReminderOffsets } from './asset-rule-editor.js';
 import { mountAssetPicker, type AssetPicker } from './asset-picker.js';
 import { assetChatContext, type ChatAssetContext } from '../chat/asset-context.js';
 import { YOURS_STYLES } from './yours-styles.js';
-import { yoursActions, yoursDisclosure, yoursEmpty, yoursList, yoursMenu, yoursPageHeader, yoursToolbar } from './yours-view.js';
+import { yoursActions, yoursDisclosure, yoursEmpty, yoursList, yoursMenu, yoursNavigation, yoursPageHeader, yoursToolbar } from './yours-view.js';
 import { focusListTarget, readListContinuity, readListScroll, restoreListScroll, updateListContinuity } from '../shell/list-preview-continuity.js';
 import { mountAssetContextInspector } from './asset-context-inspector.js';
 import { mountAssetWriterSetup, type AssetWriterSetupCallers } from './asset-writer-setup.js';
@@ -28,7 +28,7 @@ import { clearYoursFieldErrors, yoursFieldError } from './yours-field-errors.js'
 import { factName } from './fact-words.js';
 import { mountClassFieldsEditor } from './class-fields-editor.js';
 import { proposalPreview, reminderTimingWords } from './proposal-preview.js';
-import { episodeDateWords, yoursCalendarDate } from './yours-dates.js';
+import { episodeDateWords, yoursCalendarDate, yoursDateTime } from './yours-dates.js';
 import { mountCountryChoice } from './country-choice.js';
 import { renderAssetComparisons } from './asset-comparisons.js';
 
@@ -55,6 +55,7 @@ export interface YoursRouteOptions {
   subscribeReady?: (listener: () => void) => () => void;
   recordOpened?: (ref: import('@recued/contracts').SituationRef) => void;
   askAsset?: (context: ChatAssetContext) => void;
+  prepareFileUpload?: (asset: { id: string; name: string }) => void;
   /** Connection identity keeps private list state separate across server profiles. */
   continuityOwner?: object;
   context?(input: import('@recued/contracts').AssetFactContextRequest): Promise<import('@recued/contracts').AssetFactContext>;
@@ -84,16 +85,21 @@ type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; corr
   | { type: 'occasion_rule'; occasion: Occasion; rule?: AssetRule; proposal?: ProactiveProposal }
   | { type: 'episode'; episode?: EpisodeInput; correction?: ProactiveProposal };
 type EditorReturnFocus = { key: string; asset_id: string; scope?: string; menu?: string };
-const scheduleText = (rule: AssetRule) => rule.schedule.before.map(point => `${point.amount} ${point.unit}`).join(', ');
+const scheduleText = (rule: AssetRule) => rule.schedule.before.map(ruleOffsetWords).join(', ');
 const ASSET_STATUS_WORDS: Record<Asset['status'], string> = { active: 'Active', lent: 'Lent', sold: 'Sold', lost: 'Lost', retired: 'Retired' };
 const newClassId = () => `owner_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
 /** §4.7 — the ladder an episode stands on (its `basis`), in the owner's words. */
 const EPISODE_BASIS_WORDS: Record<EpisodeInput['basis'], string> = { declared: 'your record', derived: 'planned, and shown to have happened', inferred: 'pieced together from traces' };
 /** P47 — the schedule as it will be sent: a clock that lapses on its due day
  * (`strict_expire`) has no repeats, whatever its repeat field says. */
-export const ruleScheduleSummary = (rule: AssetRule): string => `remind ${scheduleText(rule) || 'no earlier points'}${rule.schedule.on_day ? ', on the day' : ''}${
-  !rule.schedule.after ? '' : rule.expiry_policy === 'strict_expire' ? '; it lapses on the due day, so it does not repeat'
-    : `; then every ${rule.schedule.after.amount} ${rule.schedule.after.unit}`}`;
+export const ruleScheduleSummary = (rule: AssetRule): string => {
+  const points = [scheduleText(rule) && `${scheduleText(rule)} before`, rule.schedule.on_day ? 'on the day' : ''].filter(Boolean);
+  const after = rule.schedule.after;
+  const timing = points.length ? `remind ${points.join(', ')}` : after && rule.expiry_policy !== 'strict_expire'
+    ? 'No reminders before or on the due day' : 'No scheduled reminders';
+  return timing + (!after ? '' : rule.expiry_policy === 'strict_expire' ? '; it lapses on the due day, so it does not repeat'
+    : `; then every ${ruleOffsetWords(after)}`);
+};
 export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const doc = options.container.ownerDocument;
   if (!doc.head.querySelector('style[data-recued-yours-styles]')) { const style = doc.createElement('style'); style.setAttribute('data-recued-yours-styles', ''); style.textContent = YOURS_STYLES; doc.head.append(style); }
@@ -112,7 +118,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   }, true);
   let content: HTMLElement = root;
   let openingTrigger: EditorReturnFocus | undefined;
-  const openDisclosures = new Set<string>();
+  const openDisclosures = new Map<string, boolean>();
   let refreshContext: (() => Promise<void>) | undefined;
   let writerSetup: ReturnType<typeof mountAssetWriterSetup> | undefined; let writerBusy = false;
   let inputAddressFocused = false;
@@ -164,6 +170,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     for (const menu of root.querySelectorAll<HTMLDetailsElement>('[data-yours-menu][open]')) if (!menu.contains(event.target as Node)) menu.open = false;
   }, { signal: routeAbort.signal });
   const assetPickers: AssetPicker[] = [];
+  const navigationDisposers: Array<() => void> = [];
   const fileMetadata = new Map<string, Promise<FileAttachmentSelection>>();
   // Four metadata reads at a time; queued reads from a replaced snapshot never
   // reach the server. A metadata read does not download file content.
@@ -258,6 +265,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     } }
   };
   const change = (input: YoursCommand, keep = false) => write(() => options.change(input), keep);
+  const writerEditor = (field: string): 'writer_setup' | 'writer' => options.writerSetup &&
+    Object.hasOwn(HOME_ASSISTANT_WRITER_SETUP.fields, field) ? 'writer_setup' : 'writer';
   const open = (value: Editor, returnFocus?: EditorReturnFocus) => {
     if (disposed) return;
     if (value.type === 'class' && value.preset.origin !== 'owner') value = { ...value, creating: true, preset: { ...value.preset, id: newClassId(), origin: 'owner', version: 1 } };
@@ -292,10 +301,14 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     }
   };
   const section = (parent: HTMLElement, title: string) => { const node = el('section', undefined, parent); node.className = 'yours-section'; el('h3', title, node); return node; };
+  const sectionActions = (parent: HTMLElement) => {
+    const heading = parent.querySelector('h3')!; const row = el('div'); row.className = 'yours-section-heading'; parent.insertBefore(row, heading); row.append(heading); return yoursActions(row);
+  };
   const placementFor = (ref: import('@recued/contracts').SituationRef) => snapshot?.sphere_placements.find(row => row.ref.collection === ref.collection && row.ref.id === ref.id);
   const placementChip = (parent: HTMLElement, ref: import('@recued/contracts').SituationRef) => {
     const placement = placementFor(ref); const host = el('details', undefined, parent); host.dataset.yoursSphere = '';
-    el('summary', `${placement?.sphere === 'personal' ? 'Personal' : placement?.sphere === 'professional' ? 'Work' : 'Unsorted'} · ${placement?.reason ?? 'unknown'}`, host);
+    el('summary', placement?.sphere === 'personal' ? 'Personal' : placement?.sphere === 'professional' ? 'Work' : 'Unsorted', host);
+    el('p', `Placement: ${placement?.reason ?? 'unknown'}`, host).className = 'yours-muted';
     el('p', 'Placement controls which AI contracts may read this record.', host);
     const choice = select(host, 'This record’s sphere', `sphere-${ref.collection}-${ref.id}`, [['', 'Use source placement'], ['personal', 'Personal'], ['professional', 'Work']], placement?.pinned ? placement.sphere : '');
     // Choosing a facet is an immediate change, not an unsaved editor draft.
@@ -859,7 +872,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   /** P44 — an episode where it is cited (an occasion's history), with Correct and Hide.
    * A hidden episode leaves every list and is named under Memory exclusions (P17). */
   const renderEpisodeSummary = (item: HTMLElement, episode: EpisodeInput) => {
-    el('p', `${episodeDateWords(episode.when)} · ${episode.where?.name ?? 'place unknown'} · ${EPISODE_BASIS_WORDS[episode.basis]}`, item);
+    item.classList.add('yours-event');
+    el('p', `${episodeDateWords(episode.when)} · ${episode.where?.name ?? 'place unknown'}`, item).className = 'yours-event-date';
+    el('p', EPISODE_BASIS_WORDS[episode.basis], item).className = 'yours-muted';
     if (episode.people.length) el('p', `With ${episode.people.map(id => holderName(id)).join(', ')}`, item);
     if (episode.notes) el('p', episode.notes, item);
     renderEvidence(item, episode.evidence);
@@ -871,13 +886,23 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     button(item, 'Hide', () => change({ action: 'episode.hide', id: episode.id }), `hide-${episode.id}`);
   };
   const renderProposal = (parent: HTMLElement, proposal: ProactiveProposal) => {
-    const item = card(parent, proposal.title, proposal.subject ?? proposal.sources[0], ['proposal', proposal.id]); el('p', `${proposal.confidence} confidence · ${proposal.kind} · ${proposal.lane?.replaceAll('_', ' ') ?? proposal.origin}`, item); el('p', proposal.explanation, item);
+    const item = card(parent, proposal.title, proposal.subject ?? proposal.sources[0], ['proposal', proposal.id]);
+    item.classList.add('yours-proposal');
     const preview = proposalPreview(proposal, { assets: [...snapshot!.assets, ...snapshot!.related_assets], classes: snapshot!.classes, occasions: snapshot!.occasions });
-    if (preview.subject || preview.lines.length) {
+    if (preview.subject || preview.lines.length || preview.changes.length) {
       const change = el('div', undefined, item); change.className = 'yours-change-preview'; change.dataset.yoursProposalPreview = proposal.id;
       if (preview.subject) link(change, preview.subject.name, preview.subject.href);
       for (const line of preview.lines) el('p', line, change);
+      for (const difference of preview.changes) {
+        const pair = el('div', undefined, change); pair.className = 'yours-change-pair';
+        for (const [title, value] of [[difference.current_label, difference.current], [difference.proposed_label, difference.proposed]]) {
+          const side = el('div', undefined, pair); el('h4', `${title}:`, side); el('p', value, side);
+        }
+      }
     }
+    const why = yoursDisclosure(item, 'Why suggested'); why.dataset.yoursDisclosure = `proposal:${proposal.id}:why`;
+    el('p', proposal.explanation, why);
+    el('small', `${proposal.confidence} confidence · ${proposal.kind} · ${proposal.lane?.replaceAll('_', ' ') ?? proposal.origin}`, why);
     for (const source of proposal.sources) if (!sourceLink(item, source)) el('small', `${source.collection}: ${source.id}`, item);
     if (proposal.kind === 'last_done') { const date = label(item, 'Actual last-done date', `proposal-${proposal.id}-date`, '', 'date');
       button(item, 'Save date', () => change({ action: 'occurrence.last_done', id: String(proposal.payload.occurrence_id), on: date.value }));
@@ -897,7 +922,10 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (proposal.kind === 'habit') { link(item, 'Review standing task in Contracts', '#contracts'); return; }
     const actions = yoursActions(item);
     if (proposal.kind === 'trip') button(actions, 'Choose travellers', () => open({ type: 'trip', proposal })).className = 'yours-primary';
-    else button(actions, proposal.kind === 'rule' && proposal.payload.apply_class !== true ? 'Switch on' : 'Accept', () => change({ action: 'proposal.accept', ids: [proposal.id] })).className = 'yours-primary';
+    else button(actions, proposal.kind === 'asset' ? 'Add asset' : proposal.kind === 'schedule' ? 'Apply reminder change'
+      : proposal.kind === 'rule' ? proposal.payload.apply_class === true ? 'Apply template' : 'Switch on'
+        : 'Accept',
+    () => change({ action: 'proposal.accept', ids: [proposal.id] }), 'accept-proposal').className = 'yours-primary';
     button(actions, 'Review change', loadEditor(async () => {
       if (proposal.kind === 'asset') return { type: 'asset', proposal };
       if (proposal.kind === 'recall') return { type: 'recall', proposal };
@@ -940,6 +968,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     typing = false;
     refreshContext = undefined;
     assetPickers.splice(0).forEach(picker => picker.destroy());
+    navigationDisposers.splice(0).forEach(dispose => dispose());
     const active = doc.activeElement as HTMLElement | null;
     const focusedElement = active && root.contains(active) ? active : undefined;
     const focused = focusTarget(focusedElement) ?? (active === doc.body ? refreshingFocus : undefined);
@@ -949,11 +978,14 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const openMenus = new Set([...root.querySelectorAll<HTMLDetailsElement>('[data-yours-menu][open]')].map(menu => menu.dataset.yoursMenu!));
     for (const disclosure of root.querySelectorAll<HTMLDetailsElement>('[data-yours-disclosure]')) {
       const key = disclosure.dataset.yoursDisclosure!;
-      if (disclosure.open) openDisclosures.add(key); else openDisclosures.delete(key);
+      openDisclosures.set(key, disclosure.open);
     }
     writerSetup?.dispose(); writerSetup = undefined;
-    root.replaceChildren(); const masthead = el('header', undefined, root); masthead.className = 'yours-masthead';
+    root.replaceChildren(); root.dataset.yoursDetail = String(!!selected);
+    const masthead = el('header', undefined, root); masthead.className = 'yours-masthead';
     const introduction = el('div', undefined, masthead); const heading = el('h1', 'Yours', introduction); heading.tabIndex = -1; heading.dataset.yoursHeading = '';
+    if (selected) { introduction.className = 'yours-breadcrumb';
+      const back = link(introduction, 'Assets', readListContinuity<string>(doc, continuityKey)?.filter ?? '#yours/assets'); back.setAttribute('aria-label', 'Back to assets'); }
     const restoreInteraction = () => {
       const menus = new Map([...root.querySelectorAll<HTMLDetailsElement>('[data-yours-menu]')].map(menu => [menu.dataset.yoursMenu!, menu]));
       for (const key of openMenus) { const menu = menus.get(key); if (menu) menu.open = true; }
@@ -965,7 +997,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     };
     el('p', 'Your things, the facts, and what comes next.', introduction);
     button(masthead, 'Refresh', () => editor?.type === 'context' ? refreshContext?.() : editor?.type === 'writer_setup' ? writerSetup?.refresh() : refresh(!editor), 'refresh').className = 'yours-quiet';
-    const nav = el('nav', undefined, root); nav.className = 'yours-nav'; nav.setAttribute('aria-label', 'Yours'); nav.setAttribute('data-recued-scroll-rail', '');
+    const navigation = yoursNavigation(root, 'Yours'); navigationDisposers.push(navigation.dispose); const nav = navigation.nav;
     for (const id of TABS) { const node = link(nav, TAB_LABELS[id], `#yours/${id}`); node.dataset.yoursFocus = `tab-${id}`; if (id === tab) node.setAttribute('aria-current', 'page'); }
     doc.defaultView?.requestAnimationFrame(() => {
       if (!nav.isConnected) return;
@@ -1000,18 +1032,19 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       content.dataset.yoursFocusScope = JSON.stringify(['asset', asset.id]);
       // §15.3 — the header names the holder, and says the status and audience in words.
       const parentName = (id: string) => snapshot!.related_assets.find(row => row.id === id)?.name ?? 'its parent';
-      link(content, 'Back to assets', readListContinuity<string>(doc, continuityKey)?.filter ?? '#yours/assets');
       const assetHeader = yoursPageHeader(content, asset.name, [snapshot.classes.find(item => item.id === asset.class_id)?.name ?? 'Unclassified', ASSET_STATUS_WORDS[asset.status],
         `${asset.audience === 'household' ? 'Shared with your household' : 'Only you'}${asset.inherited_fields?.audience ? ` (same as ${parentName(asset.inherited_fields.audience)})` : ''}`].join(' · '));
-      button(assetHeader.actions, 'Edit asset', () => open({ type: 'asset', asset })).className = 'yours-primary';
-      if (options.askAsset) button(assetHeader.actions, 'Ask about this asset', () => options.askAsset!(assetChatContext(asset, files, filesAvailable)));
+      assetHeader.header.classList.add('yours-asset-header');
+      const editAsset = button(assetHeader.actions, 'Edit asset', () => open({ type: 'asset', asset })); editAsset.textContent = 'Edit'; editAsset.setAttribute('aria-label', 'Edit asset');
+      if (options.askAsset) { const ask = button(assetHeader.actions, 'Ask about this asset', () => options.askAsset!(assetChatContext(asset, files, filesAvailable))); ask.textContent = 'Ask'; ask.setAttribute('aria-label', 'Ask about this asset'); }
       const assetMenu = yoursMenu(assetHeader.actions, asset.name, ['asset', asset.id]);
       button(assetMenu, 'Save as class', () => open({ type: 'class', preset: presetForAsset(asset), creating: true }));
       button(assetMenu, 'Delete asset', () => { if (doc.defaultView?.confirm && !doc.defaultView.confirm(`Remove ${asset.name}, its open clocks and bindings? Its ${snapshot!.retirement_impact?.parts ?? 0} parts and ${snapshot!.retirement_impact?.contracts ?? 0} contracts are shown below.`)) return; return change({ action: 'asset.delete', id: asset.id, confirmed: true }); }).className = 'yours-danger';
-      if (asset.holder_contact) el('p', `Held by ${holderName(asset.holder_contact)}`, content).setAttribute('data-yours-holder', '');
-      placementChip(content, { collection: 'asset', id: asset.id });
+      const metadata = el('div', undefined, assetHeader.text); metadata.className = 'yours-asset-identity';
+      if (asset.holder_contact) el('p', `Held by ${holderName(asset.holder_contact)}`, metadata).setAttribute('data-yours-holder', '');
+      placementChip(metadata, { collection: 'asset', id: asset.id });
       const view = segments[2] === 'view' && ['rules', 'files', 'activity'].includes(segments[3] ?? '') ? segments[3]! : 'overview';
-      const localNav = el('nav', undefined, content); localNav.className = 'yours-nav'; localNav.setAttribute('aria-label', 'Asset sections'); localNav.setAttribute('data-recued-scroll-rail', '');
+      const localNavigation = yoursNavigation(content, 'Asset'); navigationDisposers.push(localNavigation.dispose); const localNav = localNavigation.nav; localNav.setAttribute('aria-label', 'Asset sections');
       for (const key of ['overview', 'rules', 'files', 'activity']) {
         const tab = link(localNav, key[0]!.toUpperCase() + key.slice(1), `#yours/asset/${encodeURIComponent(asset.id)}${key === 'overview' ? '' : `/view/${key}`}`);
         if (key === view) tab.setAttribute('aria-current', 'page');
@@ -1019,17 +1052,33 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const panels = Object.fromEntries(['overview', 'rules', 'files', 'activity'].map(key => {
         const panel = el('div', undefined, content); panel.className = 'yours-content'; panel.dataset.yoursAssetPanel = key; panel.hidden = key !== view; return [key, panel];
       })) as Record<'overview' | 'rules' | 'files' | 'activity', HTMLDivElement>;
-      const openItems = section(panels.overview, 'Needs attention'); snapshot.occurrences.forEach(item => renderOccurrence(openItems, item)); snapshot.proposals.forEach(item => renderProposal(openItems, item));
+      const openItems = section(panels.overview, 'Needs attention');
+      const attention = yoursDisclosure(openItems, 'Open items'); attention.className = 'yours-attention'; attention.dataset.yoursDisclosure = `attention:${asset.id}`;
+      const dueDates = snapshot.occurrences.map(item => item.due_on).filter((on): on is string => !!on && isAssetDate(on)).sort();
+      const now = new Date(); const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      attention.open = !!snapshot.proposals.length || snapshot.occurrences.some(item => item.question || !!item.due_on && isAssetDate(item.due_on) && item.due_on <= today);
+      openItems.classList.add('yours-attention-section'); openItems.querySelector('h3')!.hidden = !attention.open;
+      attention.addEventListener('toggle', () => { openItems.querySelector('h3')!.hidden = !attention.open; });
+      attention.querySelector('summary')!.textContent = [
+        snapshot.occurrences.length ? `${snapshot.occurrences.length} open item${snapshot.occurrences.length === 1 ? '' : 's'}` : '',
+        snapshot.proposals.length ? `${snapshot.proposals.length} suggestion${snapshot.proposals.length === 1 ? '' : 's'} to review` : '',
+        dueDates[0] ? `Next due ${yoursCalendarDate(dueDates[0])}` : '',
+      ].filter(Boolean).join(' · ');
+      const attentionBody = el('div', undefined, attention); attentionBody.className = 'yours-content';
+      snapshot.occurrences.forEach(item => renderOccurrence(attentionBody, item)); snapshot.proposals.forEach(item => renderProposal(attentionBody, item));
       openItems.hidden = !snapshot.occurrences.length && !snapshot.proposals.length;
       // §5.3 — forwarded proof proposes the close of an open task.
       if (snapshot.proof_addresses?.length && snapshot.occurrences.some(item => item.closes_by_proof)) {
-        el('p', `To close one with proof, forward the email that shows it was done to ${snapshot.proof_addresses.join(' or ')} from that same mailbox, then accept the proposal it makes here.`, openItems)
+        el('p', `To close one with proof, forward the email that shows it was done to ${snapshot.proof_addresses.join(' or ')} from that same mailbox, then accept the proposal it makes here.`, attentionBody)
           .setAttribute('data-yours-proof-addresses', '');
       }
-      const rules = section(panels.rules, 'Rules'); button(rules, 'Add rule', () => open({ type: 'rule', asset })).className = 'yours-primary';
+      const rules = section(panels.rules, 'Rules'); button(sectionActions(rules), 'Add rule', () => open({ type: 'rule', asset })).className = 'yours-primary';
       if (!asset.rules.length) yoursEmpty(rules, 'No rules yet. Add one when a fact needs a reminder or an action.');
       for (const rule of asset.rules) {
-        const item = card(rules, rule.title, undefined, ['rule', asset.id, rule.id]); el('p', `${assetRuleWhenWords(rule.when)} · ${ruleScheduleSummary(rule)} · ${rule.consequence}${!rule.enabled ? ' · disabled' : ''}${rule.muted ? ' · muted' : ''}`, item);
+        const item = card(rules, rule.title, undefined, ['rule', asset.id, rule.id]);
+        const state = el('span', `${rule.enabled ? 'Enabled' : 'Disabled'}${rule.muted ? ' · reminders muted' : ''}`, item); state.className = 'yours-state';
+        el('p', `${assetRuleWhenWords(rule.when)}.`, item);
+        el('p', `${ruleScheduleSummary(rule).replace(/^r/u, 'R')} · ${rule.consequence === 'floor' ? 'Safety, legal or travel' : 'Routine'}`, item).className = 'yours-muted';
         item.dataset.yoursRule = rule.id;
         item.tabIndex = -1; item.dataset.yoursFocus = JSON.stringify(['source', 'rule', rule.id]);
         if (rule.when.kind === 'condition' || rule.when.kind === 'objective') {
@@ -1045,9 +1094,12 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       }
       const comparisons = renderAssetComparisons(panels.overview, asset, snapshot.reading_comparisons, (field, origin) => open({ type: 'reading', asset, field }, focusTarget(origin)));
       const readings = section(panels.overview, 'Conditions and readings'); const readingActions = yoursActions(readings);
+      if (comparisons) panels.overview.append(comparisons);
       readings.hidden = !Object.keys(asset.readings).length && !Object.keys(asset.observations).length;
       button(readingActions, 'Record reading', () => open({ type: 'reading', asset })); button(readingActions, 'Record condition', () => open({ type: 'condition', asset }));
-      if (options.writerSetup) button(readingActions, 'Automatic updates', () => open({ type: 'writer_setup', asset }), 'automatic-updates');
+      if (options.writerSetup && Object.keys(HOME_ASSISTANT_WRITER_SETUP.fields).some(path => {
+        const [group, key] = path.split('.') as ['readings' | 'observations', string]; return Object.hasOwn(asset[group], key);
+      })) button(readingActions, 'Automatic updates', () => open({ type: 'writer_setup', asset }), 'automatic-updates');
       const writers = yoursDisclosure(panels.rules, 'Observation writers');
       el('p', 'Choose an installed recipe and the fields it can report. A changed recipe needs your review again.', writers);
       for (const binding of snapshot.observation_bindings ?? []) if (binding.asset_id === asset.id) {
@@ -1069,7 +1121,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const observationControls = (item: HTMLElement, path: string, value: Asset['readings'][string] | Asset['observations'][string]) => {
         const source = asset.field_sources[path];
         if (path.startsWith('readings.')) {
-          el('p', source ? `${source.kind === 'owner' ? 'Recorded by you' : writerName(source.ref)} · ${new Date(source.at).toLocaleString()}` : 'Source not recorded.', item);
+          if (source) renderAssetSource(item, source, `${asset.id}:${path}`, source.kind === 'observation' ? writerName(source.ref) : undefined);
+          else el('small', 'Source not recorded.', item);
         }
         if (source?.kind !== 'owner') return;
         if (asset.automatic_updates?.[path] !== undefined) {
@@ -1084,26 +1137,35 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       };
       for (const [name, reading] of Object.entries(asset.readings)) {
         const item = card(readings, assetObservationFieldName(name), undefined, ['field', asset.id, 'readings', name]); item.dataset.yoursReading = name;
+        item.classList.add('yours-reading-row');
         item.tabIndex = -1; item.dataset.yoursFocus = JSON.stringify(['source', 'reading', name]);
-        el('p', reading ? `${reading.value} ${reading.unit} · ${new Date(reading.as_of).toLocaleString()}` : 'Unknown', item);
+        el('p', reading ? `${reading.value} ${reading.unit}` : 'Unknown', item).className = 'yours-reading-value';
+        if (reading) el('small', `Observed ${yoursDateTime(reading.as_of)}`, item);
         if (reading) renderEvidence(item, reading.evidence);
-        const actions = yoursActions(item); button(actions, 'Update reading', () => open({ type: 'reading', asset, field: name }), `reading-${name}`);
+        const actions = yoursActions(item); const update = button(actions, 'Update reading', () => open({ type: 'reading', asset, field: name }), `reading-${name}`); update.textContent = 'Update'; update.setAttribute('aria-label', 'Update reading');
         const more = yoursMenu(actions, `${assetObservationFieldName(name)} reading`, ['field', asset.id, 'readings', name]);
         button(more, 'Use in a rule', () => open({ type: 'rule', asset, initialField: { group: 'readings', field: name } }), `use-reading-${name}`);
-        button(more, 'Keep updated from a source', () => open({ type: options.writerSetup ? 'writer_setup' : 'writer', asset, field: `readings.${name}` }), `writer-reading-${name}`);
+        button(more, 'Keep updated from a source', () => open({ type: writerEditor(`readings.${name}`), asset, field: `readings.${name}` }), `writer-reading-${name}`);
         if (reading) button(more, 'Add evidence', () => open({ type: 'evidence', asset, group: 'readings', field: name }), `evidence-reading-${name}`);
         if (options.context) button(more, 'Used by', () => open({ type: 'context', request: { root: { kind: 'field', asset_id: asset.id, group: 'readings', field: name } } }), `used-by-reading-${name}`);
         observationControls(item, `readings.${name}`, reading);
       }
       const expected = (asset.settings[ASSET_EXPECTED_PATTERNS] ?? {}) as Record<string, { active: boolean; at: number } | undefined>;
       for (const [name, observation] of Object.entries(asset.observations)) { const item = card(readings, assetObservationFieldName(name), undefined, ['field', asset.id, 'observations', name]); item.dataset.yoursCondition = name;
+        item.classList.add('yours-reading-row');
+        item.dataset.yoursField = `observations.${name}`; item.tabIndex = -1; item.dataset.yoursFocus = JSON.stringify(['source', 'field', `observations.${name}`]);
         const source = asset.field_sources[`observations.${name}`];
-        el('p', observation ? `${observation.active ? 'Present' : 'Clear'} · ${observation.certainty} · ${source?.kind === 'owner' ? 'Recorded by you' : writerName(source?.ref ?? observation.source)} · ${new Date(observation.as_of).toLocaleString()}` : 'Unknown', item);
+        el('p', observation ? `${observation.active ? 'Present' : 'Clear'} · ${observation.certainty}` : 'Unknown', item).className = 'yours-reading-value';
+        if (observation) {
+          el('small', `Observed ${yoursDateTime(observation.as_of)}`, item);
+        }
+        if (source) renderAssetSource(item, source, `${asset.id}:observations.${name}`, source.kind === 'observation' ? writerName(source.ref) : undefined);
+        else el('small', 'Source not recorded.', item);
         if (observation) renderEvidence(item, observation.evidence);
         const actions = yoursActions(item); button(actions, 'Update condition', () => open({ type: 'condition', asset, field: name }), `condition-${name}`);
         const more = yoursMenu(actions, `${assetObservationFieldName(name)} condition`, ['field', asset.id, 'observations', name]);
         button(more, 'Use in a rule', () => open({ type: 'rule', asset, initialField: { group: 'observations', field: name } }), `use-condition-${name}`);
-        button(more, 'Keep updated from a source', () => open({ type: options.writerSetup ? 'writer_setup' : 'writer', asset, field: `observations.${name}` }), `writer-condition-${name}`);
+        button(more, 'Keep updated from a source', () => open({ type: writerEditor(`observations.${name}`), asset, field: `observations.${name}` }), `writer-condition-${name}`);
         if (observation) button(more, 'Add evidence', () => open({ type: 'evidence', asset, group: 'observations', field: name }), `evidence-condition-${name}`);
         if (options.context) button(more, 'Used by', () => open({ type: 'context', request: { root: { kind: 'field', asset_id: asset.id, group: 'observations', field: name } } }), `used-by-condition-${name}`);
         observationControls(item, `observations.${name}`, observation);
@@ -1118,8 +1180,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         } else if (observation?.active) button(item, 'That’s expected', () => change({ action: 'asset.update', id: asset.id, patch: { settings: {
           [ASSET_EXPECTED_PATTERNS]: { ...expected, [name]: { active: true, at: observation.as_of } } } } }), `expected-${name}`); }
       // §15.3 — each value with where it came from and what can replace it (its rank).
-      const facts = section(panels.overview, 'Facts and settings'); panels.overview.insertBefore(facts, comparisons ? readings : openItems);
-      const factActions = yoursActions(facts); button(factActions, 'Add fact', () => open({ type: 'fact', asset, group: 'attributes' })).className = 'yours-primary';
+      const facts = section(panels.overview, 'Facts and settings'); panels.overview.insertBefore(facts, readings);
+      const factActions = sectionActions(facts); button(factActions, 'Add fact', () => open({ type: 'fact', asset, group: 'attributes' })).className = 'yours-primary';
       if (readings.hidden) { const more = yoursMenu(factActions, 'facts', ['facts', asset.id]);
         button(more, 'Record reading', () => open({ type: 'reading', asset })); button(more, 'Record condition', () => open({ type: 'condition', asset })); }
       const definition = el('dl', undefined, facts); definition.className = 'yours-facts';
@@ -1132,10 +1194,12 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       ];
       for (const [path, name, value] of factRows) {
         const row = el('div', undefined, definition); row.className = 'yours-fact'; el('dt', factName(name), row);
-        const detail = el('dd', value === null ? 'Unknown' : typeof value === 'object' ? JSON.stringify(value) : String(value), row); detail.dataset.yoursFact = path;
+        row.dataset.yoursField = path; row.tabIndex = -1; row.dataset.yoursFocus = JSON.stringify(['source', 'field', path]);
+        const detail = el('dd', value === null ? 'Unknown' : typeof value === 'object' ? JSON.stringify(value) : path.startsWith('dates.') && typeof value === 'string' ? yoursCalendarDate(value) : String(value), row); detail.dataset.yoursFact = path;
+        if (path.startsWith('dates.') && typeof value === 'string') detail.title = value;
         const inheritedFrom = asset.inherited_fields?.[path]; const source = asset.field_sources[path];
         if (inheritedFrom) el('small', `Same as ${parentName(inheritedFrom)}.`, detail);
-        else if (source) { const words = assetSourceWords(source); el('small', `${words.from}. ${words.rank}`, detail); }
+        else if (source) renderAssetSource(detail, source, `${asset.id}:${path}`);
         if (path === 'document_number' || path === 'serial_number' || path === 'exact_address') el('small', ASSET_IDENTIFYING_FIELD_NOTE, detail);
         if (path.startsWith('dates.')) {
           const actionHost = el('dd', undefined, row); actionHost.className = 'yours-fact-actions'; const more = yoursMenu(actionHost, name.replaceAll('_', ' '), ['fact', asset.id, path]);
@@ -1193,11 +1257,13 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           button(actions, 'Preview file', () => openFilePreview(doc, { record_id: file.to_id,
             ...(selection ? { filename: selection.filename, selection_revision: selection.selection_revision } : {}) }, options.files!, routeAbort.signal)).className = 'yours-primary';
         }
-        button(actions, 'Document details', () => open({ type: 'document', asset, file, filename: selection?.filename ?? details.purpose ?? 'Attached file' }));
-        button(yoursMenu(actions, 'attached file', ['attachment', asset.id, file._id]), 'Remove attachment', () => change({ action: 'file.detach', asset_id: asset.id, link_id: file._id, record_id: file.to_id })).className = 'yours-danger';
+        const more = yoursMenu(actions, 'attached file', ['attachment', asset.id, file._id]);
+        button(more, 'Document details', () => open({ type: 'document', asset, file, filename: selection?.filename ?? details.purpose ?? 'Attached file' }));
+        button(more, 'Remove attachment', () => change({ action: 'file.detach', asset_id: asset.id, link_id: file._id, record_id: file.to_id })).className = 'yours-danger';
       }
       if (options.files) {
-        const query = label(attachments, 'Find a file to attach', 'file-search', '', 'text', true); const browser = el('div', undefined, attachments);
+        const attach = yoursDisclosure(attachments, 'Attach a file'); attach.dataset.yoursDisclosure = `attach:${asset.id}`; attach.open = !attached.length;
+        const query = label(attach, 'Find a file to attach', 'file-search', '', 'text', true); const browser = el('div', undefined, attach);
         let cursor: string | undefined; let browseVersion = 0;
         query.addEventListener('input', () => { browseVersion += 1; cursor = undefined; browser.replaceChildren(); });
         const browse = async (more = false) => {
@@ -1216,16 +1282,29 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           if (cursor) button(browser, 'More files', () => browse(true)).dataset.yoursFileMore = '';
           if (!more && !result.files.length) el('p', 'No matching files.', browser);
         };
-        button(attachments, 'Browse files', () => browse()); link(attachments, 'Upload a receipt, photo or certificate in Files', '#data/files');
+        const actions = yoursActions(attach); button(actions, 'Browse files', () => browse());
+        const upload = link(actions, 'Upload a file', '#data/files');
+        upload.addEventListener('click', event => { if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) options.prepareFileUpload?.({ id: asset.id, name: asset.name }); });
       }
       const history = section(panels.activity, 'History'); if (!timeline?.entries.length && !snapshot.observation_handoffs?.length) yoursEmpty(history, 'No timeline entries.');
-      for (const entry of timeline?.entries ?? []) el('p', `${new Date(entry.ts).toLocaleString()} · ${entry.source} · ${entry.kind}`, history);
+      let timelineDay = ''; let dayList: HTMLOListElement | undefined;
+      for (const entry of timeline?.entries ?? []) {
+        const at = new Date(entry.ts); const day = at.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        if (day !== timelineDay) { timelineDay = day; const group = el('section', undefined, history); group.className = 'yours-history-day';
+          el('h4', day, group); dayList = el('ol', undefined, group); dayList.className = 'yours-timeline'; }
+        const row = el('li', undefined, dayList!); const heading = el('div', undefined, row); heading.className = 'yours-timeline-heading';
+        const words = entry.kind.replace(/[._-]+/gu, ' '); el('strong', words.replace(/^./u, letter => letter.toUpperCase()), heading);
+        const when = el('time', at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }), heading);
+        if (Number.isFinite(at.getTime())) when.dateTime = at.toISOString();
+        const details = yoursDisclosure(row, 'Source details'); details.classList.add('yours-source'); details.dataset.yoursDisclosure = JSON.stringify(['timeline', asset.id, entry.ts, entry.source, entry.kind]);
+        el('p', `${yoursDateTime(entry.ts)} · ${entry.source} · ${entry.kind}`, details);
+      }
       for (const entry of snapshot.observation_handoffs ?? []) {
         const value = entry.value; const title = assetObservationFieldName(entry.path.split('.')[1]!);
         const item = card(history, `Automatic updates allowed · ${title}`); item.dataset.yoursHandoff = entry.id;
-        el('p', new Date(entry.at).toLocaleString(), item);
+        el('p', yoursDateTime(entry.at), item);
         el('p', `Previous manual entry: ${value === null ? 'Unknown' : 'value' in value ? `${value.value} ${value.unit}` : `${value.active ? 'Present' : 'Clear'} · ${value.certainty}`}`, item);
-        el('p', `Recorded by you · ${new Date(entry.source.at).toLocaleString()}${value ? ` · observed ${new Date(value.as_of).toLocaleString()}` : ''}`, item);
+        el('p', `Recorded by you · ${yoursDateTime(entry.source.at)}${value ? ` · observed ${yoursDateTime(value.as_of)}` : ''}`, item);
       }
     } else if (tab === 'assets') {
       link(pageHeader!.actions, classesView ? 'Assets' : 'Classes', classesView ? '#yours/assets' : '#yours/assets/classes');
@@ -1273,13 +1352,15 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         const list = yoursList(content);
         for (const asset of applied ? snapshot.assets : []) { const item = card(list, '', { collection: 'asset', id: asset.id }); item.dataset.yoursAsset = asset.id;
           link(item.querySelector('h3')!, asset.name, `#yours/asset/${encodeURIComponent(asset.id)}`).dataset.yoursAssetName = '';
-          el('p', `${snapshot.classes.find(preset => preset.id === asset.class_id)?.name ?? asset.class_id ?? 'Unclassified'} · ${ASSET_STATUS_WORDS[asset.status]}`, item).className = 'yours-asset-meta';
+          const identity = el('div', undefined, item); identity.className = 'yours-asset-identity';
+          el('p', [snapshot.classes.find(preset => preset.id === asset.class_id)?.name ?? asset.class_id, ASSET_STATUS_WORDS[asset.status]].filter(Boolean).join(' · '), identity).className = 'yours-asset-meta';
+          const sphere = item.querySelector<HTMLElement>('[data-yours-sphere]'); if (sphere) identity.append(sphere);
           mountAssetSummary(item, asset, snapshot.asset_summaries?.find(summary => summary.asset_id === asset.id), fact => {
             const [kind, field] = fact.path.split('.');
             open({ type: kind === 'dates' ? 'date' : kind === 'readings' ? 'reading' : 'condition', asset, field: field! },
               { key: `missing:${asset.id}:${fact.path}`, asset_id: asset.id, scope: JSON.stringify(['asset', asset.id]) });
           });
-          link(item, 'Open asset', `#yours/asset/${encodeURIComponent(asset.id)}`).dataset.yoursOpenAsset = ''; } }
+          const openAsset = link(item, '›', `#yours/asset/${encodeURIComponent(asset.id)}`); openAsset.setAttribute('aria-label', 'Open asset'); openAsset.title = `Open ${asset.name}`; openAsset.dataset.yoursOpenAsset = ''; } }
     } else if (tab === 'proposals') {
       const kind = select(filterToolbar ?? content, 'Proposal kind', 'proposal-kind', [['', 'All kinds'], ...PROACTIVE_PROPOSAL_KINDS.map(value => [value, value.replaceAll('_', ' ')] as [string, string])], proposalKind);
       kind.addEventListener('change', () => { proposalKind = kind.value as typeof proposalKind; page = 0; dirty = false;
@@ -1337,8 +1418,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     } else if (tab === 'occasions') {
       button(pageHeader!.actions, 'Create occasion', () => open({ type: 'occasion' })).className = 'yours-primary';
       for (const occasion of snapshot.occasions) { const item = card(content, occasion.title, { collection: 'occasion', id: occasion.id });
+        item.classList.add('yours-event');
         const next = occasionNextDate(occasion, new Date().toISOString().slice(0, 10));
-        el('p', `${next ? `Next ${yoursCalendarDate(next)}` : 'No upcoming date'}${occasion.muted ? ' · muted' : ''}`, item);
+        el('p', `${next ? `Next ${yoursCalendarDate(next)}` : 'No upcoming date'}${occasion.muted ? ' · muted' : ''}`, item).className = 'yours-event-date';
         if (occasion.people.length) el('p', occasion.people.map(id => holderName(id)).join(', '), item);
         if (occasion.source_active === false) el('p', 'Its source was removed or hidden. Reminders are suspended.', item);
         const actions = yoursActions(item); button(actions, 'Edit occasion', () => open({ type: 'occasion', occasion })); button(yoursMenu(actions, occasion.title, ['occasion', occasion.id]), 'Delete occasion', () => { const floor = occasion.rules.some(rule => rule.enabled && rule.consequence === 'floor');
@@ -1420,14 +1502,14 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const more = tab === 'proposals' ? (page + 1) * 50 < (snapshot.matching_proposals ?? snapshot.total_proposals) : tab === 'assets' ? (page + 1) * 50 < snapshot.total_assets : (tab === 'episodes' ? snapshot.episodes.length + (snapshot.derived_episodes?.length ?? 0) : tab === 'occasions' ? snapshot.occasions.length : 0) === 50;
       if (more) link(pagination, 'Next', assetList ? assetListHash(page + 1) : `#yours/${pageRoute}/page/${page + 2}`); }
     if (snapshot.unmatched_replies.length) { const replies = section(content, 'Unmatched replies'); for (const reply of snapshot.unmatched_replies) { const item = card(replies, reply.reason.replaceAll('_', ' ')); el('p', reply.text, item); button(item, 'Dismiss reply', () => change({ action: 'unmatched.dismiss', id: reply.id })); } }
-    for (const disclosure of root.querySelectorAll<HTMLDetailsElement>('[data-yours-disclosure]')) if (openDisclosures.has(disclosure.dataset.yoursDisclosure!)) disclosure.open = true;
+    for (const disclosure of root.querySelectorAll<HTMLDetailsElement>('[data-yours-disclosure]')) if (openDisclosures.has(disclosure.dataset.yoursDisclosure!)) disclosure.open = openDisclosures.get(disclosure.dataset.yoursDisclosure!)!;
     paintStatus(); restoreInteraction();
     // D-325 — source links focus their exact saved input once. Later broadcasts
     // preserve what the owner is doing instead of pulling focus back to it.
-    if (selected && !editor && !inputAddressFocused && ['reading', 'rule'].includes(segments[4] ?? '') && segments[5]) {
+    if (selected && !editor && !inputAddressFocused && ['reading', 'rule', 'field'].includes(segments[4] ?? '') && segments[5]) {
       inputAddressFocused = true;
-      const kind = segments[4] === 'reading' ? 'yoursReading' : 'yoursRule';
-      const target = [...root.querySelectorAll<HTMLElement>(segments[4] === 'reading' ? '[data-yours-reading]' : '[data-yours-rule]')]
+      const kind = segments[4] === 'reading' ? 'yoursReading' : segments[4] === 'field' ? 'yoursField' : 'yoursRule';
+      const target = [...root.querySelectorAll<HTMLElement>(segments[4] === 'reading' ? '[data-yours-reading]' : segments[4] === 'field' ? '[data-yours-field]' : '[data-yours-rule]')]
         .find(node => node.dataset[kind] === segments[5] && !node.closest('[hidden]'));
       if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); }
       else { message = 'That saved input is no longer on file. Review the current item below.'; paintStatus(); }
@@ -1508,6 +1590,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       focusKind: openedAsset?.kind,
       scroll: readListScroll(scrollHost) });
     assetPickers.splice(0).forEach(picker => picker.destroy());
+    navigationDisposers.splice(0).forEach(dispose => dispose());
     writerSetup?.dispose(); unsubscribe.forEach(unsubscribe => unsubscribe()); root.remove(); }, refresh,
     whenLoaded: () => pending, hasUnsavedChanges: () => dirty, hasInFlightWork: () => busy || writerBusy,
     getRunPageContext: (): RunPageContext | null => {

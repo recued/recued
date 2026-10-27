@@ -1052,6 +1052,8 @@ export interface BootstrapDataRouteOptions {
   uploadFinalizeCaller?: DataUploadFinalizeCaller;
   uploadDeleteCaller?: DataUploadDeleteCaller;
   uploadConnectFactory?: Upload.UploadConnectFactory;
+  /** Owner-only return context supplied by Yours, scoped to this connection. */
+  fileAttachmentReturn?: { assetId: string; assetName: string };
   filePreviewCallers?: FilePreviewCallers;
   spheres?: SpherePlacementCallers;
   /** D-172 Half-A "open" — file-content read for the Files tab download. Absent
@@ -6273,6 +6275,8 @@ export const bootstrapDataRoute = (
         aria-label="Search cloud files" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-query" value="${e(cloudFileQueryInput)}" /></label>
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search">Search files</button>` : ''}` : '';
     return `<section ${DATA_ROUTE_MIRROR_ATTR}="files">
+      ${opts.fileAttachmentReturn ? `<aside data-yours-file-return><p>Upload a file, then return to attach it to ${e(opts.fileAttachmentReturn.assetName)}.</p>
+        <a class="data-button" href="#yours/asset/${e(encodeURIComponent(opts.fileAttachmentReturn.assetId))}/view/files">Return to ${e(opts.fileAttachmentReturn.assetName)}</a></aside>` : ''}
       ${cloudSourcesError ? `<p role="alert">${e(cloudSourcesError)}
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-refresh">Reload file sources</button></p>` : ''}
       ${opts.fileUsageCaller && explorerSelectedSlug === 'received' ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-toggle-archived" aria-pressed="${showArchivedFiles}">${showArchivedFiles ? 'Show current files' : 'Show archived files'}</button>` : ''}

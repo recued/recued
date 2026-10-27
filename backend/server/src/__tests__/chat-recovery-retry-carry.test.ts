@@ -25,6 +25,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LLMError } from '@recued/llm';
 
 import { runChatTurn } from '../chat-turn-executor.js';
+
+
 import {
   appendUnfoldedUserMessage,
   getSessionBrief,
@@ -504,5 +506,35 @@ describe('a held call in a folded turn', () => {
     expect(foldPrompts.join('')).not.toContain('awaiting_approval');
     expect(getSessionBrief('s')?.completed ?? []).not.toContainEqual(
       expect.stringContaining('recued-core/control-device'));
+  });
+});
+
+describe('a rejected reply cannot become a blank or unverified saved answer', () => {
+  it.each([
+    { label: 'empty absence repair', first: "I can't find any matching records.", next: 'empty', expected: 'while correcting its answer' },
+    { label: 'failed invented-value repair', first: 'Contact Canary-731@invented.invalid.', next: 'failed', expected: 'The AI provider failed before answering.' },
+    { label: 'repeated invented value', first: 'Contact Canary-731@invented.invalid.', next: 'unchanged', expected: 'could not verify' },
+  ])('saves a truthful stop for $label', async ({ first, next, expected }) => {
+    let calls = 0;
+    const events: unknown[] = [];
+    const result = await runChatTurn({
+      session_id: `repair-${next}`, turn_id: 'repair-turn', picker_target: 'self', dispatch_peer_name: null,
+      available_tools: [], content: { chat_tail: [], user_message: 'find the contact details' }, correction_context: [], model_layer: 'byok',
+    }, {
+      executeAiCall: async () => {
+        calls += 1;
+        if (calls > 1 && next === 'failed') throw new Error('PRIVATE-REPAIR-731');
+        return { body: { response: calls === 1 || next === 'unchanged' ? first : '', events: [], tool_calls: [] } };
+      },
+      registry: { list: () => [], listByTier: () => [], getByName: () => null,
+        dispatch: async () => ({ ok: true, result: {} }), subscribeRefresh: () => () => {} },
+      dispatchTool: async () => { throw new Error('Unexpected dispatch'); },
+      emit: event => { if (event.kind === 'chat.transparency') events.push(event.event); }, now: () => 1_000,
+    });
+    expect(calls).toBe(2);
+    expect(result.assistant_content).toContain(expected);
+    expect(result.assistant_content).not.toContain(first);
+    expect(result.assistant_content).not.toContain('PRIVATE-REPAIR-731');
+    if (next === 'failed') expect(events).toContainEqual(expect.objectContaining({ kind: 'engine.budget_exceeded', total_calls: 2 }));
   });
 });

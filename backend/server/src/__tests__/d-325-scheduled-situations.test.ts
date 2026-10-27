@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { quietHoursEndFor, shouldSuppressForQuietHours, type AssetRule, type IngredientManifest, type QuietHoursPolicy, type SituationFact } from '@recued/contracts';
 import { createSituationQuery, SituationScanBoundError } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
-import { createScheduledSituations } from '../situations/scheduled-situations.js';
+import { createScheduledSituations, mailboxHealthOf } from '../situations/scheduled-situations.js';
 import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createClusterSummary } from '../situations/cluster-summary.js';
 import { createSituationDismissalStore, situationItemKey, situationKindKey } from '../storage/situation-dismissal-store.js';
@@ -726,5 +726,33 @@ describe('D-325 scheduled overview — stopping', () => {
     expect(f.send).toHaveBeenCalledTimes(2);
     expect(f.send.mock.calls[1]?.[0].text).toContain('Repeating once because the previous delivery could not be confirmed.');
     expect(f.service().status().last_sent).toMatchObject({ mode: 'overview' });
+  });
+});
+
+describe('the Digest\'s mailbox lines', () => {
+  const now = Date.parse('2026-10-26T12:00:00Z');
+  const box = (slug: string, over: Record<string, unknown> = {}, health: Record<string, unknown> = {}) => ({
+    platform: 'mail', slug, ...over,
+    health: () => ({ platform: 'mail', slug, last_indexed_at: now - 60_000, pending_queue_size: 0, error_count_24h: 0, state: 'idle', ...health }),
+  });
+
+  it('⛔ leaves out an SMTP-only account: it syncs nothing, so it is never "not synced yet"', () => {
+    // Listed, a send-only account read "mail has not synced yet · needs attention" every day.
+    expect(mailboxHealthOf([
+      box('home'),
+      box('behind', {}, { last_indexed_at: now - 3 * 86_400_000 }),
+      box('mailgun', { receiveCapable: false }, { last_indexed_at: 0 }),
+      box('calendar', { platform: 'calendar' }),
+    ] as never, now)).toEqual([
+      { name: 'home', last_success_at: now - 60_000, needs_attention: false },
+      { name: 'behind', last_success_at: now - 3 * 86_400_000, needs_attention: true },
+    ]);
+  });
+
+  it('keeps a mailbox that has not synced yet, or whose sends fail, and says it needs attention', () => {
+    expect(mailboxHealthOf([
+      box('new', { receiveCapable: true }, { last_indexed_at: 0 }),
+      box('failing', {}, { error_count_24h: 2 }),
+    ] as never, now).map(row => [row.name, row.needs_attention])).toEqual([['new', true], ['failing', true]]);
   });
 });

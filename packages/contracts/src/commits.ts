@@ -457,6 +457,8 @@ export type ExecutionSource =
   | {
       channel: 'schedule';
       actor: 'system';
+      /** Host-stamped identity of the actual scheduler row. */
+      schedule_id?: string;
       cron: string;
       source_recipe: string;
       /** D-209 §1.4 — the owner's own AUTOMATION runs under a contract: the origin
@@ -569,6 +571,7 @@ export const isExecutionSource = (value: unknown): value is ExecutionSource => {
       return actor === 'system'
         && isString(v.cron)
         && isString(v.source_recipe)
+        && isOptString(v.schedule_id)
         && isOptString(v.contract_id);
     case 'reactive':
       return actor === 'system'

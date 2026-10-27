@@ -1,0 +1,151 @@
+{
+  "recipe_id": "set-paperless-sync-state",
+  "version": 5,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Change Paperless sync",
+    "description": "Use “Change Paperless sync” in Recued. Pause, resume, ignore or disconnect a source link. Keeps the accepted asset and reminders.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "paperless-ngx"
+    ],
+    "recipe_bundle": "recued-core/paperless-ngx",
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "sync"
+    ],
+    "budget_ms": 120000
+  },
+  "depends_on": [
+    "recued-core.paperless-ngx"
+  ],
+  "requires": [],
+  "variables": {
+    "id": {
+      "label": "Source link",
+      "type": "string"
+    },
+    "state": {
+      "label": "Sync state",
+      "type": "string",
+      "options": [
+        "sync",
+        "once",
+        "paused",
+        "ignored",
+        "disconnected"
+      ]
+    },
+    "reset_interrupted_check": {
+      "label": "Reset an interrupted check",
+      "type": "boolean",
+      "default": false,
+      "help": "Only after its previous run has finished or been stopped in Runs. Resetting a live check would allow overlapping updates."
+    }
+  },
+  "steps": [
+    {
+      "id": "link",
+      "op": "recued-core.paperless-ngx.sync_link.get",
+      "args": {
+        "id": "{{config.id}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "allowed",
+      "transform": "compare",
+      "left": "{{config.state}}",
+      "operator": "in",
+      "right": [
+        "sync",
+        "once",
+        "paused",
+        "ignored",
+        "disconnected"
+      ]
+    },
+    {
+      "id": "valid_state",
+      "guard": "{{step.allowed}} equal false",
+      "fail_reason": "Choose a supported sync state."
+    },
+    {
+      "id": "resume",
+      "transform": "compare",
+      "left": "{{config.state}}",
+      "operator": "in",
+      "right": [
+        "sync",
+        "once"
+      ]
+    },
+    {
+      "id": "held",
+      "transform": "all",
+      "conditions": [
+        "{{step.link.record.busy}} equal true",
+        "{{step.resume}} equal true",
+        "{{config.reset_interrupted_check}} not_equal true"
+      ]
+    },
+    {
+      "id": "finished_check",
+      "guard": "{{step.held}} equal true",
+      "fail_reason": "Finish or stop the previous run before resetting its interrupted check and resuming."
+    },
+    {
+      "id": "busy",
+      "transform": "ternary",
+      "if": "{{config.reset_interrupted_check}}",
+      "then": false,
+      "else": "{{step.link.record.busy}}"
+    },
+    {
+      "id": "updated",
+      "op": "recued-core.paperless-ngx.sync_link.update",
+      "args": {
+        "id": "{{config.id}}",
+        "expected_version": 7,
+        "expected_revision": "{{step.link.record._record.revision}}",
+        "set": {
+          "state": "{{config.state}}",
+          "busy": "{{step.busy}}"
+        }
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "receipt",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Connection",
+          "value": "{{step.link.record.connection}}"
+        },
+        {
+          "label": "Sync",
+          "value": "{{config.state}}"
+        },
+        {
+          "label": "Asset",
+          "value": "{{step.link.record.asset_id}}"
+        },
+        {
+          "label": "Kept",
+          "value": "The asset, its saved dates and its reminder rules remain. A source check already in progress may finish."
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.receipt"
+      }
+    ]
+  }
+}

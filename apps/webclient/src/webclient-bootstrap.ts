@@ -3515,6 +3515,7 @@ export const bootstrapWebclient = async (
   let pendingChatRecovery = reauthRecovery;
   let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
   let pendingAssetChatDraft: { hash: string; draft: ChatRouteRecoveryDraft } | undefined;
+  let pendingYoursFileAttachment: { assetId: string; assetName: string } | undefined;
   let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest } | undefined;
   const navigateHash = (hash: string): void => {
     if (hashSource?.setHash !== undefined) {
@@ -10179,6 +10180,8 @@ export const bootstrapWebclient = async (
     /** Chat-only in-memory rescue seam for a forced re-pair. */
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } => {
+    // A file upload return belongs to its current owner task, not later routes.
+    if (route !== 'data') pendingYoursFileAttachment = undefined;
     // A re-pair draft belongs to this first return, not every later Chat mount.
     const chatRecovery = route === 'chat' && pendingChatRecovery?.returnHash === hashSource?.getHash()
       ? pendingChatRecovery?.chatDraft : undefined;
@@ -11429,6 +11432,7 @@ export const bootstrapWebclient = async (
         recordsOutboxRetireCaller: dataRecordsOutboxRetireCaller,
         recordsPurgeCaller: dataRecordsPurgeCaller,
         uploadCreateCaller: dataUploadCreateCaller,
+        fileAttachmentReturn: pendingYoursFileAttachment,
         uploadProbeCaller: dataUploadProbeCaller,
         uploadFinalizeCaller: dataUploadFinalizeCaller,
         uploadDeleteCaller: dataUploadDeleteCaller,
@@ -11658,6 +11662,7 @@ export const bootstrapWebclient = async (
         segments: hashSource ? parseShellRoute(hashSource.getHash()).segments : [],
         read: input => rpcConn.call('yours.read', input),
         recordOpened: ref => { void rpcConn.call('yours.change', { action: 'navigation.open', ref }).catch(() => {}); },
+        prepareFileUpload: asset => { pendingYoursFileAttachment = { assetId: asset.id, assetName: asset.name }; },
         askAsset: assetContext => {
           const hash = serializeShellRoute('chat', 'new');
           pendingAssetChatDraft = { hash, draft: { text: 'What should I know about this asset?', protected: true, modelSourceId: null, assetContext } };

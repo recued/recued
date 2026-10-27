@@ -69,7 +69,7 @@ export const createHistoryFilters = (options: {
     }
     saving = false;
     retrying = false;
-    if (!disposed) syncControls?.();
+    if (!disposed) { syncControls?.(); options.changed(); }
   };
   const change = (control: HistoryFilterControl): void => {
     if (disposed) return;
@@ -80,6 +80,16 @@ export const createHistoryFilters = (options: {
   return {
     filters: () => filters,
     scope: () => scope,
+    summary: (): string => {
+      const active = [
+        ...(filters.vendor !== 'all' ? [getMessengerVendorDeclaration(filters.vendor)?.display_name ?? filters.vendor]
+          : filters.source !== 'all' ? [filters.source === 'webclient' ? 'Webclient' : 'Messenger'] : []),
+        ...(filters.needs_attention ? ['Needs attention'] : []),
+        ...(scope === 'current' ? ['Current conversation'] : []),
+      ];
+      return (active.length ? `Filters · ${active.join(' · ')}` : 'Filters') + (error ? ' · Not saved' : '');
+    },
+    clear(): void { filters = { ...DEFAULT_CHAT_HISTORY_FILTERS }; scope = 'all'; change('clear'); },
     adopt(prefs: Partial<InstancePrefs>): void {
       if (touched || disposed) return;
       filters = parseChatHistoryFilters({

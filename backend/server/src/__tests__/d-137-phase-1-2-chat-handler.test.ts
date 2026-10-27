@@ -36,6 +36,7 @@ import {
   handleEgressGet,
   handleSend,
   handleSessionCreate,
+  handleSessionRename,
   handleSessionDelete,
   handleSessionExport,
   handleSessionGet,
@@ -46,6 +47,7 @@ import {
   type ChatRpcDeps,
 } from '../chat-handler.js';
 import type { ChatBroadcastEmitter, ChatOrchestrator } from '../chat-orchestrator.js';
+import type { WsClient } from '../ws-server.js';
 
 const selfSignature: RecuedServerSignature = {
   server_kind: 'recued',
@@ -141,6 +143,56 @@ describe('D-137 P1.2 — chat.session.create', () => {
   it('accepts void args (sidebar-create-no-title path)', async () => {
     await handleSessionCreate(deps, undefined);
     expect(store.getSession('mint-stub')).not.toBeNull();
+  });
+});
+
+describe('chat.session.rename', () => {
+  it('changes only the title, broadcasts it, and makes a lost-reply retry a no-op', async () => {
+    const deps = setup();
+    store.createSession({ id: 'rename', title: 'Original', now: 10 });
+    await store.appendMessage({ id: 'kept', session_id: 'rename', role: 'assistant', content: 'Retained answer', ts: 20,
+      target_server: 'self', picker_at_send: { display_name: 'Self', signature: selfSignature }, model_used: { provider: 'local', model_id: 'fixture' } });
+    const before = store.getSession('rename')!; const summary = store.listSessions()[0]!;
+    const writes = vi.spyOn(store, 'setTitle');
+    const request = { session_id: 'rename', title: '  Japan 🧭 planning  ', expected_title: 'Original' };
+    expect(await handleSessionRename(deps, request)).toEqual({ session_id: 'rename', title: 'Japan 🧭 planning' });
+    expect(store.getSession('rename')).toEqual({ ...before, title: 'Japan 🧭 planning' });
+    expect(store.listSessions()[0]).toEqual({ ...summary, title: 'Japan 🧭 planning' });
+    expect((await store.listMessages('rename'))[0]?.content).toBe('Retained answer');
+    expect(broadcastedEvents).toEqual([{ kind: 'chat.session_changed', session_id: 'rename', field: 'title', value: 'Japan 🧭 planning' }]);
+    await handleSessionRename(deps, request);
+    expect(writes).toHaveBeenCalledTimes(1); expect(broadcastedEvents).toHaveLength(1);
+    expect(auditRows.map(row => row.action)).toEqual(['chat_session_renamed']);
+    expect(orchestrator.runTurn).not.toHaveBeenCalled(); db.close();
+  });
+
+  it('does not overwrite another client name and accepts the current name on a deliberate retry', async () => {
+    const deps = setup(); store.createSession({ id: 'rename', title: 'Original' });
+    await handleSessionRename(deps, { session_id: 'rename', title: 'First name', expected_title: 'Original' });
+    await expect(handleSessionRename(deps, { session_id: 'rename', title: 'Second name', expected_title: 'Original' })).rejects.toMatchObject({ code: 'conflict' });
+    expect(store.getSession('rename')?.title).toBe('First name');
+    await handleSessionRename(deps, { session_id: 'rename', title: 'Second name', expected_title: 'First name' });
+    expect(store.getSession('rename')?.title).toBe('Second name'); db.close();
+  });
+
+  it('validates the name and expected value, and refuses a missing session', async () => {
+    const deps = setup(); store.createSession({ id: 'rename' });
+    for (const patch of [{ title: '   ' }, { title: 'x'.repeat(161) }, { title: 'two\nlines' }, { title: 42 }, { expected_title: undefined }]) {
+      await expect(handleSessionRename(deps, { session_id: 'rename', title: 'New name', expected_title: null, ...patch } as never)).rejects.toMatchObject({ code: 'bad_request' });
+    }
+    await expect(handleSessionRename(deps, { session_id: 'absent', title: 'New name', expected_title: null })).rejects.toMatchObject({ code: 'not_found' });
+    expect(store.getSession('rename')?.title).toBeUndefined(); expect(broadcastedEvents).toEqual([]);
+    await handleSessionRename(deps, { session_id: 'rename', title: 'Named now', expected_title: null });
+    expect(store.getSession('rename')?.title).toBe('Named now'); db.close();
+  });
+
+  it('requires a paired owner at the registered RPC boundary', async () => {
+    const deps = setup(); store.createSession({ id: 'rename', title: 'Original' });
+    const handler = makeChatHandlers(deps)!.handlers['chat.session.rename']!;
+    const request = { session_id: 'rename', title: 'New name', expected_title: 'Original' };
+    await expect(handler(request, {} as WsClient)).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(store.getSession('rename')?.title).toBe('Original');
+    await expect(handler(request, { instance_id: 'paired' } as WsClient)).resolves.toEqual({ session_id: 'rename', title: 'New name' }); db.close();
   });
 });
 

@@ -13,6 +13,1721 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
   [
   {
     "manifest_version": 2,
+    "slug": "home-assistant",
+    "publisher": "recued-core",
+    "connection_requirements": [
+      {
+        "api_base": "https://homeassistant.example.com",
+        "per_org": true,
+        "vendor": "home_assistant",
+        "auth": {
+          "type": "bearer"
+        }
+      }
+    ],
+    "connection_hints": [
+      {
+        "connection": "home-assistant",
+        "values": {
+          "auth.type": "bearer"
+        },
+        "setup_url": "https://www.home-assistant.io/docs/authentication/"
+      }
+    ],
+    "name": "Home Assistant",
+    "description": "Use Home Assistant in Recued to check on your home and control it: device health, a house check before you leave, weekly energy use, lights, climate, locks and more. It includes 29 built-in actions and 6 ready-to-run workflows. Connect with your Home Assistant address and a long-lived access token. Changes use Recued's approval controls; unlocking a door, disarming an alarm, opening any cover (a garage door, gate or blind) and running any other Home Assistant service always ask first.",
+    "version": 5,
+    "bundled": true,
+    "recipes": [],
+    "requires": [
+      "install_bulk_pack",
+      "notification_send"
+    ],
+    "tags": [
+      "pack:home-assistant",
+      "home-assistant",
+      "smart-home",
+      "home",
+      "iot",
+      "lights",
+      "locks",
+      "climate",
+      "energy",
+      "self-hosted",
+      "api",
+      "composition"
+    ],
+    "pack_kind": "app_pack",
+    "service_kind": "entity_platform",
+    "contents": [
+      {
+        "type": "recipe",
+        "slug": "record-device-condition-home-assistant",
+        "version": 2,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "check-device-health-home-assistant",
+        "version": 2,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "check-house-before-leaving-home-assistant",
+        "version": 2,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "summarize-energy-use-weekly-home-assistant",
+        "version": 2,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "control-device-home-assistant",
+        "version": 2,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "check-camera-home-assistant",
+        "version": 2,
+        "visible": true
+      },
+      {
+        "type": "composition",
+        "composition": {
+          "schema_version": 1,
+          "slug": "home-assistant",
+          "catalog_kind": "official",
+          "tags": [
+            "home-assistant",
+            "smart-home",
+            "home",
+            "lights",
+            "locks",
+            "climate",
+            "energy"
+          ],
+          "ingredients": [
+            {
+              "slug": "home-assistant",
+              "kind": "http",
+              "tags": [
+                "home-assistant",
+                "smart-home",
+                "home",
+                "iot"
+              ],
+              "http": {
+                "base": "https://homeassistant.example.com",
+                "connection": "home-assistant"
+              }
+            }
+          ],
+          "operations": [
+            {
+              "op": "config.read",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/config"
+              },
+              "description": "Read the Home Assistant instance's own settings: location name, version, time zone, unit system and the integrations it has loaded. Returns one object. Use it to confirm the connection works or to learn the home's units before reading values. Read-only.",
+              "cache_ttl_ms": 60000
+            },
+            {
+              "op": "state.list",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/states"
+              },
+              "description": "List the current state of every entity in Home Assistant: entity_id, state, attributes (friendly_name, device_class, unit_of_measurement, battery level) and last_changed. Returns one array, which can be large in a big home and includes people's home or away status and tracked locations. Use state.read when the entity_id is known. Read-only.",
+              "cache_ttl_ms": 5000
+            },
+            {
+              "op": "state.read",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/states/{{entity_id}}"
+              },
+              "description": "Read one entity's current state, attributes and last_changed by its entity_id, such as light.kitchen or sensor.outside_temperature. Returns one object, or an error when no such entity exists. Use state.list to discover entity ids. Read-only.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "entity_id"
+                ],
+                "properties": {
+                  "entity_id": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                }
+              }
+            },
+            {
+              "op": "camera.snapshot",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/camera_proxy/{{entity_id}}",
+                "response_capture": {
+                  "kind": "file_ref",
+                  "mime_type": "image/jpeg",
+                  "filename_source": {
+                    "kind": "static",
+                    "value": "camera-snapshot"
+                  },
+                  "ai_enrichment": "opt_out"
+                }
+              },
+              "description": "Take the current picture from one camera, such as camera.front_door, exactly as Home Assistant serves it: full size, in the camera's own format, with any metadata it carries. Returns a file reference with the picture's type and name, never the picture itself. Each call stores the picture as a file in your data, and nothing removes it; a second picture of the same camera in the same run replaces the first. Nothing captions or describes it automatically; a recipe of yours can still send it to an AI. Find camera ids with state.list (entity ids that start with camera.). Read-only; it needs no camera token.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "entity_id"
+                ],
+                "properties": {
+                  "entity_id": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "pattern": "^camera\\.[a-z0-9_]+$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "history.list",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "start_time",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "query.filter_entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "query.end_time",
+                  "type": "string",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.minimal_response",
+                  "type": "boolean"
+                },
+                {
+                  "key": "query.no_attributes",
+                  "type": "boolean"
+                },
+                {
+                  "key": "query.significant_changes_only",
+                  "type": "boolean"
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/history/period/{{start_time}}"
+              },
+              "description": "Read how entities changed over a period. start_time is an ISO timestamp; filter_entity_id is required and holds one entity id or several separated by commas; end_time defaults to one day after start_time. Returns one list per entity, oldest first, starting with its state at start_time. minimal_response and no_attributes make the result smaller. Use logbook.list for readable events. Read-only.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "start_time",
+                  "query.filter_entity_id"
+                ],
+                "properties": {
+                  "start_time": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "query.filter_entity_id": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "query.end_time": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "query.minimal_response": {
+                    "type": "boolean"
+                  },
+                  "query.no_attributes": {
+                    "type": "boolean"
+                  },
+                  "query.significant_changes_only": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            {
+              "op": "logbook.list",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "start_time",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "query.entity",
+                  "type": "string",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.end_time",
+                  "type": "string",
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/logbook/{{start_time}}"
+              },
+              "description": "Read the Home Assistant logbook from start_time (an ISO timestamp): what turned on or off, who arrived or left and which automations ran, as readable entries. entity narrows it to one entity; end_time defaults to one day after start_time. Use history.list for numeric values over time. Read-only.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "start_time"
+                ],
+                "properties": {
+                  "start_time": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "query.entity": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "query.end_time": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                }
+              }
+            },
+            {
+              "op": "service.list",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/services"
+              },
+              "description": "List the actions Home Assistant offers, grouped by domain (light, lock, climate, script and so on), with each action's fields. Returns one array, which can be large. Use it before service.call to find an action's exact name and fields. Read-only.",
+              "cache_ttl_ms": 60000
+            },
+            {
+              "op": "calendar.list",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/calendars"
+              },
+              "description": "List the calendar entities that live in Home Assistant, with entity_id and name. Use calendar_event.list to read one calendar's events. Read-only.",
+              "cache_ttl_ms": 60000
+            },
+            {
+              "op": "calendar_event.list",
+              "ingredient": "home-assistant",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "query.start",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "query.end",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/calendars/{{entity_id}}"
+              },
+              "description": "Read the events of one Home Assistant calendar entity between start and end (ISO timestamps, both required). Returns summary, start, end, description and location per event. These are calendars kept inside Home Assistant, such as waste collection or school holidays, not the owner's main calendar. Read-only.",
+              "cache_ttl_ms": 60000,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "entity_id",
+                  "query.start",
+                  "query.end"
+                ],
+                "properties": {
+                  "entity_id": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "query.start": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "query.end": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                }
+              }
+            },
+            {
+              "op": "light.turn_on",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.brightness_pct",
+                  "type": "number"
+                },
+                {
+                  "key": "body.color_temp_kelvin",
+                  "type": "number"
+                },
+                {
+                  "key": "body.rgb_color",
+                  "type": "array"
+                },
+                {
+                  "key": "body.transition",
+                  "type": "number"
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.brightness_pct",
+                  "type": "number",
+                  "label": "Brightness (%)"
+                },
+                {
+                  "key": "body.color_temp_kelvin",
+                  "type": "number",
+                  "label": "Colour temperature (K)"
+                },
+                {
+                  "key": "body.rgb_color",
+                  "type": "json",
+                  "label": "Colour (red, green, blue)"
+                },
+                {
+                  "key": "body.transition",
+                  "type": "number",
+                  "label": "Fade (seconds)"
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/light/turn_on"
+              },
+              "description": "Turn on a light, optionally setting brightness_pct (0 to 100), color_temp_kelvin, rgb_color as [red, green, blue] or a transition in seconds. entity_id is one light entity id (light.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^light\\.[a-z0-9_]+(?:,\\s*light\\.[a-z0-9_]+)*$"
+                  },
+                  "body.brightness_pct": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "body.color_temp_kelvin": {
+                    "type": "number"
+                  },
+                  "body.rgb_color": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 255
+                    }
+                  },
+                  "body.transition": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            {
+              "op": "light.turn_off",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.transition",
+                  "type": "number"
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.transition",
+                  "type": "number",
+                  "label": "Fade (seconds)"
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/light/turn_off"
+              },
+              "description": "Turn off a light, with an optional transition in seconds. entity_id is one light entity id (light.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^light\\.[a-z0-9_]+(?:,\\s*light\\.[a-z0-9_]+)*$"
+                  },
+                  "body.transition": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            {
+              "op": "switch.turn_on",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/switch/turn_on"
+              },
+              "description": "Turn on a switch, such as a smart plug or relay. entity_id is one switch entity id (switch.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^switch\\.[a-z0-9_]+(?:,\\s*switch\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "switch.turn_off",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/switch/turn_off"
+              },
+              "description": "Turn off a switch, such as a smart plug or relay. entity_id is one switch entity id (switch.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^switch\\.[a-z0-9_]+(?:,\\s*switch\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "device.turn_on",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "domain",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "domain",
+                  "type": "string",
+                  "label": "Kind of device",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/{{domain}}/turn_on"
+              },
+              "description": "Turn on a fan, media player, humidifier, thermostat or on/off helper. domain is fan, media_player, humidifier, climate or input_boolean, and must match the start of the entity id; any other domain is refused, so this action cannot reach a lock, cover, alarm or script. entity_id is one fan, media_player, humidifier, climate or input_boolean entity id, or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state, does not exist or is in another domain. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "domain",
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "domain": {
+                    "type": "string",
+                    "enum": [
+                      "fan",
+                      "media_player",
+                      "humidifier",
+                      "climate",
+                      "input_boolean"
+                    ]
+                  },
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+(?:,\\s*(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "device.turn_off",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "domain",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "domain",
+                  "type": "string",
+                  "label": "Kind of device",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/{{domain}}/turn_off"
+              },
+              "description": "Turn off a fan, media player, humidifier, thermostat or on/off helper. domain is fan, media_player, humidifier, climate or input_boolean, and must match the start of the entity id; any other domain is refused, so this action cannot reach a lock, cover, alarm or script. entity_id is one fan, media_player, humidifier, climate or input_boolean entity id, or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state, does not exist or is in another domain. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "domain",
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "domain": {
+                    "type": "string",
+                    "enum": [
+                      "fan",
+                      "media_player",
+                      "humidifier",
+                      "climate",
+                      "input_boolean"
+                    ]
+                  },
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+(?:,\\s*(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "climate.set_temperature",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.temperature",
+                  "type": "number",
+                  "affects_target": true
+                },
+                {
+                  "key": "body.target_temp_low",
+                  "type": "number",
+                  "affects_target": true
+                },
+                {
+                  "key": "body.target_temp_high",
+                  "type": "number",
+                  "affects_target": true
+                },
+                {
+                  "key": "body.hvac_mode",
+                  "type": "string",
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.temperature",
+                  "type": "number",
+                  "label": "Temperature",
+                  "affects_target": true
+                },
+                {
+                  "key": "body.target_temp_low",
+                  "type": "number",
+                  "label": "Lowest temperature",
+                  "affects_target": true
+                },
+                {
+                  "key": "body.target_temp_high",
+                  "type": "number",
+                  "label": "Highest temperature",
+                  "affects_target": true
+                },
+                {
+                  "key": "body.hvac_mode",
+                  "type": "string",
+                  "label": "Mode",
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/climate/set_temperature"
+              },
+              "description": "Set a thermostat's target temperature in the home's own units: temperature for one setpoint, or target_temp_low and target_temp_high in heat-cool mode. hvac_mode optionally changes the mode in the same call: off, heat, cool, heat_cool, auto, dry or fan_only. entity_id is one climate entity id (climate.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^climate\\.[a-z0-9_]+(?:,\\s*climate\\.[a-z0-9_]+)*$"
+                  },
+                  "body.temperature": {
+                    "type": "number"
+                  },
+                  "body.target_temp_low": {
+                    "type": "number"
+                  },
+                  "body.target_temp_high": {
+                    "type": "number"
+                  },
+                  "body.hvac_mode": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "enum": [
+                      "off",
+                      "heat",
+                      "cool",
+                      "heat_cool",
+                      "auto",
+                      "dry",
+                      "fan_only"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "op": "climate.set_hvac_mode",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.hvac_mode",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.hvac_mode",
+                  "type": "string",
+                  "label": "Mode",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/climate/set_hvac_mode"
+              },
+              "description": "Change a thermostat's mode to off, heat, cool, heat_cool, auto, dry or fan_only, as the device supports. entity_id is one climate entity id (climate.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id",
+                  "body.hvac_mode"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^climate\\.[a-z0-9_]+(?:,\\s*climate\\.[a-z0-9_]+)*$"
+                  },
+                  "body.hvac_mode": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "enum": [
+                      "off",
+                      "heat",
+                      "cool",
+                      "heat_cool",
+                      "auto",
+                      "dry",
+                      "fan_only"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "op": "cover.close",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/cover/close_cover"
+              },
+              "description": "Close a cover: a blind, shade, motorised window, garage door or gate. Closing is the safe direction; opening is cover.open, which always asks. entity_id is one cover entity id (cover.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^cover\\.[a-z0-9_]+(?:,\\s*cover\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "lock.lock",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/lock/lock"
+              },
+              "description": "Lock a lock. Locking is the safe direction; unlocking is lock.unlock, which always asks. entity_id is one lock entity id (lock.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^lock\\.[a-z0-9_]+(?:,\\s*lock\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "alarm.arm_away",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/alarm_control_panel/alarm_arm_away"
+              },
+              "description": "Arm an alarm panel in away mode. Never sends an alarm code: a panel that needs one refuses, which Home Assistant reports as a server error. entity_id is one alarm_control_panel entity id (alarm_control_panel.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^alarm_control_panel\\.[a-z0-9_]+(?:,\\s*alarm_control_panel\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "alarm.arm_home",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/alarm_control_panel/alarm_arm_home"
+              },
+              "description": "Arm an alarm panel in home mode. Never sends an alarm code: a panel that needs one refuses, which Home Assistant reports as a server error. entity_id is one alarm_control_panel entity id (alarm_control_panel.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^alarm_control_panel\\.[a-z0-9_]+(?:,\\s*alarm_control_panel\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "media_player.play",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/media_player/media_play"
+              },
+              "description": "Start or resume playback on a media player. entity_id is one media_player entity id (media_player.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^media_player\\.[a-z0-9_]+(?:,\\s*media_player\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "media_player.pause",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/media_player/media_pause"
+              },
+              "description": "Pause playback on a media player. entity_id is one media_player entity id (media_player.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^media_player\\.[a-z0-9_]+(?:,\\s*media_player\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "media_player.set_volume",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.volume_level",
+                  "type": "number",
+                  "required": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body.volume_level",
+                  "type": "number",
+                  "label": "Volume (0 to 1)",
+                  "required": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/media_player/volume_set"
+              },
+              "description": "Set a media player's volume, with volume_level between 0 and 1. entity_id is one media_player entity id (media_player.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id",
+                  "body.volume_level"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^media_player\\.[a-z0-9_]+(?:,\\s*media_player\\.[a-z0-9_]+)*$"
+                  },
+                  "body.volume_level": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "scene.activate",
+              "ingredient": "home-assistant",
+              "risk": "write",
+              "approval": "ask",
+              "idempotency": "non_idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/scene/turn_on"
+              },
+              "description": "Activate a Home Assistant scene by its entity id, such as scene.movie_night. A scene sets whatever its definition says, which can include locks and covers. entity_id is one scene entity id (scene.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^scene\\.[a-z0-9_]+(?:,\\s*scene\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "lock.unlock",
+              "ingredient": "home-assistant",
+              "risk": "admin",
+              "approval": "always",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/lock/unlock"
+              },
+              "description": "Unlock a lock, opening a door to anyone there. Always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. Use lock.lock to secure a door. entity_id is one lock entity id (lock.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^lock\\.[a-z0-9_]+(?:,\\s*lock\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "cover.open",
+              "ingredient": "home-assistant",
+              "risk": "admin",
+              "approval": "always",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/cover/open_cover"
+              },
+              "description": "Open a cover. A cover can be a garage door or a gate, so this always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. Use cover.close for the safe direction. entity_id is one cover entity id (cover.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^cover\\.[a-z0-9_]+(?:,\\s*cover\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "alarm.disarm",
+              "ingredient": "home-assistant",
+              "risk": "admin",
+              "approval": "always",
+              "idempotency": "idempotent",
+              "args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "body.entity_id",
+                  "type": "string",
+                  "label": "Device",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/alarm_control_panel/alarm_disarm"
+              },
+              "description": "Disarm an alarm panel. Always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. Never sends an alarm code, so the code stays out of chat and approval records: a panel that requires one refuses, which Home Assistant reports as a server error. entity_id is one alarm_control_panel entity id (alarm_control_panel.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "body.entity_id"
+                ],
+                "properties": {
+                  "body.entity_id": {
+                    "type": "string",
+                    "maxLength": 65536,
+                    "pattern": "^alarm_control_panel\\.[a-z0-9_]+(?:,\\s*alarm_control_panel\\.[a-z0-9_]+)*$"
+                  }
+                }
+              }
+            },
+            {
+              "op": "service.call",
+              "ingredient": "home-assistant",
+              "risk": "admin",
+              "approval": "always",
+              "idempotency": "non_idempotent",
+              "args": [
+                {
+                  "key": "domain",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "service",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body_raw",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "editable_args": [
+                {
+                  "key": "domain",
+                  "type": "string",
+                  "label": "Domain",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "service",
+                  "type": "string",
+                  "label": "Action",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "body_raw",
+                  "type": "string",
+                  "label": "Data",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "POST",
+                "path_template": "/api/services/{{domain}}/{{service}}",
+                "static_headers": {
+                  "Content-Type": "application/json"
+                }
+              },
+              "description": "Call any Home Assistant action by domain and service, such as script.turn_on, fan.set_percentage or vacuum.start, with body_raw holding the action's data as a JSON object (use an empty object when it takes none). For everything without its own action in this pack. Always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. On the Approvals page the request names the domain, action and data. Use service.list to find names and fields. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "domain",
+                  "service",
+                  "body_raw"
+                ],
+                "properties": {
+                  "domain": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "service": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "body_raw": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "asset_class",
+        "preset": {
+          "id": "ha_device",
+          "name": "Home Assistant device",
+          "version": 1,
+          "origin": "pack:recued-core/home-assistant",
+          "fields": {
+            "dates": {},
+            "readings": {
+              "battery": null
+            },
+            "observations": {
+              "unavailable": null,
+              "flickering": null,
+              "problem": null
+            },
+            "settings": {
+              "hold_ms": 600000,
+              "flicker_window_ms": 120000,
+              "flicker_min_count": 8,
+              "expected_flicker": false
+            }
+          },
+          "audience": "household",
+          "retirement": "part",
+          "rules": [
+            {
+              "id": "unavailable",
+              "title": "Check unavailable device",
+              "enabled": true,
+              "muted": false,
+              "pinned": false,
+              "when": {
+                "kind": "condition",
+                "field": "unavailable",
+                "certainty": "confirmed"
+              },
+              "consequence": "routine",
+              "expiry_policy": "indefinite",
+              "reaction": {
+                "notify": true,
+                "occurrence": "action",
+                "emit": false
+              },
+              "schedule": {
+                "before": [],
+                "on_day": true
+              }
+            },
+            {
+              "id": "flickering",
+              "title": "Review unexplained flicker",
+              "enabled": true,
+              "muted": false,
+              "pinned": false,
+              "when": {
+                "kind": "condition",
+                "field": "flickering",
+                "certainty": "conditional"
+              },
+              "consequence": "routine",
+              "expiry_policy": "indefinite",
+              "reaction": {
+                "notify": true,
+                "occurrence": "action",
+                "emit": false
+              },
+              "schedule": {
+                "before": [],
+                "on_day": true
+              }
+            },
+            {
+              "id": "problem",
+              "title": "Check reported device problem",
+              "enabled": true,
+              "muted": false,
+              "pinned": false,
+              "when": {
+                "kind": "condition",
+                "field": "problem",
+                "certainty": "confirmed"
+              },
+              "consequence": "routine",
+              "expiry_policy": "indefinite",
+              "reaction": {
+                "notify": true,
+                "occurrence": "action",
+                "emit": false
+              },
+              "schedule": {
+                "before": [],
+                "on_day": true
+              }
+            },
+            {
+              "id": "battery",
+              "title": "Replace low battery",
+              "enabled": true,
+              "muted": false,
+              "pinned": false,
+              "when": {
+                "kind": "objective",
+                "field": "battery",
+                "target": 20,
+                "unit": "%",
+                "direction": "falling",
+                "mode": "condition",
+                "lead_days": 0
+              },
+              "consequence": "routine",
+              "expiry_policy": "indefinite",
+              "reaction": {
+                "notify": true,
+                "occurrence": "action",
+                "emit": false
+              },
+              "schedule": {
+                "before": [],
+                "on_day": true
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "manifest_version": 2,
     "slug": "mail-compose-foundation",
     "publisher": "recued-core",
     "name": "Mail — Compose",
@@ -49,6 +1764,691 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
         "slug": "save-composed-draft-to-mailbox",
         "version": 1,
         "visible": false
+      }
+    ]
+  },
+  {
+    "manifest_version": 2,
+    "slug": "paperless-ngx",
+    "publisher": "recued-core",
+    "name": "Paperless documents",
+    "description": "Use Paperless documents to connect selected document expiry dates to Yours. Review one document or a batch, import once or keep dates current with a scheduled sync, and pause or ignore source links while keeping your assets and reminders.",
+    "version": 7,
+    "bundled": true,
+    "recipes": [],
+    "requires": [
+      "install_bulk_pack"
+    ],
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "assets",
+      "self-hosted"
+    ],
+    "pack_kind": "app_pack",
+    "service_kind": "storage",
+    "contents": [
+      {
+        "type": "composition",
+        "composition": {
+          "schema_version": 1,
+          "slug": "paperless-sync",
+          "ingredients": [
+            {
+              "slug": "paperless-sync-records",
+              "kind": "storage",
+              "entities": {
+                "sync_link": {
+                  "fields": [
+                    {
+                      "maps_to": "id",
+                      "field_path": "pk",
+                      "type": "string",
+                      "source_operation": "sync_link.get",
+                      "pii": "external_id"
+                    },
+                    {
+                      "maps_to": "connection",
+                      "field_path": "s1",
+                      "type": "string",
+                      "source_operation": "sync_link.get",
+                      "pii": "external_id"
+                    },
+                    {
+                      "maps_to": "document_id",
+                      "field_path": "n1",
+                      "type": "number",
+                      "source_operation": "sync_link.get"
+                    },
+                    {
+                      "maps_to": "custom_field_id",
+                      "field_path": "n2",
+                      "type": "number",
+                      "source_operation": "sync_link.get"
+                    },
+                    {
+                      "maps_to": "asset_id",
+                      "field_path": "s2",
+                      "type": "string",
+                      "source_operation": "sync_link.get",
+                      "optional": true,
+                      "pii": "external_id"
+                    },
+                    {
+                      "maps_to": "source_title",
+                      "field_path": "s3",
+                      "type": "string",
+                      "source_operation": "sync_link.get",
+                      "optional": true,
+                      "pii": "content"
+                    },
+                    {
+                      "maps_to": "state",
+                      "field_path": "s4",
+                      "type": "string",
+                      "source_operation": "sync_link.get"
+                    },
+                    {
+                      "maps_to": "last_result",
+                      "field_path": "s5",
+                      "type": "string",
+                      "source_operation": "sync_link.get",
+                      "optional": true
+                    },
+                    {
+                      "maps_to": "busy",
+                      "field_path": "b1",
+                      "type": "boolean",
+                      "source_operation": "sync_link.get"
+                    },
+                    {
+                      "maps_to": "source_root",
+                      "field_path": "s7",
+                      "type": "string",
+                      "source_operation": "sync_link.get",
+                      "pii": "url"
+                    },
+                    {
+                      "maps_to": "last_applied_date",
+                      "field_path": "s6",
+                      "type": "string",
+                      "source_operation": "sync_link.get",
+                      "optional": true
+                    },
+                    {
+                      "maps_to": "last_checked_at",
+                      "field_path": "dt1",
+                      "type": "datetime",
+                      "source_operation": "sync_link.get",
+                      "optional": true,
+                      "date_granularity": "datetime"
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "operations": [
+            {
+              "op": "sync_link.create",
+              "ingredient": "paperless-sync-records",
+              "risk": "write",
+              "approval": "never",
+              "description": "create Paperless source-link bookkeeping; accepted assets live in Yours.",
+              "args": [
+                {
+                  "key": "id",
+                  "type": "string"
+                },
+                {
+                  "key": "values",
+                  "type": "object",
+                  "required": true
+                }
+              ],
+              "bind": {
+                "kind": "core.records",
+                "action": "create",
+                "entity": "sync_link"
+              }
+            },
+            {
+              "op": "sync_link.get",
+              "ingredient": "paperless-sync-records",
+              "risk": "read",
+              "approval": "never",
+              "description": "get Paperless source-link bookkeeping; accepted assets live in Yours.",
+              "args": [
+                {
+                  "key": "id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "core.records",
+                "action": "get",
+                "entity": "sync_link"
+              }
+            },
+            {
+              "op": "sync_link.search",
+              "ingredient": "paperless-sync-records",
+              "risk": "read",
+              "approval": "never",
+              "description": "search Paperless source-link bookkeeping; accepted assets live in Yours.",
+              "args": [
+                {
+                  "key": "filters",
+                  "type": "object"
+                },
+                {
+                  "key": "sort",
+                  "type": "string"
+                },
+                {
+                  "key": "limit",
+                  "type": "number"
+                },
+                {
+                  "key": "cursor",
+                  "type": "string"
+                }
+              ],
+              "bind": {
+                "kind": "core.records",
+                "action": "search",
+                "entity": "sync_link",
+                "filter_fields": [
+                  "connection",
+                  "state",
+                  "document_id",
+                  "busy"
+                ],
+                "sort_fields": [
+                  "last_checked_at",
+                  "_record.updated_at"
+                ]
+              }
+            },
+            {
+              "op": "sync_link.update",
+              "ingredient": "paperless-sync-records",
+              "risk": "write",
+              "approval": "never",
+              "description": "update Paperless source-link bookkeeping; accepted assets live in Yours.",
+              "args": [
+                {
+                  "key": "id",
+                  "type": "string",
+                  "required": true,
+                  "affects_target": true
+                },
+                {
+                  "key": "set",
+                  "type": "object"
+                },
+                {
+                  "key": "unset",
+                  "type": "array"
+                },
+                {
+                  "key": "expected_version",
+                  "type": "number",
+                  "required": true
+                },
+                {
+                  "key": "expected_revision",
+                  "type": "number",
+                  "required": true
+                }
+              ],
+              "bind": {
+                "kind": "core.records",
+                "action": "update",
+                "entity": "sync_link"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "asset_class",
+        "preset": {
+          "id": "paperless_document",
+          "name": "Document with an expiry date",
+          "version": 1,
+          "origin": "pack:recued-core/paperless-ngx",
+          "fields": {
+            "dates": {
+              "expires_on": null
+            },
+            "readings": {},
+            "observations": {
+              "document_evidence": null
+            },
+            "settings": {}
+          },
+          "audience": "owner",
+          "retirement": "part",
+          "rules": [
+            {
+              "id": "renew",
+              "title": "Review expiry",
+              "enabled": true,
+              "muted": false,
+              "pinned": false,
+              "when": {
+                "kind": "expiry",
+                "field": "expires_on"
+              },
+              "consequence": "routine",
+              "expiry_policy": "escalate_overdue",
+              "reaction": {
+                "notify": true,
+                "occurrence": "action",
+                "emit": false
+              },
+              "schedule": {
+                "before": [
+                  {
+                    "amount": 1,
+                    "unit": "months"
+                  }
+                ],
+                "on_day": true,
+                "after": {
+                  "amount": 1,
+                  "unit": "months"
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "recipe",
+        "slug": "paperless-date-fields",
+        "version": 5,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "find-paperless-documents",
+        "version": 5,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "preview-paperless-sync",
+        "version": 5,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "configure-paperless-sync",
+        "version": 5,
+        "visible": false
+      },
+      {
+        "type": "recipe",
+        "slug": "sync-paperless-documents",
+        "version": 5,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "paperless-sync-status",
+        "version": 5,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "set-paperless-sync-state",
+        "version": 5,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "ignore-paperless-document",
+        "version": 5,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "record-asset-evidence-paperless",
+        "version": 5,
+        "visible": false
+      },
+      {
+        "type": "recipe",
+        "slug": "paperless-sync-require-records-runtime",
+        "version": 1,
+        "visible": false
+      }
+    ],
+    "dependencies": [
+      {
+        "type": "pack",
+        "slug": "paperless-ngx-api",
+        "min_version": 2
+      }
+    ]
+  },
+  {
+    "manifest_version": 2,
+    "slug": "paperless-ngx-api",
+    "publisher": "recued-core",
+    "name": "Paperless API",
+    "description": "Use Paperless API to let Paperless documents read your document metadata and custom date fields. Connect your own server and keep documents unchanged while reviewing dates or checking selected source links.",
+    "version": 2,
+    "bundled": true,
+    "requires": [
+      "install_bulk_pack"
+    ],
+    "pack_kind": "app_pack",
+    "service_kind": "storage",
+    "tags": [
+      "paperless",
+      "documents",
+      "api"
+    ],
+    "connection_requirements": [
+      {
+        "api_base": "https://paperless.example.com",
+        "per_org": true,
+        "vendor": "paperless_ngx",
+        "auth": {
+          "type": "header",
+          "header_names": [
+            "Authorization"
+          ]
+        }
+      }
+    ],
+    "connection_hints": [
+      {
+        "connection": "paperless-ngx-api",
+        "setup_url": "https://docs.paperless-ngx.com/api/",
+        "values": {
+          "auth.type": "header"
+        }
+      }
+    ],
+    "recipes": [],
+    "contents": [
+      {
+        "type": "composition",
+        "composition": {
+          "schema_version": 1,
+          "slug": "paperless-ngx-api",
+          "catalog_kind": "official",
+          "ingredients": [
+            {
+              "slug": "paperless-ngx-api",
+              "kind": "http",
+              "http": {
+                "base": "https://paperless.example.com",
+                "connection": "paperless-ngx-api"
+              }
+            }
+          ],
+          "operations": [
+            {
+              "op": "document.list",
+              "ingredient": "paperless-ngx-api",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "query.query",
+                  "type": "string",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.custom_field_query",
+                  "type": "string",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.page",
+                  "type": "number",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.page_size",
+                  "type": "number",
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/documents/",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "Search documents or filter custom fields using the documented query. Returns provider count, results and next page; use next page until empty. Fresh metadata only.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "query.query": {
+                    "type": "string",
+                    "maxLength": 2048
+                  },
+                  "query.custom_field_query": {
+                    "type": "string",
+                    "maxLength": 2048
+                  },
+                  "query.page": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "query.page_size": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "document.get",
+              "ingredient": "paperless-ngx-api",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "document_id",
+                  "type": "number",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/documents/{{document_id}}/",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "Read one document’s metadata and structured custom fields. A custom field is evidence to review; it does not confirm an asset date. API version 9, uncached.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "document_id"
+                ],
+                "properties": {
+                  "document_id": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "document.download",
+              "ingredient": "paperless-ngx-api",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "document_id",
+                  "type": "number",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/documents/{{document_id}}/download/",
+                "response_capture": {
+                  "kind": "file_ref",
+                  "mime_type": "application/octet-stream",
+                  "filename_source": {
+                    "kind": "static",
+                    "value": "paperless-document"
+                  },
+                  "ai_enrichment": "opt_out"
+                },
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "Save this document as a file reference on this server, with automatic AI enrichment off. Nothing in Paperless is changed. The evidence recipe captures only a changed date or a newly reviewed writer source.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "document_id"
+                ],
+                "properties": {
+                  "document_id": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "custom-field.list",
+              "ingredient": "paperless-ngx-api",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "query.page",
+                  "type": "number",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.page_size",
+                  "type": "number",
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/custom_fields/",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "List custom field ids, names and types so the owner can choose a date field. Fresh metadata only.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "query.page": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "query.page_size": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "custom_field.get",
+              "ingredient": "paperless-ngx-api",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "cache_ttl_ms": 0,
+              "description": "Read the current name and declared type of one custom field before importing its date.",
+              "args": [
+                {
+                  "key": "custom_field_id",
+                  "type": "number",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/custom_fields/{{custom_field_id}}/",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "custom_field_id"
+                ],
+                "properties": {
+                  "custom_field_id": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "document.api-root",
+              "ingredient": "paperless-ngx-api",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "cache_ttl_ms": 0,
+              "description": "Read the authenticated API root to pin the document source. Returned URLs are compared as identities, never followed.",
+              "args": [],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/.json",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              }
+            }
+          ],
+          "tags": [
+            "documents",
+            "assets",
+            "evidence"
+          ]
+        }
       }
     ]
   },
@@ -924,6 +3324,2916 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ]
     }
   },
+  "check-camera-home-assistant": {
+    "recipe_id": "check-camera-home-assistant",
+    "version": 2,
+    "chat_exposed": true,
+    "ttl": 0,
+    "metadata": {
+      "name": "Home Assistant camera check",
+      "description": "Use “Home Assistant camera check” in Recued. Takes a picture from one camera, asks your AI a yes-or-no question about it, such as whether someone is at the door, and alerts you on yes. Run it yourself, from chat, or on a schedule that waits for a motion sensor. The picture goes to your AI, which can miss things: an extra pair of eyes, not a safety device.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "home-assistant"
+      ],
+      "variant_group": "check-camera",
+      "tags": [
+        "home-assistant",
+        "smart-home",
+        "camera",
+        "security",
+        "alerts",
+        "ai",
+        "pack:home-assistant"
+      ],
+      "budget_ms": 120000
+    },
+    "variables": {
+      "camera": {
+        "label": "Camera",
+        "type": "string",
+        "optional": true,
+        "help": "Its name in Home Assistant, such as Front Door, or its entity id, such as camera.front_door."
+      },
+      "question": {
+        "label": "Question",
+        "type": "string",
+        "default": "Is there a person in the picture?",
+        "help": "A yes-or-no question about the picture, such as: Is someone at the door?"
+      },
+      "motion_sensor": {
+        "label": "Motion sensor, for schedules",
+        "type": "string",
+        "optional": true,
+        "help": "On a schedule, it looks only while this sensor is on, such as binary_sensor.front_door_person. Run any other way, it always looks."
+      },
+      "alert_when": {
+        "label": "Alert me",
+        "type": "enum",
+        "options": [
+          "yes_or_unsure",
+          "yes",
+          "never"
+        ],
+        "default": "yes_or_unsure",
+        "help": "yes_or_unsure: alert on yes, and when the AI cannot tell or the camera cannot be checked. yes: only on yes. never: only show the answer."
+      },
+      "channels": {
+        "label": "Notification channels",
+        "type": "array",
+        "options": [
+          "@notification_channels"
+        ],
+        "optional": true,
+        "help": "Sends to every channel you have set up, unless you choose some, such as Slack, email or in-app."
+      }
+    },
+    "requires": [
+      "read_connection_home_assistant",
+      "notification_send"
+    ],
+    "depends_on": [
+      "recued-core.home-assistant"
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "camera_given",
+        "transform": "coalesce",
+        "values": [
+          "{{config.camera}}",
+          ""
+        ]
+      },
+      {
+        "id": "camera_text",
+        "transform": "trim",
+        "input": "{{step.camera_given}}"
+      },
+      {
+        "id": "camera_lc",
+        "transform": "lowercase",
+        "input": "{{step.camera_text}}"
+      },
+      {
+        "id": "camera_key_raw",
+        "transform": "replace",
+        "input": "{{step.camera_lc}}",
+        "pattern": "camera",
+        "replacement": "",
+        "all": true
+      },
+      {
+        "id": "camera_key_text",
+        "transform": "trim",
+        "input": "{{step.camera_key_raw}}"
+      },
+      {
+        "id": "camera_key_empty",
+        "transform": "compare",
+        "left": "{{step.camera_key_text}}",
+        "operator": "is_empty"
+      },
+      {
+        "id": "camera_key",
+        "transform": "ternary",
+        "if": "{{step.camera_key_empty}}",
+        "then": "(no name)",
+        "else": "{{step.camera_key_text}}"
+      },
+      {
+        "id": "question_given",
+        "transform": "coalesce",
+        "values": [
+          "{{config.question}}",
+          "Is there a person in the picture?"
+        ]
+      },
+      {
+        "id": "question",
+        "transform": "trim",
+        "input": "{{step.question_given}}"
+      },
+      {
+        "id": "states_raw",
+        "op": "recued-core.home-assistant.state.list",
+        "cache": "fresh",
+        "args": {}
+      },
+      {
+        "id": "states",
+        "transform": "default",
+        "value": "{{step.states_raw.result}}",
+        "fallback": []
+      },
+      {
+        "id": "states_named",
+        "transform": "map",
+        "array": "{{step.states}}",
+        "apply": "lowercase",
+        "field": "attributes.friendly_name",
+        "output_field": "name_lc"
+      },
+      {
+        "id": "states_with_domain",
+        "transform": "map",
+        "array": "{{step.states_named}}",
+        "apply": "split",
+        "field": "entity_id",
+        "delimiter": ".",
+        "output_field": "entity_parts"
+      },
+      {
+        "id": "cameras",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "field": "entity_parts.0",
+        "operator": "equal",
+        "value": "camera"
+      },
+      {
+        "id": "cameras_keyed_raw",
+        "transform": "map",
+        "array": "{{step.cameras}}",
+        "apply": "replace",
+        "field": "name_lc",
+        "pattern": "camera",
+        "replacement": "",
+        "all": true,
+        "output_field": "name_key_raw"
+      },
+      {
+        "id": "cameras_keyed",
+        "transform": "map",
+        "array": "{{step.cameras_keyed_raw}}",
+        "apply": "trim",
+        "field": "name_key_raw",
+        "output_field": "name_key"
+      },
+      {
+        "id": "camera_labels",
+        "transform": "map",
+        "array": "{{step.cameras}}",
+        "expression": "{{item.attributes.friendly_name}} ({{item.entity_id}})"
+      },
+      {
+        "id": "camera_list",
+        "transform": "join",
+        "array": "{{step.camera_labels}}",
+        "separator": ", "
+      },
+      {
+        "id": "camera_count",
+        "transform": "count",
+        "input": "{{step.cameras}}"
+      },
+      {
+        "id": "no_cameras",
+        "transform": "compare",
+        "left": "{{step.camera_count}}",
+        "operator": "equal",
+        "right": 0
+      },
+      {
+        "id": "matches",
+        "transform": "filter",
+        "array": "{{step.cameras_keyed}}",
+        "mode": "any",
+        "conditions": [
+          {
+            "field": "name_lc",
+            "operator": "equal",
+            "value": "{{step.camera_lc}}"
+          },
+          {
+            "field": "entity_id",
+            "operator": "equal",
+            "value": "{{step.camera_lc}}"
+          },
+          {
+            "field": "name_key",
+            "operator": "equal",
+            "value": "{{step.camera_key}}"
+          }
+        ]
+      },
+      {
+        "id": "match_count",
+        "transform": "count",
+        "input": "{{step.matches}}"
+      },
+      {
+        "id": "found",
+        "transform": "compare",
+        "left": "{{step.match_count}}",
+        "operator": "equal",
+        "right": 1
+      },
+      {
+        "id": "entity",
+        "transform": "default",
+        "value": "{{step.matches.0.entity_id}}",
+        "fallback": ""
+      },
+      {
+        "id": "camera_name",
+        "transform": "coalesce",
+        "values": [
+          "{{step.matches.0.attributes.friendly_name}}",
+          "{{step.matches.0.entity_id}}",
+          "{{step.camera_text}}"
+        ]
+      },
+      {
+        "id": "camera_seen",
+        "transform": "coalesce",
+        "values": [
+          "{{step.matches.0.attributes.friendly_name}}",
+          "{{step.matches.0.entity_id}}"
+        ]
+      },
+      {
+        "id": "unavailable",
+        "transform": "compare",
+        "left": "{{step.matches.0.state}}",
+        "operator": "equal",
+        "right": "unavailable"
+      },
+      {
+        "id": "sensor_given",
+        "transform": "coalesce",
+        "values": [
+          "{{config.motion_sensor}}",
+          ""
+        ]
+      },
+      {
+        "id": "sensor_text",
+        "transform": "trim",
+        "input": "{{step.sensor_given}}"
+      },
+      {
+        "id": "sensor_lc",
+        "transform": "lowercase",
+        "input": "{{step.sensor_text}}"
+      },
+      {
+        "id": "scheduled",
+        "transform": "compare",
+        "left": "{{context.caller.channel}}",
+        "operator": "equal",
+        "right": "schedule"
+      },
+      {
+        "id": "has_sensor",
+        "transform": "compare",
+        "left": "{{step.sensor_text}}",
+        "operator": "is_not_empty"
+      },
+      {
+        "id": "gated",
+        "transform": "all",
+        "conditions": [
+          "{{step.scheduled}} equal true",
+          "{{step.has_sensor}} equal true"
+        ]
+      },
+      {
+        "id": "sensor_rows",
+        "transform": "filter",
+        "array": "{{step.states_named}}",
+        "mode": "any",
+        "conditions": [
+          {
+            "field": "entity_id",
+            "operator": "equal",
+            "value": "{{step.sensor_lc}}"
+          },
+          {
+            "field": "name_lc",
+            "operator": "equal",
+            "value": "{{step.sensor_lc}}"
+          }
+        ]
+      },
+      {
+        "id": "sensor_count",
+        "transform": "count",
+        "input": "{{step.sensor_rows}}"
+      },
+      {
+        "id": "sensor_found",
+        "transform": "compare",
+        "left": "{{step.sensor_count}}",
+        "operator": "equal",
+        "right": 1
+      },
+      {
+        "id": "sensor_name",
+        "transform": "coalesce",
+        "values": [
+          "{{step.sensor_rows.0.attributes.friendly_name}}",
+          "{{step.sensor_text}}"
+        ]
+      },
+      {
+        "id": "sensor_on",
+        "transform": "compare",
+        "left": "{{step.sensor_rows.0.state}}",
+        "operator": "equal",
+        "right": "on"
+      },
+      {
+        "id": "idle",
+        "transform": "all",
+        "conditions": [
+          "{{step.gated}} equal true",
+          "{{step.sensor_found}} equal true",
+          "{{step.sensor_on}} equal false"
+        ]
+      },
+      {
+        "id": "sensor_missing",
+        "transform": "all",
+        "conditions": [
+          "{{step.gated}} equal true",
+          "{{step.sensor_found}} equal false"
+        ]
+      },
+      {
+        "id": "ready",
+        "transform": "all",
+        "conditions": [
+          "{{step.found}} equal true",
+          "{{step.unavailable}} equal false",
+          "{{step.idle}} equal false",
+          "{{step.sensor_missing}} equal false"
+        ]
+      },
+      {
+        "id": "snapshot",
+        "skip_when": "{{step.ready}} not_equal true",
+        "op": "recued-core.home-assistant.camera.snapshot",
+        "cache": "fresh",
+        "args": {
+          "entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "ask",
+        "skip_when": "{{step.snapshot.file_ref}} is_null",
+        "op": "core.ai.classify",
+        "cache": "fresh",
+        "args": {
+          "llm.data": "{{step.snapshot}}",
+          "llm.categories": [
+            "yes",
+            "no",
+            "cannot_tell"
+          ],
+          "llm.context": "This picture was taken just now by a camera in the owner's home ({{step.camera_seen}}). Answer the owner's question about it with yes or no. Choose cannot_tell only when the picture is too dark, blurred, blocked or empty to answer.\n\nQuestion: {{step.question}}"
+        }
+      },
+      {
+        "id": "answer",
+        "transform": "default",
+        "value": "{{step.ask.category}}",
+        "fallback": ""
+      },
+      {
+        "id": "answer_word",
+        "transform": "switch",
+        "input": "{{step.answer}}",
+        "cases": {
+          "yes": "Yes",
+          "no": "No",
+          "cannot_tell": "Could not tell"
+        },
+        "default": "No answer"
+      },
+      {
+        "id": "is_yes",
+        "transform": "compare",
+        "left": "{{step.answer}}",
+        "operator": "equal",
+        "right": "yes"
+      },
+      {
+        "id": "is_unsure",
+        "transform": "compare",
+        "left": "{{step.answer}}",
+        "operator": "equal",
+        "right": "cannot_tell"
+      },
+      {
+        "id": "alerts_on",
+        "transform": "compare",
+        "left": "{{config.alert_when}}",
+        "operator": "not_equal",
+        "right": "never"
+      },
+      {
+        "id": "unsure_alerts",
+        "transform": "compare",
+        "left": "{{config.alert_when}}",
+        "operator": "not_equal",
+        "right": "yes"
+      },
+      {
+        "id": "unsure_alert",
+        "transform": "all",
+        "conditions": [
+          "{{step.is_unsure}} equal true",
+          "{{step.unsure_alerts}} equal true"
+        ]
+      },
+      {
+        "id": "alert_worthy",
+        "transform": "any",
+        "conditions": [
+          "{{step.is_yes}} equal true",
+          "{{step.unsure_alert}} equal true"
+        ]
+      },
+      {
+        "id": "should_alert",
+        "transform": "all",
+        "conditions": [
+          "{{step.alerts_on}} equal true",
+          "{{step.alert_worthy}} equal true"
+        ]
+      },
+      {
+        "id": "should_warn",
+        "transform": "all",
+        "conditions": [
+          "{{step.unsure_alerts}} equal true",
+          "{{step.alerts_on}} equal true",
+          "{{step.ready}} equal false",
+          "{{step.idle}} equal false"
+        ]
+      },
+      {
+        "id": "several",
+        "transform": "compare",
+        "left": "{{step.match_count}}",
+        "operator": "greater",
+        "right": 1
+      },
+      {
+        "id": "no_camera_named",
+        "transform": "compare",
+        "left": "{{step.camera_text}}",
+        "operator": "is_empty"
+      },
+      {
+        "id": "not_found_text",
+        "transform": "ternary",
+        "if": "{{step.no_cameras}}",
+        "then": "Home Assistant has no cameras",
+        "else": "Home Assistant has no camera called {{step.camera_text}}. Its cameras are: {{step.camera_list}}"
+      },
+      {
+        "id": "blocked_missing",
+        "transform": "ternary",
+        "if": "{{step.unavailable}}",
+        "then": "{{step.camera_name}} is unavailable in Home Assistant, so no picture was taken",
+        "else": "{{step.not_found_text}}"
+      },
+      {
+        "id": "blocked_detail",
+        "transform": "ternary",
+        "if": "{{step.several}}",
+        "then": "More than one camera is called {{step.camera_text}}: name it by its entity id instead",
+        "else": "{{step.blocked_missing}}"
+      },
+      {
+        "id": "blocked_camera",
+        "transform": "ternary",
+        "if": "{{step.no_camera_named}}",
+        "then": "No camera was named: set Camera in this check's settings, or send one from Home Assistant",
+        "else": "{{step.blocked_detail}}"
+      },
+      {
+        "id": "blocked_text",
+        "transform": "ternary",
+        "if": "{{step.sensor_missing}}",
+        "then": "Home Assistant has no sensor called {{step.sensor_text}}, so the check could not tell whether anything moved",
+        "else": "{{step.blocked_camera}}"
+      },
+      {
+        "id": "notify_answer",
+        "skip_when": "{{step.should_alert}} not_equal true",
+        "op": "core.notification.send",
+        "args": {
+          "channels": "{{config.channels}}",
+          "title": "{{step.camera_name}}: {{step.answer_word}}",
+          "text": "{{step.question}} {{step.answer_word}}. {{step.ask.reasoning}}"
+        }
+      },
+      {
+        "id": "notify_blocked",
+        "skip_when": "{{step.should_warn}} not_equal true",
+        "op": "core.notification.send",
+        "args": {
+          "channels": "{{config.channels}}",
+          "title": "Camera check could not look",
+          "text": "{{step.blocked_text}}."
+        }
+      },
+      {
+        "id": "alerted",
+        "transform": "coalesce",
+        "values": [
+          "{{step.notify_answer}}",
+          "{{step.notify_blocked}}"
+        ]
+      },
+      {
+        "id": "alert_tried",
+        "transform": "compare",
+        "left": "{{step.alerted}}",
+        "operator": "is_not_null"
+      },
+      {
+        "id": "alert_channels",
+        "transform": "default",
+        "value": "{{step.alerted.delivered_to}}",
+        "fallback": []
+      },
+      {
+        "id": "alert_reached",
+        "transform": "compare",
+        "left": "{{step.alert_channels}}",
+        "operator": "is_not_empty"
+      },
+      {
+        "id": "alert_list",
+        "transform": "join",
+        "array": "{{step.alert_channels}}",
+        "separator": ", "
+      },
+      {
+        "id": "alert_unreached",
+        "transform": "ternary",
+        "if": "{{step.alert_tried}}",
+        "then": "Tried, but it reached no channel",
+        "else": "No"
+      },
+      {
+        "id": "alert_text",
+        "transform": "ternary",
+        "if": "{{step.alert_reached}}",
+        "then": "Sent to {{step.alert_list}}",
+        "else": "{{step.alert_unreached}}"
+      },
+      {
+        "id": "not_ready_text",
+        "transform": "ternary",
+        "if": "{{step.idle}}",
+        "then": "Not looked: {{step.sensor_name}} is {{step.sensor_rows.0.state}}",
+        "else": "Could not look: {{step.blocked_text}}"
+      },
+      {
+        "id": "result_text",
+        "transform": "ternary",
+        "if": "{{step.ready}}",
+        "then": "{{step.answer_word}}",
+        "else": "{{step.not_ready_text}}"
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Answer",
+            "value": "{{step.result_text}}"
+          },
+          {
+            "label": "Question",
+            "value": "{{step.question}}"
+          },
+          {
+            "label": "Camera",
+            "value": "{{step.camera_name}}"
+          },
+          {
+            "label": "Why",
+            "value": "{{step.ask.reasoning}}"
+          },
+          {
+            "label": "Alert",
+            "value": "{{step.alert_text}}"
+          }
+        ]
+      }
+    ]
+  },
+  "check-device-health-home-assistant": {
+    "recipe_id": "check-device-health-home-assistant",
+    "version": 2,
+    "chat_exposed": true,
+    "ttl": 60,
+    "metadata": {
+      "name": "Home Assistant device health",
+      "description": "Use “Home Assistant device health” in Recued. Lists devices with a low battery and devices that have been unavailable for a while, with how long each has been offline. Read-only: nothing in Home Assistant is changed.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "home-assistant"
+      ],
+      "variant_group": "check-device-health",
+      "tags": [
+        "home-assistant",
+        "smart-home",
+        "devices",
+        "battery",
+        "health",
+        "digest",
+        "pack:home-assistant"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "battery_threshold": {
+        "label": "Low battery below (%)",
+        "type": "number",
+        "default": 20
+      },
+      "unavailable_hours": {
+        "label": "Unavailable for at least (hours)",
+        "type": "number",
+        "default": 6
+      },
+      "ignore_domains": {
+        "label": "Kinds of entity to leave out",
+        "type": "array",
+        "default": [
+          "media_player",
+          "update",
+          "button",
+          "event",
+          "scene"
+        ],
+        "help": "Kinds that often read unavailable without a fault, such as a TV that is off."
+      },
+      "row_limit": {
+        "label": "Max rows per table",
+        "type": "number",
+        "default": 25
+      },
+      "notify_when_found": {
+        "label": "Notify when something needs attention",
+        "type": "boolean",
+        "default": false,
+        "help": "Turn on for a scheduled run."
+      },
+      "channels": {
+        "label": "Notification channels",
+        "type": "array",
+        "options": [
+          "@notification_channels"
+        ],
+        "optional": true
+      }
+    },
+    "requires": [
+      "read_connection_home_assistant",
+      "notification_send"
+    ],
+    "depends_on": [
+      "recued-core.home-assistant"
+    ],
+    "steps": [
+      {
+        "id": "states_raw",
+        "op": "recued-core.home-assistant.state.list",
+        "args": {}
+      },
+      {
+        "id": "states",
+        "transform": "default",
+        "value": "{{step.states_raw.result}}",
+        "fallback": []
+      },
+      {
+        "id": "entity_count",
+        "transform": "count",
+        "input": "{{step.states}}"
+      },
+      {
+        "id": "states_with_domain",
+        "transform": "map",
+        "array": "{{step.states}}",
+        "apply": "split",
+        "field": "entity_id",
+        "delimiter": ".",
+        "output_field": "entity_parts"
+      },
+      {
+        "id": "watched",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "field": "entity_parts.0",
+        "operator": "not_in",
+        "value": "{{config.ignore_domains}}"
+      },
+      {
+        "id": "low_percent",
+        "transform": "filter",
+        "array": "{{step.watched}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "attributes.device_class",
+            "operator": "equal",
+            "value": "battery"
+          },
+          {
+            "field": "attributes.unit_of_measurement",
+            "operator": "equal",
+            "value": "%"
+          },
+          {
+            "field": "state",
+            "operator": "not_in",
+            "value": [
+              "unknown",
+              "unavailable",
+              ""
+            ]
+          },
+          {
+            "field": "state",
+            "operator": "less",
+            "value": "{{config.battery_threshold}}"
+          }
+        ]
+      },
+      {
+        "id": "low_percent_keyed",
+        "transform": "map",
+        "array": "{{step.low_percent}}",
+        "apply": "replace",
+        "field": "entity_parts.1",
+        "pattern": "_battery_level",
+        "replacement": "",
+        "output_field": "device_key"
+      },
+      {
+        "id": "low_percent_keyed_short",
+        "transform": "map",
+        "array": "{{step.low_percent_keyed}}",
+        "apply": "replace",
+        "field": "device_key",
+        "pattern": "_battery",
+        "replacement": "",
+        "output_field": "device_key"
+      },
+      {
+        "id": "low_percent_keys",
+        "transform": "pluck",
+        "array": "{{step.low_percent_keyed_short}}",
+        "field": "device_key"
+      },
+      {
+        "id": "low_percent_valued",
+        "transform": "map",
+        "array": "{{step.low_percent}}",
+        "apply": "to_number",
+        "field": "state",
+        "output_field": "level_value"
+      },
+      {
+        "id": "low_percent_rows",
+        "transform": "map",
+        "array": "{{step.low_percent_valued}}",
+        "expression": {
+          "name": "{{item.attributes.friendly_name}}",
+          "level": "{{item.state}}",
+          "level_value": "{{item.level_value}}",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "low_attribute",
+        "transform": "filter",
+        "array": "{{step.watched}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "attributes.battery_level",
+            "operator": "is_not_null"
+          },
+          {
+            "field": "attributes.battery_level",
+            "operator": "less",
+            "value": "{{config.battery_threshold}}"
+          },
+          {
+            "field": "entity_parts.1",
+            "operator": "not_in",
+            "value": "{{step.low_percent_keys}}"
+          }
+        ]
+      },
+      {
+        "id": "low_attribute_rows",
+        "transform": "map",
+        "array": "{{step.low_attribute}}",
+        "expression": {
+          "name": "{{item.attributes.friendly_name}}",
+          "level": "{{item.attributes.battery_level}}",
+          "level_value": "{{item.attributes.battery_level}}",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "low_numeric_rows",
+        "transform": "flatten",
+        "array": [
+          "{{step.low_percent_rows}}",
+          "{{step.low_attribute_rows}}"
+        ]
+      },
+      {
+        "id": "low_numeric_sorted",
+        "transform": "sort",
+        "array": "{{step.low_numeric_rows}}",
+        "fields": [
+          {
+            "field": "level_value",
+            "direction": "asc"
+          }
+        ]
+      },
+      {
+        "id": "low_flag",
+        "transform": "filter",
+        "array": "{{step.watched}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "entity_parts.0",
+            "operator": "equal",
+            "value": "binary_sensor"
+          },
+          {
+            "field": "attributes.device_class",
+            "operator": "equal",
+            "value": "battery"
+          },
+          {
+            "field": "state",
+            "operator": "equal",
+            "value": "on"
+          }
+        ]
+      },
+      {
+        "id": "low_flag_keyed",
+        "transform": "map",
+        "array": "{{step.low_flag}}",
+        "apply": "replace",
+        "field": "entity_parts.1",
+        "pattern": "_battery_low",
+        "replacement": "",
+        "output_field": "device_key"
+      },
+      {
+        "id": "low_flag_keyed_short",
+        "transform": "map",
+        "array": "{{step.low_flag_keyed}}",
+        "apply": "replace",
+        "field": "device_key",
+        "pattern": "_battery",
+        "replacement": "",
+        "output_field": "device_key"
+      },
+      {
+        "id": "low_flag_unlisted",
+        "transform": "filter",
+        "array": "{{step.low_flag_keyed_short}}",
+        "field": "device_key",
+        "operator": "not_in",
+        "value": "{{step.low_percent_keys}}"
+      },
+      {
+        "id": "low_flag_rows",
+        "transform": "map",
+        "array": "{{step.low_flag_unlisted}}",
+        "expression": {
+          "name": "{{item.attributes.friendly_name}}",
+          "level": "Low",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "low_rows_all",
+        "transform": "flatten",
+        "array": [
+          "{{step.low_flag_rows}}",
+          "{{step.low_numeric_sorted}}"
+        ]
+      },
+      {
+        "id": "low_count",
+        "transform": "count",
+        "input": "{{step.low_rows_all}}"
+      },
+      {
+        "id": "unavailable",
+        "transform": "filter",
+        "array": "{{step.watched}}",
+        "field": "state",
+        "operator": "equal",
+        "value": "unavailable"
+      },
+      {
+        "id": "unavailable_aged",
+        "transform": "map",
+        "array": "{{step.unavailable}}",
+        "apply": "date_diff",
+        "field": "last_changed",
+        "to": "now",
+        "unit": "hours",
+        "output_field": "hours_unavailable"
+      },
+      {
+        "id": "unavailable_long",
+        "transform": "filter",
+        "array": "{{step.unavailable_aged}}",
+        "field": "hours_unavailable",
+        "operator": "greater_or_equal",
+        "value": "{{config.unavailable_hours}}"
+      },
+      {
+        "id": "unavailable_dated",
+        "transform": "map",
+        "array": "{{step.unavailable_long}}",
+        "apply": "date_format",
+        "field": "last_changed",
+        "format": "YYYY-MM-DD HH:mm",
+        "output_field": "since"
+      },
+      {
+        "id": "unavailable_sorted",
+        "transform": "sort",
+        "array": "{{step.unavailable_dated}}",
+        "fields": [
+          {
+            "field": "hours_unavailable",
+            "direction": "desc"
+          }
+        ]
+      },
+      {
+        "id": "unavailable_rows_all",
+        "transform": "map",
+        "array": "{{step.unavailable_sorted}}",
+        "expression": {
+          "name": "{{item.attributes.friendly_name}}",
+          "since": "{{item.since}}",
+          "hours": "{{item.hours_unavailable}}",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "unavailable_count",
+        "transform": "count",
+        "input": "{{step.unavailable_rows_all}}"
+      },
+      {
+        "id": "low_table_rows",
+        "transform": "slice",
+        "array": "{{step.low_rows_all}}",
+        "start": 0,
+        "end": "{{config.row_limit}}"
+      },
+      {
+        "id": "low_table",
+        "transform": "to_table",
+        "array": "{{step.low_table_rows}}",
+        "columns": [
+          {
+            "field": "name",
+            "label": "Device"
+          },
+          {
+            "field": "level",
+            "label": "Battery %"
+          },
+          {
+            "field": "entity_id",
+            "label": "Entity"
+          }
+        ]
+      },
+      {
+        "id": "unavailable_table_rows",
+        "transform": "slice",
+        "array": "{{step.unavailable_rows_all}}",
+        "start": 0,
+        "end": "{{config.row_limit}}"
+      },
+      {
+        "id": "unavailable_table",
+        "transform": "to_table",
+        "array": "{{step.unavailable_table_rows}}",
+        "columns": [
+          {
+            "field": "name",
+            "label": "Device"
+          },
+          {
+            "field": "since",
+            "label": "Unavailable since"
+          },
+          {
+            "field": "hours",
+            "label": "Hours"
+          },
+          {
+            "field": "entity_id",
+            "label": "Entity"
+          }
+        ]
+      },
+      {
+        "id": "finding_count",
+        "transform": "math",
+        "expression": "{{step.low_count}} + {{step.unavailable_count}}"
+      },
+      {
+        "id": "has_findings",
+        "transform": "compare",
+        "left": "{{step.finding_count}}",
+        "operator": "greater",
+        "right": 0
+      },
+      {
+        "id": "status_text",
+        "transform": "ternary",
+        "if": "{{step.has_findings}}",
+        "then": "Something needs attention",
+        "else": "Every device looks healthy"
+      },
+      {
+        "id": "notify_enabled",
+        "transform": "compare",
+        "left": "{{config.notify_when_found}}",
+        "operator": "equal",
+        "right": true
+      },
+      {
+        "id": "should_notify",
+        "transform": "all",
+        "conditions": [
+          "{{step.has_findings}} equal true",
+          "{{step.notify_enabled}} equal true"
+        ]
+      },
+      {
+        "id": "notify",
+        "skip_when": "{{step.should_notify}} not_equal true",
+        "op": "core.notification.send",
+        "args": {
+          "channels": "{{config.channels}}",
+          "title": "Home Assistant: {{step.low_count:number}} low battery, {{step.unavailable_count:number}} unavailable",
+          "text": "{{step.low_count:number}} device(s) below {{config.battery_threshold}}% battery and {{step.unavailable_count:number}} unavailable for {{config.unavailable_hours}} hours or more. Open the device health check in Recued for the list."
+        }
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Status",
+            "value": "{{step.status_text}}"
+          },
+          {
+            "label": "Low batteries",
+            "value": "{{step.low_count:number}} below {{config.battery_threshold}}%"
+          },
+          {
+            "label": "Unavailable",
+            "value": "{{step.unavailable_count:number}} for {{config.unavailable_hours}} hours or more"
+          },
+          {
+            "label": "Entities checked",
+            "value": "{{step.entity_count:number}}"
+          },
+          {
+            "label": "Scope",
+            "value": "Read-only; nothing in Home Assistant was changed."
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        },
+        {
+          "type": "table",
+          "source": "step.low_table",
+          "label": "Low batteries"
+        },
+        {
+          "type": "table",
+          "source": "step.unavailable_table",
+          "label": "Unavailable devices"
+        },
+        {
+          "type": "json",
+          "source": "step.low_rows_all",
+          "label": "Every low-battery device"
+        },
+        {
+          "type": "json",
+          "source": "step.unavailable_rows_all",
+          "label": "Every unavailable device"
+        }
+      ]
+    }
+  },
+  "check-house-before-leaving-home-assistant": {
+    "recipe_id": "check-house-before-leaving-home-assistant",
+    "version": 2,
+    "chat_exposed": true,
+    "ttl": 0,
+    "metadata": {
+      "name": "Home Assistant house check before leaving",
+      "description": "Use “Home Assistant house check before leaving” in Recued. Lists open doors and windows, unlocked locks, an open garage door or gate, a disarmed alarm and lights left on. Read-only: it never locks, closes or switches anything off.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "home-assistant"
+      ],
+      "variant_group": "check-house-before-leaving",
+      "tags": [
+        "home-assistant",
+        "smart-home",
+        "security",
+        "doors",
+        "locks",
+        "lights",
+        "pack:home-assistant"
+      ],
+      "budget_ms": 15000
+    },
+    "variables": {
+      "include_lights": {
+        "label": "Include lights left on",
+        "type": "boolean",
+        "default": true
+      },
+      "row_limit": {
+        "label": "Max rows to show",
+        "type": "number",
+        "default": 50
+      }
+    },
+    "requires": [
+      "read_connection_home_assistant"
+    ],
+    "depends_on": [
+      "recued-core.home-assistant"
+    ],
+    "steps": [
+      {
+        "id": "states_raw",
+        "op": "recued-core.home-assistant.state.list",
+        "cache": "fresh",
+        "args": {}
+      },
+      {
+        "id": "states",
+        "transform": "default",
+        "value": "{{step.states_raw.result}}",
+        "fallback": []
+      },
+      {
+        "id": "entity_count",
+        "transform": "count",
+        "input": "{{step.states}}"
+      },
+      {
+        "id": "states_with_domain",
+        "transform": "map",
+        "array": "{{step.states}}",
+        "apply": "split",
+        "field": "entity_id",
+        "delimiter": ".",
+        "output_field": "entity_parts"
+      },
+      {
+        "id": "open_openings",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "entity_parts.0",
+            "operator": "equal",
+            "value": "binary_sensor"
+          },
+          {
+            "field": "attributes.device_class",
+            "operator": "in",
+            "value": [
+              "door",
+              "window",
+              "garage_door",
+              "opening"
+            ]
+          },
+          {
+            "field": "state",
+            "operator": "equal",
+            "value": "on"
+          }
+        ]
+      },
+      {
+        "id": "open_openings_rows",
+        "transform": "map",
+        "array": "{{step.open_openings}}",
+        "expression": {
+          "check": "Open door or window",
+          "name": "{{item.attributes.friendly_name}}",
+          "state": "open",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "unlocked",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "entity_parts.0",
+            "operator": "equal",
+            "value": "lock"
+          },
+          {
+            "field": "state",
+            "operator": "in",
+            "value": [
+              "unlocked",
+              "unlocking",
+              "open",
+              "opening",
+              "jammed"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "unlocked_rows",
+        "transform": "map",
+        "array": "{{step.unlocked}}",
+        "expression": {
+          "check": "Lock not locked",
+          "name": "{{item.attributes.friendly_name}}",
+          "state": "{{item.state}}",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "open_covers",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "entity_parts.0",
+            "operator": "equal",
+            "value": "cover"
+          },
+          {
+            "field": "attributes.device_class",
+            "operator": "in",
+            "value": [
+              "garage",
+              "gate",
+              "door",
+              "window"
+            ]
+          },
+          {
+            "field": "state",
+            "operator": "in",
+            "value": [
+              "open",
+              "opening"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "open_covers_rows",
+        "transform": "map",
+        "array": "{{step.open_covers}}",
+        "expression": {
+          "check": "Garage door, gate or window open",
+          "name": "{{item.attributes.friendly_name}}",
+          "state": "{{item.state}}",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "open_unclassed_covers",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "entity_parts.0",
+            "operator": "equal",
+            "value": "cover"
+          },
+          {
+            "field": "attributes.device_class",
+            "operator": "is_null"
+          },
+          {
+            "field": "state",
+            "operator": "in",
+            "value": [
+              "open",
+              "opening"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "open_unclassed_covers_rows",
+        "transform": "map",
+        "array": "{{step.open_unclassed_covers}}",
+        "expression": {
+          "check": "Cover open (could be a window)",
+          "name": "{{item.attributes.friendly_name}}",
+          "state": "{{item.state}}",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "disarmed",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "entity_parts.0",
+            "operator": "equal",
+            "value": "alarm_control_panel"
+          },
+          {
+            "field": "state",
+            "operator": "equal",
+            "value": "disarmed"
+          }
+        ]
+      },
+      {
+        "id": "disarmed_rows",
+        "transform": "map",
+        "array": "{{step.disarmed}}",
+        "expression": {
+          "check": "Alarm disarmed",
+          "name": "{{item.attributes.friendly_name}}",
+          "state": "disarmed",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "lights_on",
+        "skip_when": "{{config.include_lights}} equal false",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "entity_parts.0",
+            "operator": "equal",
+            "value": "light"
+          },
+          {
+            "field": "state",
+            "operator": "equal",
+            "value": "on"
+          }
+        ]
+      },
+      {
+        "id": "lights_on_list",
+        "transform": "default",
+        "value": "{{step.lights_on}}",
+        "fallback": []
+      },
+      {
+        "id": "lights_on_rows",
+        "transform": "map",
+        "array": "{{step.lights_on_list}}",
+        "expression": {
+          "check": "Light on",
+          "name": "{{item.attributes.friendly_name}}",
+          "state": "on",
+          "entity_id": "{{item.entity_id}}"
+        }
+      },
+      {
+        "id": "findings",
+        "transform": "flatten",
+        "array": [
+          "{{step.open_openings_rows}}",
+          "{{step.unlocked_rows}}",
+          "{{step.open_covers_rows}}",
+          "{{step.open_unclassed_covers_rows}}",
+          "{{step.disarmed_rows}}",
+          "{{step.lights_on_rows}}"
+        ]
+      },
+      {
+        "id": "finding_count",
+        "transform": "count",
+        "input": "{{step.findings}}"
+      },
+      {
+        "id": "light_count",
+        "transform": "count",
+        "input": "{{step.lights_on_rows}}"
+      },
+      {
+        "id": "security_count",
+        "transform": "math",
+        "expression": "{{step.finding_count}} - {{step.light_count}}"
+      },
+      {
+        "id": "all_clear",
+        "transform": "compare",
+        "left": "{{step.finding_count}}",
+        "operator": "equal",
+        "right": 0
+      },
+      {
+        "id": "status_text",
+        "transform": "ternary",
+        "if": "{{step.all_clear}}",
+        "then": "All clear: everything is closed, locked and off",
+        "else": "Some things need a look before you leave"
+      },
+      {
+        "id": "finding_rows",
+        "transform": "slice",
+        "array": "{{step.findings}}",
+        "start": 0,
+        "end": "{{config.row_limit}}"
+      },
+      {
+        "id": "finding_table",
+        "transform": "to_table",
+        "array": "{{step.finding_rows}}",
+        "columns": [
+          {
+            "field": "check",
+            "label": "Check"
+          },
+          {
+            "field": "name",
+            "label": "Name"
+          },
+          {
+            "field": "state",
+            "label": "State"
+          },
+          {
+            "field": "entity_id",
+            "label": "Entity"
+          }
+        ]
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Status",
+            "value": "{{step.status_text}}"
+          },
+          {
+            "label": "Doors, windows, locks and alarm",
+            "value": "{{step.security_count:number}} to check"
+          },
+          {
+            "label": "Lights on",
+            "value": "{{step.light_count:number}}"
+          },
+          {
+            "label": "Entities checked",
+            "value": "{{step.entity_count:number}}"
+          },
+          {
+            "label": "Scope",
+            "value": "Read-only; nothing in Home Assistant was changed."
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        },
+        {
+          "type": "table",
+          "source": "step.finding_table",
+          "label": "Before you leave"
+        },
+        {
+          "type": "json",
+          "source": "step.findings",
+          "label": "Every finding"
+        }
+      ]
+    }
+  },
+  "configure-paperless-sync": {
+    "recipe_id": "configure-paperless-sync",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Approve Paperless documents",
+      "description": "Use “Approve Paperless documents” in Recued. Recheck a reviewed selection and save source links. Run Sync Paperless documents to perform the import.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000,
+      "retired_connections": {
+        "paperless_ngx": "paperless-ngx-api"
+      }
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx",
+      "recued-core.paperless-ngx-api"
+    ],
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "variables": {
+      "document_ids": {
+        "label": "Documents",
+        "type": "array",
+        "help": "Choose one document or the displayed batch from Find Paperless documents."
+      },
+      "custom_field_id": {
+        "label": "Document date field",
+        "type": "number"
+      },
+      "asset_id": {
+        "label": "Existing asset (optional)",
+        "type": "string",
+        "default": "",
+        "page_binding": {
+          "kind": "asset",
+          "field": "id"
+        },
+        "help": "Leave blank to create assets. An existing asset can be linked to one document; manual dates retain their priority."
+      },
+      "mode": {
+        "label": "After the first import",
+        "type": "string",
+        "default": "sync",
+        "options": [
+          "sync",
+          "once"
+        ],
+        "help": "Keep in sync, or import once. Schedule Sync Paperless documents using the existing automation controls."
+      },
+      "expected_hash": {
+        "label": "Reviewed selection",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "connection_required",
+        "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+        "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+      },
+      {
+        "id": "source_server",
+        "op": "recued-core.paperless-ngx-api.document.api-root",
+        "args": {},
+        "cache": "fresh"
+      },
+      {
+        "id": "source_identity",
+        "guard": "{{step.source_server.result.documents}} is_empty",
+        "fail_reason": "Paperless did not return its document API identity. Nothing was connected."
+      },
+      {
+        "id": "ids",
+        "transform": "unique",
+        "array": "{{config.document_ids}}"
+      },
+      {
+        "id": "selection_count",
+        "transform": "count",
+        "input": "{{step.ids}}"
+      },
+      {
+        "id": "selection_ok",
+        "transform": "all",
+        "conditions": [
+          "{{step.selection_count}} greater 0",
+          "{{step.selection_count}} less_or_equal 50",
+          "{{config.custom_field_id}} greater 0"
+        ]
+      },
+      {
+        "id": "selection_required",
+        "guard": "{{step.selection_ok}} equal false",
+        "fail_reason": "Choose between one and fifty documents and a date field."
+      },
+      {
+        "id": "mode_ok",
+        "transform": "compare",
+        "left": "{{config.mode}}",
+        "operator": "in",
+        "right": [
+          "sync",
+          "once"
+        ]
+      },
+      {
+        "id": "mode_required",
+        "guard": "{{step.mode_ok}} equal false",
+        "fail_reason": "Choose sync or import once."
+      },
+      {
+        "id": "single_existing",
+        "transform": "any",
+        "conditions": [
+          "{{config.asset_id}} is_empty",
+          "{{step.selection_count}} equal 1"
+        ]
+      },
+      {
+        "id": "existing_selection",
+        "guard": "{{step.single_existing}} equal false",
+        "fail_reason": "An existing asset can be linked to only one selected document."
+      },
+      {
+        "id": "existing_asset",
+        "op": "core.work-entity.get",
+        "args": {
+          "kind": "asset",
+          "id": "{{config.asset_id}}"
+        },
+        "cache": "fresh",
+        "skip_when": "{{config.asset_id}} is_empty"
+      },
+      {
+        "id": "existing_expiry",
+        "transform": "pick",
+        "source": "{{step.existing_asset.entity.dates}}",
+        "fields": [
+          "expires_on"
+        ]
+      },
+      {
+        "id": "expiry_fields",
+        "transform": "count",
+        "input": "{{step.existing_expiry}}"
+      },
+      {
+        "id": "missing_target",
+        "transform": "all",
+        "conditions": [
+          "{{config.asset_id}} is_not_empty",
+          "{{step.expiry_fields}} equal 0"
+        ]
+      },
+      {
+        "id": "compatible_asset",
+        "guard": "{{step.missing_target}} equal true",
+        "fail_reason": "This asset has no expiry date field. Choose an asset with expires_on or leave Existing asset blank to create a document asset."
+      },
+      {
+        "id": "existing_field_source",
+        "transform": "rename",
+        "source": "{{step.existing_asset.entity.field_sources}}",
+        "mapping": {
+          "dates.expires_on": "expiry_source"
+        }
+      },
+      {
+        "id": "existing_authority",
+        "transform": "switch",
+        "input": "{{step.existing_field_source.expiry_source.kind}}",
+        "cases": {
+          "owner": "Your entry stays protected",
+          "confirmed_document": "Your confirmed date stays protected",
+          "extracted": "An extracted date is already recorded; another source may control it"
+        },
+        "default": "No saved date authority"
+      },
+      {
+        "id": "field",
+        "op": "recued-core.paperless-ngx-api.custom_field.get",
+        "args": {
+          "custom_field_id": "{{config.custom_field_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "same_field",
+        "guard": "{{step.field.result.id}} not_equal {{config.custom_field_id}}",
+        "fail_reason": "Paperless returned another custom field. Nothing was connected."
+      },
+      {
+        "id": "date_field_required",
+        "guard": "{{step.field.result.data_type}} not_equal date",
+        "fail_reason": "Choose a Paperless custom field declared as a date."
+      },
+      {
+        "id": "documents",
+        "op": "recued-core.paperless-ngx-api.document.get",
+        "args": {
+          "document_id": "{{item}}"
+        },
+        "cache": "fresh",
+        "foreach": "{{step.ids}}"
+      },
+      {
+        "id": "source_rows",
+        "transform": "map",
+        "array": "{{step.documents}}",
+        "expression": {
+          "document_id": "{{item.item}}",
+          "returned_id": "{{item.result.result.id}}",
+          "title": "{{item.result.result.title}}",
+          "custom_fields": "{{item.result.result.custom_fields}}",
+          "read_ok": "{{item.ok}}",
+          "custom_field_id": "{{config.custom_field_id}}"
+        }
+      },
+      {
+        "id": "date_values",
+        "transform": "find",
+        "array": "{{item.custom_fields}}",
+        "field": "field",
+        "operator": "equal",
+        "value": "{{item.custom_field_id}}",
+        "foreach": "{{step.source_rows}}"
+      },
+      {
+        "id": "with_dates",
+        "transform": "enrich_by",
+        "array": "{{step.source_rows}}",
+        "with": "{{step.date_values}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "source_date": "result.value"
+        }
+      },
+      {
+        "id": "parsed_dates",
+        "transform": "map",
+        "array": "{{step.with_dates}}",
+        "apply": "date_parse",
+        "field": "source_date",
+        "output_field": "date_ms"
+      },
+      {
+        "id": "date_lengths",
+        "transform": "map",
+        "array": "{{step.parsed_dates}}",
+        "apply": "string_length",
+        "field": "source_date",
+        "output_field": "date_length"
+      },
+      {
+        "id": "parseable_dates",
+        "transform": "filter",
+        "array": "{{step.date_lengths}}",
+        "conditions": [
+          {
+            "field": "date_ms",
+            "operator": "is_not_null",
+            "value": null
+          },
+          {
+            "field": "date_length",
+            "operator": "equal",
+            "value": 10
+          },
+          {
+            "field": "read_ok",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "date_iso",
+        "transform": "map",
+        "array": "{{step.parseable_dates}}",
+        "apply": "date_add",
+        "field": "date_ms",
+        "amount": 0,
+        "unit": "seconds",
+        "output_field": "iso"
+      },
+      {
+        "id": "date_parts",
+        "transform": "map",
+        "array": "{{step.date_iso}}",
+        "apply": "split",
+        "field": "iso",
+        "delimiter": "T",
+        "output_field": "parts"
+      },
+      {
+        "id": "date_roundtrips",
+        "transform": "compare",
+        "left": "{{item.source_date}}",
+        "operator": "equal",
+        "right": "{{item.parts.0}}",
+        "foreach": "{{step.date_parts}}"
+      },
+      {
+        "id": "date_proofs",
+        "transform": "enrich_by",
+        "array": "{{step.date_parts}}",
+        "with": "{{step.date_roundtrips}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "date_valid": "result"
+        }
+      },
+      {
+        "id": "identity_proofs",
+        "transform": "compare",
+        "left": "{{item.document_id}}",
+        "operator": "equal",
+        "right": "{{item.returned_id}}",
+        "foreach": "{{step.date_proofs}}"
+      },
+      {
+        "id": "identity_dates",
+        "transform": "enrich_by",
+        "array": "{{step.date_proofs}}",
+        "with": "{{step.identity_proofs}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "identity_valid": "result"
+        }
+      },
+      {
+        "id": "valid_dates",
+        "transform": "filter",
+        "array": "{{step.identity_dates}}",
+        "conditions": [
+          {
+            "field": "date_valid",
+            "operator": "equal",
+            "value": true
+          },
+          {
+            "field": "identity_valid",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "valid_markers",
+        "transform": "map",
+        "array": "{{step.valid_dates}}",
+        "expression": {
+          "document_id": "{{item.document_id}}",
+          "valid": true
+        }
+      },
+      {
+        "id": "dated_rows",
+        "transform": "enrich_by",
+        "array": "{{step.with_dates}}",
+        "with": "{{step.valid_markers}}",
+        "key": "document_id",
+        "with_key": "document_id",
+        "fields": {
+          "valid": "valid"
+        }
+      },
+      {
+        "id": "links",
+        "op": "recued-core.paperless-ngx.sync_link.search",
+        "args": {
+          "filters": {
+            "connection": "{{context.connections.paperless-ngx-api}}"
+          },
+          "limit": 200
+        },
+        "cache": "fresh",
+        "pages": "all"
+      },
+      {
+        "id": "complete_links",
+        "guard": "{{step.links.next_cursor}} is_not_empty",
+        "fail_reason": "Too many sync links to review completely. Narrow this source first."
+      },
+      {
+        "id": "review_rows",
+        "transform": "enrich_by",
+        "array": "{{step.dated_rows}}",
+        "with": "{{step.links.records}}",
+        "key": "document_id",
+        "with_key": "document_id",
+        "fields": {
+          "link_id": "id",
+          "revision": "_record.revision",
+          "existing_asset_id": "asset_id",
+          "source_root": "source_root",
+          "state": "state",
+          "busy": "busy"
+        }
+      },
+      {
+        "id": "review_material",
+        "transform": "map",
+        "array": "{{step.review_rows}}",
+        "expression": {
+          "connection": "{{context.connections.paperless-ngx-api}}",
+          "document_id": "{{item.document_id}}",
+          "title": "{{item.title}}",
+          "date": "{{item.source_date}}",
+          "valid": "{{item.valid}}",
+          "field": "{{config.custom_field_id}}",
+          "field_name": "{{step.field.result.name}}",
+          "field_type": "{{step.field.result.data_type}}",
+          "asset_id": "{{config.asset_id}}",
+          "baseline": "{{step.existing_asset.entity.dates.expires_on}}",
+          "baseline_source": "{{step.existing_field_source.expiry_source}}",
+          "mode": "{{config.mode}}",
+          "source_root": "{{step.source_server.result.documents}}",
+          "link_id": "{{item.link_id}}",
+          "revision": "{{item.revision}}",
+          "existing_asset_id": "{{item.existing_asset_id}}",
+          "state": "{{item.state}}"
+        }
+      },
+      {
+        "id": "review_json",
+        "transform": "json_stringify",
+        "input": "{{step.review_material}}"
+      },
+      {
+        "id": "review_hash",
+        "transform": "sha256",
+        "input": "{{step.review_json}}"
+      },
+      {
+        "id": "same_review",
+        "guard": "{{step.review_hash}} not_equal {{config.expected_hash}}",
+        "fail_reason": "The documents, mapping or saved setup changed. Open a fresh review before approving."
+      },
+      {
+        "id": "invalid",
+        "transform": "filter",
+        "array": "{{step.review_rows}}",
+        "conditions": [
+          {
+            "field": "valid",
+            "operator": "not_equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "invalid_count",
+        "transform": "count",
+        "input": "{{step.invalid}}"
+      },
+      {
+        "id": "valid_selection",
+        "guard": "{{step.invalid_count}} greater 0",
+        "fail_reason": "Every selected document must have the chosen field and a real YYYY-MM-DD date. Review a smaller selection."
+      },
+      {
+        "id": "checking",
+        "transform": "filter",
+        "array": "{{step.review_rows}}",
+        "conditions": [
+          {
+            "field": "busy",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "checking_count",
+        "transform": "count",
+        "input": "{{step.checking}}"
+      },
+      {
+        "id": "settled_selection",
+        "guard": "{{step.checking_count}} greater 0",
+        "fail_reason": "A selected source link still has a check in progress. Let it finish, or stop its run and reset the interrupted check in Sync settings."
+      },
+      {
+        "id": "existing_roots",
+        "transform": "default",
+        "value": "{{step.links.records}}",
+        "fallback": []
+      },
+      {
+        "id": "same_roots",
+        "transform": "compare",
+        "left": "{{item.source_root}}",
+        "operator": "equal",
+        "right": "{{step.source_server.result.documents}}",
+        "foreach": "{{step.existing_roots}}"
+      },
+      {
+        "id": "other_roots",
+        "transform": "filter",
+        "array": "{{step.same_roots}}",
+        "conditions": [
+          {
+            "field": "result",
+            "operator": "not_equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "other_root_count",
+        "transform": "count",
+        "input": "{{step.other_roots}}"
+      },
+      {
+        "id": "same_source",
+        "guard": "{{step.other_root_count}} greater 0",
+        "fail_reason": "This connection name now points to another Paperless server. Enroll it under a different connection name before connecting these documents."
+      },
+      {
+        "id": "existing_choice",
+        "transform": "compare",
+        "left": "{{config.asset_id}}",
+        "operator": "is_not_empty"
+      },
+      {
+        "id": "linked_assets",
+        "transform": "filter",
+        "array": "{{step.review_rows}}",
+        "conditions": [
+          {
+            "field": "existing_asset_id",
+            "operator": "is_not_empty",
+            "value": null
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "asset_targets",
+        "transform": "compare",
+        "left": "{{item.existing_asset_id}}",
+        "operator": "equal",
+        "right": "{{config.asset_id}}",
+        "foreach": "{{step.linked_assets}}"
+      },
+      {
+        "id": "different_assets",
+        "transform": "filter",
+        "array": "{{step.asset_targets}}",
+        "conditions": [
+          {
+            "field": "result",
+            "operator": "equal",
+            "value": false
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "different_asset_count",
+        "transform": "count",
+        "input": "{{step.different_assets}}"
+      },
+      {
+        "id": "changed_target",
+        "transform": "all",
+        "conditions": [
+          "{{step.existing_choice}} equal true",
+          "{{step.different_asset_count}} greater 0"
+        ]
+      },
+      {
+        "id": "stable_target",
+        "guard": "{{step.changed_target}} equal true",
+        "fail_reason": "This document is already linked to another asset. Keep that link; disconnecting does not move or delete the accepted asset."
+      },
+      {
+        "id": "key_seeds",
+        "transform": "map",
+        "array": "{{step.review_rows}}",
+        "expression": {
+          "document_id": "{{item.document_id}}",
+          "title": "{{item.title}}",
+          "link_id": "{{item.link_id}}",
+          "revision": "{{item.revision}}",
+          "existing_asset_id": "{{item.existing_asset_id}}",
+          "seed": "{{context.connections.paperless-ngx-api}}/{{item.document_id}}"
+        }
+      },
+      {
+        "id": "target_rows",
+        "transform": "map",
+        "array": "{{step.key_seeds}}",
+        "expression": {
+          "$ternary": {
+            "if": "{{step.existing_choice}}",
+            "then": "{{config.asset_id}}",
+            "else": "{{item.existing_asset_id}}"
+          }
+        },
+        "output_field": "target_asset_id"
+      },
+      {
+        "id": "keys",
+        "transform": "map",
+        "array": "{{step.target_rows}}",
+        "apply": "sha256",
+        "field": "seed",
+        "output_field": "key"
+      },
+      {
+        "id": "new",
+        "transform": "filter",
+        "array": "{{step.keys}}",
+        "conditions": [
+          {
+            "field": "link_id",
+            "operator": "is_empty",
+            "value": null
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "existing",
+        "transform": "filter",
+        "array": "{{step.keys}}",
+        "conditions": [
+          {
+            "field": "link_id",
+            "operator": "is_not_empty",
+            "value": null
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "created",
+        "op": "recued-core.paperless-ngx.sync_link.create",
+        "args": {
+          "id": "{{item.key}}",
+          "values": {
+            "connection": "{{context.connections.paperless-ngx-api}}",
+            "document_id": "{{item.document_id}}",
+            "custom_field_id": "{{config.custom_field_id}}",
+            "asset_id": "{{config.asset_id}}",
+            "source_root": "{{step.source_server.result.documents}}",
+            "source_title": "{{item.title}}",
+            "state": "{{config.mode}}",
+            "busy": false,
+            "last_result": "Ready for first sync"
+          }
+        },
+        "cache": "fresh",
+        "foreach": "{{step.new}}"
+      },
+      {
+        "id": "updated",
+        "op": "recued-core.paperless-ngx.sync_link.update",
+        "args": {
+          "id": "{{item.link_id}}",
+          "expected_version": 7,
+          "expected_revision": "{{item.revision}}",
+          "set": {
+            "custom_field_id": "{{config.custom_field_id}}",
+            "state": "{{config.mode}}",
+            "asset_id": "{{item.target_asset_id}}"
+          }
+        },
+        "cache": "fresh",
+        "foreach": "{{step.existing}}"
+      },
+      {
+        "id": "saved_links",
+        "transform": "flatten",
+        "array": [
+          "{{step.created}}",
+          "{{step.updated}}"
+        ]
+      },
+      {
+        "id": "failed_links",
+        "transform": "filter",
+        "array": "{{step.saved_links}}",
+        "conditions": [
+          {
+            "field": "ok",
+            "operator": "not_equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "failed_count",
+        "transform": "count",
+        "input": "{{step.failed_links}}"
+      },
+      {
+        "id": "saved_selection",
+        "guard": "{{step.failed_count}} greater 0",
+        "fail_reason": "Some links could not be saved. Review the selection again; existing links and stable asset identities are retained."
+      },
+      {
+        "id": "receipt",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Next step",
+            "value": "Run Sync Paperless documents to import the approved selection."
+          },
+          {
+            "label": "Automation",
+            "value": "Complete the first import, then schedule this recipe with the same connection saved on its dish. In Automation, open the schedule and review Scheduled local writes to allow recurring updates. Manage source links in Sync settings."
+          },
+          {
+            "label": "Selected documents",
+            "value": "{{step.selection_count}}"
+          }
+        ]
+      },
+      {
+        "id": "actions",
+        "transform": "default",
+        "value": [
+          {
+            "kind": "recipe.run",
+            "label": "Sync now",
+            "recipe_id": "sync-paperless-documents",
+            "config": {}
+          },
+          {
+            "kind": "recipe.run",
+            "label": "Open sync settings",
+            "recipe_id": "paperless-sync-status",
+            "config": {}
+          }
+        ],
+        "fallback": []
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.receipt"
+        },
+        {
+          "type": "button",
+          "source": "step.actions"
+        }
+      ]
+    }
+  },
+  "control-device-home-assistant": {
+    "recipe_id": "control-device-home-assistant",
+    "version": 2,
+    "chat_exposed": true,
+    "ttl": 0,
+    "metadata": {
+      "name": "Home Assistant control",
+      "description": "Use “Home Assistant control” in Recued. Turns one device on or off, locks or unlocks a door, opens or closes a cover, sets a thermostat or activates a scene, found by its name. Unlocking a door or opening a cover always asks for your approval first; the rest happens straight away when you ask in your own chat or run it yourself.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "home-assistant"
+      ],
+      "variant_group": "control-device",
+      "tags": [
+        "home-assistant",
+        "smart-home",
+        "control",
+        "lights",
+        "locks",
+        "pack:home-assistant"
+      ],
+      "budget_ms": 20000
+    },
+    "variables": {
+      "action": {
+        "label": "What to do",
+        "type": "enum",
+        "options": [
+          "turn_on",
+          "turn_off",
+          "lock",
+          "unlock",
+          "open",
+          "close",
+          "set_temperature",
+          "activate_scene"
+        ]
+      },
+      "target": {
+        "label": "Device",
+        "type": "string",
+        "help": "Its name in Home Assistant, such as Kitchen Lights, or its entity id."
+      },
+      "temperature": {
+        "label": "Temperature",
+        "type": "number",
+        "optional": true,
+        "help": "Only for set_temperature."
+      }
+    },
+    "requires": [
+      "read_connection_home_assistant"
+    ],
+    "depends_on": [
+      "recued-core.home-assistant"
+    ],
+    "steps": [
+      {
+        "id": "target_text",
+        "transform": "trim",
+        "input": "{{config.target}}"
+      },
+      {
+        "id": "target_lc",
+        "transform": "lowercase",
+        "input": "{{step.target_text}}"
+      },
+      {
+        "id": "states_raw",
+        "op": "recued-core.home-assistant.state.list",
+        "cache": "fresh",
+        "args": {}
+      },
+      {
+        "id": "states",
+        "transform": "default",
+        "value": "{{step.states_raw.result}}",
+        "fallback": []
+      },
+      {
+        "id": "states_named",
+        "transform": "map",
+        "array": "{{step.states}}",
+        "apply": "lowercase",
+        "field": "attributes.friendly_name",
+        "output_field": "name_lc"
+      },
+      {
+        "id": "states_with_domain",
+        "transform": "map",
+        "array": "{{step.states_named}}",
+        "apply": "split",
+        "field": "entity_id",
+        "delimiter": ".",
+        "output_field": "entity_parts"
+      },
+      {
+        "id": "matches",
+        "transform": "filter",
+        "array": "{{step.states_with_domain}}",
+        "mode": "any",
+        "conditions": [
+          {
+            "field": "name_lc",
+            "operator": "equal",
+            "value": "{{step.target_lc}}"
+          },
+          {
+            "field": "entity_id",
+            "operator": "equal",
+            "value": "{{step.target_lc}}"
+          }
+        ]
+      },
+      {
+        "id": "allowed_domains",
+        "transform": "switch",
+        "input": "{{config.action}}",
+        "cases": {
+          "lock": [
+            "lock"
+          ],
+          "unlock": [
+            "lock"
+          ],
+          "open": [
+            "cover"
+          ],
+          "close": [
+            "cover"
+          ],
+          "set_temperature": [
+            "climate"
+          ],
+          "activate_scene": [
+            "scene"
+          ]
+        },
+        "default": [
+          "light",
+          "switch",
+          "fan",
+          "input_boolean",
+          "media_player",
+          "humidifier",
+          "climate"
+        ]
+      },
+      {
+        "id": "candidates",
+        "transform": "filter",
+        "array": "{{step.matches}}",
+        "field": "entity_parts.0",
+        "operator": "in",
+        "value": "{{step.allowed_domains}}"
+      },
+      {
+        "id": "candidate_count",
+        "transform": "count",
+        "input": "{{step.candidates}}"
+      },
+      {
+        "id": "ready",
+        "transform": "compare",
+        "left": "{{step.candidate_count}}",
+        "operator": "equal",
+        "right": 1
+      },
+      {
+        "id": "entity",
+        "transform": "default",
+        "value": "{{step.candidates.0.entity_id}}",
+        "fallback": ""
+      },
+      {
+        "id": "domain",
+        "transform": "default",
+        "value": "{{step.candidates.0.entity_parts.0}}",
+        "fallback": ""
+      },
+      {
+        "id": "is_light",
+        "transform": "compare",
+        "left": "{{step.domain}}",
+        "operator": "equal",
+        "right": "light"
+      },
+      {
+        "id": "is_switch",
+        "transform": "compare",
+        "left": "{{step.domain}}",
+        "operator": "equal",
+        "right": "switch"
+      },
+      {
+        "id": "temperature_given",
+        "transform": "compare",
+        "left": "{{config.temperature}}",
+        "operator": "is_not_null"
+      },
+      {
+        "id": "go_light_on",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal turn_on",
+          "{{step.is_light}} equal true"
+        ]
+      },
+      {
+        "id": "go_light_off",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal turn_off",
+          "{{step.is_light}} equal true"
+        ]
+      },
+      {
+        "id": "go_switch_on",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal turn_on",
+          "{{step.is_switch}} equal true"
+        ]
+      },
+      {
+        "id": "go_switch_off",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal turn_off",
+          "{{step.is_switch}} equal true"
+        ]
+      },
+      {
+        "id": "go_other_on",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal turn_on",
+          "{{step.is_light}} equal false",
+          "{{step.is_switch}} equal false"
+        ]
+      },
+      {
+        "id": "go_other_off",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal turn_off",
+          "{{step.is_light}} equal false",
+          "{{step.is_switch}} equal false"
+        ]
+      },
+      {
+        "id": "go_lock",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal lock"
+        ]
+      },
+      {
+        "id": "go_unlock",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal unlock"
+        ]
+      },
+      {
+        "id": "go_open",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal open"
+        ]
+      },
+      {
+        "id": "go_close",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal close"
+        ]
+      },
+      {
+        "id": "go_temperature",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal set_temperature",
+          "{{step.temperature_given}} equal true"
+        ]
+      },
+      {
+        "id": "go_scene",
+        "transform": "all",
+        "conditions": [
+          "{{step.ready}} equal true",
+          "{{config.action}} equal activate_scene"
+        ]
+      },
+      {
+        "id": "light_on",
+        "skip_when": "{{step.go_light_on}} not_equal true",
+        "op": "recued-core.home-assistant.light.turn_on",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "light_off",
+        "skip_when": "{{step.go_light_off}} not_equal true",
+        "op": "recued-core.home-assistant.light.turn_off",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "switch_on",
+        "skip_when": "{{step.go_switch_on}} not_equal true",
+        "op": "recued-core.home-assistant.switch.turn_on",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "switch_off",
+        "skip_when": "{{step.go_switch_off}} not_equal true",
+        "op": "recued-core.home-assistant.switch.turn_off",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "other_on",
+        "skip_when": "{{step.go_other_on}} not_equal true",
+        "op": "recued-core.home-assistant.device.turn_on",
+        "args": {
+          "domain": "{{step.domain}}",
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "other_off",
+        "skip_when": "{{step.go_other_off}} not_equal true",
+        "op": "recued-core.home-assistant.device.turn_off",
+        "args": {
+          "domain": "{{step.domain}}",
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "lock",
+        "skip_when": "{{step.go_lock}} not_equal true",
+        "op": "recued-core.home-assistant.lock.lock",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "unlock",
+        "skip_when": "{{step.go_unlock}} not_equal true",
+        "op": "recued-core.home-assistant.lock.unlock",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "open",
+        "skip_when": "{{step.go_open}} not_equal true",
+        "op": "recued-core.home-assistant.cover.open",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "close",
+        "skip_when": "{{step.go_close}} not_equal true",
+        "op": "recued-core.home-assistant.cover.close",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "temperature",
+        "skip_when": "{{step.go_temperature}} not_equal true",
+        "op": "recued-core.home-assistant.climate.set_temperature",
+        "args": {
+          "body.entity_id": "{{step.entity}}",
+          "body.temperature": "{{config.temperature}}"
+        }
+      },
+      {
+        "id": "scene",
+        "skip_when": "{{step.go_scene}} not_equal true",
+        "op": "recued-core.home-assistant.scene.activate",
+        "args": {
+          "body.entity_id": "{{step.entity}}"
+        }
+      },
+      {
+        "id": "outcome",
+        "transform": "coalesce",
+        "values": [
+          "{{step.light_on}}",
+          "{{step.light_off}}",
+          "{{step.switch_on}}",
+          "{{step.switch_off}}",
+          "{{step.other_on}}",
+          "{{step.other_off}}",
+          "{{step.lock}}",
+          "{{step.unlock}}",
+          "{{step.open}}",
+          "{{step.close}}",
+          "{{step.temperature}}",
+          "{{step.scene}}"
+        ]
+      },
+      {
+        "id": "did_run",
+        "transform": "compare",
+        "left": "{{step.outcome}}",
+        "operator": "is_not_null"
+      },
+      {
+        "id": "new_states",
+        "transform": "default",
+        "value": "{{step.outcome.result}}",
+        "fallback": []
+      },
+      {
+        "id": "changed_count",
+        "transform": "count",
+        "input": "{{step.new_states}}"
+      },
+      {
+        "id": "reported_change",
+        "transform": "compare",
+        "left": "{{step.changed_count}}",
+        "operator": "greater",
+        "right": 0
+      },
+      {
+        "id": "none_found",
+        "transform": "compare",
+        "left": "{{step.candidate_count}}",
+        "operator": "equal",
+        "right": 0
+      },
+      {
+        "id": "several_found",
+        "transform": "compare",
+        "left": "{{step.candidate_count}}",
+        "operator": "greater",
+        "right": 1
+      },
+      {
+        "id": "done_text",
+        "transform": "ternary",
+        "if": "{{step.reported_change}}",
+        "then": "Done: Home Assistant reports {{step.entity}} is now {{step.new_states.0.state}}",
+        "else": "Done: Home Assistant reported no change, so {{step.entity}} was already that way"
+      },
+      {
+        "id": "missing_text",
+        "transform": "ternary",
+        "if": "{{step.ready}}",
+        "then": "Nothing changed: say which temperature to set",
+        "else": "Nothing changed"
+      },
+      {
+        "id": "several_text",
+        "transform": "ternary",
+        "if": "{{step.several_found}}",
+        "then": "Nothing changed: several devices are named {{step.target_text}}, so name one of them by its entity id",
+        "else": "{{step.missing_text}}"
+      },
+      {
+        "id": "not_done_text",
+        "transform": "ternary",
+        "if": "{{step.none_found}}",
+        "then": "Nothing changed: no device named {{step.target_text}} can {{config.action}}",
+        "else": "{{step.several_text}}"
+      },
+      {
+        "id": "result_text",
+        "transform": "ternary",
+        "if": "{{step.did_run}}",
+        "then": "{{step.done_text}}",
+        "else": "{{step.not_done_text}}"
+      },
+      {
+        "id": "candidate_table",
+        "transform": "to_table",
+        "array": "{{step.candidates}}",
+        "columns": [
+          {
+            "field": "attributes.friendly_name",
+            "label": "Name"
+          },
+          {
+            "field": "entity_id",
+            "label": "Entity"
+          },
+          {
+            "field": "state",
+            "label": "State"
+          }
+        ]
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Result",
+            "value": "{{step.result_text}}"
+          },
+          {
+            "label": "Asked for",
+            "value": "{{config.action}}: {{step.target_text}}"
+          },
+          {
+            "label": "Devices matched",
+            "value": "{{step.candidate_count:number}}"
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        },
+        {
+          "type": "table",
+          "source": "step.candidate_table",
+          "label": "Matching devices"
+        },
+        {
+          "type": "json",
+          "source": "step.outcome",
+          "label": "What Home Assistant answered"
+        }
+      ]
+    }
+  },
   "extract-commitments-from-mail": {
     "recipe_id": "extract-commitments-from-mail",
     "chat_exposed": true,
@@ -1658,6 +6968,355 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ]
     }
   },
+  "find-paperless-documents": {
+    "recipe_id": "find-paperless-documents",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Find Paperless documents",
+      "description": "Use “Find Paperless documents” in Recued. Search one page at a time. Review one document or the displayed batch before connecting it.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000,
+      "retired_connections": {
+        "paperless_ngx": "paperless-ngx-api"
+      }
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx",
+      "recued-core.paperless-ngx-api"
+    ],
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "variables": {
+      "custom_field_id": {
+        "label": "Document date field",
+        "type": "number"
+      },
+      "query": {
+        "label": "Search",
+        "type": "string",
+        "default": ""
+      },
+      "page": {
+        "label": "Page",
+        "type": "number",
+        "default": 1
+      }
+    },
+    "steps": [
+      {
+        "id": "connection_required",
+        "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+        "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+      },
+      {
+        "id": "documents",
+        "op": "recued-core.paperless-ngx-api.document.list",
+        "args": {
+          "query.query": "{{config.query}}",
+          "query.page": "{{config.page}}",
+          "query.page_size": 50
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "rows",
+        "transform": "map",
+        "array": "{{step.documents.result.results}}",
+        "expression": {
+          "id": "{{item.id}}",
+          "title": "{{item.title}}",
+          "actions": [
+            {
+              "kind": "recipe.run",
+              "label": "Review",
+              "recipe_id": "preview-paperless-sync",
+              "config": {
+                "document_ids": [
+                  "{{item.id}}"
+                ],
+                "custom_field_id": "{{config.custom_field_id}}"
+              }
+            },
+            {
+              "kind": "recipe.run",
+              "label": "Ignore",
+              "recipe_id": "ignore-paperless-document",
+              "config": {
+                "document_id": "{{item.id}}",
+                "custom_field_id": "{{config.custom_field_id}}"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "table",
+        "transform": "to_table",
+        "array": "{{step.rows}}",
+        "columns": [
+          {
+            "field": "title",
+            "label": "Document"
+          },
+          {
+            "field": "actions",
+            "label": "",
+            "type": "action"
+          }
+        ]
+      },
+      {
+        "id": "ids",
+        "transform": "pluck",
+        "array": "{{step.documents.result.results}}",
+        "field": "id"
+      },
+      {
+        "id": "document_count",
+        "transform": "count",
+        "input": "{{step.ids}}"
+      },
+      {
+        "id": "next_page",
+        "transform": "math",
+        "operator": "add",
+        "left": "{{config.page}}",
+        "right": 1
+      },
+      {
+        "id": "more",
+        "transform": "ternary",
+        "if": "{{step.documents.result.next}}",
+        "then": [
+          {
+            "kind": "recipe.run",
+            "label": "Next page",
+            "recipe_id": "find-paperless-documents",
+            "config": {
+              "custom_field_id": "{{config.custom_field_id}}",
+              "query": "{{config.query}}",
+              "page": "{{step.next_page}}"
+            }
+          }
+        ],
+        "else": []
+      },
+      {
+        "id": "batch",
+        "transform": "ternary",
+        "if": "{{step.document_count}}",
+        "then": [
+          {
+            "kind": "recipe.run",
+            "label": "Review this page",
+            "recipe_id": "preview-paperless-sync",
+            "config": {
+              "document_ids": "{{step.ids}}",
+              "custom_field_id": "{{config.custom_field_id}}"
+            }
+          }
+        ],
+        "else": []
+      },
+      {
+        "id": "actions",
+        "transform": "flatten",
+        "array": [
+          "{{step.batch}}",
+          "{{step.more}}"
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "table",
+          "source": "step.table"
+        },
+        {
+          "type": "button",
+          "source": "step.actions"
+        }
+      ]
+    }
+  },
+  "ignore-paperless-document": {
+    "recipe_id": "ignore-paperless-document",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Ignore Paperless document",
+      "description": "Use “Ignore Paperless document” in Recued. Remember an excluded source document without creating or removing an asset.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000,
+      "retired_connections": {
+        "paperless_ngx": "paperless-ngx-api"
+      }
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx",
+      "recued-core.paperless-ngx-api"
+    ],
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "variables": {
+      "document_id": {
+        "label": "Document",
+        "type": "number"
+      },
+      "custom_field_id": {
+        "label": "Date field",
+        "type": "number"
+      }
+    },
+    "steps": [
+      {
+        "id": "connection_required",
+        "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+        "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+      },
+      {
+        "id": "source_server",
+        "op": "recued-core.paperless-ngx-api.document.api-root",
+        "args": {},
+        "cache": "fresh"
+      },
+      {
+        "id": "source_identity",
+        "guard": "{{step.source_server.result.documents}} is_empty",
+        "fail_reason": "Paperless did not return its document API identity. Nothing was connected."
+      },
+      {
+        "id": "document",
+        "op": "recued-core.paperless-ngx-api.document.get",
+        "args": {
+          "document_id": "{{config.document_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "same_document",
+        "guard": "{{step.document.result.id}} not_equal {{config.document_id}}",
+        "fail_reason": "The source returned another document. Nothing was ignored."
+      },
+      {
+        "id": "existing",
+        "op": "recued-core.paperless-ngx.sync_link.search",
+        "args": {
+          "filters": {
+            "connection": "{{context.connections.paperless-ngx-api}}",
+            "document_id": "{{config.document_id}}"
+          },
+          "limit": 1
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "same_root",
+        "transform": "any",
+        "conditions": [
+          "{{step.existing.records.0.id}} is_empty",
+          "{{step.existing.records.0.source_root}} equal {{step.source_server.result.documents}}"
+        ]
+      },
+      {
+        "id": "same_source",
+        "guard": "{{step.same_root}} equal false",
+        "fail_reason": "Choose the connection this document was selected from; its Paperless server changed."
+      },
+      {
+        "id": "seed",
+        "transform": "default",
+        "value": "{{context.connections.paperless-ngx-api}}/{{config.document_id}}",
+        "fallback": ""
+      },
+      {
+        "id": "key",
+        "transform": "sha256",
+        "input": "{{step.seed}}"
+      },
+      {
+        "id": "created",
+        "op": "recued-core.paperless-ngx.sync_link.create",
+        "args": {
+          "id": "{{step.key}}",
+          "values": {
+            "connection": "{{context.connections.paperless-ngx-api}}",
+            "document_id": "{{config.document_id}}",
+            "custom_field_id": "{{config.custom_field_id}}",
+            "asset_id": "",
+            "source_root": "{{step.source_server.result.documents}}",
+            "source_title": "{{step.document.result.title}}",
+            "state": "ignored",
+            "busy": false,
+            "last_result": "Ignored by you"
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.existing.records.0.id}} is_not_empty"
+      },
+      {
+        "id": "updated",
+        "op": "recued-core.paperless-ngx.sync_link.update",
+        "args": {
+          "id": "{{step.existing.records.0.id}}",
+          "expected_version": 7,
+          "expected_revision": "{{step.existing.records.0._record.revision}}",
+          "set": {
+            "state": "ignored",
+            "last_result": "Ignored by you"
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.existing.records.0.id}} is_empty"
+      },
+      {
+        "id": "receipt",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Document",
+            "value": "{{step.document.result.title}}"
+          },
+          {
+            "label": "Sync",
+            "value": "Ignored. An existing asset and its reminders are kept. Review this document again to reconnect it."
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.receipt"
+        }
+      ]
+    }
+  },
   "list-folders": {
     "recipe_id": "list-folders",
     "chat_exposed": true,
@@ -1980,6 +7639,864 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         {
           "type": "summary",
           "source": "step.card"
+        }
+      ]
+    }
+  },
+  "paperless-date-fields": {
+    "recipe_id": "paperless-date-fields",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Connect Paperless documents",
+      "description": "Use “Connect Paperless documents” in Recued. Choose the named date field, then find documents to bring into Yours.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000,
+      "retired_connections": {
+        "paperless_ngx": "paperless-ngx-api"
+      }
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx",
+      "recued-core.paperless-ngx-api"
+    ],
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "variables": {
+      "page": {
+        "label": "Page",
+        "type": "number",
+        "default": 1
+      }
+    },
+    "steps": [
+      {
+        "id": "connection_required",
+        "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+        "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+      },
+      {
+        "id": "fields",
+        "op": "recued-core.paperless-ngx-api.custom-field.list",
+        "args": {
+          "query.page": "{{config.page}}",
+          "query.page_size": 100
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "dates",
+        "transform": "filter",
+        "array": "{{step.fields.result.results}}",
+        "conditions": [
+          {
+            "field": "data_type",
+            "operator": "equal",
+            "value": "date"
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "choices",
+        "transform": "map",
+        "array": "{{step.dates}}",
+        "expression": {
+          "name": "{{item.name}}",
+          "actions": [
+            {
+              "kind": "recipe.run",
+              "label": "Find documents",
+              "recipe_id": "find-paperless-documents",
+              "config": {
+                "custom_field_id": "{{item.id}}"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "table",
+        "transform": "to_table",
+        "array": "{{step.choices}}",
+        "columns": [
+          {
+            "field": "name",
+            "label": "Document date"
+          },
+          {
+            "field": "actions",
+            "label": "",
+            "type": "action"
+          }
+        ]
+      },
+      {
+        "id": "next_page",
+        "transform": "math",
+        "operator": "add",
+        "left": "{{config.page}}",
+        "right": 1
+      },
+      {
+        "id": "navigation",
+        "transform": "ternary",
+        "if": "{{step.fields.result.next}}",
+        "then": [
+          {
+            "kind": "recipe.run",
+            "label": "More date fields",
+            "recipe_id": "paperless-date-fields",
+            "config": {
+              "page": "{{step.next_page}}"
+            }
+          }
+        ],
+        "else": []
+      },
+      {
+        "id": "help",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Where to work",
+            "value": "Choose a document date here. Accepted assets and reminders live in Yours. Sync settings stay in this pack."
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.help"
+        },
+        {
+          "type": "table",
+          "source": "step.table"
+        },
+        {
+          "type": "button",
+          "source": "step.navigation"
+        }
+      ]
+    }
+  },
+  "paperless-sync-require-records-runtime": {
+    "recipe_id": "paperless-sync-require-records-runtime",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Records runtime compatibility canary",
+      "description": "Use “Records runtime” in Recued. Check that this server can save document sync settings before connecting Paperless.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/paperless-ngx"
+    },
+    "variables": {},
+    "prefetch_steps": [],
+    "steps": [
+      {
+        "id": "require_runtime",
+        "op": "core.records.require-runtime",
+        "args": {}
+      }
+    ],
+    "output": {
+      "render": []
+    }
+  },
+  "paperless-sync-status": {
+    "recipe_id": "paperless-sync-status",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Paperless sync settings",
+      "description": "Use “Paperless sync settings” in Recued. Manage source links and see actual results. Accepted asset details and reminders remain in Yours.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx"
+    ],
+    "requires": [],
+    "variables": {},
+    "steps": [
+      {
+        "id": "links",
+        "op": "recued-core.paperless-ngx.sync_link.search",
+        "args": {
+          "filters": {},
+          "limit": 200
+        },
+        "cache": "fresh",
+        "pages": "all"
+      },
+      {
+        "id": "rows",
+        "transform": "map",
+        "array": "{{step.links.records}}",
+        "expression": {
+          "connection": "{{item.connection}}",
+          "document": "{{item.source_title}}",
+          "state": "{{item.state}}",
+          "source_root": "{{item.source_root}}",
+          "checking": "{{item.busy}}",
+          "result": "{{item.last_result}}",
+          "checked": "{{item.last_checked_at}}",
+          "asset_id": "{{item.asset_id}}",
+          "actions": [
+            {
+              "kind": "recipe.run",
+              "label": "Change sync",
+              "recipe_id": "set-paperless-sync-state",
+              "config": {
+                "id": "{{item.id}}"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "table",
+        "transform": "to_table",
+        "array": "{{step.rows}}",
+        "columns": [
+          {
+            "field": "connection",
+            "label": "Connection"
+          },
+          {
+            "field": "document",
+            "label": "Source document"
+          },
+          {
+            "field": "state",
+            "label": "Sync"
+          },
+          {
+            "field": "source_root",
+            "label": "Paperless source"
+          },
+          {
+            "field": "checking",
+            "label": "Check in progress"
+          },
+          {
+            "field": "result",
+            "label": "Last result"
+          },
+          {
+            "field": "checked",
+            "label": "Last checked"
+          },
+          {
+            "field": "asset_id",
+            "label": "Asset in Yours"
+          },
+          {
+            "field": "actions",
+            "label": "",
+            "type": "action"
+          }
+        ]
+      },
+      {
+        "id": "actions",
+        "transform": "default",
+        "value": [
+          {
+            "kind": "recipe.run",
+            "label": "Connect documents",
+            "recipe_id": "paperless-date-fields",
+            "config": {}
+          },
+          {
+            "kind": "recipe.run",
+            "label": "Sync now",
+            "recipe_id": "sync-paperless-documents",
+            "config": {}
+          }
+        ],
+        "fallback": []
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "table",
+          "source": "step.table"
+        },
+        {
+          "type": "button",
+          "source": "step.actions"
+        }
+      ]
+    }
+  },
+  "preview-paperless-sync": {
+    "recipe_id": "preview-paperless-sync",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Review Paperless connection",
+      "description": "Use “Review Paperless connection” in Recued. Check the exact documents and date values before approving an import or ongoing sync.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000,
+      "retired_connections": {
+        "paperless_ngx": "paperless-ngx-api"
+      }
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx",
+      "recued-core.paperless-ngx-api"
+    ],
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "variables": {
+      "document_ids": {
+        "label": "Documents",
+        "type": "array",
+        "help": "Choose one document or the displayed batch from Find Paperless documents."
+      },
+      "custom_field_id": {
+        "label": "Document date field",
+        "type": "number"
+      },
+      "asset_id": {
+        "label": "Existing asset (optional)",
+        "type": "string",
+        "default": "",
+        "page_binding": {
+          "kind": "asset",
+          "field": "id"
+        },
+        "help": "Leave blank to create assets. An existing asset can be linked to one document; manual dates retain their priority."
+      },
+      "mode": {
+        "label": "After the first import",
+        "type": "string",
+        "default": "sync",
+        "options": [
+          "sync",
+          "once"
+        ],
+        "help": "Keep in sync, or import once. Schedule Sync Paperless documents using the existing automation controls."
+      }
+    },
+    "steps": [
+      {
+        "id": "connection_required",
+        "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+        "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+      },
+      {
+        "id": "source_server",
+        "op": "recued-core.paperless-ngx-api.document.api-root",
+        "args": {},
+        "cache": "fresh"
+      },
+      {
+        "id": "source_identity",
+        "guard": "{{step.source_server.result.documents}} is_empty",
+        "fail_reason": "Paperless did not return its document API identity. Nothing was connected."
+      },
+      {
+        "id": "ids",
+        "transform": "unique",
+        "array": "{{config.document_ids}}"
+      },
+      {
+        "id": "selection_count",
+        "transform": "count",
+        "input": "{{step.ids}}"
+      },
+      {
+        "id": "selection_ok",
+        "transform": "all",
+        "conditions": [
+          "{{step.selection_count}} greater 0",
+          "{{step.selection_count}} less_or_equal 50",
+          "{{config.custom_field_id}} greater 0"
+        ]
+      },
+      {
+        "id": "selection_required",
+        "guard": "{{step.selection_ok}} equal false",
+        "fail_reason": "Choose between one and fifty documents and a date field."
+      },
+      {
+        "id": "mode_ok",
+        "transform": "compare",
+        "left": "{{config.mode}}",
+        "operator": "in",
+        "right": [
+          "sync",
+          "once"
+        ]
+      },
+      {
+        "id": "mode_required",
+        "guard": "{{step.mode_ok}} equal false",
+        "fail_reason": "Choose sync or import once."
+      },
+      {
+        "id": "single_existing",
+        "transform": "any",
+        "conditions": [
+          "{{config.asset_id}} is_empty",
+          "{{step.selection_count}} equal 1"
+        ]
+      },
+      {
+        "id": "existing_selection",
+        "guard": "{{step.single_existing}} equal false",
+        "fail_reason": "An existing asset can be linked to only one selected document."
+      },
+      {
+        "id": "existing_asset",
+        "op": "core.work-entity.get",
+        "args": {
+          "kind": "asset",
+          "id": "{{config.asset_id}}"
+        },
+        "cache": "fresh",
+        "skip_when": "{{config.asset_id}} is_empty"
+      },
+      {
+        "id": "existing_expiry",
+        "transform": "pick",
+        "source": "{{step.existing_asset.entity.dates}}",
+        "fields": [
+          "expires_on"
+        ]
+      },
+      {
+        "id": "expiry_fields",
+        "transform": "count",
+        "input": "{{step.existing_expiry}}"
+      },
+      {
+        "id": "missing_target",
+        "transform": "all",
+        "conditions": [
+          "{{config.asset_id}} is_not_empty",
+          "{{step.expiry_fields}} equal 0"
+        ]
+      },
+      {
+        "id": "compatible_asset",
+        "guard": "{{step.missing_target}} equal true",
+        "fail_reason": "This asset has no expiry date field. Choose an asset with expires_on or leave Existing asset blank to create a document asset."
+      },
+      {
+        "id": "existing_field_source",
+        "transform": "rename",
+        "source": "{{step.existing_asset.entity.field_sources}}",
+        "mapping": {
+          "dates.expires_on": "expiry_source"
+        }
+      },
+      {
+        "id": "existing_authority",
+        "transform": "switch",
+        "input": "{{step.existing_field_source.expiry_source.kind}}",
+        "cases": {
+          "owner": "Your entry stays protected",
+          "confirmed_document": "Your confirmed date stays protected",
+          "extracted": "An extracted date is already recorded; another source may control it"
+        },
+        "default": "No saved date authority"
+      },
+      {
+        "id": "field",
+        "op": "recued-core.paperless-ngx-api.custom_field.get",
+        "args": {
+          "custom_field_id": "{{config.custom_field_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "same_field",
+        "guard": "{{step.field.result.id}} not_equal {{config.custom_field_id}}",
+        "fail_reason": "Paperless returned another custom field. Nothing was connected."
+      },
+      {
+        "id": "date_field_required",
+        "guard": "{{step.field.result.data_type}} not_equal date",
+        "fail_reason": "Choose a Paperless custom field declared as a date."
+      },
+      {
+        "id": "documents",
+        "op": "recued-core.paperless-ngx-api.document.get",
+        "args": {
+          "document_id": "{{item}}"
+        },
+        "cache": "fresh",
+        "foreach": "{{step.ids}}"
+      },
+      {
+        "id": "source_rows",
+        "transform": "map",
+        "array": "{{step.documents}}",
+        "expression": {
+          "document_id": "{{item.item}}",
+          "returned_id": "{{item.result.result.id}}",
+          "title": "{{item.result.result.title}}",
+          "custom_fields": "{{item.result.result.custom_fields}}",
+          "read_ok": "{{item.ok}}",
+          "custom_field_id": "{{config.custom_field_id}}"
+        }
+      },
+      {
+        "id": "date_values",
+        "transform": "find",
+        "array": "{{item.custom_fields}}",
+        "field": "field",
+        "operator": "equal",
+        "value": "{{item.custom_field_id}}",
+        "foreach": "{{step.source_rows}}"
+      },
+      {
+        "id": "with_dates",
+        "transform": "enrich_by",
+        "array": "{{step.source_rows}}",
+        "with": "{{step.date_values}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "source_date": "result.value"
+        }
+      },
+      {
+        "id": "parsed_dates",
+        "transform": "map",
+        "array": "{{step.with_dates}}",
+        "apply": "date_parse",
+        "field": "source_date",
+        "output_field": "date_ms"
+      },
+      {
+        "id": "date_lengths",
+        "transform": "map",
+        "array": "{{step.parsed_dates}}",
+        "apply": "string_length",
+        "field": "source_date",
+        "output_field": "date_length"
+      },
+      {
+        "id": "parseable_dates",
+        "transform": "filter",
+        "array": "{{step.date_lengths}}",
+        "conditions": [
+          {
+            "field": "date_ms",
+            "operator": "is_not_null",
+            "value": null
+          },
+          {
+            "field": "date_length",
+            "operator": "equal",
+            "value": 10
+          },
+          {
+            "field": "read_ok",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "date_iso",
+        "transform": "map",
+        "array": "{{step.parseable_dates}}",
+        "apply": "date_add",
+        "field": "date_ms",
+        "amount": 0,
+        "unit": "seconds",
+        "output_field": "iso"
+      },
+      {
+        "id": "date_parts",
+        "transform": "map",
+        "array": "{{step.date_iso}}",
+        "apply": "split",
+        "field": "iso",
+        "delimiter": "T",
+        "output_field": "parts"
+      },
+      {
+        "id": "date_roundtrips",
+        "transform": "compare",
+        "left": "{{item.source_date}}",
+        "operator": "equal",
+        "right": "{{item.parts.0}}",
+        "foreach": "{{step.date_parts}}"
+      },
+      {
+        "id": "date_proofs",
+        "transform": "enrich_by",
+        "array": "{{step.date_parts}}",
+        "with": "{{step.date_roundtrips}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "date_valid": "result"
+        }
+      },
+      {
+        "id": "identity_proofs",
+        "transform": "compare",
+        "left": "{{item.document_id}}",
+        "operator": "equal",
+        "right": "{{item.returned_id}}",
+        "foreach": "{{step.date_proofs}}"
+      },
+      {
+        "id": "identity_dates",
+        "transform": "enrich_by",
+        "array": "{{step.date_proofs}}",
+        "with": "{{step.identity_proofs}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "identity_valid": "result"
+        }
+      },
+      {
+        "id": "valid_dates",
+        "transform": "filter",
+        "array": "{{step.identity_dates}}",
+        "conditions": [
+          {
+            "field": "date_valid",
+            "operator": "equal",
+            "value": true
+          },
+          {
+            "field": "identity_valid",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "valid_markers",
+        "transform": "map",
+        "array": "{{step.valid_dates}}",
+        "expression": {
+          "document_id": "{{item.document_id}}",
+          "valid": true
+        }
+      },
+      {
+        "id": "dated_rows",
+        "transform": "enrich_by",
+        "array": "{{step.with_dates}}",
+        "with": "{{step.valid_markers}}",
+        "key": "document_id",
+        "with_key": "document_id",
+        "fields": {
+          "valid": "valid"
+        }
+      },
+      {
+        "id": "links",
+        "op": "recued-core.paperless-ngx.sync_link.search",
+        "args": {
+          "filters": {
+            "connection": "{{context.connections.paperless-ngx-api}}"
+          },
+          "limit": 200
+        },
+        "cache": "fresh",
+        "pages": "all"
+      },
+      {
+        "id": "complete_links",
+        "guard": "{{step.links.next_cursor}} is_not_empty",
+        "fail_reason": "Too many sync links to review completely. Narrow this source first."
+      },
+      {
+        "id": "review_rows",
+        "transform": "enrich_by",
+        "array": "{{step.dated_rows}}",
+        "with": "{{step.links.records}}",
+        "key": "document_id",
+        "with_key": "document_id",
+        "fields": {
+          "link_id": "id",
+          "revision": "_record.revision",
+          "existing_asset_id": "asset_id",
+          "source_root": "source_root",
+          "state": "state",
+          "busy": "busy"
+        }
+      },
+      {
+        "id": "review_material",
+        "transform": "map",
+        "array": "{{step.review_rows}}",
+        "expression": {
+          "connection": "{{context.connections.paperless-ngx-api}}",
+          "document_id": "{{item.document_id}}",
+          "title": "{{item.title}}",
+          "date": "{{item.source_date}}",
+          "valid": "{{item.valid}}",
+          "field": "{{config.custom_field_id}}",
+          "field_name": "{{step.field.result.name}}",
+          "field_type": "{{step.field.result.data_type}}",
+          "asset_id": "{{config.asset_id}}",
+          "baseline": "{{step.existing_asset.entity.dates.expires_on}}",
+          "baseline_source": "{{step.existing_field_source.expiry_source}}",
+          "mode": "{{config.mode}}",
+          "source_root": "{{step.source_server.result.documents}}",
+          "link_id": "{{item.link_id}}",
+          "revision": "{{item.revision}}",
+          "existing_asset_id": "{{item.existing_asset_id}}",
+          "state": "{{item.state}}"
+        }
+      },
+      {
+        "id": "review_json",
+        "transform": "json_stringify",
+        "input": "{{step.review_material}}"
+      },
+      {
+        "id": "review_hash",
+        "transform": "sha256",
+        "input": "{{step.review_json}}"
+      },
+      {
+        "id": "preview",
+        "transform": "to_table",
+        "array": "{{step.review_rows}}",
+        "columns": [
+          {
+            "field": "title",
+            "label": "Document"
+          },
+          {
+            "field": "source_date",
+            "label": "Document date"
+          },
+          {
+            "field": "valid",
+            "label": "Valid date"
+          },
+          {
+            "field": "state",
+            "label": "Existing connection"
+          }
+        ]
+      },
+      {
+        "id": "scope",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Date field",
+            "value": "{{step.field.result.name}}"
+          },
+          {
+            "label": "Asset date",
+            "value": "Expiry date"
+          },
+          {
+            "label": "Mode",
+            "value": "{{config.mode}}"
+          },
+          {
+            "label": "Existing asset",
+            "value": "{{step.existing_asset.entity.name}}"
+          },
+          {
+            "label": "Current saved expiry",
+            "value": "{{step.existing_asset.entity.dates.expires_on}}"
+          },
+          {
+            "label": "Current date authority",
+            "value": "{{step.existing_authority}}"
+          },
+          {
+            "label": "Reminders",
+            "value": "The document asset type starts its existing expiry reminders. Local edits keep their priority."
+          },
+          {
+            "label": "Automation",
+            "value": "Complete the first import, then schedule this recipe with the same connection saved on its dish. In Automation, open the schedule and review Scheduled local writes to allow recurring updates. Manage source links in Sync settings."
+          }
+        ]
+      },
+      {
+        "id": "approve",
+        "transform": "default",
+        "value": [
+          {
+            "kind": "recipe.run",
+            "label": "Approve these documents",
+            "recipe_id": "configure-paperless-sync",
+            "config": {
+              "document_ids": "{{config.document_ids}}",
+              "custom_field_id": "{{config.custom_field_id}}",
+              "asset_id": "{{config.asset_id}}",
+              "mode": "{{config.mode}}",
+              "expected_hash": "{{step.review_hash}}"
+            },
+            "confirm": "Connect exactly the reviewed documents and allow the selected expiry date to follow Paperless? Manual or confirmed dates remain protected."
+          }
+        ],
+        "fallback": []
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.scope"
+        },
+        {
+          "type": "table",
+          "source": "step.preview"
+        },
+        {
+          "type": "button",
+          "source": "step.approve"
         }
       ]
     }
@@ -2560,6 +9077,774 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     ],
     "output": {
       "render": []
+    }
+  },
+  "record-asset-evidence-paperless": {
+    "recipe_id": "record-asset-evidence-paperless",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Review a Paperless document date",
+      "description": "Use “Review a Paperless document date” in Recued. Reads the chosen date field and keeps supporting evidence when its date or reviewed writer changes, with AI enrichment off. Review the date in Yours before confirming it and recalculating its reminders.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "tags": [
+        "pack:paperless-ngx",
+        "asset",
+        "evidence"
+      ],
+      "budget_ms": 30000,
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "retired_connections": {
+        "paperless_ngx": "paperless-ngx-api"
+      }
+    },
+    "variables": {
+      "asset_id": {
+        "label": "Asset",
+        "type": "string",
+        "page_binding": {
+          "kind": "asset",
+          "field": "id"
+        }
+      },
+      "binding_id": {
+        "label": "Observation binding id from Yours",
+        "type": "string"
+      },
+      "document_id": {
+        "label": "Paperless document id",
+        "type": "number"
+      },
+      "custom_field_id": {
+        "label": "Paperless custom date field id",
+        "type": "number"
+      },
+      "asset_date_field": {
+        "label": "Asset date field",
+        "type": "string",
+        "default": "expires_on"
+      },
+      "writer_source_ref": {
+        "label": "Reviewed writer source supplied by Yours",
+        "type": "string",
+        "default": ""
+      }
+    },
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "depends_on": [
+      "recued-core.paperless-ngx",
+      "recued-core.paperless-ngx-api"
+    ],
+    "steps": [
+      {
+        "id": "asset",
+        "op": "core.work-entity.get",
+        "args": {
+          "kind": "asset",
+          "id": "{{config.asset_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "document",
+        "op": "recued-core.paperless-ngx-api.document.get",
+        "args": {
+          "document_id": "{{config.document_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "date_field",
+        "transform": "find",
+        "array": "{{step.document.result.custom_fields}}",
+        "field": "field",
+        "operator": "equal",
+        "value": "{{config.custom_field_id}}"
+      },
+      {
+        "id": "date_ms",
+        "transform": "date_parse",
+        "input": "{{step.date_field.value}}"
+      },
+      {
+        "id": "roundtrip",
+        "transform": "date_format",
+        "date": "{{step.date_ms}}",
+        "format": "YYYY-MM-DD",
+        "time_zone": "UTC"
+      },
+      {
+        "id": "real_date",
+        "transform": "all",
+        "conditions": [
+          "{{step.date_field.value}} is_not_null",
+          "{{step.roundtrip}} equal {{step.date_field.value}}"
+        ]
+      },
+      {
+        "id": "old_date",
+        "transform": "find",
+        "array": "{{step.asset.entity.observations.document_evidence.evidence}}",
+        "field": "field",
+        "operator": "equal",
+        "value": "dates.{{config.asset_date_field}}"
+      },
+      {
+        "id": "changed",
+        "transform": "compare",
+        "left": "{{step.old_date.value}}",
+        "operator": "not_equal",
+        "right": "{{step.date_field.value}}"
+      },
+      {
+        "id": "managed_source",
+        "transform": "compare",
+        "left": "{{config.writer_source_ref}}",
+        "operator": "not_equal",
+        "right": ""
+      },
+      {
+        "id": "source_changed",
+        "transform": "compare",
+        "left": "{{step.asset.entity.observations.document_evidence.source}}",
+        "operator": "not_equal",
+        "right": "{{config.writer_source_ref}}"
+      },
+      {
+        "id": "fresh_source",
+        "transform": "all",
+        "conditions": [
+          "{{step.managed_source}} equal true",
+          "{{step.source_changed}} equal true"
+        ]
+      },
+      {
+        "id": "needs_evidence",
+        "transform": "any",
+        "conditions": [
+          "{{step.changed}} equal true",
+          "{{step.fresh_source}} equal true"
+        ]
+      },
+      {
+        "id": "evidence_source",
+        "transform": "rename",
+        "source": "{{step.asset.entity.field_sources}}",
+        "mapping": {
+          "observations.document_evidence": "evidence"
+        }
+      },
+      {
+        "id": "evidence_handoff",
+        "transform": "rename",
+        "source": "{{step.asset.entity.automatic_updates}}",
+        "mapping": {
+          "observations.document_evidence": "evidence"
+        }
+      },
+      {
+        "id": "can_report",
+        "transform": "any",
+        "conditions": [
+          "{{step.evidence_source.evidence.kind}} is_null",
+          "{{step.evidence_source.evidence.kind}} equal observation",
+          "{{step.evidence_source.evidence.kind}} equal extracted",
+          "{{step.evidence_source.evidence.kind}} equal ai_guess",
+          "{{step.evidence_handoff.evidence}} is_not_null"
+        ]
+      },
+      {
+        "id": "needs_capture",
+        "transform": "all",
+        "conditions": [
+          "{{step.can_report}} equal true",
+          "{{step.real_date}} equal true",
+          "{{step.needs_evidence}} equal true"
+        ]
+      },
+      {
+        "id": "file",
+        "op": "recued-core.paperless-ngx-api.document.download",
+        "args": {
+          "document_id": "{{config.document_id}}"
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.needs_capture}} not_equal true"
+      },
+      {
+        "id": "now_iso",
+        "transform": "date_add",
+        "date": "now",
+        "amount": 0,
+        "unit": "minutes"
+      },
+      {
+        "id": "now",
+        "transform": "date_parse",
+        "input": "{{step.now_iso}}"
+      },
+      {
+        "id": "evidence",
+        "op": "core.work-entity.asset.observe",
+        "args": {
+          "binding_id": "{{config.binding_id}}",
+          "observations": {
+            "document_evidence": {
+              "active": true,
+              "certainty": "conditional",
+              "as_of": "{{step.now}}",
+              "evidence": [
+                {
+                  "collection": "file",
+                  "id": "{{step.file.file_ref}}",
+                  "field": "dates.{{config.asset_date_field}}",
+                  "value": "{{step.date_field.value}}"
+                }
+              ]
+            }
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.needs_capture}} not_equal true"
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "json",
+          "source": "step.date_field",
+          "label": "Date evidence to review"
+        }
+      ]
+    }
+  },
+  "record-device-condition-home-assistant": {
+    "recipe_id": "record-device-condition-home-assistant",
+    "version": 2,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Record device conditions",
+      "description": "Use “Record device conditions” in Recued. Checks the Home Assistant entity you linked, using fresh state, history and logbook reads. Confirmed problem and battery readings are recorded right away, and an outage only once it has lasted. Unexplained flicker stays conditional. Nothing is inferred about motion or occupancy.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "home-assistant"
+      ],
+      "tags": [
+        "pack:home-assistant",
+        "asset",
+        "observations"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "asset_id": {
+        "label": "Asset",
+        "type": "string"
+      },
+      "binding_id": {
+        "label": "Observation binding id from Yours",
+        "type": "string"
+      },
+      "entity_id": {
+        "label": "Home Assistant entity id",
+        "type": "string"
+      },
+      "record_unavailable": {
+        "label": "Record availability",
+        "type": "boolean",
+        "default": true
+      },
+      "record_flickering": {
+        "label": "Record unexplained flicker",
+        "type": "boolean",
+        "default": true
+      },
+      "record_problem": {
+        "label": "Record a reported problem",
+        "type": "boolean",
+        "default": true
+      },
+      "record_battery": {
+        "label": "Record battery percentage",
+        "type": "boolean",
+        "default": true
+      }
+    },
+    "requires": [
+      "read_connection_home_assistant"
+    ],
+    "depends_on": [
+      "recued-core.home-assistant"
+    ],
+    "steps": [
+      {
+        "id": "asset",
+        "op": "core.work-entity.get",
+        "args": {
+          "kind": "asset",
+          "id": "{{config.asset_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "now_iso",
+        "transform": "date_add",
+        "date": "now",
+        "amount": 0,
+        "unit": "minutes"
+      },
+      {
+        "id": "now",
+        "transform": "date_parse",
+        "input": "{{step.now_iso}}"
+      },
+      {
+        "id": "hold_ms",
+        "transform": "default",
+        "value": "{{step.asset.entity.settings.hold_ms}}",
+        "fallback": 300000
+      },
+      {
+        "id": "flicker_window_ms",
+        "transform": "default",
+        "value": "{{step.asset.entity.settings.flicker_window_ms}}",
+        "fallback": 900000
+      },
+      {
+        "id": "flicker_min_count",
+        "transform": "default",
+        "value": "{{step.asset.entity.settings.flicker_min_count}}",
+        "fallback": 3
+      },
+      {
+        "id": "back_minutes",
+        "transform": "math",
+        "expression": "0 - ({{step.flicker_window_ms}} + {{step.hold_ms}}) / 60000"
+      },
+      {
+        "id": "start",
+        "transform": "date_add",
+        "date": "{{step.now_iso}}",
+        "amount": "{{step.back_minutes}}",
+        "unit": "minutes"
+      },
+      {
+        "id": "current_raw",
+        "op": "recued-core.home-assistant.state.read",
+        "args": {
+          "entity_id": "{{config.entity_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "history_raw",
+        "op": "recued-core.home-assistant.history.list",
+        "args": {
+          "start_time": "{{step.start}}",
+          "query.filter_entity_id": "{{config.entity_id}}",
+          "query.end_time": "{{step.now_iso}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "logbook_raw",
+        "op": "recued-core.home-assistant.logbook.list",
+        "args": {
+          "start_time": "{{step.start}}",
+          "query.entity": "{{config.entity_id}}",
+          "query.end_time": "{{step.now_iso}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "current",
+        "transform": "default",
+        "value": "{{step.current_raw.result}}",
+        "fallback": {}
+      },
+      {
+        "id": "history",
+        "transform": "flatten",
+        "array": "{{step.history_raw.result}}"
+      },
+      {
+        "id": "history_at",
+        "transform": "map",
+        "array": "{{step.history}}",
+        "apply": "date_parse",
+        "field": "last_changed",
+        "output_field": "at"
+      },
+      {
+        "id": "entity_history",
+        "transform": "filter",
+        "array": "{{step.history_at}}",
+        "field": "entity_id",
+        "operator": "in",
+        "value": [
+          "{{config.entity_id}}"
+        ]
+      },
+      {
+        "id": "latest_sample",
+        "transform": "map",
+        "array": [
+          "{{step.current}}"
+        ],
+        "expression": {
+          "state": "{{item.state}}",
+          "at": "{{step.now}}"
+        }
+      },
+      {
+        "id": "samples",
+        "transform": "flatten",
+        "array": [
+          "{{step.entity_history}}",
+          "{{step.latest_sample}}"
+        ]
+      },
+      {
+        "id": "hold",
+        "transform": "held",
+        "rows": "{{step.samples}}",
+        "time_field": "at",
+        "state_field": "state",
+        "hold_ms": "{{step.hold_ms}}",
+        "now": "{{step.now}}"
+      },
+      {
+        "id": "flicker",
+        "transform": "transitions",
+        "rows": "{{step.entity_history}}",
+        "time_field": "at",
+        "state_field": "state",
+        "window_ms": "{{step.flicker_window_ms}}",
+        "min_count": "{{step.flicker_min_count}}",
+        "now": "{{step.now}}"
+      },
+      {
+        "id": "causes_at",
+        "transform": "map",
+        "array": "{{step.logbook_raw.result}}",
+        "apply": "date_parse",
+        "field": "when",
+        "output_field": "at"
+      },
+      {
+        "id": "causes",
+        "transform": "enrich_by",
+        "array": "{{step.entity_history}}",
+        "with": "{{step.causes_at}}",
+        "key": "at",
+        "fields": {
+          "cause_domain": "context_domain",
+          "cause_user": "context_user_id",
+          "cause_entity": "context_entity_id",
+          "cause_state": "state"
+        }
+      },
+      {
+        "id": "changed_rows",
+        "transform": "slice",
+        "array": "{{step.causes}}",
+        "start": 1,
+        "end": 20000
+      },
+      {
+        "id": "uncommanded",
+        "transform": "filter",
+        "array": "{{step.changed_rows}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "cause_user",
+            "operator": "is_null"
+          },
+          {
+            "field": "cause_domain",
+            "operator": "not_in",
+            "value": [
+              "automation",
+              "script",
+              "scene",
+              "light"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "uncommanded_count",
+        "transform": "count",
+        "input": "{{step.uncommanded}}"
+      },
+      {
+        "id": "change_count",
+        "transform": "count",
+        "input": "{{step.changed_rows}}"
+      },
+      {
+        "id": "intended",
+        "transform": "all",
+        "conditions": [
+          "{{step.uncommanded_count}} equal 0",
+          "{{step.change_count}} greater 0"
+        ]
+      },
+      {
+        "id": "ignore_flicker",
+        "transform": "any",
+        "conditions": [
+          "{{step.intended}} equal true",
+          "{{step.asset.entity.settings.expected_flicker}} equal true"
+        ]
+      },
+      {
+        "id": "settled",
+        "transform": "compare",
+        "left": "{{step.hold.status}}",
+        "operator": "equal",
+        "right": "settled"
+      },
+      {
+        "id": "unavailable",
+        "transform": "compare",
+        "left": "{{step.current.state}}",
+        "operator": "equal",
+        "right": "unavailable"
+      },
+      {
+        "id": "current_known",
+        "transform": "compare",
+        "left": "{{step.current.state}}",
+        "operator": "not_in",
+        "right": [
+          "unknown",
+          null,
+          ""
+        ]
+      },
+      {
+        "id": "can_write_hold",
+        "transform": "all",
+        "conditions": [
+          "{{step.settled}} equal true",
+          "{{step.current_known}} equal true",
+          "{{config.record_unavailable}} not_equal false"
+        ]
+      },
+      {
+        "id": "history_evidence",
+        "transform": "json_stringify",
+        "input": "{{step.hold}}"
+      },
+      {
+        "id": "flicker_evidence",
+        "transform": "json_stringify",
+        "input": "{{step.flicker}}"
+      },
+      {
+        "id": "unavailable_write",
+        "op": "core.work-entity.asset.observe",
+        "args": {
+          "binding_id": "{{config.binding_id}}",
+          "observations": {
+            "unavailable": {
+              "active": "{{step.unavailable}}",
+              "certainty": "confirmed",
+              "as_of": "{{step.now}}",
+              "evidence": [
+                {
+                  "collection": "home-assistant",
+                  "id": "{{config.entity_id}}",
+                  "field": "state",
+                  "value": "{{step.history_evidence}}"
+                }
+              ]
+            }
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.can_write_hold}} not_equal true"
+      },
+      {
+        "id": "flicker_known",
+        "transform": "all",
+        "conditions": [
+          "{{step.flicker.flickering}} not_equal unknown",
+          "{{config.record_flickering}} not_equal false"
+        ]
+      },
+      {
+        "id": "flicker_active",
+        "transform": "all",
+        "conditions": [
+          "{{step.flicker.flickering}} equal true",
+          "{{step.ignore_flicker}} equal false"
+        ]
+      },
+      {
+        "id": "flicker_write",
+        "op": "core.work-entity.asset.observe",
+        "args": {
+          "binding_id": "{{config.binding_id}}",
+          "observations": {
+            "flickering": {
+              "active": "{{step.flicker_active}}",
+              "certainty": "conditional",
+              "as_of": "{{step.now}}",
+              "evidence": [
+                {
+                  "collection": "home-assistant",
+                  "id": "{{config.entity_id}}",
+                  "field": "transitions",
+                  "value": "{{step.flicker_evidence}}"
+                }
+              ]
+            }
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.flicker_known}} not_equal true"
+      },
+      {
+        "id": "problem_type",
+        "transform": "compare",
+        "left": "{{step.current.attributes.device_class}}",
+        "operator": "equal",
+        "right": "problem"
+      },
+      {
+        "id": "problem_state_known",
+        "transform": "compare",
+        "left": "{{step.current.state}}",
+        "operator": "in",
+        "right": [
+          "on",
+          "off"
+        ]
+      },
+      {
+        "id": "is_problem",
+        "transform": "all",
+        "conditions": [
+          "{{step.problem_type}} equal true",
+          "{{step.problem_state_known}} equal true",
+          "{{config.record_problem}} not_equal false"
+        ]
+      },
+      {
+        "id": "problem_active",
+        "transform": "compare",
+        "left": "{{step.current.state}}",
+        "operator": "equal",
+        "right": "on"
+      },
+      {
+        "id": "problem_write",
+        "op": "core.work-entity.asset.observe",
+        "args": {
+          "binding_id": "{{config.binding_id}}",
+          "observations": {
+            "problem": {
+              "active": "{{step.problem_active}}",
+              "certainty": "confirmed",
+              "as_of": "{{step.now}}",
+              "evidence": [
+                {
+                  "collection": "home-assistant",
+                  "id": "{{config.entity_id}}",
+                  "field": "state",
+                  "value": "{{step.current.state}}"
+                }
+              ]
+            }
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.is_problem}} not_equal true"
+      },
+      {
+        "id": "battery_type",
+        "transform": "compare",
+        "left": "{{step.current.attributes.device_class}}",
+        "operator": "equal",
+        "right": "battery"
+      },
+      {
+        "id": "battery_unit",
+        "transform": "compare",
+        "left": "{{step.current.attributes.unit_of_measurement}}",
+        "operator": "equal",
+        "right": "%"
+      },
+      {
+        "id": "battery_value",
+        "transform": "to_number",
+        "input": "{{step.current.state}}"
+      },
+      {
+        "id": "battery_number",
+        "transform": "compare",
+        "left": "{{step.battery_value}}",
+        "operator": "is_not_null",
+        "right": null
+      },
+      {
+        "id": "battery_valid",
+        "transform": "all",
+        "conditions": [
+          "{{step.battery_type}} equal true",
+          "{{step.battery_unit}} equal true",
+          "{{step.battery_number}} equal true",
+          "{{config.record_battery}} not_equal false"
+        ]
+      },
+      {
+        "id": "battery_write",
+        "op": "core.work-entity.asset.observe",
+        "args": {
+          "binding_id": "{{config.binding_id}}",
+          "readings": {
+            "battery": {
+              "value": "{{step.battery_value}}",
+              "unit": "%",
+              "as_of": "{{step.now}}",
+              "evidence": [
+                {
+                  "collection": "home-assistant",
+                  "id": "{{config.entity_id}}",
+                  "field": "battery",
+                  "value": "{{step.battery_value}}"
+                }
+              ]
+            }
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.battery_valid}} not_equal true"
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "json",
+          "source": "step.hold",
+          "label": "State hold and evidence"
+        },
+        {
+          "type": "json",
+          "source": "step.flicker",
+          "label": "Transition window and evidence"
+        }
+      ]
     }
   },
   "remind-me-of": {
@@ -3334,6 +10619,157 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ]
     }
   },
+  "set-paperless-sync-state": {
+    "recipe_id": "set-paperless-sync-state",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Change Paperless sync",
+      "description": "Use “Change Paperless sync” in Recued. Pause, resume, ignore or disconnect a source link. Keeps the accepted asset and reminders.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx"
+    ],
+    "requires": [],
+    "variables": {
+      "id": {
+        "label": "Source link",
+        "type": "string"
+      },
+      "state": {
+        "label": "Sync state",
+        "type": "string",
+        "options": [
+          "sync",
+          "once",
+          "paused",
+          "ignored",
+          "disconnected"
+        ]
+      },
+      "reset_interrupted_check": {
+        "label": "Reset an interrupted check",
+        "type": "boolean",
+        "default": false,
+        "help": "Only after its previous run has finished or been stopped in Runs. Resetting a live check would allow overlapping updates."
+      }
+    },
+    "steps": [
+      {
+        "id": "link",
+        "op": "recued-core.paperless-ngx.sync_link.get",
+        "args": {
+          "id": "{{config.id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "allowed",
+        "transform": "compare",
+        "left": "{{config.state}}",
+        "operator": "in",
+        "right": [
+          "sync",
+          "once",
+          "paused",
+          "ignored",
+          "disconnected"
+        ]
+      },
+      {
+        "id": "valid_state",
+        "guard": "{{step.allowed}} equal false",
+        "fail_reason": "Choose a supported sync state."
+      },
+      {
+        "id": "resume",
+        "transform": "compare",
+        "left": "{{config.state}}",
+        "operator": "in",
+        "right": [
+          "sync",
+          "once"
+        ]
+      },
+      {
+        "id": "held",
+        "transform": "all",
+        "conditions": [
+          "{{step.link.record.busy}} equal true",
+          "{{step.resume}} equal true",
+          "{{config.reset_interrupted_check}} not_equal true"
+        ]
+      },
+      {
+        "id": "finished_check",
+        "guard": "{{step.held}} equal true",
+        "fail_reason": "Finish or stop the previous run before resetting its interrupted check and resuming."
+      },
+      {
+        "id": "busy",
+        "transform": "ternary",
+        "if": "{{config.reset_interrupted_check}}",
+        "then": false,
+        "else": "{{step.link.record.busy}}"
+      },
+      {
+        "id": "updated",
+        "op": "recued-core.paperless-ngx.sync_link.update",
+        "args": {
+          "id": "{{config.id}}",
+          "expected_version": 7,
+          "expected_revision": "{{step.link.record._record.revision}}",
+          "set": {
+            "state": "{{config.state}}",
+            "busy": "{{step.busy}}"
+          }
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "receipt",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Connection",
+            "value": "{{step.link.record.connection}}"
+          },
+          {
+            "label": "Sync",
+            "value": "{{config.state}}"
+          },
+          {
+            "label": "Asset",
+            "value": "{{step.link.record.asset_id}}"
+          },
+          {
+            "label": "Kept",
+            "value": "The asset, its saved dates and its reminder rules remain. A source check already in progress may finish."
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.receipt"
+        }
+      ]
+    }
+  },
   "stalled-projects": {
     "recipe_id": "stalled-projects",
     "chat_exposed": true,
@@ -3497,6 +10933,1574 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         {
           "type": "summary",
           "source": "step.card"
+        }
+      ]
+    }
+  },
+  "summarize-energy-use-weekly-home-assistant": {
+    "recipe_id": "summarize-energy-use-weekly-home-assistant",
+    "version": 2,
+    "chat_exposed": false,
+    "ttl": 300,
+    "metadata": {
+      "name": "Home Assistant weekly energy use",
+      "description": "Use “Home Assistant weekly energy use” in Recued. Shows how much energy each meter and smart plug used over the last week, biggest first; a net meter reads below zero when it sent out more than it took in. Read-only. Readings are never added up, since a whole-home meter already counts the others.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "home-assistant"
+      ],
+      "variant_group": "summarize-energy-use",
+      "tags": [
+        "home-assistant",
+        "smart-home",
+        "energy",
+        "electricity",
+        "weekly",
+        "digest",
+        "pack:home-assistant"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "days": {
+        "label": "Days to look back",
+        "type": "number",
+        "default": 7,
+        "help": "Home Assistant keeps 10 days of history by default."
+      },
+      "row_limit": {
+        "label": "Max rows to show",
+        "type": "number",
+        "default": 25
+      },
+      "notify_with_summary": {
+        "label": "Send the summary as a notification",
+        "type": "boolean",
+        "default": false,
+        "help": "Turn on for a weekly schedule."
+      },
+      "channels": {
+        "label": "Notification channels",
+        "type": "array",
+        "options": [
+          "@notification_channels"
+        ],
+        "optional": true
+      }
+    },
+    "requires": [
+      "read_connection_home_assistant",
+      "notification_send"
+    ],
+    "depends_on": [
+      "recued-core.home-assistant"
+    ],
+    "steps": [
+      {
+        "id": "states_raw",
+        "op": "recued-core.home-assistant.state.list",
+        "args": {}
+      },
+      {
+        "id": "states",
+        "transform": "default",
+        "value": "{{step.states_raw.result}}",
+        "fallback": []
+      },
+      {
+        "id": "energy_sensors",
+        "transform": "filter",
+        "array": "{{step.states}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "attributes.device_class",
+            "operator": "equal",
+            "value": "energy"
+          },
+          {
+            "field": "attributes.state_class",
+            "operator": "in",
+            "value": [
+              "total_increasing",
+              "total"
+            ]
+          },
+          {
+            "field": "state",
+            "operator": "not_in",
+            "value": [
+              "unknown",
+              "unavailable",
+              ""
+            ]
+          }
+        ]
+      },
+      {
+        "id": "energy_count",
+        "transform": "count",
+        "input": "{{step.energy_sensors}}"
+      },
+      {
+        "id": "has_sensors",
+        "transform": "compare",
+        "left": "{{step.energy_count}}",
+        "operator": "greater",
+        "right": 0
+      },
+      {
+        "id": "entity_ids",
+        "transform": "pluck",
+        "array": "{{step.energy_sensors}}",
+        "field": "entity_id"
+      },
+      {
+        "id": "ids_csv",
+        "transform": "join",
+        "array": "{{step.entity_ids}}",
+        "separator": ","
+      },
+      {
+        "id": "back_days",
+        "transform": "math",
+        "expression": "0 - {{config.days}}"
+      },
+      {
+        "id": "window_start",
+        "transform": "date_add",
+        "date": "now",
+        "amount": "{{step.back_days}}",
+        "unit": "days"
+      },
+      {
+        "id": "window_start_end",
+        "transform": "date_add",
+        "date": "{{step.window_start}}",
+        "amount": 1,
+        "unit": "hours"
+      },
+      {
+        "id": "history_raw",
+        "skip_when": "{{step.has_sensors}} equal false",
+        "op": "recued-core.home-assistant.history.list",
+        "args": {
+          "start_time": "{{step.window_start}}",
+          "query.filter_entity_id": "{{step.ids_csv}}",
+          "query.end_time": "{{step.window_start_end}}",
+          "query.minimal_response": true,
+          "query.no_attributes": true
+        }
+      },
+      {
+        "id": "history",
+        "transform": "default",
+        "value": "{{step.history_raw.result}}",
+        "fallback": []
+      },
+      {
+        "id": "start_values",
+        "transform": "map",
+        "array": "{{step.history}}",
+        "expression": {
+          "entity_id": "{{item.0.entity_id}}",
+          "start": "{{item.0.state}}"
+        }
+      },
+      {
+        "id": "matched",
+        "foreach": "{{step.energy_sensors}}",
+        "transform": "find",
+        "array": "{{step.start_values}}",
+        "field": "entity_id",
+        "operator": "equal",
+        "value": "{{item.entity_id}}"
+      },
+      {
+        "id": "matched_list",
+        "transform": "default",
+        "value": "{{step.matched}}",
+        "fallback": []
+      },
+      {
+        "id": "usage_raw",
+        "transform": "map",
+        "array": "{{step.matched_list}}",
+        "expression": {
+          "name": "{{item.item.attributes.friendly_name}}",
+          "entity_id": "{{item.item.entity_id}}",
+          "unit": "{{item.item.attributes.unit_of_measurement}}",
+          "now_value": "{{item.item.state}}",
+          "start_value": "{{item.result.start}}",
+          "state_class": "{{item.item.attributes.state_class}}",
+          "last_reset": "{{item.item.attributes.last_reset}}"
+        }
+      },
+      {
+        "id": "usage_known",
+        "transform": "filter",
+        "array": "{{step.usage_raw}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "start_value",
+            "operator": "is_not_null"
+          },
+          {
+            "field": "start_value",
+            "operator": "not_in",
+            "value": [
+              "unknown",
+              "unavailable",
+              ""
+            ]
+          }
+        ]
+      },
+      {
+        "id": "usage_calc",
+        "transform": "map",
+        "array": "{{step.usage_known}}",
+        "expression": "{{item.now_value}} - {{item.start_value}}",
+        "output_field": "used_raw"
+      },
+      {
+        "id": "usage_reset_hours",
+        "transform": "map",
+        "array": "{{step.usage_calc}}",
+        "apply": "date_diff",
+        "field": "last_reset",
+        "to": "{{step.window_start}}",
+        "unit": "hours",
+        "output_field": "reset_hours"
+      },
+      {
+        "id": "usage_counting",
+        "transform": "filter",
+        "array": "{{step.usage_reset_hours}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "state_class",
+            "operator": "equal",
+            "value": "total_increasing"
+          },
+          {
+            "field": "used_raw",
+            "operator": "is_not_null"
+          },
+          {
+            "field": "used_raw",
+            "operator": "greater_or_equal",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "id": "usage_net_never_reset",
+        "transform": "filter",
+        "array": "{{step.usage_reset_hours}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "state_class",
+            "operator": "equal",
+            "value": "total"
+          },
+          {
+            "field": "used_raw",
+            "operator": "is_not_null"
+          },
+          {
+            "field": "last_reset",
+            "operator": "is_null"
+          }
+        ]
+      },
+      {
+        "id": "usage_net_reset_before",
+        "transform": "filter",
+        "array": "{{step.usage_reset_hours}}",
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "state_class",
+            "operator": "equal",
+            "value": "total"
+          },
+          {
+            "field": "used_raw",
+            "operator": "is_not_null"
+          },
+          {
+            "field": "reset_hours",
+            "operator": "is_not_null"
+          },
+          {
+            "field": "reset_hours",
+            "operator": "greater_or_equal",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "id": "usage_valid",
+        "transform": "flatten",
+        "array": [
+          "{{step.usage_counting}}",
+          "{{step.usage_net_never_reset}}",
+          "{{step.usage_net_reset_before}}"
+        ]
+      },
+      {
+        "id": "usage_rounded",
+        "transform": "map",
+        "array": "{{step.usage_valid}}",
+        "apply": "round",
+        "field": "used_raw",
+        "precision": 2,
+        "output_field": "used"
+      },
+      {
+        "id": "usage_sorted",
+        "transform": "sort",
+        "array": "{{step.usage_rounded}}",
+        "fields": [
+          {
+            "field": "used",
+            "direction": "desc"
+          }
+        ]
+      },
+      {
+        "id": "measured_count",
+        "transform": "count",
+        "input": "{{step.usage_sorted}}"
+      },
+      {
+        "id": "unmeasured_count",
+        "transform": "math",
+        "expression": "{{step.energy_count}} - {{step.measured_count}}"
+      },
+      {
+        "id": "has_rows",
+        "transform": "compare",
+        "left": "{{step.measured_count}}",
+        "operator": "greater",
+        "right": 0
+      },
+      {
+        "id": "biggest_text",
+        "transform": "ternary",
+        "if": "{{step.has_rows}}",
+        "then": "{{step.usage_sorted.0.name}}: {{step.usage_sorted.0.used}} {{step.usage_sorted.0.unit}}",
+        "else": "No meter could be measured"
+      },
+      {
+        "id": "period_start",
+        "transform": "date_format",
+        "date": "{{step.window_start}}",
+        "format": "YYYY-MM-DD HH:mm"
+      },
+      {
+        "id": "usage_rows",
+        "transform": "slice",
+        "array": "{{step.usage_sorted}}",
+        "start": 0,
+        "end": "{{config.row_limit}}"
+      },
+      {
+        "id": "usage_table",
+        "transform": "to_table",
+        "array": "{{step.usage_rows}}",
+        "columns": [
+          {
+            "field": "name",
+            "label": "Meter"
+          },
+          {
+            "field": "used",
+            "label": "Used"
+          },
+          {
+            "field": "unit",
+            "label": "Unit"
+          },
+          {
+            "field": "entity_id",
+            "label": "Entity"
+          }
+        ]
+      },
+      {
+        "id": "notify_enabled",
+        "transform": "compare",
+        "left": "{{config.notify_with_summary}}",
+        "operator": "equal",
+        "right": true
+      },
+      {
+        "id": "should_notify",
+        "transform": "all",
+        "conditions": [
+          "{{step.has_rows}} equal true",
+          "{{step.notify_enabled}} equal true"
+        ]
+      },
+      {
+        "id": "notify",
+        "skip_when": "{{step.should_notify}} not_equal true",
+        "op": "core.notification.send",
+        "args": {
+          "channels": "{{config.channels}}",
+          "title": "Home Assistant energy, last {{config.days}} days",
+          "text": "Biggest user: {{step.biggest_text}}. {{step.measured_count:number}} meter(s) measured since {{step.period_start}}. Open the weekly energy summary in Recued for the list."
+        }
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Period",
+            "value": "Since {{step.period_start}} ({{config.days}} days)"
+          },
+          {
+            "label": "Biggest user",
+            "value": "{{step.biggest_text}}"
+          },
+          {
+            "label": "Meters measured",
+            "value": "{{step.measured_count:number}} of {{step.energy_count:number}}"
+          },
+          {
+            "label": "Not measured",
+            "value": "{{step.unmeasured_count:number}}: no reading at the start of the period, a meter that only counts up went down (it was reset), or a meter restarted its count during the period"
+          },
+          {
+            "label": "Note",
+            "value": "Readings are not added up: one of them may be a whole-home meter that already includes the others. A reading below zero is a net meter that sent out more than it took in, such as solar export."
+          },
+          {
+            "label": "Scope",
+            "value": "Read-only; nothing in Home Assistant was changed."
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        },
+        {
+          "type": "table",
+          "source": "step.usage_table",
+          "label": "Energy used, biggest first"
+        },
+        {
+          "type": "json",
+          "source": "step.usage_sorted",
+          "label": "Every measured meter"
+        }
+      ]
+    }
+  },
+  "sync-paperless-documents": {
+    "recipe_id": "sync-paperless-documents",
+    "version": 5,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Sync Paperless documents",
+      "description": "Use “Sync Paperless documents” in Recued. Import and refresh up to fifty selected documents. Schedule this recipe for recurring updates. Reads sources afresh and changes only dates this source may update.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "recipe_bundle": "recued-core/paperless-ngx",
+      "tags": [
+        "pack:paperless-ngx",
+        "documents",
+        "sync"
+      ],
+      "budget_ms": 120000,
+      "retired_connections": {
+        "paperless_ngx": "paperless-ngx-api"
+      },
+      "local_automation": {
+        "catalog": "recued-core.paperless-ngx",
+        "entity": "sync_link",
+        "connection_slot": "paperless-ngx-api",
+        "connection_field": "connection",
+        "filters": {
+          "state": "sync"
+        },
+        "mutable_fields": [
+          "source_title",
+          "last_result",
+          "busy",
+          "last_checked_at",
+          "last_applied_date"
+        ],
+        "asset": {
+          "id_field": "asset_id",
+          "date_fields": [
+            "expires_on"
+          ],
+          "source_ref_prefix": "paperless:"
+        }
+      }
+    },
+    "depends_on": [
+      "recued-core.paperless-ngx",
+      "recued-core.paperless-ngx-api"
+    ],
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "variables": {},
+    "steps": [
+      {
+        "id": "connection_required",
+        "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+        "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+      },
+      {
+        "id": "links",
+        "op": "recued-core.paperless-ngx.sync_link.search",
+        "args": {
+          "filters": {
+            "connection": "{{context.connections.paperless-ngx-api}}",
+            "busy": false,
+            "state": {
+              "op": "in",
+              "value": [
+                "sync",
+                "once"
+              ]
+            }
+          },
+          "sort": "last_checked_at",
+          "limit": 50
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "link_count",
+        "transform": "count",
+        "input": "{{step.links.records}}"
+      },
+      {
+        "id": "source_server",
+        "op": "recued-core.paperless-ngx-api.document.api-root",
+        "args": {},
+        "cache": "fresh",
+        "skip_when": "{{step.link_count}} equal 0"
+      },
+      {
+        "id": "source_matches",
+        "transform": "compare",
+        "left": "{{item.source_root}}",
+        "operator": "equal",
+        "right": "{{step.source_server.result.documents}}",
+        "foreach": "{{step.links.records}}"
+      },
+      {
+        "id": "source_links",
+        "transform": "enrich_by",
+        "array": "{{step.links.records}}",
+        "with": "{{step.source_matches}}",
+        "key": "id",
+        "with_key": "item.id",
+        "fields": {
+          "same_source": "result"
+        }
+      },
+      {
+        "id": "matching_links",
+        "transform": "filter",
+        "array": "{{step.source_links}}",
+        "conditions": [
+          {
+            "field": "same_source",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "changed_server",
+        "transform": "filter",
+        "array": "{{step.source_links}}",
+        "conditions": [
+          {
+            "field": "same_source",
+            "operator": "not_equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "changed_server_results",
+        "op": "recued-core.paperless-ngx.sync_link.update",
+        "args": {
+          "id": "{{item.id}}",
+          "expected_version": 7,
+          "expected_revision": "{{item._record.revision}}",
+          "set": {
+            "last_result": "Connection points to another Paperless server; reconnect before syncing"
+          }
+        },
+        "cache": "fresh",
+        "foreach": "{{step.changed_server}}"
+      },
+      {
+        "id": "claims",
+        "op": "recued-core.paperless-ngx.sync_link.update",
+        "args": {
+          "id": "{{item.id}}",
+          "expected_version": 7,
+          "expected_revision": "{{item._record.revision}}",
+          "set": {
+            "busy": true,
+            "last_result": "Check in progress"
+          }
+        },
+        "cache": "fresh",
+        "foreach": "{{step.matching_links}}"
+      },
+      {
+        "id": "claimed",
+        "transform": "filter",
+        "array": "{{step.claims}}",
+        "conditions": [
+          {
+            "field": "ok",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "claimed_rows",
+        "transform": "map",
+        "array": "{{step.claimed}}",
+        "expression": "{{item.result.record}}"
+      },
+      {
+        "id": "documents",
+        "op": "recued-core.paperless-ngx-api.document.get",
+        "args": {
+          "document_id": "{{item.document_id}}"
+        },
+        "cache": "fresh",
+        "foreach": "{{step.claimed_rows}}"
+      },
+      {
+        "id": "source_rows",
+        "transform": "map",
+        "array": "{{step.documents}}",
+        "expression": {
+          "document_id": "{{item.item.document_id}}",
+          "returned_id": "{{item.result.result.id}}",
+          "title": "{{item.result.result.title}}",
+          "custom_fields": "{{item.result.result.custom_fields}}",
+          "read_ok": "{{item.ok}}",
+          "custom_field_id": "{{item.item.custom_field_id}}",
+          "link": "{{item.item}}"
+        }
+      },
+      {
+        "id": "date_values",
+        "transform": "find",
+        "array": "{{item.custom_fields}}",
+        "field": "field",
+        "operator": "equal",
+        "value": "{{item.custom_field_id}}",
+        "foreach": "{{step.source_rows}}"
+      },
+      {
+        "id": "with_dates",
+        "transform": "enrich_by",
+        "array": "{{step.source_rows}}",
+        "with": "{{step.date_values}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "source_date": "result.value"
+        }
+      },
+      {
+        "id": "parsed_dates",
+        "transform": "map",
+        "array": "{{step.with_dates}}",
+        "apply": "date_parse",
+        "field": "source_date",
+        "output_field": "date_ms"
+      },
+      {
+        "id": "date_lengths",
+        "transform": "map",
+        "array": "{{step.parsed_dates}}",
+        "apply": "string_length",
+        "field": "source_date",
+        "output_field": "date_length"
+      },
+      {
+        "id": "parseable_dates",
+        "transform": "filter",
+        "array": "{{step.date_lengths}}",
+        "conditions": [
+          {
+            "field": "date_ms",
+            "operator": "is_not_null",
+            "value": null
+          },
+          {
+            "field": "date_length",
+            "operator": "equal",
+            "value": 10
+          },
+          {
+            "field": "read_ok",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "date_iso",
+        "transform": "map",
+        "array": "{{step.parseable_dates}}",
+        "apply": "date_add",
+        "field": "date_ms",
+        "amount": 0,
+        "unit": "seconds",
+        "output_field": "iso"
+      },
+      {
+        "id": "date_parts",
+        "transform": "map",
+        "array": "{{step.date_iso}}",
+        "apply": "split",
+        "field": "iso",
+        "delimiter": "T",
+        "output_field": "parts"
+      },
+      {
+        "id": "date_roundtrips",
+        "transform": "compare",
+        "left": "{{item.source_date}}",
+        "operator": "equal",
+        "right": "{{item.parts.0}}",
+        "foreach": "{{step.date_parts}}"
+      },
+      {
+        "id": "date_proofs",
+        "transform": "enrich_by",
+        "array": "{{step.date_parts}}",
+        "with": "{{step.date_roundtrips}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "date_valid": "result"
+        }
+      },
+      {
+        "id": "identity_proofs",
+        "transform": "compare",
+        "left": "{{item.document_id}}",
+        "operator": "equal",
+        "right": "{{item.returned_id}}",
+        "foreach": "{{step.date_proofs}}"
+      },
+      {
+        "id": "identity_dates",
+        "transform": "enrich_by",
+        "array": "{{step.date_proofs}}",
+        "with": "{{step.identity_proofs}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "identity_valid": "result"
+        }
+      },
+      {
+        "id": "valid_dates",
+        "transform": "filter",
+        "array": "{{step.identity_dates}}",
+        "conditions": [
+          {
+            "field": "date_valid",
+            "operator": "equal",
+            "value": true
+          },
+          {
+            "field": "identity_valid",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "valid_markers",
+        "transform": "map",
+        "array": "{{step.valid_dates}}",
+        "expression": {
+          "document_id": "{{item.document_id}}",
+          "valid": true
+        }
+      },
+      {
+        "id": "dated_rows",
+        "transform": "enrich_by",
+        "array": "{{step.with_dates}}",
+        "with": "{{step.valid_markers}}",
+        "key": "document_id",
+        "with_key": "document_id",
+        "fields": {
+          "valid": "valid"
+        }
+      },
+      {
+        "id": "types",
+        "op": "recued-core.paperless-ngx-api.custom_field.get",
+        "args": {
+          "custom_field_id": "{{item.custom_field_id}}"
+        },
+        "cache": "fresh",
+        "foreach": "{{step.dated_rows}}"
+      },
+      {
+        "id": "typed_rows",
+        "transform": "enrich_by",
+        "array": "{{step.dated_rows}}",
+        "with": "{{step.types}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "field_type": "result.result.data_type",
+          "declared_field_id": "result.result.id"
+        }
+      },
+      {
+        "id": "declared_fields",
+        "transform": "compare",
+        "left": "{{item.declared_field_id}}",
+        "operator": "equal",
+        "right": "{{item.custom_field_id}}",
+        "foreach": "{{step.typed_rows}}"
+      },
+      {
+        "id": "identified_fields",
+        "transform": "enrich_by",
+        "array": "{{step.typed_rows}}",
+        "with": "{{step.declared_fields}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "correct_field": "result"
+        }
+      },
+      {
+        "id": "field_types",
+        "transform": "compare",
+        "left": "{{item.field_type}}",
+        "operator": "equal",
+        "right": "date",
+        "foreach": "{{step.identified_fields}}"
+      },
+      {
+        "id": "source_types",
+        "transform": "enrich_by",
+        "array": "{{step.identified_fields}}",
+        "with": "{{step.field_types}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "type_valid": "result"
+        }
+      },
+      {
+        "id": "source_proofs",
+        "transform": "all",
+        "conditions": [
+          "{{item.valid}} equal true",
+          "{{item.type_valid}} equal true",
+          "{{item.correct_field}} equal true"
+        ],
+        "foreach": "{{step.source_types}}"
+      },
+      {
+        "id": "source_checked",
+        "transform": "enrich_by",
+        "array": "{{step.source_types}}",
+        "with": "{{step.source_proofs}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "source_valid": "result"
+        }
+      },
+      {
+        "id": "eligible_sources",
+        "transform": "filter",
+        "array": "{{step.source_checked}}",
+        "conditions": [
+          {
+            "field": "source_valid",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "new_sources",
+        "transform": "filter",
+        "array": "{{step.eligible_sources}}",
+        "conditions": [
+          {
+            "field": "link.asset_id",
+            "operator": "is_empty",
+            "value": null
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "created",
+        "op": "core.work-entity.asset.create",
+        "args": {
+          "name": "{{item.title}}",
+          "class_id": "paperless_document",
+          "idempotency_key": "paperless:{{item.link.id}}",
+          "source": {
+            "kind": "extracted",
+            "ref": "paperless:{{item.link.id}}"
+          },
+          "dates": {
+            "expires_on": "{{item.source_date}}"
+          },
+          "attributes": {
+            "paperless_document_id": "{{item.document_id}}",
+            "paperless_connection": "{{context.connections.paperless-ngx-api}}"
+          }
+        },
+        "cache": "fresh",
+        "foreach": "{{step.new_sources}}"
+      },
+      {
+        "id": "with_created",
+        "transform": "enrich_by",
+        "array": "{{step.source_checked}}",
+        "with": "{{step.created}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "created_asset_id": "result.asset_id"
+        }
+      },
+      {
+        "id": "existing_assets",
+        "transform": "compare",
+        "left": "{{item.link.asset_id}}",
+        "operator": "is_not_empty",
+        "right": null,
+        "foreach": "{{step.with_created}}"
+      },
+      {
+        "id": "created_flags",
+        "transform": "enrich_by",
+        "array": "{{step.with_created}}",
+        "with": "{{step.existing_assets}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "has_asset": "result"
+        }
+      },
+      {
+        "id": "asset_rows",
+        "transform": "map",
+        "array": "{{step.created_flags}}",
+        "expression": {
+          "document_id": "{{item.document_id}}",
+          "title": "{{item.title}}",
+          "source_date": "{{item.source_date}}",
+          "source_valid": "{{item.source_valid}}",
+          "link": "{{item.link}}",
+          "asset_id": {
+            "$ternary": {
+              "if": "{{item.has_asset}}",
+              "then": "{{item.link.asset_id}}",
+              "else": "{{item.created_asset_id}}"
+            }
+          }
+        }
+      },
+      {
+        "id": "readable_assets",
+        "transform": "filter",
+        "array": "{{step.asset_rows}}",
+        "conditions": [
+          {
+            "field": "asset_id",
+            "operator": "is_not_empty",
+            "value": null
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "assets",
+        "op": "core.work-entity.get",
+        "args": {
+          "kind": "asset",
+          "id": "{{item.asset_id}}"
+        },
+        "cache": "fresh",
+        "foreach": "{{step.readable_assets}}"
+      },
+      {
+        "id": "with_assets",
+        "transform": "enrich_by",
+        "array": "{{step.asset_rows}}",
+        "with": "{{step.assets}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "asset": "result.entity",
+          "asset_read_ok": "ok"
+        }
+      },
+      {
+        "id": "source_maps",
+        "transform": "rename",
+        "source": "{{item.asset.field_sources}}",
+        "mapping": {
+          "dates.expires_on": "expiry_source"
+        },
+        "foreach": "{{step.with_assets}}"
+      },
+      {
+        "id": "with_authority",
+        "transform": "enrich_by",
+        "array": "{{step.with_assets}}",
+        "with": "{{step.source_maps}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "expiry_source": "result.expiry_source"
+        }
+      },
+      {
+        "id": "own_sources",
+        "transform": "compare",
+        "left": "{{item.expiry_source.ref}}",
+        "operator": "equal",
+        "right": "paperless:{{item.link.id}}",
+        "foreach": "{{step.with_authority}}"
+      },
+      {
+        "id": "authority_rows",
+        "transform": "enrich_by",
+        "array": "{{step.with_authority}}",
+        "with": "{{step.own_sources}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "own_source": "result"
+        }
+      },
+      {
+        "id": "empty_fields",
+        "transform": "all",
+        "conditions": [
+          "{{item.expiry_source.kind}} is_empty",
+          "{{item.asset.dates.expires_on}} is_empty"
+        ],
+        "foreach": "{{step.authority_rows}}"
+      },
+      {
+        "id": "with_empty",
+        "transform": "enrich_by",
+        "array": "{{step.authority_rows}}",
+        "with": "{{step.empty_fields}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "empty_field": "result"
+        }
+      },
+      {
+        "id": "permissions",
+        "transform": "any",
+        "conditions": [
+          "{{item.own_source}} equal true",
+          "{{item.empty_field}} equal true"
+        ],
+        "foreach": "{{step.with_empty}}"
+      },
+      {
+        "id": "permitted",
+        "transform": "enrich_by",
+        "array": "{{step.with_empty}}",
+        "with": "{{step.permissions}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "can_write": "result"
+        }
+      },
+      {
+        "id": "active_assets",
+        "transform": "compare",
+        "left": "{{item.asset.status}}",
+        "operator": "in",
+        "right": [
+          "active",
+          "lent"
+        ],
+        "foreach": "{{step.permitted}}"
+      },
+      {
+        "id": "active_rows",
+        "transform": "enrich_by",
+        "array": "{{step.permitted}}",
+        "with": "{{step.active_assets}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "active": "result"
+        }
+      },
+      {
+        "id": "same_dates",
+        "transform": "compare",
+        "left": "{{item.asset.dates.expires_on}}",
+        "operator": "equal",
+        "right": "{{item.source_date}}",
+        "foreach": "{{step.active_rows}}"
+      },
+      {
+        "id": "compared",
+        "transform": "enrich_by",
+        "array": "{{step.active_rows}}",
+        "with": "{{step.same_dates}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "same_date": "result"
+        }
+      },
+      {
+        "id": "writes",
+        "transform": "filter",
+        "array": "{{step.compared}}",
+        "conditions": [
+          {
+            "field": "source_valid",
+            "operator": "equal",
+            "value": true
+          },
+          {
+            "field": "asset_read_ok",
+            "operator": "equal",
+            "value": true
+          },
+          {
+            "field": "can_write",
+            "operator": "equal",
+            "value": true
+          },
+          {
+            "field": "same_date",
+            "operator": "equal",
+            "value": false
+          },
+          {
+            "field": "active",
+            "operator": "equal",
+            "value": true
+          }
+        ],
+        "mode": "all"
+      },
+      {
+        "id": "updated",
+        "op": "core.work-entity.asset.update",
+        "args": {
+          "id": "{{item.asset_id}}",
+          "source": {
+            "kind": "extracted",
+            "ref": "paperless:{{item.link.id}}"
+          },
+          "dates": {
+            "expires_on": "{{item.source_date}}"
+          }
+        },
+        "cache": "fresh",
+        "foreach": "{{step.writes}}"
+      },
+      {
+        "id": "verified",
+        "op": "core.work-entity.get",
+        "args": {
+          "kind": "asset",
+          "id": "{{item.asset_id}}"
+        },
+        "cache": "fresh",
+        "foreach": "{{step.readable_assets}}"
+      },
+      {
+        "id": "verified_sources",
+        "transform": "rename",
+        "source": "{{item.result.entity.field_sources}}",
+        "mapping": {
+          "dates.expires_on": "expiry_source"
+        },
+        "foreach": "{{step.verified}}"
+      },
+      {
+        "id": "verified_authority",
+        "transform": "enrich_by",
+        "array": "{{step.compared}}",
+        "with": "{{step.verified_sources}}",
+        "key": "document_id",
+        "with_key": "item.item.document_id",
+        "fields": {
+          "saved_source": "result.expiry_source"
+        }
+      },
+      {
+        "id": "saved_authorities",
+        "transform": "compare",
+        "left": "{{item.saved_source.ref}}",
+        "operator": "equal",
+        "right": "paperless:{{item.link.id}}",
+        "foreach": "{{step.verified_authority}}"
+      },
+      {
+        "id": "saved_owners",
+        "transform": "enrich_by",
+        "array": "{{step.verified_authority}}",
+        "with": "{{step.saved_authorities}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "saved_own_source": "result"
+        }
+      },
+      {
+        "id": "settled",
+        "transform": "enrich_by",
+        "array": "{{step.saved_owners}}",
+        "with": "{{step.verified}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "saved_date": "result.entity.dates.expires_on",
+          "verify_ok": "ok"
+        }
+      },
+      {
+        "id": "saved_dates",
+        "transform": "compare",
+        "left": "{{item.saved_date}}",
+        "operator": "equal",
+        "right": "{{item.source_date}}",
+        "foreach": "{{step.settled}}"
+      },
+      {
+        "id": "results",
+        "transform": "enrich_by",
+        "array": "{{step.settled}}",
+        "with": "{{step.saved_dates}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "saved": "result"
+        }
+      },
+      {
+        "id": "outcomes",
+        "transform": "map",
+        "array": "{{step.results}}",
+        "expression": {
+          "document_id": "{{item.document_id}}",
+          "asset_id": "{{item.asset_id}}",
+          "source_date": "{{item.source_date}}",
+          "link": "{{item.link}}",
+          "title": {
+            "$ternary": {
+              "if": "{{item.source_valid}}",
+              "then": "{{item.title}}",
+              "else": "{{item.link.source_title}}"
+            }
+          },
+          "last_result": {
+            "$ternary": {
+              "if": "{{item.source_valid}}",
+              "then": {
+                "$ternary": {
+                  "if": "{{item.verify_ok}}",
+                  "then": {
+                    "$ternary": {
+                      "if": "{{item.saved_own_source}}",
+                      "then": {
+                        "$ternary": {
+                          "if": "{{item.saved}}",
+                          "then": "Synced",
+                          "else": "Update not applied; retry or review"
+                        }
+                      },
+                      "else": "Local or other source value kept; review in Yours"
+                    }
+                  },
+                  "else": "Asset unavailable; review in Yours"
+                }
+              },
+              "else": "Document unavailable or date invalid; kept the saved value"
+            }
+          },
+          "applied_date": {
+            "$ternary": {
+              "if": "{{item.source_valid}}",
+              "then": {
+                "$ternary": {
+                  "if": "{{item.saved}}",
+                  "then": {
+                    "$ternary": {
+                      "if": "{{item.saved_own_source}}",
+                      "then": "{{item.source_date}}",
+                      "else": "{{item.link.last_applied_date}}"
+                    }
+                  },
+                  "else": "{{item.link.last_applied_date}}"
+                }
+              },
+              "else": "{{item.link.last_applied_date}}"
+            }
+          }
+        }
+      },
+      {
+        "id": "completed",
+        "transform": "compare",
+        "left": "{{item.last_result}}",
+        "operator": "equal",
+        "right": "Synced",
+        "foreach": "{{step.outcomes}}"
+      },
+      {
+        "id": "completed_rows",
+        "transform": "enrich_by",
+        "array": "{{step.outcomes}}",
+        "with": "{{step.completed}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "completed": "result"
+        }
+      },
+      {
+        "id": "once_modes",
+        "transform": "compare",
+        "left": "{{item.link.state}}",
+        "operator": "equal",
+        "right": "once",
+        "foreach": "{{step.completed_rows}}"
+      },
+      {
+        "id": "receipt_rows",
+        "transform": "enrich_by",
+        "array": "{{step.completed_rows}}",
+        "with": "{{step.once_modes}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "once": "result"
+        }
+      },
+      {
+        "id": "final_receipts",
+        "transform": "map",
+        "array": "{{step.receipt_rows}}",
+        "expression": {
+          "document_id": "{{item.document_id}}",
+          "asset_id": "{{item.asset_id}}",
+          "source_date": "{{item.source_date}}",
+          "title": "{{item.title}}",
+          "link": "{{item.link}}",
+          "last_result": "{{item.last_result}}",
+          "applied_date": "{{item.applied_date}}",
+          "next_state": {
+            "$ternary": {
+              "if": "{{item.once}}",
+              "then": {
+                "$ternary": {
+                  "if": "{{item.completed}}",
+                  "then": "imported",
+                  "else": "{{item.link.state}}"
+                }
+              },
+              "else": "{{item.link.state}}"
+            }
+          }
+        }
+      },
+      {
+        "id": "receipt_values",
+        "transform": "defaults",
+        "fields": {
+          "asset_id": {
+            "value": "{{item.asset_id}}",
+            "fallback": ""
+          },
+          "applied_date": {
+            "value": "{{item.applied_date}}",
+            "fallback": ""
+          },
+          "title": {
+            "value": "{{item.title}}",
+            "fallback": ""
+          }
+        },
+        "foreach": "{{step.final_receipts}}"
+      },
+      {
+        "id": "receipt_ready",
+        "transform": "enrich_by",
+        "array": "{{step.final_receipts}}",
+        "with": "{{step.receipt_values}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "asset_id": "result.asset_id",
+          "applied_date": "result.applied_date",
+          "title": "result.title"
+        }
+      },
+      {
+        "id": "now",
+        "transform": "date_add",
+        "date": "now",
+        "amount": 0,
+        "unit": "seconds"
+      },
+      {
+        "id": "receipts",
+        "op": "recued-core.paperless-ngx.sync_link.update",
+        "args": {
+          "id": "{{item.link.id}}",
+          "expected_version": 7,
+          "expected_revision": "{{item.link._record.revision}}",
+          "set": {
+            "asset_id": "{{item.asset_id}}",
+            "source_title": "{{item.title}}",
+            "last_result": "{{item.last_result}}",
+            "last_checked_at": "{{step.now}}",
+            "last_applied_date": "{{item.applied_date}}",
+            "state": "{{item.next_state}}",
+            "busy": false
+          }
+        },
+        "cache": "fresh",
+        "foreach": "{{step.receipt_ready}}"
+      },
+      {
+        "id": "reported",
+        "transform": "enrich_by",
+        "array": "{{step.receipt_ready}}",
+        "with": "{{step.receipts}}",
+        "key": "document_id",
+        "with_key": "item.document_id",
+        "fields": {
+          "receipt_saved": "ok"
+        }
+      },
+      {
+        "id": "table",
+        "transform": "to_table",
+        "array": "{{step.reported}}",
+        "columns": [
+          {
+            "field": "title",
+            "label": "Document"
+          },
+          {
+            "field": "last_result",
+            "label": "Result"
+          },
+          {
+            "field": "receipt_saved",
+            "label": "Result recorded"
+          },
+          {
+            "field": "applied_date",
+            "label": "Last applied date"
+          },
+          {
+            "field": "asset_id",
+            "label": "Asset in Yours"
+          }
+        ]
+      },
+      {
+        "id": "changed_source_table",
+        "transform": "to_table",
+        "array": "{{step.changed_server}}",
+        "columns": [
+          {
+            "field": "source_title",
+            "label": "Document kept"
+          },
+          {
+            "field": "source_root",
+            "label": "Original Paperless server"
+          }
+        ]
+      },
+      {
+        "id": "scope",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Checked",
+            "value": "Selected links only. Source reads repeat; unchanged dates do not write the asset."
+          },
+          {
+            "label": "More links",
+            "value": "{{step.links.next_cursor}}"
+          },
+          {
+            "label": "Automation",
+            "value": "Complete the first import, then schedule this recipe with the same connection saved on its dish. In Automation, open the schedule and review Scheduled local writes to allow recurring updates. Manage source links in Sync settings."
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.scope"
+        },
+        {
+          "type": "table",
+          "source": "step.table"
+        },
+        {
+          "type": "table",
+          "source": "step.changed_source_table"
         }
       ]
     }

@@ -1736,13 +1736,30 @@ export const createImapProvider = (
         { kind: 'imap', slug: opts.slug },
       );
     }
-    const { meta: submitted, raw: rfc822 } = await submitSmtp({
-      kind: 'imap', slug: opts.slug, msg,
-      config: { host: smtp.host, port: smtp.port ?? DEFAULT_SMTP_PORT,
-        secure: smtp.secure ?? false, username: smtp.username ?? cfg.username,
-        password: smtp.password ?? cfg.password, from: smtp.from ?? cfg.username },
-      factory: smtpFactory, now: nowOf, uuid: messageIdUuid,
-    });
+    let submission: Awaited<ReturnType<typeof submitSmtp>>;
+    try {
+      submission = await submitSmtp({
+        kind: 'imap', slug: opts.slug, msg,
+        config: { host: smtp.host, port: smtp.port ?? DEFAULT_SMTP_PORT,
+          secure: smtp.secure ?? false, username: smtp.username ?? cfg.username,
+          password: smtp.password ?? cfg.password, from: smtp.from ?? cfg.username },
+        factory: smtpFactory, now: nowOf, uuid: messageIdUuid,
+      });
+    } catch (err) {
+      // The mailbox's health counts what a failed send says about the ACCOUNT:
+      // SMTP could not be reached, refused the sign-in, or failed. A recipient
+      // SMTP refused is the message's problem, the line Gmail and Graph draw too,
+      // and a send stopped before submission is not SMTP's. Lost when submission
+      // moved into `submitSmtp`, which owns no health.
+      const details = err instanceof IngredientError ? err.details : undefined;
+      if (!(err instanceof IngredientError && err.code === 'MAIL_SEND_RECIPIENT_INVALID')
+        && details?.dispatch_blocked !== true) {
+        markError(`imap SMTP submission failed code=${String(details?.smtp_code ?? 'none')} `
+          + `response=${String(details?.smtp_response_code ?? 'none')}`, err);
+      }
+      throw err;
+    }
+    const { meta: submitted, raw: rfc822 } = submission;
     const { message_id: messageId, sent_at: sentAt } = submitted;
 
     // ── 2. IMAP APPEND to Sent (best-effort) ──────────────────

@@ -58,6 +58,7 @@ import {
 import type {
   AdapterRegistry as LLMAdapterRegistry,
   LLMConfig,
+  LLMFinishReason,
   QuotaTracker,
   TranscribeDeps,
   TokenUsage,
@@ -1331,6 +1332,7 @@ export const composeChatOrchestrator = (
     // `executeLLM`'s zero-retry policy guarantees at most one
     // successful call per invocation.
     let captured: TokenUsage | undefined;
+    let finishReason: LLMFinishReason | undefined;
     const captureUsage = (u: TokenUsage) => {
       captured = u;
       // D-250 § D — the same provider result also advances the owner's daily
@@ -1344,12 +1346,14 @@ export const composeChatOrchestrator = (
       tabProbe: emptyTabProbe,
       webChatSupported: false,
       onTokenUsage: captureUsage,
+      onFinishReason: reason => { finishReason = reason; },
       // Opt-in only; absent leaves `resolveLLMTimeoutMs` at its no-timer default.
       ...(opts?.timeout_ms !== undefined ? { timeout_ms: opts.timeout_ms } : {}),
     });
     return {
       body,
       ...(captured ? { usage: tokenUsageToReport(captured) } : {}),
+      ...(finishReason !== undefined ? { finish_reason: finishReason } : {}),
     };
   };
   // D-167 (recall path) — the whole-warehouse contact index the egress aliases

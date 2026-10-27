@@ -105,6 +105,9 @@ export interface QuotaTracker {
    *  the availability builder can surface slot cooldowns without
    *  needing a full `FreePoolEntry` for slots. */
   isInCooldown(entryId: string, now?: number): boolean;
+  /** Absolute expiry of a live cooldown. Optional for older tracker hosts;
+   *  callers must omit a retry time when the host cannot report one. */
+  cooldownUntil?(entryId: string, now?: number): number | undefined;
   /** Advance the round-robin cursor for a source-key. Called after a successful match. */
   advanceCursor(sourceKey: string): void;
   /** Current round-robin cursor for a source-key. */
@@ -278,6 +281,13 @@ export const createQuotaTracker = (
     }
   };
 
+  const cooldownUntil = (entryId: string, nowArg?: number): number | undefined => {
+    const until = cooldown_until.get(entryId);
+    if (until == null) return undefined;
+    if (until <= (nowArg ?? Date.now())) { cooldown_until.delete(entryId); return undefined; }
+    return until;
+  };
+
   return {
     statusFor(entry, nowArg) {
       const now = nowArg ?? Date.now();
@@ -382,16 +392,8 @@ export const createQuotaTracker = (
       cooldown_until.set(entryId, now + ms);
     },
 
-    isInCooldown(entryId, nowArg) {
-      const now = nowArg ?? Date.now();
-      const until = cooldown_until.get(entryId);
-      if (until == null) return false;
-      if (until <= now) {
-        cooldown_until.delete(entryId);
-        return false;
-      }
-      return true;
-    },
+    cooldownUntil,
+    isInCooldown: (entryId, nowArg) => cooldownUntil(entryId, nowArg) !== undefined,
 
     advanceCursor(sourceKey) {
       cursor.set(sourceKey, (cursor.get(sourceKey) ?? 0) + 1);

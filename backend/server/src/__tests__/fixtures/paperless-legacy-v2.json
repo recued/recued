@@ -1,0 +1,564 @@
+{
+  "commit": "3e2664355a3261bfc6bb597bb88b053714593945",
+  "pack": {
+    "manifest_version": 2,
+    "slug": "paperless-ngx",
+    "publisher": "recued-core",
+    "name": "Paperless-ngx evidence",
+    "description": "Use Paperless-ngx evidence to read your documents and bring changed dates to the assets you select in Yours. Review each date with its source document before confirming it. Connect your own Paperless server with its address and access token.",
+    "version": 2,
+    "bundled": true,
+    "recipes": [],
+    "requires": [
+      "install_bulk_pack"
+    ],
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "assets",
+      "self-hosted"
+    ],
+    "pack_kind": "app_pack",
+    "service_kind": "storage",
+    "connection_requirements": [
+      {
+        "api_base": "https://paperless.example.com",
+        "per_org": true,
+        "vendor": "paperless_ngx",
+        "auth": {
+          "type": "header",
+          "header_names": [
+            "Authorization"
+          ]
+        }
+      }
+    ],
+    "connection_hints": [
+      {
+        "connection": "paperless-ngx",
+        "setup_url": "https://docs.paperless-ngx.com/api/",
+        "values": {
+          "auth.type": "header"
+        }
+      }
+    ],
+    "contents": [
+      {
+        "type": "recipe",
+        "slug": "record-asset-evidence-paperless",
+        "version": 3,
+        "visible": true
+      },
+      {
+        "type": "asset_class",
+        "preset": {
+          "id": "paperless_document",
+          "name": "Document with an expiry date",
+          "version": 1,
+          "origin": "pack:recued-core/paperless-ngx",
+          "fields": {
+            "dates": {
+              "expires_on": null
+            },
+            "readings": {},
+            "observations": {
+              "document_evidence": null
+            },
+            "settings": {}
+          },
+          "audience": "owner",
+          "retirement": "part",
+          "rules": [
+            {
+              "id": "renew",
+              "title": "Review expiry",
+              "enabled": true,
+              "muted": false,
+              "pinned": false,
+              "when": {
+                "kind": "expiry",
+                "field": "expires_on"
+              },
+              "consequence": "routine",
+              "expiry_policy": "escalate_overdue",
+              "reaction": {
+                "notify": true,
+                "occurrence": "action",
+                "emit": false
+              },
+              "schedule": {
+                "before": [
+                  {
+                    "amount": 1,
+                    "unit": "months"
+                  }
+                ],
+                "on_day": true,
+                "after": {
+                  "amount": 1,
+                  "unit": "months"
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "composition",
+        "composition": {
+          "schema_version": 1,
+          "slug": "paperless-ngx",
+          "catalog_kind": "official",
+          "ingredients": [
+            {
+              "slug": "paperless-ngx",
+              "kind": "http",
+              "http": {
+                "base": "https://paperless.example.com",
+                "connection": "paperless-ngx"
+              }
+            }
+          ],
+          "operations": [
+            {
+              "op": "document.list",
+              "ingredient": "paperless-ngx",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "query.query",
+                  "type": "string",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.custom_field_query",
+                  "type": "string",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.page",
+                  "type": "number",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.page_size",
+                  "type": "number",
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/documents/",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "Search documents or filter custom fields using the documented query. Returns provider count, results and next page; use next page until empty. Fresh metadata only.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "query.query": {
+                    "type": "string",
+                    "maxLength": 2048
+                  },
+                  "query.custom_field_query": {
+                    "type": "string",
+                    "maxLength": 2048
+                  },
+                  "query.page": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "query.page_size": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "document.get",
+              "ingredient": "paperless-ngx",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "document_id",
+                  "type": "number",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/documents/{{document_id}}/",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "Read one document\u2019s metadata and structured custom fields. A custom field is evidence to review; it does not confirm an asset date. API version 9, uncached.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "document_id"
+                ],
+                "properties": {
+                  "document_id": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "document.download",
+              "ingredient": "paperless-ngx",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "document_id",
+                  "type": "number",
+                  "required": true,
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/documents/{{document_id}}/download/",
+                "response_capture": {
+                  "kind": "file_ref",
+                  "mime_type": "application/octet-stream",
+                  "filename_source": {
+                    "kind": "static",
+                    "value": "paperless-document"
+                  },
+                  "ai_enrichment": "opt_out"
+                },
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "Save this document as a file reference on this server, with automatic AI enrichment off. Nothing in Paperless is changed. The evidence recipe captures only a changed date or a newly reviewed writer source.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "document_id"
+                ],
+                "properties": {
+                  "document_id": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            {
+              "op": "custom-field.list",
+              "ingredient": "paperless-ngx",
+              "risk": "read",
+              "approval": "never",
+              "idempotency": "safe",
+              "args": [
+                {
+                  "key": "query.page",
+                  "type": "number",
+                  "affects_target": true
+                },
+                {
+                  "key": "query.page_size",
+                  "type": "number",
+                  "affects_target": true
+                }
+              ],
+              "bind": {
+                "kind": "rest",
+                "method": "GET",
+                "path_template": "/api/custom_fields/",
+                "static_headers": {
+                  "Accept": "application/json; version=9"
+                }
+              },
+              "description": "List custom field ids, names and types so the owner can choose a date field. Fresh metadata only.",
+              "cache_ttl_ms": 0,
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [],
+                "properties": {
+                  "query.page": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "query.page_size": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          ],
+          "tags": [
+            "documents",
+            "assets",
+            "evidence"
+          ]
+        }
+      }
+    ]
+  },
+  "recipe": {
+    "recipe_id": "record-asset-evidence-paperless",
+    "version": 3,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Review a Paperless document date",
+      "description": "Use \u201cReview a Paperless document date\u201d in Recued. Reads the chosen date field and keeps supporting evidence when its date or reviewed writer changes, with AI enrichment off. Review the date in Yours before confirming it and recalculating its reminders.",
+      "author": "recued-core",
+      "supported_platforms": [
+        "paperless-ngx"
+      ],
+      "tags": [
+        "pack:paperless-ngx",
+        "asset",
+        "evidence"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "asset_id": {
+        "label": "Asset",
+        "type": "string",
+        "page_binding": {
+          "kind": "asset",
+          "field": "id"
+        }
+      },
+      "binding_id": {
+        "label": "Observation binding id from Yours",
+        "type": "string"
+      },
+      "document_id": {
+        "label": "Paperless document id",
+        "type": "number"
+      },
+      "custom_field_id": {
+        "label": "Paperless custom date field id",
+        "type": "number"
+      },
+      "asset_date_field": {
+        "label": "Asset date field",
+        "type": "string",
+        "default": "expires_on"
+      },
+      "writer_source_ref": {
+        "label": "Reviewed writer source supplied by Yours",
+        "type": "string",
+        "default": ""
+      }
+    },
+    "requires": [
+      "read_connection_paperless_ngx"
+    ],
+    "depends_on": [
+      "recued-core.paperless-ngx"
+    ],
+    "steps": [
+      {
+        "id": "asset",
+        "op": "core.work-entity.get",
+        "args": {
+          "kind": "asset",
+          "id": "{{config.asset_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "document",
+        "op": "recued-core.paperless-ngx.document.get",
+        "args": {
+          "document_id": "{{config.document_id}}"
+        },
+        "cache": "fresh"
+      },
+      {
+        "id": "date_field",
+        "transform": "find",
+        "array": "{{step.document.result.custom_fields}}",
+        "field": "field",
+        "operator": "equal",
+        "value": "{{config.custom_field_id}}"
+      },
+      {
+        "id": "date_ms",
+        "transform": "date_parse",
+        "input": "{{step.date_field.value}}"
+      },
+      {
+        "id": "roundtrip",
+        "transform": "date_format",
+        "date": "{{step.date_ms}}",
+        "format": "YYYY-MM-DD",
+        "time_zone": "UTC"
+      },
+      {
+        "id": "real_date",
+        "transform": "all",
+        "conditions": [
+          "{{step.date_field.value}} is_not_null",
+          "{{step.roundtrip}} equal {{step.date_field.value}}"
+        ]
+      },
+      {
+        "id": "old_date",
+        "transform": "find",
+        "array": "{{step.asset.entity.observations.document_evidence.evidence}}",
+        "field": "field",
+        "operator": "equal",
+        "value": "dates.{{config.asset_date_field}}"
+      },
+      {
+        "id": "changed",
+        "transform": "compare",
+        "left": "{{step.old_date.value}}",
+        "operator": "not_equal",
+        "right": "{{step.date_field.value}}"
+      },
+      {
+        "id": "managed_source",
+        "transform": "compare",
+        "left": "{{config.writer_source_ref}}",
+        "operator": "not_equal",
+        "right": ""
+      },
+      {
+        "id": "source_changed",
+        "transform": "compare",
+        "left": "{{step.asset.entity.observations.document_evidence.source}}",
+        "operator": "not_equal",
+        "right": "{{config.writer_source_ref}}"
+      },
+      {
+        "id": "fresh_source",
+        "transform": "all",
+        "conditions": [
+          "{{step.managed_source}} equal true",
+          "{{step.source_changed}} equal true"
+        ]
+      },
+      {
+        "id": "needs_evidence",
+        "transform": "any",
+        "conditions": [
+          "{{step.changed}} equal true",
+          "{{step.fresh_source}} equal true"
+        ]
+      },
+      {
+        "id": "evidence_source",
+        "transform": "rename",
+        "source": "{{step.asset.entity.field_sources}}",
+        "mapping": {
+          "observations.document_evidence": "evidence"
+        }
+      },
+      {
+        "id": "evidence_handoff",
+        "transform": "rename",
+        "source": "{{step.asset.entity.automatic_updates}}",
+        "mapping": {
+          "observations.document_evidence": "evidence"
+        }
+      },
+      {
+        "id": "can_report",
+        "transform": "any",
+        "conditions": [
+          "{{step.evidence_source.evidence.kind}} is_null",
+          "{{step.evidence_source.evidence.kind}} equal observation",
+          "{{step.evidence_source.evidence.kind}} equal extracted",
+          "{{step.evidence_source.evidence.kind}} equal ai_guess",
+          "{{step.evidence_handoff.evidence}} is_not_null"
+        ]
+      },
+      {
+        "id": "needs_capture",
+        "transform": "all",
+        "conditions": [
+          "{{step.can_report}} equal true",
+          "{{step.real_date}} equal true",
+          "{{step.needs_evidence}} equal true"
+        ]
+      },
+      {
+        "id": "file",
+        "op": "recued-core.paperless-ngx.document.download",
+        "args": {
+          "document_id": "{{config.document_id}}"
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.needs_capture}} not_equal true"
+      },
+      {
+        "id": "now_iso",
+        "transform": "date_add",
+        "date": "now",
+        "amount": 0,
+        "unit": "minutes"
+      },
+      {
+        "id": "now",
+        "transform": "date_parse",
+        "input": "{{step.now_iso}}"
+      },
+      {
+        "id": "evidence",
+        "op": "core.work-entity.asset.observe",
+        "args": {
+          "binding_id": "{{config.binding_id}}",
+          "observations": {
+            "document_evidence": {
+              "active": true,
+              "certainty": "conditional",
+              "as_of": "{{step.now}}",
+              "evidence": [
+                {
+                  "collection": "file",
+                  "id": "{{step.file.file_ref}}",
+                  "field": "dates.{{config.asset_date_field}}",
+                  "value": "{{step.date_field.value}}"
+                }
+              ]
+            }
+          }
+        },
+        "cache": "fresh",
+        "skip_when": "{{step.needs_capture}} not_equal true"
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "json",
+          "source": "step.date_field",
+          "label": "Date evidence to review"
+        }
+      ]
+    }
+  }
+}

@@ -1634,7 +1634,10 @@ const mcpServerCapabilities = (deps: McpDeps): Record<string, unknown> => {
       : {}),
   };
   return {
-    tools: {},
+    // Clients act on a notice only where this is declared: the official SDK v2
+    // opens `subscriptions/listen` only then, and Claude Code and OpenClaw
+    // register their 2025-era handler only then. Declared only where it is true.
+    tools: deps.mcpToolsListChangedNotifications === true ? { listChanged: true } : {},
     ...(Object.keys(experimental).length > 0 ? { experimental } : {}),
   };
 };
@@ -2082,6 +2085,12 @@ export interface McpDeps extends ExecuteHandlerDeps {
    * notifications. Set by the stdio transport; stateless HTTP remains polling
    * only and must never advertise this capability. */
   mcpRecipeCallbackNotifications?: boolean;
+  /** True only where the door sends `notifications/tools/list_changed`: over
+   * MCP 2026-07-28 `subscriptions/listen`, and on a 2025-era client's
+   * `GET /mcp` stream. Set by the HTTP door's composer, which builds that port
+   * over this same dispatch; stdio sends none. Declares `tools.listChanged` in
+   * both handshakes. */
+  mcpToolsListChangedNotifications?: boolean;
   /** Fresh authorization resolver for a queued callback pointer. Production
    * re-reads the token, its contract binding/liveness, MCP door scope, and the
    * exact query-tool grant before every delivery. The notification grants no

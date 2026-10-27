@@ -3153,7 +3153,12 @@ const runCatalogOperationInner = async (
       resolution.authorization_provenance.lift_reason,
     );
 
-  if (resolution.verdict === 'ask' && !reviewedApproved && !resumeApproved && !standingAdmit) {
+  const localAutomationPermit = resolution.verdict === 'ask' && !reviewedApproved && !resumeApproved && !standingAdmit
+    ? ctx.resourceReview?.localAutomation?.authorize({ slug, input: { operation: call.operation_id, args: effectiveArgs },
+      risk_tier: resolution.effective_risk_tier, provenance: resolution.authorization_provenance }) : undefined;
+  if (localAutomationPermit) resourceReview ??= captureResourceReview(ctx.resourceReview, slug,
+    { operation: call.operation_id, args: effectiveArgs });
+  if (resolution.verdict === 'ask' && !reviewedApproved && !resumeApproved && !standingAdmit && !localAutomationPermit) {
     // Consult a live session grant before raising (N.4, ask-branch only): a
     // match ADMITS the dispatch instead of pausing. Gated on a grantable tier
     // (read / write / admin) and the hashes (a non-canonicalizable payload can't
@@ -3513,7 +3518,7 @@ const runCatalogOperationInner = async (
       }
       const principal = recordsPrincipal;
       const executeRecords = (args: Record<string, unknown>): unknown => {
-        const dispatch = () => (ctx.resourceReview?.run.bind(ctx.resourceReview) ?? ((_r, f) => f()))(resourceReview, () => {
+        const localDispatch = () => (ctx.resourceReview?.run.bind(ctx.resourceReview) ?? ((_r, f) => f()))(resourceReview, () => {
           const result = ctx.recordsOperationExecutor!({
             binding: recordsBinding,
             args,
@@ -3528,6 +3533,8 @@ const runCatalogOperationInner = async (
           });
           return result;
         });
+        const dispatch = () => localAutomationPermit && ctx.resourceReview?.localAutomation
+          ? ctx.resourceReview.localAutomation.run(localAutomationPermit, localDispatch) : localDispatch();
         return !reviewedApproved && resourceReview && ctx.localMutations
           ? ctx.localMutations.run({ slug, operation: resolution.operation_id,
               input: { operation: call.operation_id, args }, review: resourceReview,

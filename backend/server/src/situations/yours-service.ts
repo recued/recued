@@ -213,15 +213,18 @@ export const createYoursService = (deps: YoursServiceDeps) => {
           for (const evidence of observation.evidence) {
             if (evidence.collection !== 'file' || !evidence.id.startsWith('file:') || !evidence.field?.startsWith('dates.') || !isAssetDate(evidence.value)) continue;
             const dateField = evidence.field.slice(6); const on = evidence.value;
-            if (!Object.hasOwn(current.dates, dateField) || (current.dates[dateField] && on <= current.dates[dateField]!)) continue;
-            for (const rule of current.rules) {
+            if (!Object.hasOwn(current.dates, dateField)) continue;
+            const offered: ProactiveProposal[] = [];
+            if (!current.dates[dateField] || on > current.dates[dateField]!) for (const rule of current.rules) {
               if (!rule.enabled || !['expiry', 'interval'].includes(rule.when.kind) || rule.when.field !== dateField || rule.reaction.occurrence !== 'action') continue;
               if (rule.when.kind === 'interval' && on > assetDateAt(now(), 'UTC')) continue;
               const payload = { asset_id: current.id, rule_id: rule.id, on, evidence_file: evidence.id, observation_source: observation.source, proposal_class: 'document-close' };
               if (!proposals.allows({ kind: 'close', payload })) continue;
-              const proposal = proposals.ensure({ key: `document-close:${current.id}:${rule.id}:${on}`, kind: 'close', title: `${rule.title} · evidence for ${current.name}`,
+              offered.push(proposals.ensure({ key: `document-close:${current.id}:${rule.id}:${on}`, kind: 'close', title: `${rule.title} · evidence for ${current.name}`,
                 explanation: `A bound source reports ${dateField.replaceAll('_', ' ')} as ${on}. Open the attached document and confirm its actual date.`, payload,
-                sources: [{ collection: 'file', id: evidence.id, field: evidence.field }], subject: { collection: 'asset', id: current.id }, confidence: 'medium', origin: 'pack' }, now());
+                sources: [{ collection: 'file', id: evidence.id, field: evidence.field }], subject: { collection: 'asset', id: current.id }, confidence: 'medium', origin: 'pack' }, now()));
+            }
+            for (const proposal of offered) {
               if (proposal.state === 'proposed' && deps.annotations) {
                 const input = { from_collection: 'asset', from_id: current.id, to_collection: 'file', to_id: evidence.id, role: 'attachment', authored_by_recipe_id: binding.actor_ref.slice('recipe:'.length), origin_actor: 'system' as const, origin_surface: 'engine' as const };
                 if (deps.annotations.upsertLink) await deps.annotations.upsertLink(input);
@@ -236,6 +239,11 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         }
       }
       cursor = page.cursor;
+    }
+    // A closure requires a rule. Retire old suggestions whose adapter no
+    // longer supplies a supported closure intent, while retaining history.
+    for (const proposal of proposals.list({ state: 'proposed', kind: 'close', limit: 10000 })) {
+      if (typeof proposal.payload.rule_id !== 'string') proposals.outcome(proposal.id, 'retracted', now());
     }
   };
   const refreshTrips = () => {
@@ -1261,7 +1269,8 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     bindRecipes(value: import('../recipe-store.js').RecipeStore) { recipes = value; },
     bindWriters(runtime: AssetWriterRuntime) {
       if (recipes && deps.homeAssistant) writers = createAssetWriterSetup({ ...runtime, db: deps.db, work: deps.work,
-        recipes, source: deps.homeAssistant, ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}), now });
+        recipes, source: deps.homeAssistant,
+        ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}), now });
     },
     writerRead(input: Parameters<AssetWriterSetup['read']>[0]) { requireOpen(); if (!writers) throw new Error('Automatic source setup is unavailable'); return writers.read(input); },
     writerPreview(input: Parameters<AssetWriterSetup['preview']>[0]) { requireOpen(); if (!writers) throw new Error('Automatic source setup is unavailable'); return writers.preview(input); },

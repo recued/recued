@@ -129,6 +129,19 @@ describe('createQuotaTracker', () => {
     expect(q.statusFor(e, t0 + 60_000)).toEqual({ available: true });
   });
 
+  it('reports the actual expiry without extending or persisting the cooldown', () => {
+    const q = createQuotaTracker(); const t0 = Date.parse('2026-10-26T20:00:00Z');
+    q.markRateLimited('slot_1', 90_000, t0);
+    const before = q.snapshot();
+    expect(q.cooldownUntil?.('slot_1', t0 + 1_000)).toBe(t0 + 90_000);
+    expect(q.cooldownUntil?.('slot_1', t0 + 40_000)).toBe(t0 + 90_000);
+    expect(q.cooldownUntil?.('slot_1', t0 + 90_000)).toBeUndefined();
+    expect(q.isInCooldown('slot_1', t0 + 90_000)).toBe(false);
+    q.markRateLimited('slot_2', undefined, t0);
+    expect(q.cooldownUntil?.('slot_2', t0)).toBe(t0 + 60_000);
+    expect(q.snapshot()).toEqual(before);
+  });
+
   it('markRateLimited defaults to 60s when Retry-After is zero or negative', () => {
     const q = createQuotaTracker();
     const e = apiEntry();

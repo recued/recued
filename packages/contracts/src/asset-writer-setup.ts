@@ -57,3 +57,7 @@ export interface AssetWriterSetupRead {
 export type AssetWriterSetupChange =
   | { action: 'configure'; review: AssetWriterReview; request_id: string }
   | { action: 'run' | 'pause' | 'resume'; asset_id: string; setup_id: string; revision: number };
+
+export interface AssetWriterSetupReadRequest {
+  asset_id: string; connection?: AssetWriterConnection; definition_id?: string;
+}

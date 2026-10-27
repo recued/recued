@@ -152,6 +152,7 @@ import {
 } from '../chat/connected-source-handoff.js';
 
 interface FakeEl {
+  style: Record<string, string>;
   tagName: string;
   className: string;
   innerHTML: string;
@@ -227,6 +228,7 @@ const makeFakeEl = (
   onFocus: (element: FakeEl) => void = () => {},
 ): FakeEl => {
   const el: FakeEl = {
+    style: {},
     tagName: tag.toUpperCase(),
     className: '',
     innerHTML: '',
@@ -283,6 +285,7 @@ const makeFakeEl = (
     },
     click() {
       if (el.disabled) return;
+      let prevented = false;
       // HTMLElement.click() dispatches an untrusted event to each listener.
       const event: FakeDomEvent = {
         target: el,
@@ -292,11 +295,11 @@ const makeFakeEl = (
         ctrlKey: false,
         metaKey: false,
         shiftKey: false,
-        preventDefault() {},
+        preventDefault() { prevented = true; },
         stopPropagation() {},
       };
       for (const fn of el.listeners.get('click') ?? []) fn(event);
-      if (el.tagName === 'SUMMARY' && el.parent?.tagName === 'DETAILS') {
+      if (!prevented && el.tagName === 'SUMMARY' && el.parent?.tagName === 'DETAILS') {
         el.parent.open = !el.parent.open;
         for (const fn of el.parent.listeners.get('toggle') ?? []) {
           fn({ target: el.parent });
@@ -2242,9 +2245,10 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       h.publish({ kind: 'chat.token_streamed', session_id: 'chat_2', turn_id: 'other_turn', delta: 'Another answer.', cursor: 1 });
       await tick();
       const scroller = () => collectByAttr(h.root, 'data-recued-chat-route-messages')[0]!;
-      expect(Reflect.get(scroller(), 'scrollTop')).toBe(0);
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(2000);
+      Reflect.set(scroller(), 'scrollTop', 500);
       h.resolveSend({ turn_id: 'turn_1' }); await send;
-      expect(Reflect.get(scroller(), 'scrollTop')).toBe(0);
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(500);
     } finally { h.resolveSend({ turn_id: 'turn_1' }); h.route.dispose(); }
   });
 
@@ -2568,11 +2572,14 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       });
       await tick();
 
-      const row = assistantRows(h.root).find((candidate) =>
+      let row = assistantRows(h.root).find((candidate) =>
         messageContent(candidate) === 'Tool-backed answer.',
       )!;
       expect(activityBlocks(row)).toHaveLength(1);
       expect(activityToggle(row).textContent).toContain('Activity (1)');
+      expect(activityRows(row)).toHaveLength(0);
+      activityToggle(row).click();
+      row = assistantRows(h.root).find(candidate => messageContent(candidate) === 'Tool-backed answer.')!;
       const disclosureRows = activityRows(row);
       expect(disclosureRows).toHaveLength(1);
       expect(allText(disclosureRows[0]!)).toContain('used mail.search ' + checkMark);
@@ -2635,6 +2642,7 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
 
       expect(allText(h.root)).not.toContain('Keep as dish');
       expect(collectByAttr(h.root, 'data-recued-chat-route-activity-dish-promote')).toHaveLength(0);
+      activityToggle(assistantRows(h.root).at(-1)!).click();
       const statuses = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR);
       expect(statuses.map((status) => [status.textContent, status.getAttribute('data-dish-id')]))
         .toEqual([['Standing dish', 'dsh_existing']]);
@@ -2930,8 +2938,8 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(route.getThread().newest_cursor).toEqual({ ts: 10, message_id: 'msg_old' });
     expect(reads).toEqual([
       { session_id: 'chat_1', limit: 100, around_message_id: 'msg_old' },
-      { session_id: 'chat_1', limit: 100, around_message_id: 'msg_old' },
-      { session_id: 'chat_1', limit: 100 },
+      { session_id: 'chat_1', limit: 100, mark_seen: false, around_message_id: 'msg_old' },
+      { session_id: 'chat_1', limit: 100, mark_seen: false },
     ]);
     route.dispose();
   });

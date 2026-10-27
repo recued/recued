@@ -1072,6 +1072,7 @@ describe('D-145 PB7 — engine.decoder_unavailable failure event', () => {
       'no_source',
       'provider_failure',
       'invalid_output',
+      'cooldown',
     ]);
     expect(new Set(TRANSPARENCY_DECODER_UNAVAILABLE_REASONS).size).toBe(
       TRANSPARENCY_DECODER_UNAVAILABLE_REASONS.length,
@@ -1148,6 +1149,17 @@ describe('D-145 PB7 — engine.decoder_unavailable failure event', () => {
   });
 
   it('pins decoder_unavailable template copy by reason and provider-failure site', () => {
+    const cooling = { kind: 'engine.decoder_unavailable', reason: 'cooldown', site: 'initial' } as const;
+    expect(validateTransparencyEvent(cooling)).toEqual([]);
+    expect(renderTransparencyTemplate(cooling)).toBe('the AI source is temporarily paused after a provider failure; wait a little before trying again');
+    const dated = { ...cooling, retry_at: Date.parse('2026-10-26T20:01:30.250Z') };
+    expect(validateTransparencyEvent(dated)).toEqual([]);
+    expect(renderTransparencyTemplate(dated)).toContain('try again after 2026-10-26 20:01:31 UTC');
+    expect(renderTransparencyTemplate({ ...dated, reason: 'provider_failure' })).toBe('the AI provider failed before answering; try again after 2026-10-26 20:01:31 UTC');
+    for (const retry_at of [NaN, 9e15]) {
+      expect(validateTransparencyEvent({ ...cooling, retry_at })).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'retry_at' })]));
+      expect(renderTransparencyTemplate({ ...cooling, retry_at })).toBe(renderTransparencyTemplate(cooling));
+    }
     expect(
       renderTransparencyTemplate({
         kind: 'engine.decoder_unavailable',

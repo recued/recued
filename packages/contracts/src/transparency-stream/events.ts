@@ -29,6 +29,7 @@ import type {
   OmissionReasonCode,
 } from '../recued-plan.js';
 import { MODEL_TIERS } from '../recued-plan.js';
+import { isLlmRetryTime } from '../llm-retry-time.js';
 
 // ── PB7.1.1 — Closed transparency event union (§ B.8.2) ──────────────
 
@@ -204,6 +205,8 @@ export type TransparencyEvent =
       readonly kind: 'engine.decoder_unavailable';
       readonly reason: TransparencyDecoderUnavailableReason;
       readonly site: TransparencyDecoderUnavailableSite;
+      /** Absolute UTC cooldown expiry; absent when the deadline is unknown. */
+      readonly retry_at?: number;
     }
   | {
       /** The chat turn SHELL failed after the user message was
@@ -363,15 +366,18 @@ export const TRANSPARENCY_COST_HALT_REASONS: ReadonlyArray<TransparencyCostHaltR
  *  slot/pool/local matcher found no usable model (the detail matched
  *  its no-source pattern); `'invalid_output'` = the model answered but
  *  the AIOutput failed validation; `'provider_failure'` = everything
- *  else (thrown provider / network / executor error). */
+ *  else (thrown provider / network / executor error); 'cooldown' = an otherwise
+ *  eligible source is temporarily blocked after a provider failure. */
 export type TransparencyDecoderUnavailableReason =
   | 'no_source'
   | 'provider_failure'
-  | 'invalid_output';
+  | 'invalid_output'
+  | 'cooldown';
 export const TRANSPARENCY_DECODER_UNAVAILABLE_REASONS: ReadonlyArray<TransparencyDecoderUnavailableReason> = [
   'no_source',
   'provider_failure',
   'invalid_output',
+  'cooldown',
 ];
 
 /** Which main-turn call failed — mirrors the executor's recovery-site
@@ -639,7 +645,7 @@ export const TRANSPARENCY_EVENT_VALIDATION_KINDS = [
   'invalid_enum_value',
   /** A required string field is missing or not a string. */
   'missing_required_string',
-  /** A required number field is missing or not a finite number. */
+  /** A numeric field is missing or has an invalid value. */
   'missing_required_number',
   /** A required array field is missing or not an array. */
   'missing_required_array',
@@ -825,6 +831,9 @@ export const validateTransparencyEvent = (
     case 'engine.decoder_unavailable':
       requireEnum(ev, 'reason', TRANSPARENCY_DECODER_UNAVAILABLE_REASONS, issues);
       requireEnum(ev, 'site', TRANSPARENCY_DECODER_UNAVAILABLE_SITES, issues);
+      if (ev.retry_at !== undefined && !isLlmRetryTime(ev.retry_at)) {
+        issues.push({ kind: 'missing_required_number', path: 'retry_at', detail: String(ev.retry_at) });
+      }
       break;
     case 'engine.turn_failed':
       // Deliberately bare — the closed kind is the whole wire story

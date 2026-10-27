@@ -62,6 +62,7 @@ export interface LocalMutationHooks {
 
 /** Host callbacks shared by the ingredient and catalog approval boundaries. */
 export interface ResourceReviewHooks {
+  localAutomation?: import('./local-automation.js').LocalAutomationHooks;
   capture(slug: string, input: Record<string, unknown>, approved?: ResourceReview,
     resuming?: boolean): ResourceReview | undefined;
   run<T>(review: ResourceReview | undefined, effect: () => T): T;

@@ -94,14 +94,23 @@ export const MCP_MAX_IDLE_LEGACY_SSE_SESSIONS_PER_TOKEN = 16;
  *  sessions above: they are different resources on different eras, and sharing
  *  a budget would let a deprecated-transport client starve the modern one. */
 export const MCP_MAX_LISTEN_STREAMS = 64;
-export const MCP_MAX_LISTEN_STREAMS_PER_TOKEN = 4;
-/** Queued-but-unflushed bytes a listen stream may accumulate before the server
+/** Was 4 until 2026-10-27. Claude Code holds one feed per session, and an owner
+ *  running several sessions on one key left the fifth onward without notices
+ *  (each still worked). The catalog check is shared per key, so more feeds on
+ *  one key cost sockets, not catalog reads. */
+export const MCP_MAX_LISTEN_STREAMS_PER_TOKEN = 16;
+/** How often an open server stream (a listen feed or a legacy SSE session) gets
+ *  an SSE comment, so a proxy with an idle timeout does not cut it. A comment
+ *  and never an empty `data:` event: Gemini CLI parses every event as JSON and
+ *  marks the server disconnected when one fails. */
+export const MCP_SSE_KEEPALIVE_MS = 25_000;
+/** Queued-but-unflushed bytes a server stream may accumulate before the server
  *  gives up on it.
  *
  *  ⛔ THE STREAM-COUNT CAPS DO NOT BOUND MEMORY. A client that stays CONNECTED
  *  but stops reading makes every `res.write()` queue instead of flush, so a
  *  bearer whose catalog keeps moving grows the response buffer without limit
- *  while sitting comfortably inside its four-stream allowance. Notifications
+ *  while sitting comfortably inside its per-key allowance. Notifications
  *  are tiny, so crossing this at all means the peer is not draining — and since
  *  every frame we send is a "your catalog moved, re-list" hint, ending the
  *  response is the correct recovery: the client reconnects and re-lists, which
@@ -155,10 +164,11 @@ export type McpDispatch = (envelope: unknown, token?: string) => Promise<unknown
  *  the per-token visibility set; the handler is a pure carrier. */
 export type McpCatalogDispatch = (token: string) => Promise<unknown>;
 
-/** The serving half of `subscriptions/listen`, injected so the door stays a
+/** The serving half of the door's pushes, injected so the door stays a
  *  transport: it owns the socket, the caps and the SSE framing; the port owns
  *  what may be acknowledged and when to push. */
 export interface McpSubscriptionsPort {
+  /** A 2026-07-28 `subscriptions/listen` feed. */
   open(input: {
     token: string;
     filter: unknown;
@@ -172,6 +182,11 @@ export interface McpSubscriptionsPort {
     readonly acknowledged: McpAcknowledgedNotifications;
     close(): void;
   }>;
+  /** The tool-list notices for a 2025-era client's `GET /mcp` stream. */
+  openLegacy(input: {
+    token: string;
+    send: (frame: { jsonrpc: '2.0'; method: string }) => void;
+  }): { close(): void };
 }
 
 export interface McpPortHandlerOptions {
@@ -186,12 +201,15 @@ export interface McpPortHandlerOptions {
    *  unwired, GET /mcp/catalog returns 404 (vendor-agnostic
    *  closed-list response). */
   catalog?: McpCatalogDispatch;
-  /** MCP 2026-07-28 `subscriptions/listen`. When wired, a POST carrying that
-   *  method gets a standing SSE response instead of a JSON one. When UNWIRED
-   *  the method falls through to the dispatcher, which answers `-32601` →
-   *  mapped to 404 for a modern client — the honest "this server does not
-   *  push" answer, and the one served today. */
+  /** The door's pushes. When wired, a 2026-07-28 `subscriptions/listen` POST
+   *  gets a standing SSE response instead of a JSON one, and a `GET /mcp`
+   *  session carries tool-list notices to its 2025-era client. When UNWIRED
+   *  `subscriptions/listen` falls through to the dispatcher, which answers
+   *  `-32601` → mapped to 404 for a modern client, the honest "this server does
+   *  not push", and a GET session carries its endpoint and replies only. */
   subscriptions?: McpSubscriptionsPort;
+  /** `MCP_SSE_KEEPALIVE_MS` override; tests shorten it. */
+  sse_keepalive_ms?: number;
   /** Body cap. JSON-RPC envelopes are typically tiny; the default
    *  256 KB is generous. */
   max_body_bytes?: number;
@@ -300,6 +318,25 @@ export const createMcpPortHandler = (
   }>();
   /** Open `subscriptions/listen` feeds, for the caps. */
   const listenStreams = new Set<{ tokenKey: string; response: ServerResponse }>();
+  const keepaliveMs = positiveInteger(options.sse_keepalive_ms, MCP_SSE_KEEPALIVE_MS);
+
+  /** Write one block to an open server stream. A peer that is not draining
+   *  gets ended rather than buffered (`MCP_LISTEN_STREAM_MAX_BUFFERED_BYTES`). */
+  const writeToStream = (res: ServerResponse, block: string): void => {
+    if (res.writableEnded || res.destroyed) return;
+    if (res.writableLength > MCP_LISTEN_STREAM_MAX_BUFFERED_BYTES) {
+      res.destroy();
+      return;
+    }
+    res.write(block);
+  };
+
+  /** Keep an open server stream from looking idle to a proxy until it closes. */
+  const keepStreamAlive = (res: ServerResponse): void => {
+    const timer = setInterval(() => { writeToStream(res, ': keep-alive\n\n'); }, keepaliveMs);
+    timer.unref?.();
+    res.once('close', () => { clearInterval(timer); });
+  };
 
   const originAllowed = (req: IncomingMessage): boolean => {
     const rawOrigin = req.headers.origin;
@@ -534,10 +571,21 @@ export const createMcpPortHandler = (
       res.setHeader('x-accel-buffering', 'no');
       res.flushHeaders?.();
       res.write(`event: endpoint\ndata: /mcp?sessionId=${encodeURIComponent(sessionId)}\n\n`);
+      // The only channel a 2025-era server has: tool-list notices go on this
+      // stream, whichever kind of client opened it. Both kinds read a
+      // `message` event (and skip the `endpoint` one when they do not use it).
+      const notices = subscriptions?.openLegacy({
+        token,
+        send: (frame) => {
+          writeToStream(res, `event: message\ndata: ${JSON.stringify(frame)}\n\n`);
+        },
+      });
+      keepStreamAlive(res);
       const forget = (): void => {
         if (legacySseSessions.get(sessionId)?.response === res) {
           legacySseSessions.delete(sessionId);
         }
+        notices?.close();
       };
       res.once('close', forget);
       return;
@@ -763,15 +811,9 @@ export const createMcpPortHandler = (
           method: string;
           params: Record<string, unknown>;
         }): void => {
-          if (res.writableEnded || res.destroyed) return;
-          // Backpressure: a peer that is not draining gets ended rather than
-          // buffered. See MCP_LISTEN_STREAM_MAX_BUFFERED_BYTES.
-          if (res.writableLength > MCP_LISTEN_STREAM_MAX_BUFFERED_BYTES) {
-            res.destroy();
-            return;
-          }
-          res.write(`data: ${JSON.stringify(frame)}\n\n`);
+          writeToStream(res, `data: ${JSON.stringify(frame)}\n\n`);
         };
+        keepStreamAlive(res);
         let session: { close(): void } | undefined;
         // ⛔ REGISTERED BEFORE THE AWAIT. A client that disconnects while
         // `open()` is still resolving would otherwise leave a watcher with no

@@ -1167,6 +1167,29 @@ describe('MCP protocol version negotiation', () => {
     });
   });
 
+  // Clients act on a tool-list notice only when the handshake declares `tools.listChanged`: the
+  // official SDK v2 client (`@modelcontextprotocol/client` 2.2.0) opens `subscriptions/listen` only
+  // then, and Claude Code and OpenClaw register their 2025-era handler only then. Recued declared `{}`
+  // in both until 2026-10-27, so none of them heard the notices the HTTP door sends.
+  it('declares tools.listChanged in both handshakes only where the door sends the notice', async () => {
+    const declaredTools = async (method: 'server/discover' | 'initialize', deps: McpDeps): Promise<unknown> =>
+      (await _testing.dispatch({
+        jsonrpc: '2.0',
+        id: method,
+        method,
+        params: method === 'server/discover'
+          ? { _meta: modernMeta }
+          : { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'legacy-test', version: '1' } },
+      }, deps) as { result: { capabilities: { tools: unknown } } }).result.capabilities.tools;
+
+    for (const method of ['server/discover', 'initialize'] as const) {
+      expect(await declaredTools(method, { ...makeDeps(), mcpToolsListChangedNotifications: true } as McpDeps), method)
+        .toEqual({ listChanged: true });
+      // stdio, or a door without the push port: nothing would carry the notice.
+      expect(await declaredTools(method, makeDeps() as McpDeps), method).toEqual({});
+    }
+  });
+
   it('stamps ordinary modern results with server identity', async () => {
     const response = await _testing.dispatch({
       jsonrpc: '2.0',

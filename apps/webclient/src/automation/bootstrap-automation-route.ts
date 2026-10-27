@@ -827,6 +827,13 @@ const AUTOMATION_ROUTE_STYLES = `
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-note {
   overflow-wrap: anywhere;
 }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .scheduled-local-writes pre {
+  max-width: 100%;
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail :is(button, a) {
   min-width: 44px;
   min-height: 44px;
@@ -1495,6 +1502,7 @@ export const bootstrapAutomationRoute = (
   // elsewhere while the read is in flight cancels that ownership.
   let pendingRetryFocus: AutomationSectionToken | null = null;
   const rehearsalPanels = new Map<string, { host: HTMLDetailsElement; panel: ReturnType<typeof mountAutomationRehearsalPanel> | null }>();
+  const localWritePanels = new Map<string, { host: HTMLDetailsElement; panel: ReturnType<typeof mountScheduledLocalWritesPanel> | null }>();
   let disposed = false;
   let loadSeq = 0;
   /** Rule ids with an in-flight mutation — their actions remain focusable but
@@ -3273,6 +3281,25 @@ export const bootstrapAutomationRoute = (
   };
 
   const mountRehearsal = (): void => {
+    if (opts.rehearsalCall && activeSection === 'schedules' && detailId !== null) {
+      const scheduleId = detailId;
+      let entry = localWritePanels.get(scheduleId);
+      if (!entry) {
+        if (localWritePanels.size >= 10) {
+          const idle = [...localWritePanels].find(([, item]) => !item.panel?.pending());
+          if (idle) { idle[1].panel?.dispose(); idle[1].host.remove(); localWritePanels.delete(idle[0]); }
+        }
+        const host = doc.createElement('details'), summary = doc.createElement('summary');
+        summary.textContent = 'Scheduled local writes'; host.append(summary);
+        entry = { host, panel: null }; localWritePanels.set(scheduleId, entry);
+        const item = entry;
+        host.addEventListener('toggle', () => {
+          if (!host.open || item.panel || disposed || !routeRoot.contains(host)) return;
+          item.panel = mountScheduledLocalWritesPanel({ host, scheduleId, call: opts.rehearsalCall! });
+        });
+      }
+      routeRoot.querySelector?.('[data-recued-automation-detail]')?.append(entry.host);
+    }
     if (!opts.rehearsalCall || detailId === null) return;
     const kind = activeSection === 'triggers' ? 'trigger' : activeSection === 'schedules' ? 'schedule' : activeSection === 'auto-run' ? 'timer' : null;
     if (!kind) return;
@@ -3462,8 +3489,9 @@ export const bootstrapAutomationRoute = (
           start: (activeElement as HTMLInputElement).selectionStart,
           end: (activeElement as HTMLInputElement).selectionEnd,
         };
-    const focusedRehearsal = [...rehearsalPanels.values()].some(item => item.host.contains(activeElement ?? null)) ? activeElement : null;
+    const focusedRehearsal = [...rehearsalPanels.values(), ...localWritePanels.values()].some(item => item.host.contains(activeElement ?? null)) ? activeElement : null;
     for (const item of rehearsalPanels.values()) item.host.remove();
+    for (const item of localWritePanels.values()) item.host.remove();
     routeRoot.innerHTML = `
       <header class="automation-header">
         <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
@@ -4667,6 +4695,7 @@ export const bootstrapAutomationRoute = (
   const hasAutomationInFlightWork = (): boolean =>
     busy.size > 0
     || [...rehearsalPanels.values()].some(item => item.panel?.hasInFlightWork() || item.panel?.hasUnsavedChanges())
+    || [...localWritePanels.values()].some(item => item.panel?.pending())
     || openModal?.hasInFlightWork() === true
     || preapprovalActivation?.hasInFlightWork() === true
     || autoRunConfigHandle?.hasInFlightWork() === true;
@@ -4693,6 +4722,8 @@ export const bootstrapAutomationRoute = (
       disposed = true;
       for (const item of rehearsalPanels.values()) { item.panel?.dispose(); item.host.remove(); }
       rehearsalPanels.clear();
+      for (const item of localWritePanels.values()) { item.panel?.dispose(); item.host.remove(); }
+      localWritePanels.clear();
       for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
       recipePicker?.destroy();
       recipePicker = null;
@@ -4715,3 +4746,4 @@ export const bootstrapAutomationRoute = (
     },
   };
 };
+import { mountScheduledLocalWritesPanel } from './scheduled-local-writes-panel.js';

@@ -1691,6 +1691,7 @@ export type ChatRpcMethod =
   | 'chat.messages.search'
   | 'chat.session.get'
   | 'chat.session.create'
+  | 'chat.session.rename'
   | 'chat.session.delete'
   | 'chat.session.export'
   | 'chat.egress.get'
@@ -1822,6 +1823,7 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.messages.search',
   'chat.session.get',
   'chat.session.create',
+  'chat.session.rename',
   'chat.session.delete',
   'chat.session.export',
   'chat.egress.get',
@@ -2022,9 +2024,20 @@ export interface ChatMessageSearchResult {
   incomplete: boolean;
 }
 
+export const CHAT_SESSION_TITLE_MAX_LENGTH = 160;
+export interface ChatSessionRenameRequest {
+  session_id: string;
+  title: string;
+  /** Compare with the name shown when editing began; null means untitled. */
+  expected_title: string | null;
+}
+export interface ChatSessionRenameResult { session_id: string; title: string }
+
 export interface ChatSessionGetRequest {
   session_id: string;
   limit?: number;
+  /** Background refreshes may inspect the tail without acknowledging it. */
+  mark_seen?: boolean;
   before?: ChatHistoryCursor;
   after?: ChatHistoryCursor;
   /** Load a bounded window containing this exact same-session message. */

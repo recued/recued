@@ -65,8 +65,17 @@ export const assetSourceWords = (source: AssetFactSource): { from: string; rank:
   rank: OUTRANKED_BY[source.kind],
 });
 
+/** A short visible source keeps uncertainty explicit; the full precedence rule
+ * stays available beside that same value. */
+export const renderAssetSource = (host: HTMLElement, source: AssetFactSource, identity: string, name?: string) => {
+  const words = assetSourceWords(source); const doc = host.ownerDocument;
+  const details = doc.createElement('details'); details.className = 'yours-source'; details.dataset.yoursDisclosure = `source:${identity}`;
+  const summary = doc.createElement('summary'); summary.textContent = `${name ? `${name} · ` : ''}${words.from}`; details.append(summary);
+  const rank = doc.createElement('p'); rank.textContent = words.rank; details.append(rank); host.append(details);
+};
+
 const COLLECTION_WORDS: Record<string, string> = {
-  'home-assistant': 'Home Assistant', file: 'Document', mail: 'Email', calendar: 'Calendar event', asset: 'Asset', paperless: 'Paperless',
+  'home-assistant': 'Home Assistant', file: 'Document', mail: 'Email', calendar: 'Calendar event', asset: 'Asset',
 };
 /** One line of evidence: where it is, and the value it showed. */
 export const assetEvidenceText = (evidence: AssetEvidence): string => {

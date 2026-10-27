@@ -1,0 +1,25 @@
+{
+  "recipe_id": "paperless-sync-require-records-runtime",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Records runtime compatibility canary",
+    "description": "Use “Records runtime” in Recued. Check that this server can save document sync settings before connecting Paperless.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/paperless-ngx"
+  },
+  "variables": {},
+  "prefetch_steps": [],
+  "steps": [
+    {
+      "id": "require_runtime",
+      "op": "core.records.require-runtime",
+      "args": {}
+    }
+  ],
+  "output": {
+    "render": []
+  }
+}

@@ -1,0 +1,1715 @@
+{
+  "manifest_version": 2,
+  "slug": "home-assistant",
+  "publisher": "recued-core",
+  "connection_requirements": [
+    {
+      "api_base": "https://homeassistant.example.com",
+      "per_org": true,
+      "vendor": "home_assistant",
+      "auth": {
+        "type": "bearer"
+      }
+    }
+  ],
+  "connection_hints": [
+    {
+      "connection": "home-assistant",
+      "values": {
+        "auth.type": "bearer"
+      },
+      "setup_url": "https://www.home-assistant.io/docs/authentication/"
+    }
+  ],
+  "name": "Home Assistant",
+  "description": "Use Home Assistant in Recued to check on your home and control it: device health, a house check before you leave, weekly energy use, lights, climate, locks and more. It includes 29 built-in actions and 6 ready-to-run workflows. Connect with your Home Assistant address and a long-lived access token. Changes use Recued's approval controls; unlocking a door, disarming an alarm, opening any cover (a garage door, gate or blind) and running any other Home Assistant service always ask first.",
+  "version": 5,
+  "bundled": true,
+  "recipes": [],
+  "requires": [
+    "install_bulk_pack",
+    "notification_send"
+  ],
+  "tags": [
+    "pack:home-assistant",
+    "home-assistant",
+    "smart-home",
+    "home",
+    "iot",
+    "lights",
+    "locks",
+    "climate",
+    "energy",
+    "self-hosted",
+    "api",
+    "composition"
+  ],
+  "pack_kind": "app_pack",
+  "service_kind": "entity_platform",
+  "contents": [
+    {
+      "type": "recipe",
+      "slug": "record-device-condition-home-assistant",
+      "version": 2,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "check-device-health-home-assistant",
+      "version": 2,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "check-house-before-leaving-home-assistant",
+      "version": 2,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "summarize-energy-use-weekly-home-assistant",
+      "version": 2,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "control-device-home-assistant",
+      "version": 2,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "check-camera-home-assistant",
+      "version": 2,
+      "visible": true
+    },
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "home-assistant",
+        "catalog_kind": "official",
+        "tags": [
+          "home-assistant",
+          "smart-home",
+          "home",
+          "lights",
+          "locks",
+          "climate",
+          "energy"
+        ],
+        "ingredients": [
+          {
+            "slug": "home-assistant",
+            "kind": "http",
+            "tags": [
+              "home-assistant",
+              "smart-home",
+              "home",
+              "iot"
+            ],
+            "http": {
+              "base": "https://homeassistant.example.com",
+              "connection": "home-assistant"
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "config.read",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/config"
+            },
+            "description": "Read the Home Assistant instance's own settings: location name, version, time zone, unit system and the integrations it has loaded. Returns one object. Use it to confirm the connection works or to learn the home's units before reading values. Read-only.",
+            "cache_ttl_ms": 60000
+          },
+          {
+            "op": "state.list",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/states"
+            },
+            "description": "List the current state of every entity in Home Assistant: entity_id, state, attributes (friendly_name, device_class, unit_of_measurement, battery level) and last_changed. Returns one array, which can be large in a big home and includes people's home or away status and tracked locations. Use state.read when the entity_id is known. Read-only.",
+            "cache_ttl_ms": 5000
+          },
+          {
+            "op": "state.read",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/states/{{entity_id}}"
+            },
+            "description": "Read one entity's current state, attributes and last_changed by its entity_id, such as light.kitchen or sensor.outside_temperature. Returns one object, or an error when no such entity exists. Use state.list to discover entity ids. Read-only.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "entity_id"
+              ],
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "maxLength": 65536
+                }
+              }
+            }
+          },
+          {
+            "op": "camera.snapshot",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/camera_proxy/{{entity_id}}",
+              "response_capture": {
+                "kind": "file_ref",
+                "mime_type": "image/jpeg",
+                "filename_source": {
+                  "kind": "static",
+                  "value": "camera-snapshot"
+                },
+                "ai_enrichment": "opt_out"
+              }
+            },
+            "description": "Take the current picture from one camera, such as camera.front_door, exactly as Home Assistant serves it: full size, in the camera's own format, with any metadata it carries. Returns a file reference with the picture's type and name, never the picture itself. Each call stores the picture as a file in your data, and nothing removes it; a second picture of the same camera in the same run replaces the first. Nothing captions or describes it automatically; a recipe of yours can still send it to an AI. Find camera ids with state.list (entity ids that start with camera.). Read-only; it needs no camera token.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "entity_id"
+              ],
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^camera\\.[a-z0-9_]+$"
+                }
+              }
+            }
+          },
+          {
+            "op": "history.list",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "start_time",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "query.filter_entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "query.end_time",
+                "type": "string",
+                "affects_target": true
+              },
+              {
+                "key": "query.minimal_response",
+                "type": "boolean"
+              },
+              {
+                "key": "query.no_attributes",
+                "type": "boolean"
+              },
+              {
+                "key": "query.significant_changes_only",
+                "type": "boolean"
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/history/period/{{start_time}}"
+            },
+            "description": "Read how entities changed over a period. start_time is an ISO timestamp; filter_entity_id is required and holds one entity id or several separated by commas; end_time defaults to one day after start_time. Returns one list per entity, oldest first, starting with its state at start_time. minimal_response and no_attributes make the result smaller. Use logbook.list for readable events. Read-only.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "start_time",
+                "query.filter_entity_id"
+              ],
+              "properties": {
+                "start_time": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "query.filter_entity_id": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "query.end_time": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "query.minimal_response": {
+                  "type": "boolean"
+                },
+                "query.no_attributes": {
+                  "type": "boolean"
+                },
+                "query.significant_changes_only": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          {
+            "op": "logbook.list",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "start_time",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "query.entity",
+                "type": "string",
+                "affects_target": true
+              },
+              {
+                "key": "query.end_time",
+                "type": "string",
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/logbook/{{start_time}}"
+            },
+            "description": "Read the Home Assistant logbook from start_time (an ISO timestamp): what turned on or off, who arrived or left and which automations ran, as readable entries. entity narrows it to one entity; end_time defaults to one day after start_time. Use history.list for numeric values over time. Read-only.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "start_time"
+              ],
+              "properties": {
+                "start_time": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "query.entity": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "query.end_time": {
+                  "type": "string",
+                  "maxLength": 65536
+                }
+              }
+            }
+          },
+          {
+            "op": "service.list",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/services"
+            },
+            "description": "List the actions Home Assistant offers, grouped by domain (light, lock, climate, script and so on), with each action's fields. Returns one array, which can be large. Use it before service.call to find an action's exact name and fields. Read-only.",
+            "cache_ttl_ms": 60000
+          },
+          {
+            "op": "calendar.list",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/calendars"
+            },
+            "description": "List the calendar entities that live in Home Assistant, with entity_id and name. Use calendar_event.list to read one calendar's events. Read-only.",
+            "cache_ttl_ms": 60000
+          },
+          {
+            "op": "calendar_event.list",
+            "ingredient": "home-assistant",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "query.start",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "query.end",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/calendars/{{entity_id}}"
+            },
+            "description": "Read the events of one Home Assistant calendar entity between start and end (ISO timestamps, both required). Returns summary, start, end, description and location per event. These are calendars kept inside Home Assistant, such as waste collection or school holidays, not the owner's main calendar. Read-only.",
+            "cache_ttl_ms": 60000,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "entity_id",
+                "query.start",
+                "query.end"
+              ],
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "query.start": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "query.end": {
+                  "type": "string",
+                  "maxLength": 65536
+                }
+              }
+            }
+          },
+          {
+            "op": "light.turn_on",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.brightness_pct",
+                "type": "number"
+              },
+              {
+                "key": "body.color_temp_kelvin",
+                "type": "number"
+              },
+              {
+                "key": "body.rgb_color",
+                "type": "array"
+              },
+              {
+                "key": "body.transition",
+                "type": "number"
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.brightness_pct",
+                "type": "number",
+                "label": "Brightness (%)"
+              },
+              {
+                "key": "body.color_temp_kelvin",
+                "type": "number",
+                "label": "Colour temperature (K)"
+              },
+              {
+                "key": "body.rgb_color",
+                "type": "json",
+                "label": "Colour (red, green, blue)"
+              },
+              {
+                "key": "body.transition",
+                "type": "number",
+                "label": "Fade (seconds)"
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/light/turn_on"
+            },
+            "description": "Turn on a light, optionally setting brightness_pct (0 to 100), color_temp_kelvin, rgb_color as [red, green, blue] or a transition in seconds. entity_id is one light entity id (light.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^light\\.[a-z0-9_]+(?:,\\s*light\\.[a-z0-9_]+)*$"
+                },
+                "body.brightness_pct": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "body.color_temp_kelvin": {
+                  "type": "number"
+                },
+                "body.rgb_color": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                },
+                "body.transition": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          {
+            "op": "light.turn_off",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.transition",
+                "type": "number"
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.transition",
+                "type": "number",
+                "label": "Fade (seconds)"
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/light/turn_off"
+            },
+            "description": "Turn off a light, with an optional transition in seconds. entity_id is one light entity id (light.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^light\\.[a-z0-9_]+(?:,\\s*light\\.[a-z0-9_]+)*$"
+                },
+                "body.transition": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          {
+            "op": "switch.turn_on",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/switch/turn_on"
+            },
+            "description": "Turn on a switch, such as a smart plug or relay. entity_id is one switch entity id (switch.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^switch\\.[a-z0-9_]+(?:,\\s*switch\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "switch.turn_off",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/switch/turn_off"
+            },
+            "description": "Turn off a switch, such as a smart plug or relay. entity_id is one switch entity id (switch.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^switch\\.[a-z0-9_]+(?:,\\s*switch\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "device.turn_on",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "domain",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "domain",
+                "type": "string",
+                "label": "Kind of device",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/{{domain}}/turn_on"
+            },
+            "description": "Turn on a fan, media player, humidifier, thermostat or on/off helper. domain is fan, media_player, humidifier, climate or input_boolean, and must match the start of the entity id; any other domain is refused, so this action cannot reach a lock, cover, alarm or script. entity_id is one fan, media_player, humidifier, climate or input_boolean entity id, or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state, does not exist or is in another domain. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "domain",
+                "body.entity_id"
+              ],
+              "properties": {
+                "domain": {
+                  "type": "string",
+                  "enum": [
+                    "fan",
+                    "media_player",
+                    "humidifier",
+                    "climate",
+                    "input_boolean"
+                  ]
+                },
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+(?:,\\s*(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "device.turn_off",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "domain",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "domain",
+                "type": "string",
+                "label": "Kind of device",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/{{domain}}/turn_off"
+            },
+            "description": "Turn off a fan, media player, humidifier, thermostat or on/off helper. domain is fan, media_player, humidifier, climate or input_boolean, and must match the start of the entity id; any other domain is refused, so this action cannot reach a lock, cover, alarm or script. entity_id is one fan, media_player, humidifier, climate or input_boolean entity id, or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state, does not exist or is in another domain. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "domain",
+                "body.entity_id"
+              ],
+              "properties": {
+                "domain": {
+                  "type": "string",
+                  "enum": [
+                    "fan",
+                    "media_player",
+                    "humidifier",
+                    "climate",
+                    "input_boolean"
+                  ]
+                },
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+(?:,\\s*(?:fan|media_player|humidifier|climate|input_boolean)\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "climate.set_temperature",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.temperature",
+                "type": "number",
+                "affects_target": true
+              },
+              {
+                "key": "body.target_temp_low",
+                "type": "number",
+                "affects_target": true
+              },
+              {
+                "key": "body.target_temp_high",
+                "type": "number",
+                "affects_target": true
+              },
+              {
+                "key": "body.hvac_mode",
+                "type": "string",
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.temperature",
+                "type": "number",
+                "label": "Temperature",
+                "affects_target": true
+              },
+              {
+                "key": "body.target_temp_low",
+                "type": "number",
+                "label": "Lowest temperature",
+                "affects_target": true
+              },
+              {
+                "key": "body.target_temp_high",
+                "type": "number",
+                "label": "Highest temperature",
+                "affects_target": true
+              },
+              {
+                "key": "body.hvac_mode",
+                "type": "string",
+                "label": "Mode",
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/climate/set_temperature"
+            },
+            "description": "Set a thermostat's target temperature in the home's own units: temperature for one setpoint, or target_temp_low and target_temp_high in heat-cool mode. hvac_mode optionally changes the mode in the same call: off, heat, cool, heat_cool, auto, dry or fan_only. entity_id is one climate entity id (climate.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^climate\\.[a-z0-9_]+(?:,\\s*climate\\.[a-z0-9_]+)*$"
+                },
+                "body.temperature": {
+                  "type": "number"
+                },
+                "body.target_temp_low": {
+                  "type": "number"
+                },
+                "body.target_temp_high": {
+                  "type": "number"
+                },
+                "body.hvac_mode": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "enum": [
+                    "off",
+                    "heat",
+                    "cool",
+                    "heat_cool",
+                    "auto",
+                    "dry",
+                    "fan_only"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "op": "climate.set_hvac_mode",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.hvac_mode",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.hvac_mode",
+                "type": "string",
+                "label": "Mode",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/climate/set_hvac_mode"
+            },
+            "description": "Change a thermostat's mode to off, heat, cool, heat_cool, auto, dry or fan_only, as the device supports. entity_id is one climate entity id (climate.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id",
+                "body.hvac_mode"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^climate\\.[a-z0-9_]+(?:,\\s*climate\\.[a-z0-9_]+)*$"
+                },
+                "body.hvac_mode": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "enum": [
+                    "off",
+                    "heat",
+                    "cool",
+                    "heat_cool",
+                    "auto",
+                    "dry",
+                    "fan_only"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "op": "cover.close",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/cover/close_cover"
+            },
+            "description": "Close a cover: a blind, shade, motorised window, garage door or gate. Closing is the safe direction; opening is cover.open, which always asks. entity_id is one cover entity id (cover.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^cover\\.[a-z0-9_]+(?:,\\s*cover\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "lock.lock",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/lock/lock"
+            },
+            "description": "Lock a lock. Locking is the safe direction; unlocking is lock.unlock, which always asks. entity_id is one lock entity id (lock.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^lock\\.[a-z0-9_]+(?:,\\s*lock\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "alarm.arm_away",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/alarm_control_panel/alarm_arm_away"
+            },
+            "description": "Arm an alarm panel in away mode. Never sends an alarm code: a panel that needs one refuses, which Home Assistant reports as a server error. entity_id is one alarm_control_panel entity id (alarm_control_panel.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^alarm_control_panel\\.[a-z0-9_]+(?:,\\s*alarm_control_panel\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "alarm.arm_home",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/alarm_control_panel/alarm_arm_home"
+            },
+            "description": "Arm an alarm panel in home mode. Never sends an alarm code: a panel that needs one refuses, which Home Assistant reports as a server error. entity_id is one alarm_control_panel entity id (alarm_control_panel.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^alarm_control_panel\\.[a-z0-9_]+(?:,\\s*alarm_control_panel\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "media_player.play",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/media_player/media_play"
+            },
+            "description": "Start or resume playback on a media player. entity_id is one media_player entity id (media_player.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^media_player\\.[a-z0-9_]+(?:,\\s*media_player\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "media_player.pause",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/media_player/media_pause"
+            },
+            "description": "Pause playback on a media player. entity_id is one media_player entity id (media_player.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^media_player\\.[a-z0-9_]+(?:,\\s*media_player\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "media_player.set_volume",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.volume_level",
+                "type": "number",
+                "required": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body.volume_level",
+                "type": "number",
+                "label": "Volume (0 to 1)",
+                "required": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/media_player/volume_set"
+            },
+            "description": "Set a media player's volume, with volume_level between 0 and 1. entity_id is one media_player entity id (media_player.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id",
+                "body.volume_level"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^media_player\\.[a-z0-9_]+(?:,\\s*media_player\\.[a-z0-9_]+)*$"
+                },
+                "body.volume_level": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            }
+          },
+          {
+            "op": "scene.activate",
+            "ingredient": "home-assistant",
+            "risk": "write",
+            "approval": "ask",
+            "idempotency": "non_idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/scene/turn_on"
+            },
+            "description": "Activate a Home Assistant scene by its entity id, such as scene.movie_night. A scene sets whatever its definition says, which can include locks and covers. entity_id is one scene entity id (scene.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist. Runs straight away when you ask in your own chat or run it yourself; an outside AI app, another person's request or a schedule asks you first.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^scene\\.[a-z0-9_]+(?:,\\s*scene\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "lock.unlock",
+            "ingredient": "home-assistant",
+            "risk": "admin",
+            "approval": "always",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/lock/unlock"
+            },
+            "description": "Unlock a lock, opening a door to anyone there. Always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. Use lock.lock to secure a door. entity_id is one lock entity id (lock.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^lock\\.[a-z0-9_]+(?:,\\s*lock\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "cover.open",
+            "ingredient": "home-assistant",
+            "risk": "admin",
+            "approval": "always",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/cover/open_cover"
+            },
+            "description": "Open a cover. A cover can be a garage door or a gate, so this always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. Use cover.close for the safe direction. entity_id is one cover entity id (cover.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^cover\\.[a-z0-9_]+(?:,\\s*cover\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "alarm.disarm",
+            "ingredient": "home-assistant",
+            "risk": "admin",
+            "approval": "always",
+            "idempotency": "idempotent",
+            "args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "body.entity_id",
+                "type": "string",
+                "label": "Device",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/alarm_control_panel/alarm_disarm"
+            },
+            "description": "Disarm an alarm panel. Always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. Never sends an alarm code, so the code stays out of chat and approval records: a panel that requires one refuses, which Home Assistant reports as a server error. entity_id is one alarm_control_panel entity id (alarm_control_panel.…), or several separated by commas; \"all\" and any other domain are refused before Home Assistant is asked. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "body.entity_id"
+              ],
+              "properties": {
+                "body.entity_id": {
+                  "type": "string",
+                  "maxLength": 65536,
+                  "pattern": "^alarm_control_panel\\.[a-z0-9_]+(?:,\\s*alarm_control_panel\\.[a-z0-9_]+)*$"
+                }
+              }
+            }
+          },
+          {
+            "op": "service.call",
+            "ingredient": "home-assistant",
+            "risk": "admin",
+            "approval": "always",
+            "idempotency": "non_idempotent",
+            "args": [
+              {
+                "key": "domain",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "service",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body_raw",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "editable_args": [
+              {
+                "key": "domain",
+                "type": "string",
+                "label": "Domain",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "service",
+                "type": "string",
+                "label": "Action",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "body_raw",
+                "type": "string",
+                "label": "Data",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "POST",
+              "path_template": "/api/services/{{domain}}/{{service}}",
+              "static_headers": {
+                "Content-Type": "application/json"
+              }
+            },
+            "description": "Call any Home Assistant action by domain and service, such as script.turn_on, fan.set_percentage or vacuum.start, with body_raw holding the action's data as a JSON object (use an empty object when it takes none). For everything without its own action in this pack. Always asks for approval, even inside the owner's own automations, and needs Full access chosen at install. On the Approvals page the request names the domain, action and data. Use service.list to find names and fields. Returns the states Home Assistant changed; an empty list means nothing changed, because the entity was already in that state or does not exist.",
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "domain",
+                "service",
+                "body_raw"
+              ],
+              "properties": {
+                "domain": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "service": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "body_raw": {
+                  "type": "string",
+                  "maxLength": 65536
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "asset_class",
+      "preset": {
+        "id": "ha_device",
+        "name": "Home Assistant device",
+        "version": 1,
+        "origin": "pack:recued-core/home-assistant",
+        "fields": {
+          "dates": {},
+          "readings": {
+            "battery": null
+          },
+          "observations": {
+            "unavailable": null,
+            "flickering": null,
+            "problem": null
+          },
+          "settings": {
+            "hold_ms": 600000,
+            "flicker_window_ms": 120000,
+            "flicker_min_count": 8,
+            "expected_flicker": false
+          }
+        },
+        "audience": "household",
+        "retirement": "part",
+        "rules": [
+          {
+            "id": "unavailable",
+            "title": "Check unavailable device",
+            "enabled": true,
+            "muted": false,
+            "pinned": false,
+            "when": {
+              "kind": "condition",
+              "field": "unavailable",
+              "certainty": "confirmed"
+            },
+            "consequence": "routine",
+            "expiry_policy": "indefinite",
+            "reaction": {
+              "notify": true,
+              "occurrence": "action",
+              "emit": false
+            },
+            "schedule": {
+              "before": [],
+              "on_day": true
+            }
+          },
+          {
+            "id": "flickering",
+            "title": "Review unexplained flicker",
+            "enabled": true,
+            "muted": false,
+            "pinned": false,
+            "when": {
+              "kind": "condition",
+              "field": "flickering",
+              "certainty": "conditional"
+            },
+            "consequence": "routine",
+            "expiry_policy": "indefinite",
+            "reaction": {
+              "notify": true,
+              "occurrence": "action",
+              "emit": false
+            },
+            "schedule": {
+              "before": [],
+              "on_day": true
+            }
+          },
+          {
+            "id": "problem",
+            "title": "Check reported device problem",
+            "enabled": true,
+            "muted": false,
+            "pinned": false,
+            "when": {
+              "kind": "condition",
+              "field": "problem",
+              "certainty": "confirmed"
+            },
+            "consequence": "routine",
+            "expiry_policy": "indefinite",
+            "reaction": {
+              "notify": true,
+              "occurrence": "action",
+              "emit": false
+            },
+            "schedule": {
+              "before": [],
+              "on_day": true
+            }
+          },
+          {
+            "id": "battery",
+            "title": "Replace low battery",
+            "enabled": true,
+            "muted": false,
+            "pinned": false,
+            "when": {
+              "kind": "objective",
+              "field": "battery",
+              "target": 20,
+              "unit": "%",
+              "direction": "falling",
+              "mode": "condition",
+              "lead_days": 0
+            },
+            "consequence": "routine",
+            "expiry_policy": "indefinite",
+            "reaction": {
+              "notify": true,
+              "occurrence": "action",
+              "emit": false
+            },
+            "schedule": {
+              "before": [],
+              "on_day": true
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

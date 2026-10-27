@@ -1370,6 +1370,16 @@ test('Chat preserves its Activity disclosure through owner and live repaints', a
   await expect(toggle).toBeFocused();
   await expect(page.locator('[data-recued-chat-route-activity-row]'))
     .toContainText('used mail.search');
+  await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
+    kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'turn_activity_focus', cursor: 3,
+    final: { id: 'activity-final', session_id: 'chat_1', turn_id: 'turn_activity_focus', role: 'assistant', contributor: 'model',
+      content: 'The search finished.', target_server: 'self', ts: 3,
+      picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: '1', instance_id: 'fixture' } },
+      model_used: { provider: 'local', model_id: 'fixture' },
+      tool_calls: [{ tool_name: 'mail.search', tier: 1, args: {}, status: 'ok', started_at: 1, completed_at: 2 }] },
+  } }));
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toBeFocused();
 });
 
 test('Chat contains long live Activity text on a narrow phone', async ({ page }) => {

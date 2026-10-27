@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { canonicalJSONStringify, RpcError, HOME_ASSISTANT_WRITER_SETUP as definition, type Asset, type AssetWriterReview,
-  type AssetWriterSelection, type AssetWriterSetupChange, type AssetWriterSetupRead, type AssetWriterSetupStatus,
+  type AssetWriterSelection, type AssetWriterSetupChange, type AssetWriterSetupRead, type AssetWriterSetupReadRequest, type AssetWriterSetupStatus,
   type AssetWriterDeliveryOutcome, type ExecutionSource } from '@recued/contracts';
-import { canonicalJsonString, canonicalRecipeDefinition } from '@recued/recipes';
+import { canonicalJsonString, canonicalRecipeDefinition, lowerOpStepRecipe } from '@recued/recipes';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import type { RecipeStore } from '../recipe-store.js';
 import { createDish, updateDish, type DishHandlerDeps } from '../dish-handler.js';
@@ -44,6 +44,22 @@ export const createAssetWriterSetup = (deps: AssetWriterRuntime & {
   };
   const save = (row: Setup) => deps.db.prepare('INSERT INTO asset_writer_setup(id,asset_id,dish_id,value) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET dish_id=excluded.dish_id,value=excluded.value')
     .run(row.id, row.review.selection.asset_id, row.dish_id, JSON.stringify(row));
+  // Retired managed adapters must not leave their private schedules running.
+  // Keep their history and assets; the installed pack can reconnect them through
+  // its own recipes without the core retaining a provider-specific adapter.
+  for (const stored of deps.db.prepare('SELECT value FROM asset_writer_setup').all() as { value: string }[]) {
+    const row = JSON.parse(stored.value) as Setup;
+    if (row.review.selection.definition_id === definition.id) continue;
+    const dish = deps.dishes.store.get(row.dish_id); const schedule = deps.schedules.store.get(row.schedule_id);
+    const binding = deps.work.listAssetObservationBindings(row.review.selection.asset_id).find(value => value.id === row.binding_id);
+    if (!row.desired && !dish?.enabled && !schedule?.enabled && !binding?.enabled) continue;
+    commitLocalTransaction(deps.db, () => {
+      if (schedule) updateSchedule(deps.schedules, row.schedule_id, { enabled: false });
+      if (dish) updateDish(deps.dishes, row.dish_id, { enabled: false });
+      if (binding) deps.work.bindAssetObservations({ ...binding, enabled: false });
+      row.desired = false; row.revision++; save(row);
+    });
+  }
   const idFor = (asset_id: string) => `aws_${digest([asset_id, definition.id]).slice(0, 32)}`;
   const asset = (id: string, active = true): Asset => {
     if (deps.isVaultUnlocked?.() === false) throw new Error('Unlock the vault to set up automatic updates');
@@ -59,10 +75,15 @@ export const createAssetWriterSetup = (deps: AssetWriterRuntime & {
     if (!stored || !current) throw new Error('Install the Home Assistant pack before setting up device updates');
     const bundled = deps.recipes.getBundled(definition.recipe_id);
     const hash = createHash('sha256').update(canonicalJsonString(canonicalRecipeDefinition(current))).digest('hex');
+    // Pack installation lowers authored operations into engine ingredients.
+    // Both representations must match this exact supported bundled recipe.
+    const supported = bundled ? [bundled, lowerOpStepRecipe(bundled, new Map([[`recued-core.${definition.connection_slot}`, {
+      catalog_slug: definition.connection_slot, operations: new Set(['state.read', 'history.list', 'logbook.list']),
+    }]]))] : [];
     if (hash !== createHash('sha256').update(canonicalJsonString(canonicalRecipeDefinition(JSON.parse(stored.recipe_json)))).digest('hex')
-      || stored.publisher_id !== 'recued-core' || !bundled
-      || hash !== createHash('sha256').update(canonicalJsonString(canonicalRecipeDefinition(bundled))).digest('hex')
-      || Object.values(definition.fields).some(key => !current.variables?.[key])) throw new Error('Update the installed Home Assistant pack to its supported version to use guided setup');
+      || stored.publisher_id !== 'recued-core'
+      || !supported.some(value => hash === createHash('sha256').update(canonicalJsonString(canonicalRecipeDefinition(value))).digest('hex'))
+      || [definition.asset_variable, definition.binding_variable, definition.source_variable, ...Object.values(definition.fields)].some(key => !current.variables?.[key])) throw new Error(`Update the installed Home Assistant pack to its supported version to use guided setup`);
     return { hash, publisher: stored.publisher_id };
   };
   const material = (selection: AssetWriterSelection, hash: string, revision: number) => ({ selection, hash, revision,
@@ -154,12 +175,14 @@ export const createAssetWriterSetup = (deps: AssetWriterRuntime & {
     pending.set(row.id, operation); return operation;
   };
   return {
-    async read(input: { asset_id: string; connection?: AssetWriterSelection['connection'] }): Promise<AssetWriterSetupRead> {
+    async read(input: AssetWriterSetupReadRequest): Promise<AssetWriterSetupRead> {
+      if (input.definition_id !== undefined && input.definition_id !== definition.id) throw new Error('Choose a supported automatic source');
       const current = asset(input.asset_id, false); let available = true; try { recipe(); } catch { available = false; }
       const rows = deps.db.prepare('SELECT value FROM asset_writer_setup WHERE asset_id=?').all(input.asset_id) as { value: string }[];
+      const activeRows = rows.filter(saved => (JSON.parse(saved.value) as Setup).review.selection.definition_id === definition.id);
       // A parked check can settle later through Approvals. Consult its exact
       // private audit anchor, never infer whole-run success from a field receipt.
-      for (const saved of rows) {
+      for (const saved of activeRows) {
         const row = JSON.parse(saved.value) as Setup;
         if (!row.last_run_id || !['waiting', 'unknown'].includes(row.last_run?.outcome ?? '') || !deps.dishes.auditLog) continue;
         try {
@@ -181,7 +204,7 @@ export const createAssetWriterSetup = (deps: AssetWriterRuntime & {
       asset(input.asset_id, false);
       return { definitions: [{ id: definition.id, name: definition.name, fields: compatible(current), available }],
         connections: deps.source.writerConnections(), ...(input.connection ? await deps.source.writerSources(input.connection) : {}),
-        setups: rows.flatMap(saved => { const row = get((JSON.parse(saved.value) as Setup).id); return row ? [status(row)] : []; }) };
+        setups: activeRows.flatMap(saved => { const row = get((JSON.parse(saved.value) as Setup).id); return row ? [status(row)] : []; }) };
     },
     async preview(input: AssetWriterSelection): Promise<AssetWriterReview> {
       const selection = checkedSelection(input); const installed = recipe(); const previous = get(idFor(selection.asset_id));

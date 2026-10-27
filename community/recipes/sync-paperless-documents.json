@@ -1,0 +1,1098 @@
+{
+  "recipe_id": "sync-paperless-documents",
+  "version": 5,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Sync Paperless documents",
+    "description": "Use “Sync Paperless documents” in Recued. Import and refresh up to fifty selected documents. Schedule this recipe for recurring updates. Reads sources afresh and changes only dates this source may update.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "paperless-ngx"
+    ],
+    "recipe_bundle": "recued-core/paperless-ngx",
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "sync"
+    ],
+    "budget_ms": 120000,
+    "retired_connections": {
+      "paperless_ngx": "paperless-ngx-api"
+    },
+    "local_automation": {
+      "catalog": "recued-core.paperless-ngx",
+      "entity": "sync_link",
+      "connection_slot": "paperless-ngx-api",
+      "connection_field": "connection",
+      "filters": {
+        "state": "sync"
+      },
+      "mutable_fields": [
+        "source_title",
+        "last_result",
+        "busy",
+        "last_checked_at",
+        "last_applied_date"
+      ],
+      "asset": {
+        "id_field": "asset_id",
+        "date_fields": [
+          "expires_on"
+        ],
+        "source_ref_prefix": "paperless:"
+      }
+    }
+  },
+  "depends_on": [
+    "recued-core.paperless-ngx",
+    "recued-core.paperless-ngx-api"
+  ],
+  "requires": [
+    "read_connection_paperless_ngx"
+  ],
+  "variables": {},
+  "steps": [
+    {
+      "id": "connection_required",
+      "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+      "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+    },
+    {
+      "id": "links",
+      "op": "recued-core.paperless-ngx.sync_link.search",
+      "args": {
+        "filters": {
+          "connection": "{{context.connections.paperless-ngx-api}}",
+          "busy": false,
+          "state": {
+            "op": "in",
+            "value": [
+              "sync",
+              "once"
+            ]
+          }
+        },
+        "sort": "last_checked_at",
+        "limit": 50
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "link_count",
+      "transform": "count",
+      "input": "{{step.links.records}}"
+    },
+    {
+      "id": "source_server",
+      "op": "recued-core.paperless-ngx-api.document.api-root",
+      "args": {},
+      "cache": "fresh",
+      "skip_when": "{{step.link_count}} equal 0"
+    },
+    {
+      "id": "source_matches",
+      "transform": "compare",
+      "left": "{{item.source_root}}",
+      "operator": "equal",
+      "right": "{{step.source_server.result.documents}}",
+      "foreach": "{{step.links.records}}"
+    },
+    {
+      "id": "source_links",
+      "transform": "enrich_by",
+      "array": "{{step.links.records}}",
+      "with": "{{step.source_matches}}",
+      "key": "id",
+      "with_key": "item.id",
+      "fields": {
+        "same_source": "result"
+      }
+    },
+    {
+      "id": "matching_links",
+      "transform": "filter",
+      "array": "{{step.source_links}}",
+      "conditions": [
+        {
+          "field": "same_source",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "changed_server",
+      "transform": "filter",
+      "array": "{{step.source_links}}",
+      "conditions": [
+        {
+          "field": "same_source",
+          "operator": "not_equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "changed_server_results",
+      "op": "recued-core.paperless-ngx.sync_link.update",
+      "args": {
+        "id": "{{item.id}}",
+        "expected_version": 7,
+        "expected_revision": "{{item._record.revision}}",
+        "set": {
+          "last_result": "Connection points to another Paperless server; reconnect before syncing"
+        }
+      },
+      "cache": "fresh",
+      "foreach": "{{step.changed_server}}"
+    },
+    {
+      "id": "claims",
+      "op": "recued-core.paperless-ngx.sync_link.update",
+      "args": {
+        "id": "{{item.id}}",
+        "expected_version": 7,
+        "expected_revision": "{{item._record.revision}}",
+        "set": {
+          "busy": true,
+          "last_result": "Check in progress"
+        }
+      },
+      "cache": "fresh",
+      "foreach": "{{step.matching_links}}"
+    },
+    {
+      "id": "claimed",
+      "transform": "filter",
+      "array": "{{step.claims}}",
+      "conditions": [
+        {
+          "field": "ok",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "claimed_rows",
+      "transform": "map",
+      "array": "{{step.claimed}}",
+      "expression": "{{item.result.record}}"
+    },
+    {
+      "id": "documents",
+      "op": "recued-core.paperless-ngx-api.document.get",
+      "args": {
+        "document_id": "{{item.document_id}}"
+      },
+      "cache": "fresh",
+      "foreach": "{{step.claimed_rows}}"
+    },
+    {
+      "id": "source_rows",
+      "transform": "map",
+      "array": "{{step.documents}}",
+      "expression": {
+        "document_id": "{{item.item.document_id}}",
+        "returned_id": "{{item.result.result.id}}",
+        "title": "{{item.result.result.title}}",
+        "custom_fields": "{{item.result.result.custom_fields}}",
+        "read_ok": "{{item.ok}}",
+        "custom_field_id": "{{item.item.custom_field_id}}",
+        "link": "{{item.item}}"
+      }
+    },
+    {
+      "id": "date_values",
+      "transform": "find",
+      "array": "{{item.custom_fields}}",
+      "field": "field",
+      "operator": "equal",
+      "value": "{{item.custom_field_id}}",
+      "foreach": "{{step.source_rows}}"
+    },
+    {
+      "id": "with_dates",
+      "transform": "enrich_by",
+      "array": "{{step.source_rows}}",
+      "with": "{{step.date_values}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "source_date": "result.value"
+      }
+    },
+    {
+      "id": "parsed_dates",
+      "transform": "map",
+      "array": "{{step.with_dates}}",
+      "apply": "date_parse",
+      "field": "source_date",
+      "output_field": "date_ms"
+    },
+    {
+      "id": "date_lengths",
+      "transform": "map",
+      "array": "{{step.parsed_dates}}",
+      "apply": "string_length",
+      "field": "source_date",
+      "output_field": "date_length"
+    },
+    {
+      "id": "parseable_dates",
+      "transform": "filter",
+      "array": "{{step.date_lengths}}",
+      "conditions": [
+        {
+          "field": "date_ms",
+          "operator": "is_not_null",
+          "value": null
+        },
+        {
+          "field": "date_length",
+          "operator": "equal",
+          "value": 10
+        },
+        {
+          "field": "read_ok",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "date_iso",
+      "transform": "map",
+      "array": "{{step.parseable_dates}}",
+      "apply": "date_add",
+      "field": "date_ms",
+      "amount": 0,
+      "unit": "seconds",
+      "output_field": "iso"
+    },
+    {
+      "id": "date_parts",
+      "transform": "map",
+      "array": "{{step.date_iso}}",
+      "apply": "split",
+      "field": "iso",
+      "delimiter": "T",
+      "output_field": "parts"
+    },
+    {
+      "id": "date_roundtrips",
+      "transform": "compare",
+      "left": "{{item.source_date}}",
+      "operator": "equal",
+      "right": "{{item.parts.0}}",
+      "foreach": "{{step.date_parts}}"
+    },
+    {
+      "id": "date_proofs",
+      "transform": "enrich_by",
+      "array": "{{step.date_parts}}",
+      "with": "{{step.date_roundtrips}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "date_valid": "result"
+      }
+    },
+    {
+      "id": "identity_proofs",
+      "transform": "compare",
+      "left": "{{item.document_id}}",
+      "operator": "equal",
+      "right": "{{item.returned_id}}",
+      "foreach": "{{step.date_proofs}}"
+    },
+    {
+      "id": "identity_dates",
+      "transform": "enrich_by",
+      "array": "{{step.date_proofs}}",
+      "with": "{{step.identity_proofs}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "identity_valid": "result"
+      }
+    },
+    {
+      "id": "valid_dates",
+      "transform": "filter",
+      "array": "{{step.identity_dates}}",
+      "conditions": [
+        {
+          "field": "date_valid",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "field": "identity_valid",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "valid_markers",
+      "transform": "map",
+      "array": "{{step.valid_dates}}",
+      "expression": {
+        "document_id": "{{item.document_id}}",
+        "valid": true
+      }
+    },
+    {
+      "id": "dated_rows",
+      "transform": "enrich_by",
+      "array": "{{step.with_dates}}",
+      "with": "{{step.valid_markers}}",
+      "key": "document_id",
+      "with_key": "document_id",
+      "fields": {
+        "valid": "valid"
+      }
+    },
+    {
+      "id": "types",
+      "op": "recued-core.paperless-ngx-api.custom_field.get",
+      "args": {
+        "custom_field_id": "{{item.custom_field_id}}"
+      },
+      "cache": "fresh",
+      "foreach": "{{step.dated_rows}}"
+    },
+    {
+      "id": "typed_rows",
+      "transform": "enrich_by",
+      "array": "{{step.dated_rows}}",
+      "with": "{{step.types}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "field_type": "result.result.data_type",
+        "declared_field_id": "result.result.id"
+      }
+    },
+    {
+      "id": "declared_fields",
+      "transform": "compare",
+      "left": "{{item.declared_field_id}}",
+      "operator": "equal",
+      "right": "{{item.custom_field_id}}",
+      "foreach": "{{step.typed_rows}}"
+    },
+    {
+      "id": "identified_fields",
+      "transform": "enrich_by",
+      "array": "{{step.typed_rows}}",
+      "with": "{{step.declared_fields}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "correct_field": "result"
+      }
+    },
+    {
+      "id": "field_types",
+      "transform": "compare",
+      "left": "{{item.field_type}}",
+      "operator": "equal",
+      "right": "date",
+      "foreach": "{{step.identified_fields}}"
+    },
+    {
+      "id": "source_types",
+      "transform": "enrich_by",
+      "array": "{{step.identified_fields}}",
+      "with": "{{step.field_types}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "type_valid": "result"
+      }
+    },
+    {
+      "id": "source_proofs",
+      "transform": "all",
+      "conditions": [
+        "{{item.valid}} equal true",
+        "{{item.type_valid}} equal true",
+        "{{item.correct_field}} equal true"
+      ],
+      "foreach": "{{step.source_types}}"
+    },
+    {
+      "id": "source_checked",
+      "transform": "enrich_by",
+      "array": "{{step.source_types}}",
+      "with": "{{step.source_proofs}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "source_valid": "result"
+      }
+    },
+    {
+      "id": "eligible_sources",
+      "transform": "filter",
+      "array": "{{step.source_checked}}",
+      "conditions": [
+        {
+          "field": "source_valid",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "new_sources",
+      "transform": "filter",
+      "array": "{{step.eligible_sources}}",
+      "conditions": [
+        {
+          "field": "link.asset_id",
+          "operator": "is_empty",
+          "value": null
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "created",
+      "op": "core.work-entity.asset.create",
+      "args": {
+        "name": "{{item.title}}",
+        "class_id": "paperless_document",
+        "idempotency_key": "paperless:{{item.link.id}}",
+        "source": {
+          "kind": "extracted",
+          "ref": "paperless:{{item.link.id}}"
+        },
+        "dates": {
+          "expires_on": "{{item.source_date}}"
+        },
+        "attributes": {
+          "paperless_document_id": "{{item.document_id}}",
+          "paperless_connection": "{{context.connections.paperless-ngx-api}}"
+        }
+      },
+      "cache": "fresh",
+      "foreach": "{{step.new_sources}}"
+    },
+    {
+      "id": "with_created",
+      "transform": "enrich_by",
+      "array": "{{step.source_checked}}",
+      "with": "{{step.created}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "created_asset_id": "result.asset_id"
+      }
+    },
+    {
+      "id": "existing_assets",
+      "transform": "compare",
+      "left": "{{item.link.asset_id}}",
+      "operator": "is_not_empty",
+      "right": null,
+      "foreach": "{{step.with_created}}"
+    },
+    {
+      "id": "created_flags",
+      "transform": "enrich_by",
+      "array": "{{step.with_created}}",
+      "with": "{{step.existing_assets}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "has_asset": "result"
+      }
+    },
+    {
+      "id": "asset_rows",
+      "transform": "map",
+      "array": "{{step.created_flags}}",
+      "expression": {
+        "document_id": "{{item.document_id}}",
+        "title": "{{item.title}}",
+        "source_date": "{{item.source_date}}",
+        "source_valid": "{{item.source_valid}}",
+        "link": "{{item.link}}",
+        "asset_id": {
+          "$ternary": {
+            "if": "{{item.has_asset}}",
+            "then": "{{item.link.asset_id}}",
+            "else": "{{item.created_asset_id}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "readable_assets",
+      "transform": "filter",
+      "array": "{{step.asset_rows}}",
+      "conditions": [
+        {
+          "field": "asset_id",
+          "operator": "is_not_empty",
+          "value": null
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "assets",
+      "op": "core.work-entity.get",
+      "args": {
+        "kind": "asset",
+        "id": "{{item.asset_id}}"
+      },
+      "cache": "fresh",
+      "foreach": "{{step.readable_assets}}"
+    },
+    {
+      "id": "with_assets",
+      "transform": "enrich_by",
+      "array": "{{step.asset_rows}}",
+      "with": "{{step.assets}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "asset": "result.entity",
+        "asset_read_ok": "ok"
+      }
+    },
+    {
+      "id": "source_maps",
+      "transform": "rename",
+      "source": "{{item.asset.field_sources}}",
+      "mapping": {
+        "dates.expires_on": "expiry_source"
+      },
+      "foreach": "{{step.with_assets}}"
+    },
+    {
+      "id": "with_authority",
+      "transform": "enrich_by",
+      "array": "{{step.with_assets}}",
+      "with": "{{step.source_maps}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "expiry_source": "result.expiry_source"
+      }
+    },
+    {
+      "id": "own_sources",
+      "transform": "compare",
+      "left": "{{item.expiry_source.ref}}",
+      "operator": "equal",
+      "right": "paperless:{{item.link.id}}",
+      "foreach": "{{step.with_authority}}"
+    },
+    {
+      "id": "authority_rows",
+      "transform": "enrich_by",
+      "array": "{{step.with_authority}}",
+      "with": "{{step.own_sources}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "own_source": "result"
+      }
+    },
+    {
+      "id": "empty_fields",
+      "transform": "all",
+      "conditions": [
+        "{{item.expiry_source.kind}} is_empty",
+        "{{item.asset.dates.expires_on}} is_empty"
+      ],
+      "foreach": "{{step.authority_rows}}"
+    },
+    {
+      "id": "with_empty",
+      "transform": "enrich_by",
+      "array": "{{step.authority_rows}}",
+      "with": "{{step.empty_fields}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "empty_field": "result"
+      }
+    },
+    {
+      "id": "permissions",
+      "transform": "any",
+      "conditions": [
+        "{{item.own_source}} equal true",
+        "{{item.empty_field}} equal true"
+      ],
+      "foreach": "{{step.with_empty}}"
+    },
+    {
+      "id": "permitted",
+      "transform": "enrich_by",
+      "array": "{{step.with_empty}}",
+      "with": "{{step.permissions}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "can_write": "result"
+      }
+    },
+    {
+      "id": "active_assets",
+      "transform": "compare",
+      "left": "{{item.asset.status}}",
+      "operator": "in",
+      "right": [
+        "active",
+        "lent"
+      ],
+      "foreach": "{{step.permitted}}"
+    },
+    {
+      "id": "active_rows",
+      "transform": "enrich_by",
+      "array": "{{step.permitted}}",
+      "with": "{{step.active_assets}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "active": "result"
+      }
+    },
+    {
+      "id": "same_dates",
+      "transform": "compare",
+      "left": "{{item.asset.dates.expires_on}}",
+      "operator": "equal",
+      "right": "{{item.source_date}}",
+      "foreach": "{{step.active_rows}}"
+    },
+    {
+      "id": "compared",
+      "transform": "enrich_by",
+      "array": "{{step.active_rows}}",
+      "with": "{{step.same_dates}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "same_date": "result"
+      }
+    },
+    {
+      "id": "writes",
+      "transform": "filter",
+      "array": "{{step.compared}}",
+      "conditions": [
+        {
+          "field": "source_valid",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "field": "asset_read_ok",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "field": "can_write",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "field": "same_date",
+          "operator": "equal",
+          "value": false
+        },
+        {
+          "field": "active",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "updated",
+      "op": "core.work-entity.asset.update",
+      "args": {
+        "id": "{{item.asset_id}}",
+        "source": {
+          "kind": "extracted",
+          "ref": "paperless:{{item.link.id}}"
+        },
+        "dates": {
+          "expires_on": "{{item.source_date}}"
+        }
+      },
+      "cache": "fresh",
+      "foreach": "{{step.writes}}"
+    },
+    {
+      "id": "verified",
+      "op": "core.work-entity.get",
+      "args": {
+        "kind": "asset",
+        "id": "{{item.asset_id}}"
+      },
+      "cache": "fresh",
+      "foreach": "{{step.readable_assets}}"
+    },
+    {
+      "id": "verified_sources",
+      "transform": "rename",
+      "source": "{{item.result.entity.field_sources}}",
+      "mapping": {
+        "dates.expires_on": "expiry_source"
+      },
+      "foreach": "{{step.verified}}"
+    },
+    {
+      "id": "verified_authority",
+      "transform": "enrich_by",
+      "array": "{{step.compared}}",
+      "with": "{{step.verified_sources}}",
+      "key": "document_id",
+      "with_key": "item.item.document_id",
+      "fields": {
+        "saved_source": "result.expiry_source"
+      }
+    },
+    {
+      "id": "saved_authorities",
+      "transform": "compare",
+      "left": "{{item.saved_source.ref}}",
+      "operator": "equal",
+      "right": "paperless:{{item.link.id}}",
+      "foreach": "{{step.verified_authority}}"
+    },
+    {
+      "id": "saved_owners",
+      "transform": "enrich_by",
+      "array": "{{step.verified_authority}}",
+      "with": "{{step.saved_authorities}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "saved_own_source": "result"
+      }
+    },
+    {
+      "id": "settled",
+      "transform": "enrich_by",
+      "array": "{{step.saved_owners}}",
+      "with": "{{step.verified}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "saved_date": "result.entity.dates.expires_on",
+        "verify_ok": "ok"
+      }
+    },
+    {
+      "id": "saved_dates",
+      "transform": "compare",
+      "left": "{{item.saved_date}}",
+      "operator": "equal",
+      "right": "{{item.source_date}}",
+      "foreach": "{{step.settled}}"
+    },
+    {
+      "id": "results",
+      "transform": "enrich_by",
+      "array": "{{step.settled}}",
+      "with": "{{step.saved_dates}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "saved": "result"
+      }
+    },
+    {
+      "id": "outcomes",
+      "transform": "map",
+      "array": "{{step.results}}",
+      "expression": {
+        "document_id": "{{item.document_id}}",
+        "asset_id": "{{item.asset_id}}",
+        "source_date": "{{item.source_date}}",
+        "link": "{{item.link}}",
+        "title": {
+          "$ternary": {
+            "if": "{{item.source_valid}}",
+            "then": "{{item.title}}",
+            "else": "{{item.link.source_title}}"
+          }
+        },
+        "last_result": {
+          "$ternary": {
+            "if": "{{item.source_valid}}",
+            "then": {
+              "$ternary": {
+                "if": "{{item.verify_ok}}",
+                "then": {
+                  "$ternary": {
+                    "if": "{{item.saved_own_source}}",
+                    "then": {
+                      "$ternary": {
+                        "if": "{{item.saved}}",
+                        "then": "Synced",
+                        "else": "Update not applied; retry or review"
+                      }
+                    },
+                    "else": "Local or other source value kept; review in Yours"
+                  }
+                },
+                "else": "Asset unavailable; review in Yours"
+              }
+            },
+            "else": "Document unavailable or date invalid; kept the saved value"
+          }
+        },
+        "applied_date": {
+          "$ternary": {
+            "if": "{{item.source_valid}}",
+            "then": {
+              "$ternary": {
+                "if": "{{item.saved}}",
+                "then": {
+                  "$ternary": {
+                    "if": "{{item.saved_own_source}}",
+                    "then": "{{item.source_date}}",
+                    "else": "{{item.link.last_applied_date}}"
+                  }
+                },
+                "else": "{{item.link.last_applied_date}}"
+              }
+            },
+            "else": "{{item.link.last_applied_date}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "completed",
+      "transform": "compare",
+      "left": "{{item.last_result}}",
+      "operator": "equal",
+      "right": "Synced",
+      "foreach": "{{step.outcomes}}"
+    },
+    {
+      "id": "completed_rows",
+      "transform": "enrich_by",
+      "array": "{{step.outcomes}}",
+      "with": "{{step.completed}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "completed": "result"
+      }
+    },
+    {
+      "id": "once_modes",
+      "transform": "compare",
+      "left": "{{item.link.state}}",
+      "operator": "equal",
+      "right": "once",
+      "foreach": "{{step.completed_rows}}"
+    },
+    {
+      "id": "receipt_rows",
+      "transform": "enrich_by",
+      "array": "{{step.completed_rows}}",
+      "with": "{{step.once_modes}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "once": "result"
+      }
+    },
+    {
+      "id": "final_receipts",
+      "transform": "map",
+      "array": "{{step.receipt_rows}}",
+      "expression": {
+        "document_id": "{{item.document_id}}",
+        "asset_id": "{{item.asset_id}}",
+        "source_date": "{{item.source_date}}",
+        "title": "{{item.title}}",
+        "link": "{{item.link}}",
+        "last_result": "{{item.last_result}}",
+        "applied_date": "{{item.applied_date}}",
+        "next_state": {
+          "$ternary": {
+            "if": "{{item.once}}",
+            "then": {
+              "$ternary": {
+                "if": "{{item.completed}}",
+                "then": "imported",
+                "else": "{{item.link.state}}"
+              }
+            },
+            "else": "{{item.link.state}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "receipt_values",
+      "transform": "defaults",
+      "fields": {
+        "asset_id": {
+          "value": "{{item.asset_id}}",
+          "fallback": ""
+        },
+        "applied_date": {
+          "value": "{{item.applied_date}}",
+          "fallback": ""
+        },
+        "title": {
+          "value": "{{item.title}}",
+          "fallback": ""
+        }
+      },
+      "foreach": "{{step.final_receipts}}"
+    },
+    {
+      "id": "receipt_ready",
+      "transform": "enrich_by",
+      "array": "{{step.final_receipts}}",
+      "with": "{{step.receipt_values}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "asset_id": "result.asset_id",
+        "applied_date": "result.applied_date",
+        "title": "result.title"
+      }
+    },
+    {
+      "id": "now",
+      "transform": "date_add",
+      "date": "now",
+      "amount": 0,
+      "unit": "seconds"
+    },
+    {
+      "id": "receipts",
+      "op": "recued-core.paperless-ngx.sync_link.update",
+      "args": {
+        "id": "{{item.link.id}}",
+        "expected_version": 7,
+        "expected_revision": "{{item.link._record.revision}}",
+        "set": {
+          "asset_id": "{{item.asset_id}}",
+          "source_title": "{{item.title}}",
+          "last_result": "{{item.last_result}}",
+          "last_checked_at": "{{step.now}}",
+          "last_applied_date": "{{item.applied_date}}",
+          "state": "{{item.next_state}}",
+          "busy": false
+        }
+      },
+      "cache": "fresh",
+      "foreach": "{{step.receipt_ready}}"
+    },
+    {
+      "id": "reported",
+      "transform": "enrich_by",
+      "array": "{{step.receipt_ready}}",
+      "with": "{{step.receipts}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "receipt_saved": "ok"
+      }
+    },
+    {
+      "id": "table",
+      "transform": "to_table",
+      "array": "{{step.reported}}",
+      "columns": [
+        {
+          "field": "title",
+          "label": "Document"
+        },
+        {
+          "field": "last_result",
+          "label": "Result"
+        },
+        {
+          "field": "receipt_saved",
+          "label": "Result recorded"
+        },
+        {
+          "field": "applied_date",
+          "label": "Last applied date"
+        },
+        {
+          "field": "asset_id",
+          "label": "Asset in Yours"
+        }
+      ]
+    },
+    {
+      "id": "changed_source_table",
+      "transform": "to_table",
+      "array": "{{step.changed_server}}",
+      "columns": [
+        {
+          "field": "source_title",
+          "label": "Document kept"
+        },
+        {
+          "field": "source_root",
+          "label": "Original Paperless server"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Checked",
+          "value": "Selected links only. Source reads repeat; unchanged dates do not write the asset."
+        },
+        {
+          "label": "More links",
+          "value": "{{step.links.next_cursor}}"
+        },
+        {
+          "label": "Automation",
+          "value": "Complete the first import, then schedule this recipe with the same connection saved on its dish. In Automation, open the schedule and review Scheduled local writes to allow recurring updates. Manage source links in Sync settings."
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.scope"
+      },
+      {
+        "type": "table",
+        "source": "step.table"
+      },
+      {
+        "type": "table",
+        "source": "step.changed_source_table"
+      }
+    ]
+  }
+}

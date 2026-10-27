@@ -889,6 +889,8 @@ export type RecipeOutputAction = {
 };
 
 export interface RecipeMetadata {
+  /** Optional scope for explicit owner authorization of scheduled local writes. */
+  local_automation?: import('./local-automation.js').LocalAutomationScope;
   name: string;
   description: string;
   author: string;

@@ -424,10 +424,13 @@ describe('D-137 P1.4 — main-turn executor wired', () => {
       return (e.event as { kind?: string }).kind === 'engine.budget_exceeded';
     });
     expect(budgetExceeded).toBeDefined();
-    // Assistant message persisted with empty content (clean retry path).
+    // The failure is saved as readable text so history keeps it (53283c434), without
+    // the provider's own detail and without a retry time nobody gave.
     const messages = await store.listMessages('sess-5');
     const assistant = messages.find((m) => m.role === 'assistant');
-    expect(assistant?.content).toBe('');
+    expect(assistant?.content).toBe('The AI provider failed before answering.');
+    expect(assistant?.content).not.toContain('upstream 5xx');
+    expect(assistant?.content).not.toContain('Try again after');
   });
 });
 

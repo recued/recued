@@ -1,0 +1,420 @@
+{
+  "recipe_id": "control-device-home-assistant",
+  "version": 2,
+  "chat_exposed": true,
+  "ttl": 0,
+  "metadata": {
+    "name": "Home Assistant control",
+    "description": "Use “Home Assistant control” in Recued. Turns one device on or off, locks or unlocks a door, opens or closes a cover, sets a thermostat or activates a scene, found by its name. Unlocking a door or opening a cover always asks for your approval first; the rest happens straight away when you ask in your own chat or run it yourself.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "home-assistant"
+    ],
+    "variant_group": "control-device",
+    "tags": [
+      "home-assistant",
+      "smart-home",
+      "control",
+      "lights",
+      "locks",
+      "pack:home-assistant"
+    ],
+    "budget_ms": 20000
+  },
+  "variables": {
+    "action": {
+      "label": "What to do",
+      "type": "enum",
+      "options": [
+        "turn_on",
+        "turn_off",
+        "lock",
+        "unlock",
+        "open",
+        "close",
+        "set_temperature",
+        "activate_scene"
+      ]
+    },
+    "target": {
+      "label": "Device",
+      "type": "string",
+      "help": "Its name in Home Assistant, such as Kitchen Lights, or its entity id."
+    },
+    "temperature": {
+      "label": "Temperature",
+      "type": "number",
+      "optional": true,
+      "help": "Only for set_temperature."
+    }
+  },
+  "requires": [
+    "read_connection_home_assistant"
+  ],
+  "depends_on": [
+    "recued-core.home-assistant"
+  ],
+  "steps": [
+    {
+      "id": "target_text",
+      "transform": "trim",
+      "input": "{{config.target}}"
+    },
+    {
+      "id": "target_lc",
+      "transform": "lowercase",
+      "input": "{{step.target_text}}"
+    },
+    {
+      "id": "states_raw",
+      "op": "recued-core.home-assistant.state.list",
+      "cache": "fresh",
+      "args": {}
+    },
+    {
+      "id": "states",
+      "transform": "default",
+      "value": "{{step.states_raw.result}}",
+      "fallback": []
+    },
+    {
+      "id": "states_named",
+      "transform": "map",
+      "array": "{{step.states}}",
+      "apply": "lowercase",
+      "field": "attributes.friendly_name",
+      "output_field": "name_lc"
+    },
+    {
+      "id": "states_with_domain",
+      "transform": "map",
+      "array": "{{step.states_named}}",
+      "apply": "split",
+      "field": "entity_id",
+      "delimiter": ".",
+      "output_field": "entity_parts"
+    },
+    {
+      "id": "matches",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "mode": "any",
+      "conditions": [
+        { "field": "name_lc", "operator": "equal", "value": "{{step.target_lc}}" },
+        { "field": "entity_id", "operator": "equal", "value": "{{step.target_lc}}" }
+      ]
+    },
+    {
+      "id": "allowed_domains",
+      "transform": "switch",
+      "input": "{{config.action}}",
+      "cases": {
+        "lock": ["lock"],
+        "unlock": ["lock"],
+        "open": ["cover"],
+        "close": ["cover"],
+        "set_temperature": ["climate"],
+        "activate_scene": ["scene"]
+      },
+      "default": ["light", "switch", "fan", "input_boolean", "media_player", "humidifier", "climate"]
+    },
+    {
+      "id": "candidates",
+      "transform": "filter",
+      "array": "{{step.matches}}",
+      "field": "entity_parts.0",
+      "operator": "in",
+      "value": "{{step.allowed_domains}}"
+    },
+    {
+      "id": "candidate_count",
+      "transform": "count",
+      "input": "{{step.candidates}}"
+    },
+    {
+      "id": "ready",
+      "transform": "compare",
+      "left": "{{step.candidate_count}}",
+      "operator": "equal",
+      "right": 1
+    },
+    {
+      "id": "entity",
+      "transform": "default",
+      "value": "{{step.candidates.0.entity_id}}",
+      "fallback": ""
+    },
+    {
+      "id": "domain",
+      "transform": "default",
+      "value": "{{step.candidates.0.entity_parts.0}}",
+      "fallback": ""
+    },
+    {
+      "id": "is_light",
+      "transform": "compare",
+      "left": "{{step.domain}}",
+      "operator": "equal",
+      "right": "light"
+    },
+    {
+      "id": "is_switch",
+      "transform": "compare",
+      "left": "{{step.domain}}",
+      "operator": "equal",
+      "right": "switch"
+    },
+    {
+      "id": "temperature_given",
+      "transform": "compare",
+      "left": "{{config.temperature}}",
+      "operator": "is_not_null"
+    },
+    {
+      "id": "go_light_on",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal turn_on", "{{step.is_light}} equal true"]
+    },
+    {
+      "id": "go_light_off",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal turn_off", "{{step.is_light}} equal true"]
+    },
+    {
+      "id": "go_switch_on",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal turn_on", "{{step.is_switch}} equal true"]
+    },
+    {
+      "id": "go_switch_off",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal turn_off", "{{step.is_switch}} equal true"]
+    },
+    {
+      "id": "go_other_on",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal turn_on", "{{step.is_light}} equal false", "{{step.is_switch}} equal false"]
+    },
+    {
+      "id": "go_other_off",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal turn_off", "{{step.is_light}} equal false", "{{step.is_switch}} equal false"]
+    },
+    {
+      "id": "go_lock",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal lock"]
+    },
+    {
+      "id": "go_unlock",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal unlock"]
+    },
+    {
+      "id": "go_open",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal open"]
+    },
+    {
+      "id": "go_close",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal close"]
+    },
+    {
+      "id": "go_temperature",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal set_temperature", "{{step.temperature_given}} equal true"]
+    },
+    {
+      "id": "go_scene",
+      "transform": "all",
+      "conditions": ["{{step.ready}} equal true", "{{config.action}} equal activate_scene"]
+    },
+    {
+      "id": "light_on",
+      "skip_when": "{{step.go_light_on}} not_equal true",
+      "op": "recued-core.home-assistant.light.turn_on",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "light_off",
+      "skip_when": "{{step.go_light_off}} not_equal true",
+      "op": "recued-core.home-assistant.light.turn_off",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "switch_on",
+      "skip_when": "{{step.go_switch_on}} not_equal true",
+      "op": "recued-core.home-assistant.switch.turn_on",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "switch_off",
+      "skip_when": "{{step.go_switch_off}} not_equal true",
+      "op": "recued-core.home-assistant.switch.turn_off",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "other_on",
+      "skip_when": "{{step.go_other_on}} not_equal true",
+      "op": "recued-core.home-assistant.device.turn_on",
+      "args": {
+        "domain": "{{step.domain}}",
+        "body.entity_id": "{{step.entity}}"
+      }
+    },
+    {
+      "id": "other_off",
+      "skip_when": "{{step.go_other_off}} not_equal true",
+      "op": "recued-core.home-assistant.device.turn_off",
+      "args": {
+        "domain": "{{step.domain}}",
+        "body.entity_id": "{{step.entity}}"
+      }
+    },
+    {
+      "id": "lock",
+      "skip_when": "{{step.go_lock}} not_equal true",
+      "op": "recued-core.home-assistant.lock.lock",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "unlock",
+      "skip_when": "{{step.go_unlock}} not_equal true",
+      "op": "recued-core.home-assistant.lock.unlock",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "open",
+      "skip_when": "{{step.go_open}} not_equal true",
+      "op": "recued-core.home-assistant.cover.open",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "close",
+      "skip_when": "{{step.go_close}} not_equal true",
+      "op": "recued-core.home-assistant.cover.close",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "temperature",
+      "skip_when": "{{step.go_temperature}} not_equal true",
+      "op": "recued-core.home-assistant.climate.set_temperature",
+      "args": { "body.entity_id": "{{step.entity}}", "body.temperature": "{{config.temperature}}" }
+    },
+    {
+      "id": "scene",
+      "skip_when": "{{step.go_scene}} not_equal true",
+      "op": "recued-core.home-assistant.scene.activate",
+      "args": { "body.entity_id": "{{step.entity}}" }
+    },
+    {
+      "id": "outcome",
+      "transform": "coalesce",
+      "values": [
+        "{{step.light_on}}", "{{step.light_off}}", "{{step.switch_on}}", "{{step.switch_off}}",
+        "{{step.other_on}}", "{{step.other_off}}", "{{step.lock}}", "{{step.unlock}}", "{{step.open}}",
+        "{{step.close}}", "{{step.temperature}}", "{{step.scene}}"
+      ]
+    },
+    {
+      "id": "did_run",
+      "transform": "compare",
+      "left": "{{step.outcome}}",
+      "operator": "is_not_null"
+    },
+    {
+      "id": "new_states",
+      "transform": "default",
+      "value": "{{step.outcome.result}}",
+      "fallback": []
+    },
+    {
+      "id": "changed_count",
+      "transform": "count",
+      "input": "{{step.new_states}}"
+    },
+    {
+      "id": "reported_change",
+      "transform": "compare",
+      "left": "{{step.changed_count}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "none_found",
+      "transform": "compare",
+      "left": "{{step.candidate_count}}",
+      "operator": "equal",
+      "right": 0
+    },
+    {
+      "id": "several_found",
+      "transform": "compare",
+      "left": "{{step.candidate_count}}",
+      "operator": "greater",
+      "right": 1
+    },
+    {
+      "id": "done_text",
+      "transform": "ternary",
+      "if": "{{step.reported_change}}",
+      "then": "Done: Home Assistant reports {{step.entity}} is now {{step.new_states.0.state}}",
+      "else": "Done: Home Assistant reported no change, so {{step.entity}} was already that way"
+    },
+    {
+      "id": "missing_text",
+      "transform": "ternary",
+      "if": "{{step.ready}}",
+      "then": "Nothing changed: say which temperature to set",
+      "else": "Nothing changed"
+    },
+    {
+      "id": "several_text",
+      "transform": "ternary",
+      "if": "{{step.several_found}}",
+      "then": "Nothing changed: several devices are named {{step.target_text}}, so name one of them by its entity id",
+      "else": "{{step.missing_text}}"
+    },
+    {
+      "id": "not_done_text",
+      "transform": "ternary",
+      "if": "{{step.none_found}}",
+      "then": "Nothing changed: no device named {{step.target_text}} can {{config.action}}",
+      "else": "{{step.several_text}}"
+    },
+    {
+      "id": "result_text",
+      "transform": "ternary",
+      "if": "{{step.did_run}}",
+      "then": "{{step.done_text}}",
+      "else": "{{step.not_done_text}}"
+    },
+    {
+      "id": "candidate_table",
+      "transform": "to_table",
+      "array": "{{step.candidates}}",
+      "columns": [
+        { "field": "attributes.friendly_name", "label": "Name" },
+        { "field": "entity_id", "label": "Entity" },
+        { "field": "state", "label": "State" }
+      ]
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Result", "value": "{{step.result_text}}" },
+        { "label": "Asked for", "value": "{{config.action}}: {{step.target_text}}" },
+        { "label": "Devices matched", "value": "{{step.candidate_count:number}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" },
+      { "type": "table", "source": "step.candidate_table", "label": "Matching devices" },
+      { "type": "json", "source": "step.outcome", "label": "What Home Assistant answered" }
+    ]
+  }
+}

@@ -949,6 +949,7 @@ export const wrapWithCommitGateway = (
     const reviewInput = () => resolvedArgsForScoped
       ?? (deps.resourceReview ? deps.resolveArgsForHash?.(slug, authorityInput, { surfaceDispatch }) : undefined) ?? input;
     const retainedReview = reviewed?.resource_review ?? stepMeta?.resource_review;
+    let localAutomationPermit: object | undefined;
     let resourceReview = !surfaceDispatch && retainedReview
       ? captureResourceReview(deps.resourceReview, slug, reviewInput(),
         retainedReview, stepMeta?.preflight_admitted === true) : undefined;
@@ -1175,6 +1176,10 @@ export const wrapWithCommitGateway = (
             decision.risk_tier,
             decision.authorization_provenance.lift_reason,
           );
+          if (!resumeApproved && !standingAdmit && !surfaceDispatch) {
+            localAutomationPermit = deps.resourceReview?.localAutomation?.authorize({ slug, input: reviewInput(),
+              risk_tier: decision.risk_tier, provenance: decision.authorization_provenance });
+          }
           // D-177 P3 — mint on a resume-admitted dispatch whose gated step
           // carries the `allow_session` mint instruction (N.5). THIS is the
           // D9 point: `argHashes` above was computed from the MERGED resolved
@@ -1282,7 +1287,7 @@ export const wrapWithCommitGateway = (
           // ⛔ The standing closure short-circuits the SAME branch a resume
           // does: the owner already answered this question at bind, so a
           // session-grant lookup would be a second answer to it.
-          if (!resumeApproved && !standingAdmit) {
+          if (!resumeApproved && !standingAdmit && !localAutomationPermit) {
             // D-177 P2 — session-grant lookup, ask-branch ONLY (N.4): the
             // verdict computation above is untouched, 'admit' never involves
             // grants, and 'deny' threw before this point (grants never
@@ -1705,7 +1710,7 @@ export const wrapWithCommitGateway = (
     try {
       await reviewed?.validate();
       deps.reviewedDispatch?.assertRunActive?.();
-      const dispatch = () => (deps.resourceReview?.run.bind(deps.resourceReview) ?? ((_r, f) => f()))(resourceReview, () => {
+      const localDispatch = () => (deps.resourceReview?.run.bind(deps.resourceReview) ?? ((_r, f) => f()))(resourceReview, () => {
         // Validation and local preparation can yield after the admission fence.
         // Recheck at the actual dispatch boundary inside every host wrapper.
         if (deps.runAbortSignal?.aborted) {
@@ -1721,6 +1726,8 @@ export const wrapWithCommitGateway = (
           probe,
         );
       });
+      const dispatch = () => localAutomationPermit && deps.resourceReview?.localAutomation
+        ? deps.resourceReview.localAutomation.run(localAutomationPermit, localDispatch) : localDispatch();
       const result = await (!reviewed && resourceReview && deps.localMutations
         ? deps.localMutations.run({ slug, operation: resourceReview.operation, input: authorityInput, review: resourceReview,
             commit: { ...pending, status: 'pending' }, ...(stepMeta ? { stepMeta } : {}),

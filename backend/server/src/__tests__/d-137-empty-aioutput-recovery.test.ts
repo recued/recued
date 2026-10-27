@@ -445,7 +445,7 @@ describe('D-137 args-only AIOutput recovery — orchestrator paths', () => {
     expect(assistant?.tool_calls?.[0]?.status).toBe('ok');
   });
 
-  it('ships the fail-loud message when the retry call throws', async () => {
+  it('saves the actual failure when initial empty recovery throws', async () => {
     let calls = 0;
     const executeAiCall: ExecuteChatAiCall = async () => {
       calls += 1;
@@ -475,11 +475,12 @@ describe('D-137 args-only AIOutput recovery — orchestrator paths', () => {
     expect(calls).toBe(2);
     const tokenStreamed = captured.find((e) => e.kind === 'chat.token_streamed');
     expect((tokenStreamed as { delta?: string } | undefined)?.delta).toContain(
-      'returned an empty reply twice',
+      'The AI provider failed before answering.',
     );
     const messages = await store.listMessages('sess-retry-throws');
     const assistant = messages.find((m) => m.role === 'assistant');
-    expect(assistant?.content).toContain('returned an empty reply twice');
+    expect(assistant?.content).toBe('The AI provider failed before answering.');
+    expect(assistant?.content).not.toContain('upstream 5xx');
   });
 
   it('does not retry a non-empty initial response and sends no output_feedback', async () => {
@@ -733,7 +734,7 @@ describe('loop-final empty recovery', () => {
 
   it('ships the fail-loud message when loop-final synthesis decodes empty twice', async () => {
     const result = await runScriptedTurn('sess-loop-final-double-empty', [
-      toolOutput('Peter'),
+      { ...toolOutput('Peter'), response: 'I will check these messages.' },
       emptyOutput,
       emptyOutput,
     ]);
@@ -742,6 +743,7 @@ describe('loop-final empty recovery', () => {
     expect(result.dispatches).toBe(1);
     expect(streamedDelta()).toContain('returned an empty reply twice');
     expect(result.assistant?.content).toContain('returned an empty reply twice');
+    expect(result.assistant?.content?.startsWith('I will check these messages.\n\n')).toBe(true);
     expect(result.assistant?.tool_calls?.[0]).toMatchObject({
       tool_name: 'mail.search',
       status: 'ok',
@@ -797,21 +799,21 @@ describe('loop-final empty recovery', () => {
     const result = await runScriptedTurn('sess-loop-final-budget-consumed', [
       toolOutput('first'),
       emptyOutput,
-      toolOutput('second'),
+      { ...toolOutput('second'), response: 'I have checked the first set.' },
       emptyOutput,
     ]);
 
     expect(result.calls).toBe(4);
     expect(result.dispatches).toBe(2);
-    expect(streamedDelta()).toContain('returned an empty reply twice');
-    expect(result.assistant?.content).toContain('returned an empty reply twice');
+    expect(streamedDelta()).toContain('returned another empty reply');
+    expect(result.assistant?.content?.startsWith('I have checked the first set.\n\n')).toBe(true);
     expectRoundLifecycle(['continue', 'aborted'], 'output_unreadable', 'round 2 aborted');
   });
 
-  it('ships the fail-loud message when the loop-final retry throws', async () => {
+  it('saves the actual failure when loop-final empty recovery throws', async () => {
     await expect(
       runScriptedTurn('sess-loop-final-retry-throws', [
-        toolOutput('Peter'),
+        { ...toolOutput('Peter'), response: 'I will check these messages.' },
         emptyOutput,
         new Error('retry failed'),
       ]),
@@ -819,11 +821,14 @@ describe('loop-final empty recovery', () => {
       calls: 3,
       dispatches: 1,
     });
-    expect(streamedDelta()).toContain('returned an empty reply twice');
+    expect(streamedDelta()).toContain('provider failed partway');
     const messages = await store.listMessages('sess-loop-final-retry-throws');
     const assistant = messages.find((m) => m.role === 'assistant');
-    expect(assistant?.content).toContain('returned an empty reply twice');
-    expectRoundLifecycle(['aborted'], 'output_unreadable', 'round 1 aborted');
+    expect(assistant?.content?.startsWith('I will check these messages.\n\n')).toBe(true);
+    expect(assistant?.content).toContain('provider failed partway');
+    expect(assistant?.content).not.toContain('retry failed');
+    expect(budgetExceeded()).toMatchObject({ total_calls: 3 });
+    expectRoundLifecycle(['aborted'], 'aborted', 'round 1 aborted');
   });
 
   it('includes both recovery sites in loop-abort total_calls accounting', async () => {

@@ -27,6 +27,7 @@ import {
   createFileViewResolverFromRegistry,
 } from '../file-view-resolver.js';
 import { handleExecute } from '../execute-handler.js';
+import { isMirroredCollection } from '../collections/mirrored-collection.js';
 import {
   isVerifiedWebclientBundlePresent,
   resolveServedWebclientBundleDir,
@@ -403,11 +404,12 @@ export const composeIngressRpcContext = async (
           // the enrichment scope, with its live D-236 verdict. Same call form
           // as the collection dispatchers (`collectionSourceFreshnessOf`
           // tolerates a throwing adapter). Scopes with no registered platform
-          // (derived scopes, vendor platform-reference) yield [] ⇒ no cap.
+          // (derived scopes, vendor platform-reference) yield [] ⇒ no cap. An
+          // SMTP-only account mirrors no mailbox, so it caps nothing.
           sourceFreshnessByScope: (scope: string, now: number) =>
             collection.collectionRegistry
               .list()
-              .filter((c) => c.platform === scope)
+              .filter((c) => c.platform === scope && isMirroredCollection(c))
               .map((c) => ({
                 instance: c.slug,
                 freshness: collectionSourceFreshnessOf(c.health, now),

@@ -400,6 +400,7 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.messages.search',
       'chat.session.get',
       'chat.session.create',
+      'chat.session.rename',
       'chat.session.delete',
       'chat.session.export',
       // D-167 transparency — read back the aliased "what we sent" egress history.

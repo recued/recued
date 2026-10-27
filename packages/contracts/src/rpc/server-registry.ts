@@ -1691,6 +1691,9 @@ export type ServerRpcRegistry = {
   >;
 
   // ── Schedules ───────────────────────────────────────────────────
+  'schedules.local_writes.review': RpcMethodSpec<{ schedule_id: string }, import('../local-automation.js').LocalAutomationReview>;
+  'schedules.local_writes.authorize': RpcMethodSpec<{ schedule_id: string; review_id: string }, import('../local-automation.js').LocalAutomationReview>;
+  'schedules.local_writes.revoke': RpcMethodSpec<{ schedule_id: string }, { revoked: true }>;
   'schedules.list': RpcMethodSpec<{ recipe_id?: string }, { schedules: ServerSchedule[] }>;
   'schedules.create': RpcMethodSpec<
     {
@@ -7172,6 +7175,7 @@ export type ServerRpcRegistry = {
   >;
   'chat.session.get': RpcMethodSpec<import('../chat.js').ChatSessionGetRequest, unknown>;
   'chat.session.create': RpcMethodSpec<{ title?: string; creation_id?: string }, { session_id: string }>;
+  'chat.session.rename': RpcMethodSpec<import('../chat.js').ChatSessionRenameRequest, import('../chat.js').ChatSessionRenameResult>;
   'chat.session.delete': RpcMethodSpec<{ session_id: string }, { ok: true }>;
   'chat.session.mark_seen': RpcMethodSpec<{ session_id: string }, { ok: true }>;
   'chat.session.export': RpcMethodSpec<{ session_id: string }, unknown>;
@@ -8383,7 +8387,7 @@ export type ServerRpcRegistry = {
   'yours.today': RpcMethodSpec<{ now: number; before: number }, import('../situation.js').ProactiveToday>;
   'yours.read': RpcMethodSpec<import('../yours.js').YoursReadRequest, import('../yours.js').YoursSnapshot>;
   'yours.context': RpcMethodSpec<import('../asset-fact-context.js').AssetFactContextRequest, import('../asset-fact-context.js').AssetFactContext>;
-  'yours.writer.read': RpcMethodSpec<{ asset_id: string; connection?: import('../asset-writer-setup.js').AssetWriterConnection }, import('../asset-writer-setup.js').AssetWriterSetupRead>;
+  'yours.writer.read': RpcMethodSpec<import('../asset-writer-setup.js').AssetWriterSetupReadRequest, import('../asset-writer-setup.js').AssetWriterSetupRead>;
   'yours.writer.preview': RpcMethodSpec<import('../asset-writer-setup.js').AssetWriterSelection, import('../asset-writer-setup.js').AssetWriterReview>;
   'yours.writer.change': RpcMethodSpec<import('../asset-writer-setup.js').AssetWriterSetupChange, import('../asset-writer-setup.js').AssetWriterSetupStatus>;
   'yours.sphere': RpcMethodSpec<{ ref: import('../situation.js').SituationRef }, import('../yours.js').YoursSpherePlacement>;
@@ -8497,6 +8501,7 @@ export const SERVER_RPC_METHODS = [
   'auth.migrate.status',
   'auth.migrate.resume',
   'schedules.list',
+  'schedules.local_writes.review', 'schedules.local_writes.authorize', 'schedules.local_writes.revoke',
   'schedules.create',
   'schedules.update',
   'schedules.delete',
@@ -9204,6 +9209,7 @@ export const SERVER_RPC_METHODS = [
   'chat.session.get',
   'chat.session.mark_seen',
   'chat.session.create',
+  'chat.session.rename',
   'chat.session.delete',
   'chat.session.export',
   'chat.egress.get',

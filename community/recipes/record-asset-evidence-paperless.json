@@ -1,0 +1,245 @@
+{
+  "recipe_id": "record-asset-evidence-paperless",
+  "version": 5,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Review a Paperless document date",
+    "description": "Use “Review a Paperless document date” in Recued. Reads the chosen date field and keeps supporting evidence when its date or reviewed writer changes, with AI enrichment off. Review the date in Yours before confirming it and recalculating its reminders.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "paperless-ngx"
+    ],
+    "tags": [
+      "pack:paperless-ngx",
+      "asset",
+      "evidence"
+    ],
+    "budget_ms": 30000,
+    "recipe_bundle": "recued-core/paperless-ngx",
+    "retired_connections": {
+      "paperless_ngx": "paperless-ngx-api"
+    }
+  },
+  "variables": {
+    "asset_id": {
+      "label": "Asset",
+      "type": "string",
+      "page_binding": {
+        "kind": "asset",
+        "field": "id"
+      }
+    },
+    "binding_id": {
+      "label": "Observation binding id from Yours",
+      "type": "string"
+    },
+    "document_id": {
+      "label": "Paperless document id",
+      "type": "number"
+    },
+    "custom_field_id": {
+      "label": "Paperless custom date field id",
+      "type": "number"
+    },
+    "asset_date_field": {
+      "label": "Asset date field",
+      "type": "string",
+      "default": "expires_on"
+    },
+    "writer_source_ref": {
+      "label": "Reviewed writer source supplied by Yours",
+      "type": "string",
+      "default": ""
+    }
+  },
+  "requires": [
+    "read_connection_paperless_ngx"
+  ],
+  "depends_on": [
+    "recued-core.paperless-ngx",
+    "recued-core.paperless-ngx-api"
+  ],
+  "steps": [
+    {
+      "id": "asset",
+      "op": "core.work-entity.get",
+      "args": {
+        "kind": "asset",
+        "id": "{{config.asset_id}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "document",
+      "op": "recued-core.paperless-ngx-api.document.get",
+      "args": {
+        "document_id": "{{config.document_id}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "date_field",
+      "transform": "find",
+      "array": "{{step.document.result.custom_fields}}",
+      "field": "field",
+      "operator": "equal",
+      "value": "{{config.custom_field_id}}"
+    },
+    {
+      "id": "date_ms",
+      "transform": "date_parse",
+      "input": "{{step.date_field.value}}"
+    },
+    {
+      "id": "roundtrip",
+      "transform": "date_format",
+      "date": "{{step.date_ms}}",
+      "format": "YYYY-MM-DD",
+      "time_zone": "UTC"
+    },
+    {
+      "id": "real_date",
+      "transform": "all",
+      "conditions": [
+        "{{step.date_field.value}} is_not_null",
+        "{{step.roundtrip}} equal {{step.date_field.value}}"
+      ]
+    },
+    {
+      "id": "old_date",
+      "transform": "find",
+      "array": "{{step.asset.entity.observations.document_evidence.evidence}}",
+      "field": "field",
+      "operator": "equal",
+      "value": "dates.{{config.asset_date_field}}"
+    },
+    {
+      "id": "changed",
+      "transform": "compare",
+      "left": "{{step.old_date.value}}",
+      "operator": "not_equal",
+      "right": "{{step.date_field.value}}"
+    },
+    {
+      "id": "managed_source",
+      "transform": "compare",
+      "left": "{{config.writer_source_ref}}",
+      "operator": "not_equal",
+      "right": ""
+    },
+    {
+      "id": "source_changed",
+      "transform": "compare",
+      "left": "{{step.asset.entity.observations.document_evidence.source}}",
+      "operator": "not_equal",
+      "right": "{{config.writer_source_ref}}"
+    },
+    {
+      "id": "fresh_source",
+      "transform": "all",
+      "conditions": [
+        "{{step.managed_source}} equal true",
+        "{{step.source_changed}} equal true"
+      ]
+    },
+    {
+      "id": "needs_evidence",
+      "transform": "any",
+      "conditions": [
+        "{{step.changed}} equal true",
+        "{{step.fresh_source}} equal true"
+      ]
+    },
+    {
+      "id": "evidence_source",
+      "transform": "rename",
+      "source": "{{step.asset.entity.field_sources}}",
+      "mapping": {
+        "observations.document_evidence": "evidence"
+      }
+    },
+    {
+      "id": "evidence_handoff",
+      "transform": "rename",
+      "source": "{{step.asset.entity.automatic_updates}}",
+      "mapping": {
+        "observations.document_evidence": "evidence"
+      }
+    },
+    {
+      "id": "can_report",
+      "transform": "any",
+      "conditions": [
+        "{{step.evidence_source.evidence.kind}} is_null",
+        "{{step.evidence_source.evidence.kind}} equal observation",
+        "{{step.evidence_source.evidence.kind}} equal extracted",
+        "{{step.evidence_source.evidence.kind}} equal ai_guess",
+        "{{step.evidence_handoff.evidence}} is_not_null"
+      ]
+    },
+    {
+      "id": "needs_capture",
+      "transform": "all",
+      "conditions": [
+        "{{step.can_report}} equal true",
+        "{{step.real_date}} equal true",
+        "{{step.needs_evidence}} equal true"
+      ]
+    },
+    {
+      "id": "file",
+      "op": "recued-core.paperless-ngx-api.document.download",
+      "args": {
+        "document_id": "{{config.document_id}}"
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.needs_capture}} not_equal true"
+    },
+    {
+      "id": "now_iso",
+      "transform": "date_add",
+      "date": "now",
+      "amount": 0,
+      "unit": "minutes"
+    },
+    {
+      "id": "now",
+      "transform": "date_parse",
+      "input": "{{step.now_iso}}"
+    },
+    {
+      "id": "evidence",
+      "op": "core.work-entity.asset.observe",
+      "args": {
+        "binding_id": "{{config.binding_id}}",
+        "observations": {
+          "document_evidence": {
+            "active": true,
+            "certainty": "conditional",
+            "as_of": "{{step.now}}",
+            "evidence": [
+              {
+                "collection": "file",
+                "id": "{{step.file.file_ref}}",
+                "field": "dates.{{config.asset_date_field}}",
+                "value": "{{step.date_field.value}}"
+              }
+            ]
+          }
+        }
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.needs_capture}} not_equal true"
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "json",
+        "source": "step.date_field",
+        "label": "Date evidence to review"
+      }
+    ]
+  }
+}

@@ -8,6 +8,10 @@ import type { PreapprovalAtomicHooks } from './preapproval-repository.js';
 export const invalidatePreapprovalLineage = (
   db: Database.Database, settleDispatch: PreapprovalAtomicHooks['settleDispatch'], now = Date.now(),
 ): void => {
+  // A restored database never revives previously approved recurring writes.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='scheduled_local_authorizations'").get()) {
+    db.prepare('UPDATE scheduled_local_authorizations SET revoked_at=COALESCE(revoked_at,?)').run(now);
+  }
   if (!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'preapproval_state'").get()) return;
   db.transaction(() => {
     const unfinished = db.prepare(`SELECT future_ref, revision, root_run_id, worker_id, fence FROM preapproval_executions

@@ -1,5 +1,6 @@
 [
   "full-app.spec.ts",
+  "chat-rename.spec.ts",
   "housekeeping.spec.ts",
   "housekeeping-read-recovery.spec.ts",
   "ai-models.spec.ts",
@@ -35,6 +36,7 @@
   "contracts.spec.ts",
   "connections.spec.ts",
   "chat.spec.ts",
+  "chat-history-reading.spec.ts",
   "ordinary-local-receipts.spec.ts",
   "local-update-undo.spec.ts",
   "local-change-sets.spec.ts",

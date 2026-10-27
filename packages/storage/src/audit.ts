@@ -746,7 +746,7 @@ export type ActivityAction =
   // - `chat_export` — Mary triggered `chat.session.export`.
   //   `target` = `<session_id>`; `detail` carries
   //   `{message_count, format: 'json'}`.
-  | 'chat_session_created' | 'chat_session_deleted'
+  | 'chat_session_created' | 'chat_session_deleted' | 'chat_session_renamed'
   | 'chat_message_sent' | 'chat_tool_call'
   | 'chat_plan_proposed' | 'chat_plan_approved' | 'chat_plan_cancelled'
   | 'chat_plan_consumed'

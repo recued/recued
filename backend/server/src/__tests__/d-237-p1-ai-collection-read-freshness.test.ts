@@ -145,6 +145,27 @@ describe('D-237 P1 — mail.search carries a per-mailbox verdict', () => {
     expect(by.get('behind')?.age_ms).toBe(48 * HOUR);
   });
 
+  it('⛔ an SMTP-only account is searched but has NO verdict: it mirrors no mailbox', async () => {
+    // It never syncs, so as a mirror it read `stale` on every search and told the
+    // model that no empty search was a verified absence. Its sent copies still match.
+    const sendOnly = { ...mailStub({ slug: 'mailgun', health: () => health({ slug: 'mailgun', last_indexed_at: 0 }) }),
+      receiveCapable: false };
+    const res = await handlers([mailStub({ slug: 'primary' }), sendOnly])['mail.search']({}, ctx);
+    expect(freshnessOf(res).map((x) => x.collection_slug)).toEqual(['primary']);
+    const r = (res as { result: { matches: Array<{ collection_slug?: string }>; collections: string[] } }).result;
+    expect(r.collections.sort()).toEqual(['mailgun', 'primary']);
+    expect(r.matches.map((m) => m.collection_slug).sort()).toEqual(['mailgun', 'primary']);
+    // The empty search the stale verdict used to hedge: only real mailboxes answer.
+    const empty = await handlers([mailStub({ slug: 'primary', rows: [] }), { ...sendOnly, search: () => [] }])['mail.search']({ query: 'invoice' }, ctx);
+    expect(freshnessOf(empty)).toMatchObject([{ collection_slug: 'primary', stale: false }]);
+  });
+
+  it('a mail collection that does not say it cannot receive keeps its verdict', async () => {
+    // Only an explicit `receiveCapable: false` drops one; a stale mailbox stays stale.
+    const res = await handlers([mailStub({ slug: 'behind', health: () => health({ slug: 'behind', last_indexed_at: 0 }) })])['mail.search']({}, ctx);
+    expect(freshnessOf(res)).toMatchObject([{ collection_slug: 'behind', stale: true }]);
+  });
+
   it('an EMPTY result from a lagging mailbox is NOT reported as a clean absence', async () => {
     // The SO-1 case in one assertion: zero matches, and the verdict is the only
     // thing standing between that and "you have no such mail".
@@ -188,6 +209,33 @@ describe('D-237 P1 — mail.search carries a per-mailbox verdict', () => {
 // ────────────────────────────────────────────────────────────────
 // 2. calendar.search — same verdict, derived off its own table path
 // ────────────────────────────────────────────────────────────────
+
+describe('mail.read carries the verdict of the mailbox it read', () => {
+  const readFrom = async (stub: ReturnType<typeof mailStub> & { receiveCapable?: boolean }) => {
+    const mailbox = { ...stub, get: () => ({ ...ROW, body_inline: 'Hello' }) };
+    const deps = {
+      now: () => NOW,
+      getCollectionRegistry: () => ({ list: () => [mailbox], get: (platform: string, slug: string) =>
+        platform === 'mail' && slug === mailbox.slug ? mailbox : undefined }),
+      getAuditLog: () => undefined,
+    } as unknown as Parameters<typeof buildChatTier1Handlers>[0];
+    const res = await buildChatTier1Handlers(deps)['mail.read']!({ slug: mailbox.slug, record_id: 'r1' }, ctx);
+    return (res as { result: { status: string; source_freshness: Freshness[] } }).result;
+  };
+
+  it('a message from a mailbox carries that mailbox\'s verdict', async () => {
+    const read = await readFrom(mailStub({ slug: 'primary', health: () => health({ pending_queue_size: 3 }) }));
+    expect(read.status).toBe('read');
+    expect(read.source_freshness).toMatchObject([{ collection_slug: 'primary', pending: 3, stale: true }]);
+  });
+
+  it('⛔ a sent copy from an SMTP-only account carries none: no mailbox is behind it', async () => {
+    const read = await readFrom({ ...mailStub({ slug: 'mailgun', health: () => health({ slug: 'mailgun', last_indexed_at: 0 }) }),
+      receiveCapable: false });
+    expect(read.status).toBe('read');
+    expect(read.source_freshness).toEqual([]);
+  });
+});
 
 describe('D-237 P1 — calendar.search carries the verdict off its own read path', () => {
   it('derives per-calendar, including a degraded instance', async () => {

@@ -31,6 +31,11 @@ const assetSection = async (route: Locator, name: 'Overview' | 'Rules' | 'Files'
   await route.getByRole('navigation', { name: 'Asset sections', exact: true }).getByRole('link', { name, exact: true }).click();
 };
 
+const openAttachedFileMenu = async (scope: Locator) => {
+  const trigger = scope.getByLabel('More actions for attached file', { exact: true });
+  if (!await trigger.locator('..').evaluate(node => (node as HTMLDetailsElement).open)) await trigger.click();
+};
+
 test('Asset cards show task counts and authoritative due dates with estimates kept explicit', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
   const route = page.locator('[data-recued-yours]'); const renewal = route.locator('[data-yours-asset="card-renewal"]');
@@ -506,7 +511,7 @@ const manualOdometer = async (page: Page, flags = '') => {
 test('Automatic updates keep the manual reading until an authoritative fresh snapshot arrives and preserve its history', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 });
   const route = await manualOdometer(page, '&yours_handoff_writer');
-  const card = route.locator('[data-yours-reading="odometer"]'); await expect(card).toContainText('Recorded by you');
+  const card = route.locator('[data-yours-reading="odometer"]'); await expect(card).toContainText('Entered by you');
   await expect(route.locator('[data-yours-reading="pressure"]').getByRole('button', { name: 'Allow automatic updates', exact: true })).toHaveCount(0);
   await card.getByRole('button', { name: 'Allow automatic updates', exact: true }).click();
   await expect(card).toContainText('Automatic updates allowed.'); await expect(card).toContainText('9500 km');
@@ -535,7 +540,7 @@ test('Automatic updates for a condition can be reclaimed by a new manual entry w
   await card.getByRole('button', { name: 'Update condition', exact: true }).click();
   await form.getByLabel('What you observed', { exact: true }).selectOption('clear');
   await form.getByRole('button', { name: 'Save condition', exact: true }).click(); await expect(form).toHaveCount(0);
-  await expect(card).toContainText('Clear · confirmed · Recorded by you');
+  await expect(card).toContainText(/Clear · confirmed.*Entered by you/su);
   await expect(card.getByRole('button', { name: 'Allow automatic updates', exact: true })).toBeVisible();
   await expect(card).not.toContainText('Automatic updates allowed.');
   await expect(route.locator('[data-yours-handoff]')).toContainText('Previous manual entry: Present · conditional');
@@ -568,7 +573,7 @@ test('Automatic updates require a refresh when another owner changes the manual 
 test('Automatic updates can release a manually cleared unknown without presenting it as zero', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields&yours_handoff_unknown#yours/asset/passport`);
   const route = page.locator('[data-recued-yours]'); const card = route.locator('[data-yours-reading="battery"]');
-  await expect(card).toContainText('Unknown'); await expect(card).toContainText('Recorded by you');
+  await expect(card).toContainText('Unknown'); await expect(card).toContainText('Entered by you');
   await card.getByRole('button', { name: 'Allow automatic updates', exact: true }).click(); await expect(card).toContainText('Automatic updates allowed.');
   await expect(card).toContainText('Unknown'); await expect(route.locator('[data-yours-handoff]')).toContainText('Previous manual entry: Unknown');
   expect(await page.evaluate(() => window.__assetHandoffWrites)).toMatchObject([{ path: 'readings.battery', expected: { value: null } }]);
@@ -576,11 +581,12 @@ test('Automatic updates can release a manually cleared unknown without presentin
 
 test('An open task proof can close names the +done address to forward the proof to', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_proof=1#yours/asset/passport`);
+  await page.locator('.yours-attention>summary').click();
   await expect(page.locator('[data-yours-proof-addresses]')).toHaveText('To close one with proof, forward the email that shows it was done '
     + 'to ana+done@example.test from that same mailbox, then accept the proposal it makes here.');
   // A server that names no address says nothing about it.
   await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
-  await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
+  await page.locator('.yours-attention>summary').click(); await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
   await expect(page.locator('[data-yours-proof-addresses]')).toHaveCount(0);
 });
 
@@ -667,13 +673,13 @@ test('Manual condition requires an explicit state and can later record a confirm
   await form.getByLabel('Observed at', { exact: true }).fill('2026-10-17T12:00');
   const asOf = await page.evaluate(() => new Date('2026-10-17T12:00').getTime());
   await form.getByRole('button', { name: 'Save condition', exact: true }).click(); await expect(form).toHaveCount(0);
-  const card = route.locator('[data-yours-condition="damage"]'); await expect(card).toContainText('Present · conditional · Recorded by you');
+  const card = route.locator('[data-yours-condition="damage"]'); await expect(card).toContainText(/Present · conditional.*Entered by you/su);
   await card.getByRole('button', { name: 'Update condition', exact: true }).click();
   await expect(form.getByLabel('What you observed', { exact: true })).toHaveValue('');
   await form.getByLabel('What you observed', { exact: true }).selectOption('clear');
   await form.getByLabel('Observed at', { exact: true }).fill('2026-10-17T12:00');
   await form.getByRole('button', { name: 'Save condition', exact: true }).click(); await expect(form).toHaveCount(0);
-  await expect(card).toContainText('Clear · confirmed · Recorded by you');
+  await expect(card).toContainText(/Clear · confirmed.*Entered by you/su);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([
     { action: 'asset.update', id: 'passport', patch: { observations: { damage: { active: true, certainty: 'conditional', as_of: asOf, evidence: [], source: 'owner' } } } },
     { action: 'asset.update', id: 'passport', patch: { observations: { damage: { active: false, certainty: 'confirmed', as_of: asOf, evidence: [], source: 'owner' } } } },
@@ -807,7 +813,7 @@ test('Schedule proposals expose only schedule edits and retain the original rule
   await route.getByRole('link', { name: 'Open asset', exact: true }).click();
   await assetSection(route, 'Rules'); await route.locator('article').filter({ has: page.getByRole('heading', { name: 'Renew', exact: true }) }).getByRole('button', { name: 'Edit rule', exact: true }).click();
   await expect(form.getByLabel('Title', { exact: true })).toHaveValue('Renew');
-  await expect(form.getByLabel('Remind before (for example 6 months, 1 week)', { exact: true })).toHaveValue('6 months, 3 months, 1 months');
+  await expect(form.getByLabel('Remind before (for example 6 months, 1 week)', { exact: true })).toHaveValue('6 months, 3 months, 1 month');
 });
 
 test('Schedule proposals with a missing rule stay on the proposal and explain the stale target', async ({ page }) => {
@@ -1415,7 +1421,7 @@ test('The asset page says where each fact came from, and an edit re-sends nothin
   await expect(fact('document_number')).toContainText('Entered by you'); await expect(fact('document_number')).toContainText('Nothing automatic replaces it.');
   await expect(fact('document_number')).toContainText('AI apps you connect can read it exactly as typed');
   const condition = route.locator('[data-yours-condition="flickering"]');
-  await expect(condition).toContainText('Present · conditional · Porch light check ·');
+  await expect(condition).toContainText(/Present · conditional.*Porch light check/su);
   await expect(condition.locator('[data-yours-evidence] li')).toHaveText(['Home Assistant · light.porch · transitions: on and off 14 times in two minutes, not from an automation']);
   await condition.getByRole('button', { name: 'That’s expected', exact: true }).click();
   await expect(condition).toContainText('You marked this as expected on');
@@ -1642,7 +1648,10 @@ test('A passport keeps a nationality only as a country code, as a visa keeps its
   await expect(form).toHaveCount(1); await expect(nationality).toHaveValue('Ja');
   await nationality.fill('cn'); await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(form).toHaveCount(0);
   await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
-  await expect(form.getByLabel('Passport nationality (optional)', { exact: true })).toHaveValue('China');
+  await expect(form.getByLabel('Passport nationality (optional)', { exact: true })).not.toHaveValue('cn');
+  expect(await page.evaluate(() => window.__assetFactWrites)).toMatchObject([
+    { action: 'asset.update', id: 'passport', patch: { settings: { nationality: 'CN' } } },
+  ]);
 });
 
 test('A visa can be tied to a passport, chosen among passports only, and says what tying does', async ({ page }) => {
@@ -1823,7 +1832,7 @@ test('Due says each task’s deadline in words, and a renewal asks for its new d
 test('a receipt proposal becomes an asset only after acceptance and leaves the waiting lane', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'LG television', exact: true }) });
-  await expect(card).toContainText('high confidence'); await card.getByRole('button', { name: 'Accept', exact: true }).click();
+  await card.getByText('Why suggested', { exact: true }).click(); await expect(card).toContainText('high confidence'); await card.getByRole('button', { name: 'Add asset', exact: true }).click();
   await expect(route.getByText('No proposals waiting.', { exact: true })).toBeVisible();
   await page.getByRole('navigation', { name: 'Yours', exact: true }).getByRole('link', { name: 'Assets', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'LG television', exact: true })).toBeVisible();
@@ -1835,7 +1844,7 @@ test('sphere chips on assets, occurrences, occasions and episodes can be changed
     const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: title, exact: true }) }).first();
     const chip = card.locator('[data-yours-sphere]').first(); await chip.locator('summary').click();
     await chip.getByLabel('This record’s sphere', { exact: true }).selectOption('professional');
-    await chip.getByRole('button', { name: 'Change', exact: true }).click(); await expect(chip.locator('summary')).toContainText('Work · placed by you');
+    await chip.getByRole('button', { name: 'Change', exact: true }).click(); await expect(chip.locator('summary')).toHaveText('Work'); await expect(chip).toContainText('Placement: placed by you');
     await chip.locator('summary').click(); await chip.getByRole('button', { name: 'Reset', exact: true }).click(); await expect(chip.locator('summary')).toContainText('Unsorted');
     const filterLabel = tab === 'assets' ? 'Asset sphere' : 'Sphere on this page';
     if (tab === 'assets') await showAssetFilters(route);
@@ -2440,14 +2449,14 @@ test('An asset attaches an existing file, opens the real preview, and removes on
   await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Browse files', exact: true }).click();
   // `files` is the Data tab's name; an unknown tab falls back to Contacts.
-  await expect(route.getByRole('link', { name: 'Upload a receipt, photo or certificate in Files', exact: true })).toHaveAttribute('href', '#data/files');
+  await expect(route.getByRole('link', { name: 'Upload a file', exact: true })).toHaveAttribute('href', '#data/files');
   await route.getByRole('button', { name: 'Attach', exact: true }).click();
   const attachment = route.locator('[data-yours-document]');
   await expect(attachment.getByRole('heading', { name: 'Passport receipt.txt', exact: true })).toBeVisible();
   await expect(attachment).toContainText('text/plain · 16 B');
   expect(await page.evaluate(() => window.__app.rpcCallCount('data.file.attachments.preview'))).toBe(0);
   expect(await page.evaluate(() => window.__app.rpcCallCount('data.file.read'))).toBe(0);
-  await attachment.getByRole('button', { name: 'Document details', exact: true }).click();
+  await openAttachedFileMenu(attachment); await attachment.getByRole('button', { name: 'Document details', exact: true }).click();
   await route.getByLabel('Purpose (optional)', { exact: true }).fill('Receipt');
   await route.getByLabel('Applies to (optional)', { exact: true }).fill('Ana’s passport renewal');
   await route.getByLabel('Document revision (optional)', { exact: true }).fill('October 2026');
@@ -2483,14 +2492,14 @@ test('Unavailable file metadata can be retried without losing document edits or 
   await expect(attachment).toContainText('File details unavailable.');
   await attachment.getByRole('button', { name: 'Retry file details', exact: true }).click();
   await expect(attachment.getByRole('heading', { name: 'Passport receipt.txt', exact: true })).toBeVisible();
-  await attachment.getByRole('button', { name: 'Document details', exact: true }).click();
+  await openAttachedFileMenu(attachment); await attachment.getByRole('button', { name: 'Document details', exact: true }).click();
   await route.getByLabel('Purpose (optional)', { exact: true }).fill('Manual');
   await expect(route.getByLabel('Document revision (optional)', { exact: true })).toHaveValue('');
   await route.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(route.getByLabel('Purpose (optional)', { exact: true })).toHaveValue('Manual');
   await route.getByRole('button', { name: 'Save details', exact: true }).click();
   await expect(attachment).toContainText('Manual');
-  await attachment.getByRole('button', { name: 'Document details', exact: true }).click();
+  await openAttachedFileMenu(attachment); await attachment.getByRole('button', { name: 'Document details', exact: true }).click();
   await route.getByLabel('Purpose (optional)', { exact: true }).fill('');
   await route.getByRole('button', { name: 'Save details', exact: true }).click();
   await expect(attachment.getByText('Purpose', { exact: true })).toHaveCount(0);
@@ -2513,7 +2522,7 @@ for (const mode of ['missing', 'mismatch']) test(`A ${mode} file stays removable
 test('An ordinary asset edit preserves document details updated after its form opened', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=ready&yours_concurrent_document=1#yours/asset/passport/view/files`);
   const route = page.locator('[data-recued-yours]');
-  await route.getByRole('button', { name: 'Document details', exact: true }).click();
+  await openAttachedFileMenu(route); await route.getByRole('button', { name: 'Document details', exact: true }).click();
   await route.getByLabel('Purpose (optional)', { exact: true }).fill('Earlier manual');
   await route.getByLabel('Document revision (optional)', { exact: true }).fill('Edition 2025');
   await route.getByRole('button', { name: 'Save details', exact: true }).click();
@@ -2557,7 +2566,7 @@ test('Late file metadata cannot replace a document draft', async ({ page }) => {
   await page.evaluate(() => { window.__app.holdRpcResponses?.('data.file.attachments.get'); location.hash = '#yours/asset/passport/view/files'; });
   const route = page.locator('[data-recued-yours]');
   await expect(route.getByText('Loading file details…', { exact: true })).toBeVisible();
-  await route.getByRole('button', { name: 'Document details', exact: true }).click();
+  await openAttachedFileMenu(route); await route.getByRole('button', { name: 'Document details', exact: true }).click();
   await route.getByLabel('Purpose (optional)', { exact: true }).fill('Draft manual');
   expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('data.file.attachments.get'))).toBe(1);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

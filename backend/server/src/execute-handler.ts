@@ -1294,6 +1294,7 @@ export interface ExecuteHandlerDeps {
    *  contract's `scope.operation_ids` folds into `op` grant entries. Absent ⇒ no op gate
    *  (additive — the baseline+snapshot+overlay decision stands). */
   opAdmissionGate?: OpAdmissionGate;
+  localAutomation?: import('./scheduled-local-authority.js').ScheduledLocalAuthority;
   /** D-177 P2 — the session-grant resolver (`createSessionGrantResolver`,
    *  built from the same local-only contract store). The commit Gateway's
    *  ask-branch matches a paused-worthy dispatch against live
@@ -5897,10 +5898,24 @@ const handleExecuteInner = async (
           if (decision?.verdict === 'deny') throw new PreflightDeniedError(call.slug, decision.code, decision.detail);
         } }) : undefined;
 
+  const runResourceReview = deps.executorConfig.resourceReview ? {
+    ...deps.executorConfig.resourceReview,
+    localAutomation: deps.localAutomation?.forRun({ source: executionSource, recipe_hash: authoredRecipeSha256,
+      dish_id: boundDish?.dish_id, connections: settledBySlot, run_id,
+      validate(slug, input) {
+        if (effectiveRunAbortSignal.aborted) throw new RpcError('run_killed', 'The run stopped before its local write.', 409);
+        const decision = evaluateAdmission?.(slug, input, typeof input.operation === 'string' ? input.operation : undefined);
+        if (decision?.verdict === 'deny') throw new PreflightDeniedError(slug, decision.code, decision.detail);
+        if (decision?.verdict === 'ask' && (decision.risk_tier !== 'write' || decision.authorization_provenance.lift_reason
+          || decision.authorization_provenance.pre_lift_approval === 'always')) {
+          throw new RpcError('local_automation_unavailable', 'This operation now requires a new individual review.', 409);
+        }
+      } }),
+  } : undefined;
   const engineExecutor: IngredientExecutor =
     commitGatewayActive
       ? wrapWithCommitGateway(cacheAwareGatewayInner(ingredientExecutor), {
-          ...(deps.executorConfig.resourceReview ? { resourceReview: deps.executorConfig.resourceReview } : {}),
+          ...(runResourceReview ? { resourceReview: runResourceReview } : {}),
           ...(ordinaryLocalMutations ? { localMutations: ordinaryLocalMutations } : {}),
           commitStore: deps.commitStore!,
           ...(deps.inDoubtNotifier ? { inDoubtNotifier: deps.inDoubtNotifier } : {}),
@@ -6785,7 +6800,7 @@ const handleExecuteInner = async (
       // for the dispatched (actor, ingredient, operation) and TIGHTENS the
       // connection-keyed profile-floor resolution (restrict only). Absent (no
       // contract store wired — dbless / unit paths) ⇒ override layer skipped.
-      ...(deps.executorConfig.resourceReview ? { resourceReview: deps.executorConfig.resourceReview } : {}),
+      ...(runResourceReview ? { resourceReview: runResourceReview } : {}),
       ...(ordinaryLocalMutations ? { localMutations: ordinaryLocalMutations } : {}),
       ...(deps.contractScan ? { contractScan: deps.contractScan } : {}),
       // D-157 server-wiring — switch the engine into resume mode when

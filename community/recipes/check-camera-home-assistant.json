@@ -1,0 +1,652 @@
+{
+  "recipe_id": "check-camera-home-assistant",
+  "version": 2,
+  "chat_exposed": true,
+  "ttl": 0,
+  "metadata": {
+    "name": "Home Assistant camera check",
+    "description": "Use “Home Assistant camera check” in Recued. Takes a picture from one camera, asks your AI a yes-or-no question about it, such as whether someone is at the door, and alerts you on yes. Run it yourself, from chat, or on a schedule that waits for a motion sensor. The picture goes to your AI, which can miss things: an extra pair of eyes, not a safety device.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "home-assistant"
+    ],
+    "variant_group": "check-camera",
+    "tags": [
+      "home-assistant",
+      "smart-home",
+      "camera",
+      "security",
+      "alerts",
+      "ai",
+      "pack:home-assistant"
+    ],
+    "budget_ms": 120000
+  },
+  "variables": {
+    "camera": {
+      "label": "Camera",
+      "type": "string",
+      "optional": true,
+      "help": "Its name in Home Assistant, such as Front Door, or its entity id, such as camera.front_door."
+    },
+    "question": {
+      "label": "Question",
+      "type": "string",
+      "default": "Is there a person in the picture?",
+      "help": "A yes-or-no question about the picture, such as: Is someone at the door?"
+    },
+    "motion_sensor": {
+      "label": "Motion sensor, for schedules",
+      "type": "string",
+      "optional": true,
+      "help": "On a schedule, it looks only while this sensor is on, such as binary_sensor.front_door_person. Run any other way, it always looks."
+    },
+    "alert_when": {
+      "label": "Alert me",
+      "type": "enum",
+      "options": [
+        "yes_or_unsure",
+        "yes",
+        "never"
+      ],
+      "default": "yes_or_unsure",
+      "help": "yes_or_unsure: alert on yes, and when the AI cannot tell or the camera cannot be checked. yes: only on yes. never: only show the answer."
+    },
+    "channels": {
+      "label": "Notification channels",
+      "type": "array",
+      "options": [
+        "@notification_channels"
+      ],
+      "optional": true,
+      "help": "Sends to every channel you have set up, unless you choose some, such as Slack, email or in-app."
+    }
+  },
+  "requires": [
+    "read_connection_home_assistant",
+    "notification_send"
+  ],
+  "depends_on": [
+    "recued-core.home-assistant"
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.card"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "camera_given",
+      "transform": "coalesce",
+      "values": [
+        "{{config.camera}}",
+        ""
+      ]
+    },
+    {
+      "id": "camera_text",
+      "transform": "trim",
+      "input": "{{step.camera_given}}"
+    },
+    {
+      "id": "camera_lc",
+      "transform": "lowercase",
+      "input": "{{step.camera_text}}"
+    },
+    {
+      "id": "camera_key_raw",
+      "transform": "replace",
+      "input": "{{step.camera_lc}}",
+      "pattern": "camera",
+      "replacement": "",
+      "all": true
+    },
+    {
+      "id": "camera_key_text",
+      "transform": "trim",
+      "input": "{{step.camera_key_raw}}"
+    },
+    {
+      "id": "camera_key_empty",
+      "transform": "compare",
+      "left": "{{step.camera_key_text}}",
+      "operator": "is_empty"
+    },
+    {
+      "id": "camera_key",
+      "transform": "ternary",
+      "if": "{{step.camera_key_empty}}",
+      "then": "(no name)",
+      "else": "{{step.camera_key_text}}"
+    },
+    {
+      "id": "question_given",
+      "transform": "coalesce",
+      "values": [
+        "{{config.question}}",
+        "Is there a person in the picture?"
+      ]
+    },
+    {
+      "id": "question",
+      "transform": "trim",
+      "input": "{{step.question_given}}"
+    },
+    {
+      "id": "states_raw",
+      "op": "recued-core.home-assistant.state.list",
+      "cache": "fresh",
+      "args": {}
+    },
+    {
+      "id": "states",
+      "transform": "default",
+      "value": "{{step.states_raw.result}}",
+      "fallback": []
+    },
+    {
+      "id": "states_named",
+      "transform": "map",
+      "array": "{{step.states}}",
+      "apply": "lowercase",
+      "field": "attributes.friendly_name",
+      "output_field": "name_lc"
+    },
+    {
+      "id": "states_with_domain",
+      "transform": "map",
+      "array": "{{step.states_named}}",
+      "apply": "split",
+      "field": "entity_id",
+      "delimiter": ".",
+      "output_field": "entity_parts"
+    },
+    {
+      "id": "cameras",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "field": "entity_parts.0",
+      "operator": "equal",
+      "value": "camera"
+    },
+    {
+      "id": "cameras_keyed_raw",
+      "transform": "map",
+      "array": "{{step.cameras}}",
+      "apply": "replace",
+      "field": "name_lc",
+      "pattern": "camera",
+      "replacement": "",
+      "all": true,
+      "output_field": "name_key_raw"
+    },
+    {
+      "id": "cameras_keyed",
+      "transform": "map",
+      "array": "{{step.cameras_keyed_raw}}",
+      "apply": "trim",
+      "field": "name_key_raw",
+      "output_field": "name_key"
+    },
+    {
+      "id": "camera_labels",
+      "transform": "map",
+      "array": "{{step.cameras}}",
+      "expression": "{{item.attributes.friendly_name}} ({{item.entity_id}})"
+    },
+    {
+      "id": "camera_list",
+      "transform": "join",
+      "array": "{{step.camera_labels}}",
+      "separator": ", "
+    },
+    {
+      "id": "camera_count",
+      "transform": "count",
+      "input": "{{step.cameras}}"
+    },
+    {
+      "id": "no_cameras",
+      "transform": "compare",
+      "left": "{{step.camera_count}}",
+      "operator": "equal",
+      "right": 0
+    },
+    {
+      "id": "matches",
+      "transform": "filter",
+      "array": "{{step.cameras_keyed}}",
+      "mode": "any",
+      "conditions": [
+        {
+          "field": "name_lc",
+          "operator": "equal",
+          "value": "{{step.camera_lc}}"
+        },
+        {
+          "field": "entity_id",
+          "operator": "equal",
+          "value": "{{step.camera_lc}}"
+        },
+        {
+          "field": "name_key",
+          "operator": "equal",
+          "value": "{{step.camera_key}}"
+        }
+      ]
+    },
+    {
+      "id": "match_count",
+      "transform": "count",
+      "input": "{{step.matches}}"
+    },
+    {
+      "id": "found",
+      "transform": "compare",
+      "left": "{{step.match_count}}",
+      "operator": "equal",
+      "right": 1
+    },
+    {
+      "id": "entity",
+      "transform": "default",
+      "value": "{{step.matches.0.entity_id}}",
+      "fallback": ""
+    },
+    {
+      "id": "camera_name",
+      "transform": "coalesce",
+      "values": [
+        "{{step.matches.0.attributes.friendly_name}}",
+        "{{step.matches.0.entity_id}}",
+        "{{step.camera_text}}"
+      ]
+    },
+    {
+      "id": "camera_seen",
+      "transform": "coalesce",
+      "values": [
+        "{{step.matches.0.attributes.friendly_name}}",
+        "{{step.matches.0.entity_id}}"
+      ]
+    },
+    {
+      "id": "unavailable",
+      "transform": "compare",
+      "left": "{{step.matches.0.state}}",
+      "operator": "equal",
+      "right": "unavailable"
+    },
+    {
+      "id": "sensor_given",
+      "transform": "coalesce",
+      "values": [
+        "{{config.motion_sensor}}",
+        ""
+      ]
+    },
+    {
+      "id": "sensor_text",
+      "transform": "trim",
+      "input": "{{step.sensor_given}}"
+    },
+    {
+      "id": "sensor_lc",
+      "transform": "lowercase",
+      "input": "{{step.sensor_text}}"
+    },
+    {
+      "id": "scheduled",
+      "transform": "compare",
+      "left": "{{context.caller.channel}}",
+      "operator": "equal",
+      "right": "schedule"
+    },
+    {
+      "id": "has_sensor",
+      "transform": "compare",
+      "left": "{{step.sensor_text}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "gated",
+      "transform": "all",
+      "conditions": [
+        "{{step.scheduled}} equal true",
+        "{{step.has_sensor}} equal true"
+      ]
+    },
+    {
+      "id": "sensor_rows",
+      "transform": "filter",
+      "array": "{{step.states_named}}",
+      "mode": "any",
+      "conditions": [
+        {
+          "field": "entity_id",
+          "operator": "equal",
+          "value": "{{step.sensor_lc}}"
+        },
+        {
+          "field": "name_lc",
+          "operator": "equal",
+          "value": "{{step.sensor_lc}}"
+        }
+      ]
+    },
+    {
+      "id": "sensor_count",
+      "transform": "count",
+      "input": "{{step.sensor_rows}}"
+    },
+    {
+      "id": "sensor_found",
+      "transform": "compare",
+      "left": "{{step.sensor_count}}",
+      "operator": "equal",
+      "right": 1
+    },
+    {
+      "id": "sensor_name",
+      "transform": "coalesce",
+      "values": [
+        "{{step.sensor_rows.0.attributes.friendly_name}}",
+        "{{step.sensor_text}}"
+      ]
+    },
+    {
+      "id": "sensor_on",
+      "transform": "compare",
+      "left": "{{step.sensor_rows.0.state}}",
+      "operator": "equal",
+      "right": "on"
+    },
+    {
+      "id": "idle",
+      "transform": "all",
+      "conditions": [
+        "{{step.gated}} equal true",
+        "{{step.sensor_found}} equal true",
+        "{{step.sensor_on}} equal false"
+      ]
+    },
+    {
+      "id": "sensor_missing",
+      "transform": "all",
+      "conditions": [
+        "{{step.gated}} equal true",
+        "{{step.sensor_found}} equal false"
+      ]
+    },
+    {
+      "id": "ready",
+      "transform": "all",
+      "conditions": [
+        "{{step.found}} equal true",
+        "{{step.unavailable}} equal false",
+        "{{step.idle}} equal false",
+        "{{step.sensor_missing}} equal false"
+      ]
+    },
+    {
+      "id": "snapshot",
+      "skip_when": "{{step.ready}} not_equal true",
+      "op": "recued-core.home-assistant.camera.snapshot",
+      "cache": "fresh",
+      "args": {
+        "entity_id": "{{step.entity}}"
+      }
+    },
+    {
+      "id": "ask",
+      "skip_when": "{{step.snapshot.file_ref}} is_null",
+      "op": "core.ai.classify",
+      "cache": "fresh",
+      "args": {
+        "llm.data": "{{step.snapshot}}",
+        "llm.categories": [
+          "yes",
+          "no",
+          "cannot_tell"
+        ],
+        "llm.context": "This picture was taken just now by a camera in the owner's home ({{step.camera_seen}}). Answer the owner's question about it with yes or no. Choose cannot_tell only when the picture is too dark, blurred, blocked or empty to answer.\n\nQuestion: {{step.question}}"
+      }
+    },
+    {
+      "id": "answer",
+      "transform": "default",
+      "value": "{{step.ask.category}}",
+      "fallback": ""
+    },
+    {
+      "id": "answer_word",
+      "transform": "switch",
+      "input": "{{step.answer}}",
+      "cases": {
+        "yes": "Yes",
+        "no": "No",
+        "cannot_tell": "Could not tell"
+      },
+      "default": "No answer"
+    },
+    {
+      "id": "is_yes",
+      "transform": "compare",
+      "left": "{{step.answer}}",
+      "operator": "equal",
+      "right": "yes"
+    },
+    {
+      "id": "is_unsure",
+      "transform": "compare",
+      "left": "{{step.answer}}",
+      "operator": "equal",
+      "right": "cannot_tell"
+    },
+    {
+      "id": "alerts_on",
+      "transform": "compare",
+      "left": "{{config.alert_when}}",
+      "operator": "not_equal",
+      "right": "never"
+    },
+    {
+      "id": "unsure_alerts",
+      "transform": "compare",
+      "left": "{{config.alert_when}}",
+      "operator": "not_equal",
+      "right": "yes"
+    },
+    {
+      "id": "unsure_alert",
+      "transform": "all",
+      "conditions": [
+        "{{step.is_unsure}} equal true",
+        "{{step.unsure_alerts}} equal true"
+      ]
+    },
+    {
+      "id": "alert_worthy",
+      "transform": "any",
+      "conditions": [
+        "{{step.is_yes}} equal true",
+        "{{step.unsure_alert}} equal true"
+      ]
+    },
+    {
+      "id": "should_alert",
+      "transform": "all",
+      "conditions": [
+        "{{step.alerts_on}} equal true",
+        "{{step.alert_worthy}} equal true"
+      ]
+    },
+    {
+      "id": "should_warn",
+      "transform": "all",
+      "conditions": [
+        "{{step.unsure_alerts}} equal true",
+        "{{step.alerts_on}} equal true",
+        "{{step.ready}} equal false",
+        "{{step.idle}} equal false"
+      ]
+    },
+    {
+      "id": "several",
+      "transform": "compare",
+      "left": "{{step.match_count}}",
+      "operator": "greater",
+      "right": 1
+    },
+    {
+      "id": "no_camera_named",
+      "transform": "compare",
+      "left": "{{step.camera_text}}",
+      "operator": "is_empty"
+    },
+    {
+      "id": "not_found_text",
+      "transform": "ternary",
+      "if": "{{step.no_cameras}}",
+      "then": "Home Assistant has no cameras",
+      "else": "Home Assistant has no camera called {{step.camera_text}}. Its cameras are: {{step.camera_list}}"
+    },
+    {
+      "id": "blocked_missing",
+      "transform": "ternary",
+      "if": "{{step.unavailable}}",
+      "then": "{{step.camera_name}} is unavailable in Home Assistant, so no picture was taken",
+      "else": "{{step.not_found_text}}"
+    },
+    {
+      "id": "blocked_detail",
+      "transform": "ternary",
+      "if": "{{step.several}}",
+      "then": "More than one camera is called {{step.camera_text}}: name it by its entity id instead",
+      "else": "{{step.blocked_missing}}"
+    },
+    {
+      "id": "blocked_camera",
+      "transform": "ternary",
+      "if": "{{step.no_camera_named}}",
+      "then": "No camera was named: set Camera in this check's settings, or send one from Home Assistant",
+      "else": "{{step.blocked_detail}}"
+    },
+    {
+      "id": "blocked_text",
+      "transform": "ternary",
+      "if": "{{step.sensor_missing}}",
+      "then": "Home Assistant has no sensor called {{step.sensor_text}}, so the check could not tell whether anything moved",
+      "else": "{{step.blocked_camera}}"
+    },
+    {
+      "id": "notify_answer",
+      "skip_when": "{{step.should_alert}} not_equal true",
+      "op": "core.notification.send",
+      "args": {
+        "channels": "{{config.channels}}",
+        "title": "{{step.camera_name}}: {{step.answer_word}}",
+        "text": "{{step.question}} {{step.answer_word}}. {{step.ask.reasoning}}"
+      }
+    },
+    {
+      "id": "notify_blocked",
+      "skip_when": "{{step.should_warn}} not_equal true",
+      "op": "core.notification.send",
+      "args": {
+        "channels": "{{config.channels}}",
+        "title": "Camera check could not look",
+        "text": "{{step.blocked_text}}."
+      }
+    },
+    {
+      "id": "alerted",
+      "transform": "coalesce",
+      "values": [
+        "{{step.notify_answer}}",
+        "{{step.notify_blocked}}"
+      ]
+    },
+    {
+      "id": "alert_tried",
+      "transform": "compare",
+      "left": "{{step.alerted}}",
+      "operator": "is_not_null"
+    },
+    {
+      "id": "alert_channels",
+      "transform": "default",
+      "value": "{{step.alerted.delivered_to}}",
+      "fallback": []
+    },
+    {
+      "id": "alert_reached",
+      "transform": "compare",
+      "left": "{{step.alert_channels}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "alert_list",
+      "transform": "join",
+      "array": "{{step.alert_channels}}",
+      "separator": ", "
+    },
+    {
+      "id": "alert_unreached",
+      "transform": "ternary",
+      "if": "{{step.alert_tried}}",
+      "then": "Tried, but it reached no channel",
+      "else": "No"
+    },
+    {
+      "id": "alert_text",
+      "transform": "ternary",
+      "if": "{{step.alert_reached}}",
+      "then": "Sent to {{step.alert_list}}",
+      "else": "{{step.alert_unreached}}"
+    },
+    {
+      "id": "not_ready_text",
+      "transform": "ternary",
+      "if": "{{step.idle}}",
+      "then": "Not looked: {{step.sensor_name}} is {{step.sensor_rows.0.state}}",
+      "else": "Could not look: {{step.blocked_text}}"
+    },
+    {
+      "id": "result_text",
+      "transform": "ternary",
+      "if": "{{step.ready}}",
+      "then": "{{step.answer_word}}",
+      "else": "{{step.not_ready_text}}"
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Answer",
+          "value": "{{step.result_text}}"
+        },
+        {
+          "label": "Question",
+          "value": "{{step.question}}"
+        },
+        {
+          "label": "Camera",
+          "value": "{{step.camera_name}}"
+        },
+        {
+          "label": "Why",
+          "value": "{{step.ask.reasoning}}"
+        },
+        {
+          "label": "Alert",
+          "value": "{{step.alert_text}}"
+        }
+      ]
+    }
+  ]
+}

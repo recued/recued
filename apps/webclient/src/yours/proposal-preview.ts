@@ -1,8 +1,8 @@
 import type { Asset, AssetClassPreset, AssetRule, Occasion, ProactiveProposal } from '@recued/contracts';
-import { assetRuleWhenWords } from './asset-rule-editor.js';
+import { assetRuleWhenWords, ruleOffsetWords } from './asset-rule-editor.js';
 import { factName } from './fact-words.js';
 
-const offset = (point: AssetRule['schedule']['before'][number]) => `${point.amount} ${point.amount === 1 ? point.unit.replace(/s$/u, '') : point.unit}`;
+const offset = ruleOffsetWords;
 export const reminderTimingWords = (schedule: AssetRule['schedule'], expiry?: AssetRule['expiry_policy']) => {
   const parts = schedule.before.map(point => `${offset(point)} before`);
   if (schedule.on_day) parts.push('on the day');
@@ -20,6 +20,7 @@ export const proposalPreview = (proposal: ProactiveProposal, context: { assets: 
   const subject = typeof payload.asset_id === 'string' ? { name: asset?.name ?? 'Open affected asset', href: `#yours/asset/${encodeURIComponent(payload.asset_id)}` }
     : typeof payload.occasion_id === 'string' ? { name: occasion?.title ?? 'Open affected occasion', href: `#yours/occasions/occasion/${encodeURIComponent(payload.occasion_id)}` } : undefined;
   const lines: string[] = [];
+  const changes: Array<{ current_label: string; current: string; proposed_label: string; proposed: string }> = [];
   if (proposal.kind === 'rule' && payload.apply_class === true) {
     const preset = context.classes.find(row => row.id === payload.class_id);
     lines.push(`Apply template: ${preset?.name ?? 'the proposed class'}${payload.preset_version ? ` · version ${payload.preset_version}` : ''}`, 'Your edited facts and pinned rules stay yours.');
@@ -32,8 +33,10 @@ export const proposalPreview = (proposal: ProactiveProposal, context: { assets: 
         if (proposal.kind === 'rule') lines.push(`Creates: ${rule.reaction.occurrence === 'action' ? 'a task to complete' : rule.reaction.occurrence === 'notice' ? 'a notice' : 'no task or notice'}${rule.reaction.notify ? ' and sends reminders' : '; notifications off'}.`);
       } else if (typeof payload.rule_id === 'string') lines.push(`Rule: ${factName(payload.rule_id)}. Review its saved trigger before applying this timing change.`);
       const proposed = proposal.kind === 'schedule' ? payload.schedule as AssetRule['schedule'] : rule?.schedule;
-      if (proposal.kind === 'schedule' && original) lines.push(`Current reminders: ${reminderTimingWords(original.schedule, original.expiry_policy)}`);
-      if (proposed) lines.push(`Proposed reminders: ${reminderTimingWords(proposed, rule?.expiry_policy)}`);
+      if (proposal.kind === 'schedule' && proposed) changes.push({ current_label: 'Current reminders',
+        current: original ? reminderTimingWords(original.schedule, original.expiry_policy) : 'Not loaded. Review the saved rule before applying.',
+        proposed_label: 'Proposed reminders', proposed: reminderTimingWords(proposed, rule?.expiry_policy) });
+      else if (proposed) lines.push(`Proposed reminders: ${reminderTimingWords(proposed, rule?.expiry_policy)}`);
     } catch { lines.push('Review the full rule before applying this change.'); }
   } else if (proposal.kind === 'asset' && payload.asset && typeof payload.asset === 'object') {
     const draft = payload.asset as Partial<Asset>;
@@ -41,5 +44,5 @@ export const proposalPreview = (proposal: ProactiveProposal, context: { assets: 
     if (draft.class_id) lines.push(`Type: ${context.classes.find(row => row.id === draft.class_id)?.name ?? factName(draft.class_id)}`);
     for (const [key, value] of Object.entries(draft.dates ?? {}).slice(0, 3)) lines.push(`${factName(key)}: ${value ?? 'Unknown'}`);
   }
-  return { subject, lines };
+  return { subject, lines, changes };
 };

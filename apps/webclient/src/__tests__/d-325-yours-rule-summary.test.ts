@@ -16,8 +16,11 @@ describe('D-325 Yours rule schedule summary (P47)', () => {
     expect(reminderTimingWords(schedule, 'escalate_overdue')).toContain('then every 2 weeks');
   });
   it('describes repeats only for a clock that stays overdue', () => {
-    expect(ruleScheduleSummary(rule({}))).toBe('remind 1 months, on the day; it lapses on the due day, so it does not repeat');
-    expect(ruleScheduleSummary(rule({ expiry_policy: 'escalate_overdue' }))).toBe('remind 1 months, on the day; then every 2 weeks');
-    expect(ruleScheduleSummary(rule({ schedule: { before: [], on_day: false } }))).toBe('remind no earlier points');
+    expect(ruleScheduleSummary(rule({}))).toBe('remind 1 month before, on the day; it lapses on the due day, so it does not repeat');
+    expect(ruleScheduleSummary(rule({ expiry_policy: 'escalate_overdue' }))).toBe('remind 1 month before, on the day; then every 2 weeks');
+    expect(ruleScheduleSummary(rule({ schedule: { before: [], on_day: false } }))).toBe('No scheduled reminders');
+    expect(ruleScheduleSummary(rule({ expiry_policy: 'escalate_overdue',
+      schedule: { before: [], on_day: false, after: { amount: 2, unit: 'weeks' } } })))
+      .toBe('No reminders before or on the due day; then every 2 weeks');
   });
 });

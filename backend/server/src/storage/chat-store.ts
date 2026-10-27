@@ -1591,7 +1591,7 @@ export interface ChatStore {
   readMailWorkEvidence?(session_id: string): Promise<string | null>;
   writeMailWorkEvidence?(session_id: string, json: string, beforeCommit?: () => void): Promise<void>;
   deleteMailWorkEvidence?(session_id: string): void;
-  setTitle(session_id: string, title: string, now?: number): boolean;
+  setTitle(session_id: string, title: string): boolean;
   setArchived(session_id: string, archived: boolean, now?: number): boolean;
   bumpSessionLastActiveAt(session_id: string, now?: number): boolean;
   deleteSession(session_id: string): boolean;
@@ -1859,8 +1859,7 @@ export const createChatStore = (
   );
   const setTitleStmt = db.prepare(`
     UPDATE chat_sessions
-       SET title = @title,
-           last_active_at = @now
+       SET title = @title
      WHERE session_id = @session_id
   `);
   const setArchivedStmt = db.prepare(`
@@ -2488,9 +2487,8 @@ export const createChatStore = (
   const setTitle = (
     session_id: string,
     title: string,
-    now: number = Date.now(),
   ): boolean => {
-    const info = setTitleStmt.run({ session_id, title, now });
+    const info = setTitleStmt.run({ session_id, title });
     return info.changes > 0;
   };
 

@@ -1,0 +1,316 @@
+{
+  "manifest_version": 2,
+  "slug": "paperless-ngx-api",
+  "publisher": "recued-core",
+  "name": "Paperless API",
+  "description": "Use Paperless API to let Paperless documents read your document metadata and custom date fields. Connect your own server and keep documents unchanged while reviewing dates or checking selected source links.",
+  "version": 2,
+  "bundled": true,
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "pack_kind": "app_pack",
+  "service_kind": "storage",
+  "tags": [
+    "paperless",
+    "documents",
+    "api"
+  ],
+  "connection_requirements": [
+    {
+      "api_base": "https://paperless.example.com",
+      "per_org": true,
+      "vendor": "paperless_ngx",
+      "auth": {
+        "type": "header",
+        "header_names": [
+          "Authorization"
+        ]
+      }
+    }
+  ],
+  "connection_hints": [
+    {
+      "connection": "paperless-ngx-api",
+      "setup_url": "https://docs.paperless-ngx.com/api/",
+      "values": {
+        "auth.type": "header"
+      }
+    }
+  ],
+  "recipes": [],
+  "contents": [
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "paperless-ngx-api",
+        "catalog_kind": "official",
+        "ingredients": [
+          {
+            "slug": "paperless-ngx-api",
+            "kind": "http",
+            "http": {
+              "base": "https://paperless.example.com",
+              "connection": "paperless-ngx-api"
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "document.list",
+            "ingredient": "paperless-ngx-api",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "query.query",
+                "type": "string",
+                "affects_target": true
+              },
+              {
+                "key": "query.custom_field_query",
+                "type": "string",
+                "affects_target": true
+              },
+              {
+                "key": "query.page",
+                "type": "number",
+                "affects_target": true
+              },
+              {
+                "key": "query.page_size",
+                "type": "number",
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/documents/",
+              "static_headers": {
+                "Accept": "application/json; version=9"
+              }
+            },
+            "description": "Search documents or filter custom fields using the documented query. Returns provider count, results and next page; use next page until empty. Fresh metadata only.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [],
+              "properties": {
+                "query.query": {
+                  "type": "string",
+                  "maxLength": 2048
+                },
+                "query.custom_field_query": {
+                  "type": "string",
+                  "maxLength": 2048
+                },
+                "query.page": {
+                  "type": "number",
+                  "minimum": 1
+                },
+                "query.page_size": {
+                  "type": "number",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "op": "document.get",
+            "ingredient": "paperless-ngx-api",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "document_id",
+                "type": "number",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/documents/{{document_id}}/",
+              "static_headers": {
+                "Accept": "application/json; version=9"
+              }
+            },
+            "description": "Read one document’s metadata and structured custom fields. A custom field is evidence to review; it does not confirm an asset date. API version 9, uncached.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "document_id"
+              ],
+              "properties": {
+                "document_id": {
+                  "type": "number",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "op": "document.download",
+            "ingredient": "paperless-ngx-api",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "document_id",
+                "type": "number",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/documents/{{document_id}}/download/",
+              "response_capture": {
+                "kind": "file_ref",
+                "mime_type": "application/octet-stream",
+                "filename_source": {
+                  "kind": "static",
+                  "value": "paperless-document"
+                },
+                "ai_enrichment": "opt_out"
+              },
+              "static_headers": {
+                "Accept": "application/json; version=9"
+              }
+            },
+            "description": "Save this document as a file reference on this server, with automatic AI enrichment off. Nothing in Paperless is changed. The evidence recipe captures only a changed date or a newly reviewed writer source.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "document_id"
+              ],
+              "properties": {
+                "document_id": {
+                  "type": "number",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "op": "custom-field.list",
+            "ingredient": "paperless-ngx-api",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "args": [
+              {
+                "key": "query.page",
+                "type": "number",
+                "affects_target": true
+              },
+              {
+                "key": "query.page_size",
+                "type": "number",
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/custom_fields/",
+              "static_headers": {
+                "Accept": "application/json; version=9"
+              }
+            },
+            "description": "List custom field ids, names and types so the owner can choose a date field. Fresh metadata only.",
+            "cache_ttl_ms": 0,
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [],
+              "properties": {
+                "query.page": {
+                  "type": "number",
+                  "minimum": 1
+                },
+                "query.page_size": {
+                  "type": "number",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "op": "custom_field.get",
+            "ingredient": "paperless-ngx-api",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "cache_ttl_ms": 0,
+            "description": "Read the current name and declared type of one custom field before importing its date.",
+            "args": [
+              {
+                "key": "custom_field_id",
+                "type": "number",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/custom_fields/{{custom_field_id}}/",
+              "static_headers": {
+                "Accept": "application/json; version=9"
+              }
+            },
+            "request_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "custom_field_id"
+              ],
+              "properties": {
+                "custom_field_id": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "op": "document.api-root",
+            "ingredient": "paperless-ngx-api",
+            "risk": "read",
+            "approval": "never",
+            "idempotency": "safe",
+            "cache_ttl_ms": 0,
+            "description": "Read the authenticated API root to pin the document source. Returned URLs are compared as identities, never followed.",
+            "args": [],
+            "bind": {
+              "kind": "rest",
+              "method": "GET",
+              "path_template": "/api/.json",
+              "static_headers": {
+                "Accept": "application/json; version=9"
+              }
+            }
+          }
+        ],
+        "tags": [
+          "documents",
+          "assets",
+          "evidence"
+        ]
+      }
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import { LLMError } from '../types.js';
 import type { LLMAdapter, LLMConfig, LLMMessage } from '../types.js';
 import type { IngredientManifest, WebChatTab } from '@recued/contracts';
 import { createQuotaTracker } from '../quota.js';
+import { buildAvailability } from '../availability.js';
 
 // ⚠ The endpoint-capability memories (native JSON mode, the `system` wire role)
 // are PROCESS-GLOBAL by design — they exist so a rejection is paid once per
@@ -440,6 +441,38 @@ describe('executeLLM — misconfiguration', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('executeLLM — rate-limit cooldown persists to the quota tracker', () => {
+  it.each([3, 5])('reports a retry time only when all %s eligible sources are cooling after the three-call limit', async (count) => {
+    const clock = Date.parse('2026-10-26T20:00:00Z'); const date = vi.spyOn(Date, 'now').mockReturnValue(clock);
+    try {
+      const config: LLMConfig = { free_pool: Array.from({ length: count }, (_, i) => ({
+        id: `source_${i}`, type: 'api', provider: 'openai', model: `model_${i}`, api_key: 'fixture', speed: 'fast', supports_json: true, enabled: true,
+      })) };
+      const complete = vi.fn<LLMAdapter['complete']>(async slot => {
+        const wait = slot.model === 'model_1' ? 10_000 : 30_000;
+        throw new LLMError('AI_LLM_UNAVAILABLE', 'Synthetic provider limit', { status: 429, retry_after_ms: wait }, true);
+      });
+      const onMatchResolved = vi.fn(); const rng = vi.fn(() => 0); const quota = createQuotaTracker(); let failed: LLMError | undefined;
+      try { await executeLLM(baseManifest, { 'llm.data': 'hi', 'llm.categories': ['a'] }, {
+        config, adapters: () => ({ provider: 'openai', complete }), quota, tabProbe: noTabs, onMatchResolved, strategy: 'weighted', rng,
+      }); } catch (error) { expect(error).toBeInstanceOf(LLMError); failed = error as LLMError; }
+      expect(complete).toHaveBeenCalledTimes(3); expect(onMatchResolved).toHaveBeenCalledTimes(3);
+      expect(rng).toHaveBeenCalledTimes(count === 3 ? 2 : 3);
+      expect(quota.currentCursor('free:fast')).toBe(0);
+      expect(failed).toMatchObject({ code: 'AI_LLM_UNAVAILABLE', details: { status: 429 } });
+      expect(failed?.details?.retry_at).toBe(count === 3 ? clock + 10_000 : undefined);
+    } finally { date.mockRestore(); }
+  });
+
+  it('keeps a caller-owned availability snapshot opaque when reporting a provider failure', async () => {
+    const config: LLMConfig = { slot_1: { provider: 'openai', model: 'fixture', api_key: 'fixture', speed: 'fast', supports_json: true } };
+    const quota = createQuotaTracker(); const preBuiltAvailability = await buildAvailability({ config, quota, tabProbe: noTabs });
+    const budgetStatus = vi.fn(() => { throw new Error('The caller owns this availability policy'); });
+    const complete = vi.fn<LLMAdapter['complete']>(async () => { throw new LLMError('AI_LLM_UNAVAILABLE', 'Synthetic outage', { status: 503 }, true); });
+    await expect(executeLLM(baseManifest, { 'llm.data': 'hi', 'llm.categories': ['a'] }, {
+      config, quota, preBuiltAvailability, budgetStatus, adapters: () => ({ provider: 'openai', complete }), tabProbe: noTabs,
+    })).rejects.toMatchObject({ details: { status: 503 } });
+    expect(budgetStatus).not.toHaveBeenCalled(); expect(complete).toHaveBeenCalledTimes(1);
+  });
   // Both slots at fast tier so the matcher has two candidates at the
   // same speed level — lets rejectSet push us from slot_1 to slot_2
   // without needing the upgrade/downgrade relaxation path.

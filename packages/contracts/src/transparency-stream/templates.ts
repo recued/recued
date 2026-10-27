@@ -32,6 +32,7 @@ import type {
   TransparencyEventKind,
 } from './events.js';
 import { TRANSPARENCY_EVENT_KINDS } from './events.js';
+import { formatLlmRetryTime } from '../llm-retry-time.js';
 
 // ── PB7.3.1 — Per-kind template registry ────────────────────────────
 
@@ -135,15 +136,22 @@ export const TRANSPARENCY_TEMPLATES_EN: Readonly<{
 
   // ─ Failure semantics — user must see truthful failure messaging ─
   'engine.decoder_unavailable': (e) => {
+    if (e.reason === 'cooldown') {
+      const retryAt = formatLlmRetryTime(e.retry_at);
+      return 'the AI source is temporarily paused after a provider failure; '
+        + (retryAt ? `try again after ${retryAt}` : 'wait a little before trying again');
+    }
     if (e.reason === 'no_source') {
       return 'no AI model source available for this turn — check Settings → AI / Models';
     }
     if (e.reason === 'invalid_output') {
       return 'the AI returned output that could not be decoded';
     }
-    return e.site === 'tool_loop'
+    const message = e.site === 'tool_loop'
       ? 'the AI provider failed partway through this turn'
       : 'the AI provider failed before answering';
+    const retryAt = formatLlmRetryTime(e.retry_at);
+    return retryAt ? `${message}; try again after ${retryAt}` : message;
   },
   // Ack-before-run — the turn shell died after the message was
   // accepted; no assistant reply is coming for it. Dual-audience copy

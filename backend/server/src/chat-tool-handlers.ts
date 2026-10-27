@@ -156,6 +156,7 @@ import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { DATA_FILE_RECEIVED_SLUG } from './collections/file/file-read-handler.js';
 import { scoreFileNeedle, type FileViewResolver, type DataFileView } from './file-view-resolver.js';
 import { isWatchedFolderCollection } from './collections/file/watched-folder-collection.js';
+import { isMirroredCollection } from './collections/mirrored-collection.js';
 import { mediaClassForMimeType } from './collections/file/inbound-file-collection.js';
 import type { Collection } from './collections/types.js';
 import type {
@@ -1594,6 +1595,10 @@ const createMailSearchHandler =
     // `contact.search` had, and `mail` is the more sensitive collection.
     const registry = deps.getCollectionRegistry();
     if (!registry) return executionError('collection registry unavailable');
+    // Each searched mailbox's verdict. An SMTP-only account is searched (its sent
+    // copies) but mirrors no mailbox, so it has none (`isMirroredCollection`).
+    const mailFreshness = (searched: readonly Collection[]) =>
+      collectionSourceFreshnessFanOut(searched.filter(isMirroredCollection), (deps.now ?? Date.now)());
     const args = asObject(raw);
     if (!args) return invalidArgs('args must be an object');
     const limit = clampLimit(args.limit);
@@ -1632,7 +1637,7 @@ const createMailSearchHandler =
           mailbox_addresses: mailboxAddresses(enrolled),
           mailbox_not_found: slug,
           note: `No enrolled mailbox has slug ${JSON.stringify(slug)}. Use a collection_slug returned by an earlier search.`,
-          source_freshness: collectionSourceFreshnessFanOut(enrolled, (deps.now ?? Date.now)()),
+          source_freshness: mailFreshness(enrolled),
         },
       };
     }
@@ -1691,9 +1696,7 @@ const createMailSearchHandler =
                 + `${slug === undefined ? 'the enrolled mailboxes' : `mailbox ${JSON.stringify(slug)}`}, so there is nothing to step from. `
                 + `Pass a record_id returned by an earlier search — ids cannot `
                 + `be constructed or guessed.`,
-              source_freshness: collectionSourceFreshnessFanOut(
-                collections, (deps.now ?? Date.now)(),
-              ),
+              source_freshness: mailFreshness(collections),
             },
           };
         }
@@ -1714,9 +1717,7 @@ const createMailSearchHandler =
                 `record_id ${JSON.stringify(nearId)} exists in more than one mailbox, so its `
                 + `neighbours would mix different messages. Pass slug with near_id: the `
                 + `collection_slug of the result you are stepping from.`,
-              source_freshness: collectionSourceFreshnessFanOut(
-                collections, (deps.now ?? Date.now)(),
-              ),
+              source_freshness: mailFreshness(collections),
             },
           };
         }
@@ -1757,9 +1758,7 @@ const createMailSearchHandler =
             more_matches: moreAvailable || aggregated.length > limit,
             collections: collections.map((c) => c.slug),
             mailbox_addresses: mailboxAddresses(collections),
-            source_freshness: collectionSourceFreshnessFanOut(
-              collections, (deps.now ?? Date.now)(),
-            ),
+            source_freshness: mailFreshness(collections),
           },
         };
       }
@@ -1862,10 +1861,7 @@ const createMailSearchHandler =
           more_matches: moreAvailable,
           collections: collections.map((c) => c.slug),
           mailbox_addresses: mailboxAddresses(collections),
-          source_freshness: collectionSourceFreshnessFanOut(
-            collections,
-            (deps.now ?? Date.now)(),
-          ),
+          source_freshness: mailFreshness(collections),
           ...(hint !== undefined ? { hint } : {}),
         },
       };

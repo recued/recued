@@ -346,6 +346,11 @@ describe('D-171 external-door HTTP MCP transport gate matrix', () => {
       mcpTokenId: expect.any(String),
       agentId: `inbound_${INBOUND_TOKEN_ID}`,
     });
+    // ⇒ and the dispatcher is told this door serves the port, which is what lets
+    // both handshakes declare `tools.listChanged`. Without it the official SDK
+    // v2 client never opens the feed this test proves exists, and Claude Code
+    // and OpenClaw ignore the 2025-era notices.
+    expect(lastCapturedDeps().mcpToolsListChangedNotifications).toBe(true);
     session.close();
   });
 });

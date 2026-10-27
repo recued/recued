@@ -253,6 +253,24 @@ describe('the context-overflow retry', () => {
  *  blank assistant turn. It then repeats on EVERY subsequent message, because
  *  nothing about the situation changes on its own. */
 describe('a size refusal is actionable, not a blank turn', () => {
+  it('does not reuse a size failure after a later malformed repair and counts every main call', async () => {
+    let calls = 0;
+    const events: unknown[] = [];
+    const result = await runChatTurn(baseInput, { ...deps,
+      executeAiCall: async () => {
+        calls += 1;
+        if (calls === 1) throw new LLMError('AI_TOKEN_BUDGET_EXCEEDED', 'context_length_exceeded');
+        return { body: { response: 42 } };
+      },
+      resolveInputTokenBudget: () => calls === 0 ? undefined : 10_000,
+      emit: event => { if (event.kind === 'chat.transparency') events.push(event.event); },
+    });
+    expect(calls).toBe(3);
+    expect(result.assistant_content).toBe('The AI model returned a reply that could not be read. Please try again.');
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'engine.budget_exceeded', total_calls: 3 }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'engine.decoder_unavailable', reason: 'invalid_output' }));
+  });
+
   const overflowDeps = {
     ...deps,
     executeAiCall: async () => {
@@ -290,13 +308,15 @@ describe('a size refusal is actionable, not a blank turn', () => {
     expect(text).not.toContain('new conversation');
   });
 
-  it('a NON-size provider failure keeps the historical empty turn', async () => {
+  it('a non-size provider failure stores readable context without inventing a deadline', async () => {
     const result = await runChatTurn(baseInput as never, {
       ...deps,
       executeAiCall: async () => {
         throw new LLMError('AI_TIMEOUT', 'Request timed out after 60000ms');
       },
     } as never);
+    expect(result.assistant_content).toBe('The AI provider failed before answering.');
+    expect(result.assistant_content).not.toContain('Try again after');
     expect(JSON.stringify(result)).not.toContain('Settings → AI / Models');
   });
 });

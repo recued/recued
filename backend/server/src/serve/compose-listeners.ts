@@ -3311,6 +3311,25 @@ export const composeListeners = async (
         })),
     } : undefined;
 
+  if (app.clientTokensRef && scheduleDeps && storage.workEntityStoreRef && execution.executeDeps.recordsStore
+    && execution.executeDeps.dishStore && execution.executeDeps.connectionStore) {
+    const authority = createScheduledLocalAuthority({ db: storage.db, execution: {
+      recipeStore: execution.executeDeps.recipeStore, dishStore: execution.executeDeps.dishStore,
+      recordsStore: execution.executeDeps.recordsStore, connectionStore: execution.executeDeps.connectionStore,
+      executorConfig: execution.executorConfig },
+      schedules: scheduleDeps.store, assets: storage.workEntityStoreRef,
+      catalogForPack: ref => execution.executeDeps.contractScan ? buildPackOpResolution(
+        () => execution.executeDeps.contractScan!('installed_pack', []), slug => execution.executorConfig.manifests.get(slug)).get(ref)?.catalog_slug : undefined });
+    execution.executeDeps.localAutomation = authority;
+    scheduleDeps.localAutomation = authority;
+    scheduleDeps.localAutomationOwner = client => {
+      const token = client.client_token_id ? app.clientTokensRef!.get(client.client_token_id) : null;
+      const instance = client.token_instance_id ?? client.instance_id;
+      if (!token || token.client_kind !== 'webclient' || client.client_kind !== 'webclient' || token.revoked_at !== null
+        || !instance || token.metadata?.instance_id !== instance) throw new RpcError('forbidden', 'Use your paired owner webclient to authorize local writes.', 403);
+      return JSON.stringify([token.token_id, instance]);
+    };
+  }
   const automationRehearsalDeps = app.keys && app.clientTokensRef && scheduleDeps && eventTriggersBundle && rpc.autoRunDeps
     && execution.executeDeps.dishStore && contractStore ? {
       clientTokens: app.clientTokensRef,
@@ -5239,3 +5258,4 @@ export const composeListeners = async (
     mcpPackFirstMintDeps,
   };
 };
+import { createScheduledLocalAuthority } from '../scheduled-local-authority.js';

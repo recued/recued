@@ -5,6 +5,7 @@ import { isCollectionReadGrantedForDispatch, type ChatToolHandlerDeps } from './
 import { collectionReadFencedHint } from './read-grant-checker.js';
 import { mailEvidenceMetadata } from './mail-evidence.js';
 import { readerPage } from './document-read-tool.js';
+import { isMirroredCollection } from './collections/mirrored-collection.js';
 
 /** What a reading of a message depends on: its identity and the headers the
  * model reads and cites. Read and flag state, labels, folder and direction
@@ -55,6 +56,7 @@ export const createMailReadHandler = (deps: ChatToolHandlerDeps): Tier1Handler =
     attachment_contents_read: false,
     warnings: !fileGranted ? [collectionReadFencedHint('file')] : attached?.warnings ?? ['Attachment links could not be checked.'],
     hint: "Cite source_url beside the claim this message supports; keep owner context and other messages separately attributed. received_at_iso is the message date as stored, usually the sender's Date header: not proof of receipt or of an agreed work date. Read relevant attachments with document.read using these file references. File metadata and mail previews do not establish attachment contents. Continue with next_offset and read_version for the rest of the body.",
-    source_freshness: collectionSourceFreshnessFanOut([collection!], (deps.now ?? Date.now)()),
+    // An SMTP-only account's copy has no mailbox behind it to be behind.
+    source_freshness: collectionSourceFreshnessFanOut([collection!].filter(isMirroredCollection), (deps.now ?? Date.now)()),
   } };
 };

@@ -8,6 +8,70 @@ declare global { interface Window {
 
 installFullAppHooks();
 
+test('The overview keeps its order and deliberate disclosure state with and without comparisons', async ({ page }) => {
+  const route = page.locator('[data-recued-yours]');
+  for (const comparisons of [false, true]) {
+    await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields=1&yours_provenance=1${comparisons ? '&yours_reading_comparisons=1' : ''}#yours/asset/passport`);
+    await expect(route.getByRole('heading', { name: 'Ana’s passport', exact: true })).toBeVisible();
+    const sections = await route.locator('[data-yours-asset-panel="overview"]>section').evaluateAll(nodes => nodes.map(node => node.querySelector('h2,h3')?.textContent));
+    expect(sections.slice(0, 3)).toEqual(['Needs attention', 'Facts and settings', 'Conditions and readings']);
+    const attention = route.locator('.yours-attention'); await expect(attention).toHaveJSProperty('open', false);
+    await attention.locator(':scope > summary').click(); await expect(attention.getByRole('button', { name: 'Done', exact: true })).toBeVisible();
+    const source = route.locator('[data-yours-fact="attributes.cover"] .yours-source'); await source.locator('summary').click();
+    await route.getByRole('button', { name: 'Refresh', exact: true }).click(); await expect(route).toHaveAttribute('aria-busy', 'false');
+    await expect(attention).toHaveJSProperty('open', true); await expect(source).toHaveJSProperty('open', true);
+    await source.locator('summary').click(); await attention.locator(':scope > summary').click();
+    await route.getByRole('button', { name: 'Refresh', exact: true }).click(); await expect(route).toHaveAttribute('aria-busy', 'false');
+    await expect(attention).toHaveJSProperty('open', false); await expect(source).toHaveJSProperty('open', false);
+    expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('yours.context'))).toBe(0);
+    if (comparisons) {
+      const comparison = route.locator('[data-yours-comparison="meter_service"]'); await expect(comparison).toContainText('1000 km below target');
+      await expect(comparison.getByRole('link', { name: 'Saved reading', exact: true })).toHaveAttribute('href', /overview\/reading\/odometer$/u);
+      await expect(comparison.getByRole('link', { name: 'Declared target', exact: true })).toHaveAttribute('href', /rules\/rule\/meter_service$/u);
+    }
+  }
+});
+
+test('Relationship inputs and rules open the exact saved target', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields=1#yours/asset/passport/view/rules`);
+  const route = page.locator('[data-recued-yours]'); const rule = route.locator('[data-yours-rule="meter_service"]');
+  await rule.getByRole('button', { name: 'Explain this rule', exact: true }).click();
+  const context = route.locator('[data-yours-context]'); await expect(context).toContainText('Service by distance uses Odometer.');
+  await context.getByRole('link', { name: 'Open saved field', exact: true }).click();
+  await expect(route.locator('[data-yours-reading="odometer"]')).toBeFocused();
+  await route.getByRole('navigation', { name: 'Asset sections', exact: true }).getByRole('link', { name: 'Rules', exact: true }).click();
+  await rule.getByRole('button', { name: 'Explain this rule', exact: true }).click();
+  await context.getByRole('link', { name: 'Open rule on asset', exact: true }).click(); await expect(rule).toBeFocused();
+  await route.locator('[data-yours-rule="renew"]').getByRole('button', { name: 'Explain this rule', exact: true }).click();
+  await context.getByRole('link', { name: 'Open saved field', exact: true }).click();
+  await expect(route.locator('[data-yours-field="dates.expires_on"]')).toBeFocused();
+  expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
+});
+
+test('Uploading keeps an explicit return to the asset and never attaches a file without the owner choosing it', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&settle_reads=1#yours/asset/passport/view/files`);
+  const route = page.locator('[data-recued-yours]'); await route.getByRole('link', { name: 'Upload a file', exact: true }).click();
+  const handoff = page.locator('[data-yours-file-return]'); await expect(handoff).toContainText('Ana’s passport');
+  await handoff.getByRole('link', { name: 'Return to Ana’s passport', exact: true }).click();
+  await expect(route.getByRole('heading', { name: 'Ana’s passport', exact: true })).toBeVisible();
+  await expect(route.locator('[data-yours-document]')).toHaveCount(0);
+  await route.getByRole('button', { name: 'Browse files', exact: true }).click(); await route.getByRole('button', { name: 'Attach', exact: true }).click();
+  await expect(route.locator('[data-yours-document]')).toHaveCount(1);
+  await page.evaluate(() => window.__app.setHash('#chat')); await expect(route).toHaveCount(0);
+  await page.evaluate(() => window.__app.setHash('#data/files')); await expect(handoff).toHaveCount(0);
+});
+
+test('Activity groups the recorded times and retains exact source and event kinds on demand', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_timeline=1#yours/asset/passport/view/activity`);
+  const route = page.locator('[data-recued-yours]'); await expect(route.locator('.yours-history-day')).toHaveCount(2);
+  const entries = route.locator('.yours-timeline>li'); await expect(entries).toHaveCount(3);
+  await expect(entries.first().locator('time')).toHaveAttribute('datetime', '2026-10-17T12:00:00.000Z');
+  const details = entries.first().locator('details'); await expect(details).toHaveJSProperty('open', false); await details.locator('summary').click();
+  await expect(details).toContainText('collection · asset.updated');
+  expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
+});
+
 test('Refresh restores its keyboard focus without taking focus from a control chosen while the read is pending', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
   const route = page.locator('[data-recued-yours]');
@@ -244,12 +308,12 @@ test('A pending fact action survives a background refresh and uses the current v
   const form = route.locator('[data-yours-editor]');
   await expect(form.locator('blockquote')).toHaveText('Green');
   await form.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(action).toBeFocused(); await expect(row.locator('details')).toHaveJSProperty('open', true);
+  await expect(action).toBeFocused(); await expect(row.locator('[data-yours-menu]')).toHaveJSProperty('open', true);
   // A subsequent refresh respects the owner's outside-pointer dismissal.
   await route.getByRole('heading', { name: 'Ana’s passport', exact: true }).click();
-  await expect(row.locator('details')).toHaveJSProperty('open', false);
+  await expect(row.locator('[data-yours-menu]')).toHaveJSProperty('open', false);
   await (await holdMenuRefresh(page))();
-  await expect(row.locator('details')).toHaveJSProperty('open', false);
+  await expect(row.locator('[data-yours-menu]')).toHaveJSProperty('open', false);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
   expect(await page.evaluate(() => window.__assetRelationshipWrites)).toEqual([]);
 });
@@ -266,14 +330,14 @@ test('Menu refresh preserves keyboard focus by full field identity and respects 
   const action = attribute.getByRole('button', { name: 'Edit fact', exact: true }); await action.focus();
   await page.evaluate(() => window.__assetSetAttributes('passport', { cover: 'Green', radius_km: 'still about five' }));
   await (await holdMenuRefresh(page))();
-  await expect(attribute.locator('details')).toHaveJSProperty('open', true);
-  await expect(setting.locator('details')).toHaveJSProperty('open', false);
+  await expect(attribute.locator('[data-yours-menu]')).toHaveJSProperty('open', true);
+  await expect(setting.locator('[data-yours-menu]')).toHaveJSProperty('open', false);
   await expect(action).toBeFocused();
   await page.keyboard.press('Escape');
-  await expect(summary).toBeFocused(); await expect(attribute.locator('details')).toHaveJSProperty('open', false);
+  await expect(summary).toBeFocused(); await expect(attribute.locator('[data-yours-menu]')).toHaveJSProperty('open', false);
   await (await holdMenuRefresh(page))();
-  await expect(summary).toBeFocused(); await expect(attribute.locator('details')).toHaveJSProperty('open', false);
-  await expect(setting.locator('details')).toHaveJSProperty('open', false);
+  await expect(summary).toBeFocused(); await expect(attribute.locator('[data-yours-menu]')).toHaveJSProperty('open', false);
+  await expect(setting.locator('[data-yours-menu]')).toHaveJSProperty('open', false);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
 });
 
@@ -288,12 +352,12 @@ test('A removed field cannot transfer its open menu or focus to a namesake', asy
   await page.evaluate(() => window.__assetSetAttributes('passport', {}));
   await (await holdMenuRefresh(page))();
   await expect(attribute).toHaveCount(0);
-  await expect(route.locator('[data-yours-fact="settings.radius_km"]').locator('..').locator('details')).toHaveJSProperty('open', false);
+  await expect(route.locator('[data-yours-fact="settings.radius_km"]').locator('..').locator('[data-yours-menu]')).toHaveJSProperty('open', false);
   await expect(route.locator('[data-yours-heading]')).toBeFocused();
   await expect(route.locator('[data-yours-editor]')).toHaveCount(0);
   await page.evaluate(() => window.__assetSetAttributes('passport', { radius_km: 'back again' }));
   await (await holdMenuRefresh(page))();
-  await expect(attribute.locator('details')).toHaveJSProperty('open', false);
+  await expect(attribute.locator('[data-yours-menu]')).toHaveJSProperty('open', false);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
 });
 
@@ -306,7 +370,7 @@ test('A removed menu action returns focus to its own summary', async ({ page }) 
   await page.evaluate(() => window.__assetSetAttributes('passport', { cover: 25 }));
   await (await holdMenuRefresh(page))();
   await expect(action).toHaveCount(0); await expect(summary).toBeFocused();
-  await expect(row.locator('details')).toHaveJSProperty('open', true);
+  await expect(row.locator('[data-yours-menu]')).toHaveJSProperty('open', true);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
 });
 
@@ -402,7 +466,7 @@ test('A reading opens its own rule and writer flows without surrendering the man
   await route.getByRole('navigation', { name: 'Asset sections', exact: true }).getByRole('link', { name: 'Rules', exact: true }).click();
   await route.locator('[data-yours-disclosure="Observation writers"]>summary').click(); await route.getByRole('button', { name: 'Disable writer', exact: true }).click();
   await route.getByRole('navigation', { name: 'Asset sections', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
-  await expect(reading).toContainText('9500 km'); await expect(reading).toContainText('Recorded by you');
+  await expect(reading).toContainText('9500 km'); await expect(reading).toContainText('Entered by you');
 });
 
 test('Adding supporting evidence preserves the value and the explicit automatic-update handoff', async ({ page }, testInfo) => {
@@ -414,7 +478,7 @@ test('Adding supporting evidence preserves the value and the explicit automatic-
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('Supporting file', { exact: true }).selectOption({ label: 'Passport receipt.txt' });
   await page.screenshot({ path: testInfo.outputPath('supporting-evidence.png'), fullPage: true });
   await form.getByRole('button', { name: 'Add evidence', exact: true }).click();
-  await expect(reading).toContainText('9500 km'); await expect(reading).toContainText('Automatic updates allowed.'); await expect(reading).toContainText('Recorded by you');
+  await expect(reading).toContainText('9500 km'); await expect(reading).toContainText('Automatic updates allowed.'); await expect(reading).toContainText('Entered by you');
   await expect(reading.getByRole('button', { name: 'Open evidence', exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.__app.rpcCallCount('data.file.read'))).toBe(0);
   expect(await page.evaluate(() => window.__assetRelationshipWrites)).toMatchObject([{ action: 'asset.add_evidence', path: 'readings.odometer', evidence: { collection: 'file', id: expect.any(String) } }]);

@@ -17,6 +17,8 @@ import type { createSituationQuery, SituationReadContext } from './query.js';
 import { wholeSituationSnapshotAllowed } from './event-visibility.js';
 import { selectDayOfClusterItems, shouldSendDayOfCluster } from './notification-overlap-policy.js';
 import { assetRenewal } from './asset-rule-timing.js';
+import type { Collection } from '../collections/types.js';
+import { isMirroredCollection } from '../collections/mirrored-collection.js';
 
 export const DEFAULT_SITUATION_DELIVERY: SituationDeliverySettings = { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true };
 const ownerSource = { channel: 'chat', actor: 'user_self', user_id: 'owner', chat_session_id: 'scheduled-situations' } as const;
@@ -49,6 +51,14 @@ const missedBy = (item: SituationItem, cluster: SituationCluster, named: (anchor
   return anchor && side ? ` · ${verdict === 'near' ? 'shortly' : 'well'} ${side} ${named(anchor)}` : '';
 };
 interface RunRow { id: string; mode: string; day: string; at: number; state: string; attempts: number; text: string; delivered_to: string }
+/** The Digest's mailbox lines: each mail account that mirrors a mailbox, with its
+ *  last good sync and whether it needs attention. An SMTP-only account syncs
+ *  nothing, so it is not listed (`isMirroredCollection`). */
+export const mailboxHealthOf = (collections: readonly Collection[], now: number) =>
+  collections.filter(collection => collection.platform === 'mail' && isMirroredCollection(collection)).map(collection => {
+    const health = collection.health(); return { name: collection.slug, last_success_at: health.last_indexed_at,
+      needs_attention: health.error_count_24h > 0 || health.last_indexed_at === 0 || now - health.last_indexed_at > 86_400_000 || health.auth_state === 'expired' || health.auth_state === 'unauthorized' };
+  });
 export const createScheduledSituations = (deps: {
   db: Database.Database; store: SituationStore; work: WorkEntityStore; query: ReturnType<typeof createSituationQuery>;
   timeZone: () => string; isVaultUnlocked: () => boolean; isQuiet: (at: number) => boolean;

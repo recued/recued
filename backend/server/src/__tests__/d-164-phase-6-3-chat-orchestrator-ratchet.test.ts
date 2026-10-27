@@ -81,7 +81,7 @@ const mkRegistry = (
 
 
 type AiStep =
-  | { body: unknown; usage?: TokenUsageReport }
+  | { body: unknown; usage?: TokenUsageReport; finish_reason?: 'length' }
   | { throws: Error };
 
 interface CapturedAiCall {
@@ -118,6 +118,7 @@ const mkExecuteAiCall = (
   if ('throws' in step) throw step.throws;
   return {
     body: step.body,
+    ...(step.finish_reason ? { finish_reason: step.finish_reason } : {}),
     ...(step.usage ? { usage: step.usage } : {}),
   };
 };
@@ -768,7 +769,26 @@ describe('D-164 P6.3 tool-loop prompt threading', () => {
 });
 
 describe('D-164 P6.3 failure paths', () => {
-  it('keeps validation failure details internal while shipping empty assistant content', async () => {
+  it('preserves partial work when the next reply reaches its output limit', async () => {
+    const calls: CapturedAiCall[] = [];
+    let dispatched = 0;
+    const { orchestrator, sessionId } = setup({
+      catalog: [mkTool('mail.search', 1)],
+      dispatchImpl: async () => { dispatched += 1; return { ok: true, result: {} }; },
+      executeAiCall: mkExecuteAiCall([
+        { body: aiOutput('I will check these messages.', [toolCall()]) },
+        { body: { response: { private: 'PRIVATE-LENGTH-731' } }, finish_reason: 'length' },
+      ], calls),
+    });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'check messages', picker_state: { current: 'self' } });
+    const assistant = await finalAssistant(sessionId);
+    expect(assistant?.content).toBe('I will check these messages.\n\nThe model reached its output limit before it could finish a valid response.');
+    expect(assistant?.content).not.toContain('PRIVATE-LENGTH-731');
+    expect(assistant?.tool_calls).toHaveLength(1); expect(dispatched).toBe(1); expect(calls).toHaveLength(2);
+    expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([{ termination_reason: 'output_unreadable' }]);
+  });
+
+  it('keeps validation failure details internal while saving a readable model-output failure', async () => {
     // Mutation caught: validation issues leak externally, the orchestrator
     // persists the malformed body verbatim, OR validation runs AFTER
     // tool dispatch (the body's `tool_calls` is deliberately non-empty
@@ -801,8 +821,9 @@ describe('D-164 P6.3 failure paths', () => {
     expect(dispatched).toBe(0);
     expect(eventsByKind('chat.tool_call_started')).toHaveLength(0);
     const finalMsg = await finalAssistant(sessionId);
-    expect(finalMsg).toMatchObject({ content: '' });
+    expect(finalMsg?.content).toBe('The AI model returned a reply that could not be read. Please try again.');
     expect(finalMsg?.tool_calls).toBeUndefined();
+    expect(calls).toHaveLength(2);
     expect(eventsByKind('engine.budget_exceeded')).toHaveLength(1);
     expect(captured.find((event) => event.kind === 'chat.message_complete')).toBeDefined();
     expect(JSON.stringify(captured)).not.toContain('validation_issues');
@@ -867,7 +888,7 @@ describe('D-164 P6.3 failure paths', () => {
       { termination_reason: 'aborted' },
     ]);
     const assistant = await finalAssistant(sessionId);
-    expect(assistant?.content).toBe('I will search first.');
+    expect(assistant?.content).toBe('I will search first.\n\nThe AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.');
     expect(assistant?.tool_calls?.[0]).toMatchObject({ tool_name: 'mail.search', status: 'ok' });
   });
 });
@@ -1412,7 +1433,7 @@ describe('D-164 § 6 chat-orchestrator dispatchToolCalls wiring', () => {
   });
 });
 
-describe('D-164 P6.3 cap-exit empty-content fail-loud', () => {
+describe('D-164 P6.3 cap-exit saved limit context', () => {
   const budgetMessageNeedle = 'tool budget before finishing an answer';
   const continueNeedle = 'Ask it to continue';
 
@@ -1480,8 +1501,8 @@ describe('D-164 P6.3 cap-exit empty-content fail-loud', () => {
     ]);
   });
 
-  it('ships non-empty cap planning response unchanged', async () => {
-    // Mutation caught: cap-exit fail-loud message overwrites a useful partial answer.
+  it('retains partial cap response with a saved tool-limit note', async () => {
+    // Preserve useful text and completed work without presenting the capped turn as finished.
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall((index) => ({
       body: aiOutput(
@@ -1503,8 +1524,8 @@ describe('D-164 P6.3 cap-exit empty-content fail-loud', () => {
     });
 
     const assistant = await finalAssistant(sessionId);
-    expect(assistant?.content).toBe('partial answer from cap');
-    expect(assistant?.content).not.toContain(budgetMessageNeedle);
+    expect(assistant?.content).toBe('partial answer from cap\n\nThe AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.');
+    expect(assistant?.tool_calls).toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
     expect(calls).toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP + 1);
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
       { termination_reason: 'max_rounds_exhausted' },
@@ -1633,6 +1654,36 @@ describe('D-164 P6.3 abort-exit provider-failure fail-loud', () => {
   const toolsRanNeedle = 'tools had already run';
   const noSourceNeedle = 'No AI model is available';
 
+  it('saves an unreadable model-output failure after bounded repair without dispatching its tool calls', async () => {
+    let dispatched = 0;
+    const calls: CapturedAiCall[] = [];
+    const { orchestrator, sessionId } = setup({
+      catalog: [mkTool('mail.search', 1)],
+      dispatchImpl: async () => {
+        dispatched += 1;
+        return { ok: true, result: { hits: [1] } };
+      },
+      executeAiCall: mkExecuteAiCall([
+        { body: aiOutput('', [toolCall()]) },
+        { body: { response: { private: 'MODEL-TRACE-731' }, events: [], tool_calls: [toolCall()] } },
+      ], calls),
+    });
+
+    await orchestrator.runTurn({ session_id: sessionId, message: 'unreadable after tools', picker_state: { current: 'self' } });
+
+    const assistant = await finalAssistant(sessionId);
+    expect(assistant?.content).toBe('The AI model returned a reply that could not be read after some tools had already run. Check those results before trying again.');
+    expect(assistant?.content).not.toContain('MODEL-TRACE-731');
+    expect(assistant?.content).not.toContain('provider failed');
+    expect(assistant?.tool_calls).toHaveLength(1);
+    expect(dispatched).toBe(1);
+    expect(calls).toHaveLength(3);
+    expect(JSON.parse(calls[2]!.input['llm.prompt'] as string).output_feedback).toContain('response_not_string');
+    expect(eventsByKind('engine.budget_exceeded')).toMatchObject([{ total_calls: 3 }]);
+    expect(eventsByKind('engine.decoder_unavailable')).toMatchObject([{ reason: 'invalid_output', site: 'tool_loop' }]);
+    expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([{ termination_reason: 'aborted' }]);
+  });
+
   it('replaces round-0 abort-empty stale planning with the provider-failed message', async () => {
     // Mutation caught: abort-empty branch persists a silent assistant bubble or loses abort accounting.
     let dispatched = 0;
@@ -1704,13 +1755,18 @@ describe('D-164 P6.3 abort-exit provider-failure fail-loud', () => {
     expect(eventsByKind('engine.budget_exceeded')).toMatchObject([{ total_calls: 2 }]);
   });
 
-  it('ships non-empty stale planning text unchanged on abort', async () => {
-    // Mutation caught: abort-exit fail-loud copy overwrites a useful partial planning response.
+  it.each([
+    { failure: 'provider', step: { throws: new Error('socket hang up') } as AiStep, expectedCalls: 2,
+      note: 'The AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.' },
+    { failure: 'invalid_output', step: { body: { response: 42 } } as AiStep, expectedCalls: 3,
+      note: 'The AI model returned a reply that could not be read after some tools had already run. Check those results before trying again.' },
+  ])('retains partial planning with saved failure context on $failure abort', async ({ step, expectedCalls, note }) => {
+    // Keep useful partial text and completed work while making the aborted turn readable after hydration.
     let dispatched = 0;
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall([
       { body: aiOutput('Checking your contacts now.', [toolCall()]) },
-      { throws: new Error('socket hang up') },
+      step,
     ], calls);
     const { orchestrator, sessionId } = setup({
       catalog: [mkTool('mail.search', 1)],
@@ -1728,9 +1784,11 @@ describe('D-164 P6.3 abort-exit provider-failure fail-loud', () => {
     });
 
     const assistant = await finalAssistant(sessionId);
-    expect(assistant?.content).toBe('Checking your contacts now.');
-    expect(assistant?.content).not.toContain(providerFailedNeedle);
-    expect(calls).toHaveLength(2);
+    expect(assistant?.content).toBe(`Checking your contacts now.\n\n${note}`);
+    expect(assistant?.content).not.toContain('socket hang up');
+    expect(assistant?.content).not.toContain('response_not_string');
+    expect(assistant?.tool_calls).toMatchObject([{ tool_name: 'mail.search', status: 'ok' }]);
+    expect(calls).toHaveLength(expectedCalls);
     expect(dispatched).toBe(1);
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
       { termination_reason: 'aborted' },
@@ -1892,6 +1950,66 @@ describe('D-164 P6.3 decoder_unavailable emission', () => {
     expect(decoderIndex).toBeGreaterThan(budgetIndex);
   };
 
+  it.each(['byok', 'free_pool'] as const)('waits through a %s cooldown without setup advice or another provider call', async (layer) => {
+    let clock = Date.parse('2026-10-26T20:00:00.250Z');
+    const date = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const source = { provider: 'openai' as const, model: 'fixture', api_key: 'fixture', speed: 'fast' as const, supports_json: true };
+      const config: LLMConfig = layer === 'byok' ? { slot_1: source }
+        : { free_pool: [{ ...source, id: 'cooling_pool', type: 'api', enabled: true }] };
+      const quota = createQuotaTracker();
+      const complete = vi.fn<LLMAdapter['complete']>(async () => {
+        if (complete.mock.calls.length === 1) throw classifyProviderError(429, 'Synthetic provider limit', 90_000);
+        return { text: JSON.stringify(aiOutput('Provider recovered.')), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+      });
+      const { orchestrator, sessionId } = setup({ modelRouting: { current: layer }, executeAiCall: async (manifest, input) => ({
+        body: await executeLLM(manifest, input, { config, adapters: () => ({ provider: 'openai', complete }), quota, tabProbe: async () => new Set() }),
+      }) });
+      const send = (message: string) => orchestrator.runTurn({ session_id: sessionId, message, picker_state: { current: 'self' } });
+      await send('Try the provider.');
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect((await finalAssistant(sessionId))?.content).toContain('Try again after 2026-10-26 20:01:31 UTC.');
+      expect(eventsByKind('engine.decoder_unavailable').at(-1)).toMatchObject({ reason: 'provider_failure', retry_at: Date.parse('2026-10-26T20:01:30.250Z') });
+
+      await send('Try again immediately.');
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(decoderEvents()).toEqual([{ reason: 'provider_failure', site: 'initial' }, { reason: 'cooldown', site: 'initial' }]);
+      expect(eventsByKind('engine.decoder_unavailable').at(-1)?.retry_at).toBe(Date.parse('2026-10-26T20:01:30.250Z'));
+      const latest = (await store.listMessages(sessionId)).filter(row => row.role === 'assistant').at(-1)!;
+      expect(latest.content).toContain('temporarily paused');
+      expect(latest.content).toContain('Try again after 2026-10-26 20:01:31 UTC.');
+      expect(latest.content).not.toContain('Settings');
+
+      clock += 90_001;
+      await send('Try after the cooldown.');
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect((await store.listMessages(sessionId)).filter(row => row.role === 'assistant').at(-1)?.content).toBe('Provider recovered.');
+      expect(quota.isInCooldown(layer === 'byok' ? 'slot_1' : 'cooling_pool')).toBe(false);
+    } finally { date.mockRestore(); }
+  });
+
+  it('keeps completed tool work when the source enters cooldown before synthesis', async () => {
+    const quota = createQuotaTracker();
+    const complete = vi.fn<LLMAdapter['complete']>(async () => ({
+      text: JSON.stringify(aiOutput('', [toolCall()])), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }));
+    const dispatch = vi.fn(async () => { quota.markRateLimited('slot_1'); return { ok: true as const, result: { hits: ['saved fact'] } }; });
+    const { orchestrator, sessionId } = setup({ catalog: [mkTool('mail.search', 1)], dispatchImpl: dispatch,
+      executeAiCall: async (manifest, input) => ({ body: await executeLLM(manifest, input, {
+        config: { slot_1: { provider: 'openai', model: 'fixture', api_key: 'fixture', speed: 'fast', supports_json: true } },
+        quota, adapters: () => ({ provider: 'openai', complete }), tabProbe: async () => new Set(),
+      }) }),
+    });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'check a saved fact', picker_state: { current: 'self' } });
+    expect(complete).toHaveBeenCalledTimes(1); expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(decoderEvents()).toEqual([{ reason: 'cooldown', site: 'tool_loop' }]);
+    const assistant = await finalAssistant(sessionId);
+    expect(assistant?.content).toContain('temporarily paused');
+    expect(assistant?.content).toContain('Some tools had already run; check their results');
+    expect(assistant?.content).not.toContain('Settings');
+    expect(assistant?.tool_calls).toMatchObject([{ tool_name: 'mail.search', status: 'ok' }]);
+  });
+
   // The qualification relay returns 502 when an upstream model times out.
   // Exercise the real cascade: its appended no-match must not become setup
   // advice in either the opening call or synthesis after a completed tool.
@@ -1953,7 +2071,7 @@ describe('D-164 P6.3 decoder_unavailable emission', () => {
     expect((await finalAssistant(sessionId))?.content).toContain('No AI model is available');
   });
 
-  it('emits initial provider_failure after budget accounting and leaves the assistant body empty', async () => {
+  it('emits initial provider_failure after budget accounting and stores a readable failure without provider detail', async () => {
     // Mutation caught: initial executor throw emits no decoder event, emits it before budget accounting, or leaks provider detail into chat.
     const { orchestrator, sessionId } = setup({
       executeAiCall: mkExecuteAiCall([{ throws: new Error('upstream down') }], []),
@@ -1969,7 +2087,9 @@ describe('D-164 P6.3 decoder_unavailable emission', () => {
       { reason: 'provider_failure', site: 'initial' },
     ]);
     expectDecoderAfterBudget();
-    expect(await finalAssistant(sessionId)).toMatchObject({ content: '' });
+    const assistant = await finalAssistant(sessionId);
+    expect(assistant?.content).toBe('The AI provider failed before answering.');
+    expect(assistant?.content).not.toContain('upstream down');
   });
 
   it('classifies initial matcher no-source failures and ships the model-source message', async () => {

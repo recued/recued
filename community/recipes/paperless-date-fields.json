@@ -1,0 +1,150 @@
+{
+  "recipe_id": "paperless-date-fields",
+  "version": 5,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Connect Paperless documents",
+    "description": "Use “Connect Paperless documents” in Recued. Choose the named date field, then find documents to bring into Yours.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "paperless-ngx"
+    ],
+    "recipe_bundle": "recued-core/paperless-ngx",
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "sync"
+    ],
+    "budget_ms": 120000,
+    "retired_connections": {
+      "paperless_ngx": "paperless-ngx-api"
+    }
+  },
+  "depends_on": [
+    "recued-core.paperless-ngx",
+    "recued-core.paperless-ngx-api"
+  ],
+  "requires": [
+    "read_connection_paperless_ngx"
+  ],
+  "variables": {
+    "page": {
+      "label": "Page",
+      "type": "number",
+      "default": 1
+    }
+  },
+  "steps": [
+    {
+      "id": "connection_required",
+      "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+      "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+    },
+    {
+      "id": "fields",
+      "op": "recued-core.paperless-ngx-api.custom-field.list",
+      "args": {
+        "query.page": "{{config.page}}",
+        "query.page_size": 100
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "dates",
+      "transform": "filter",
+      "array": "{{step.fields.result.results}}",
+      "conditions": [
+        {
+          "field": "data_type",
+          "operator": "equal",
+          "value": "date"
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "choices",
+      "transform": "map",
+      "array": "{{step.dates}}",
+      "expression": {
+        "name": "{{item.name}}",
+        "actions": [
+          {
+            "kind": "recipe.run",
+            "label": "Find documents",
+            "recipe_id": "find-paperless-documents",
+            "config": {
+              "custom_field_id": "{{item.id}}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "table",
+      "transform": "to_table",
+      "array": "{{step.choices}}",
+      "columns": [
+        {
+          "field": "name",
+          "label": "Document date"
+        },
+        {
+          "field": "actions",
+          "label": "",
+          "type": "action"
+        }
+      ]
+    },
+    {
+      "id": "next_page",
+      "transform": "math",
+      "operator": "add",
+      "left": "{{config.page}}",
+      "right": 1
+    },
+    {
+      "id": "navigation",
+      "transform": "ternary",
+      "if": "{{step.fields.result.next}}",
+      "then": [
+        {
+          "kind": "recipe.run",
+          "label": "More date fields",
+          "recipe_id": "paperless-date-fields",
+          "config": {
+            "page": "{{step.next_page}}"
+          }
+        }
+      ],
+      "else": []
+    },
+    {
+      "id": "help",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Where to work",
+          "value": "Choose a document date here. Accepted assets and reminders live in Yours. Sync settings stay in this pack."
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.help"
+      },
+      {
+        "type": "table",
+        "source": "step.table"
+      },
+      {
+        "type": "button",
+        "source": "step.navigation"
+      }
+    ]
+  }
+}

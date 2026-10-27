@@ -139,7 +139,7 @@ test('a quote-only draft is kept through navigation and fits a narrow composer',
     // Since 04844efda a typed draft stays with the chat it was written in, so switching asks nothing, a quote with no text included.
     // A phone shows the conversation list as its own pane.
     await openChatHistory(a);
-    await a.getByRole('button', { name: /Another conversation.*0 messages/ }).click();
+    await a.getByRole('button', { name: /Another conversation/ }).click();
     await expect(a.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
     await expect(a.locator('[data-chat-reply-draft]')).toHaveCount(0);
     await expect(row(a, 'question-2')).toHaveCount(0);

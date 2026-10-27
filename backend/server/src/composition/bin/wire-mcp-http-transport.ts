@@ -208,6 +208,10 @@ export const composeMcpHttpTransport = (
     ...(deps.formDefinitionReader
       ? { formDefinitionReader: deps.formDefinitionReader }
       : {}),
+    // This bundle always returns the push port built over this dispatch
+    // (`subscriptions/listen` and the 2025-era GET stream), so both handshakes
+    // may declare `tools.listChanged`.
+    mcpToolsListChangedNotifications: true,
   };
   const sellerUsageGate = deps.sellerStore
     ? createSellerCustomerUsageGate({ sellerStore: deps.sellerStore })

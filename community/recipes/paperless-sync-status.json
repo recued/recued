@@ -1,0 +1,138 @@
+{
+  "recipe_id": "paperless-sync-status",
+  "version": 5,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Paperless sync settings",
+    "description": "Use “Paperless sync settings” in Recued. Manage source links and see actual results. Accepted asset details and reminders remain in Yours.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "paperless-ngx"
+    ],
+    "recipe_bundle": "recued-core/paperless-ngx",
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "sync"
+    ],
+    "budget_ms": 120000
+  },
+  "depends_on": [
+    "recued-core.paperless-ngx"
+  ],
+  "requires": [],
+  "variables": {},
+  "steps": [
+    {
+      "id": "links",
+      "op": "recued-core.paperless-ngx.sync_link.search",
+      "args": {
+        "filters": {},
+        "limit": 200
+      },
+      "cache": "fresh",
+      "pages": "all"
+    },
+    {
+      "id": "rows",
+      "transform": "map",
+      "array": "{{step.links.records}}",
+      "expression": {
+        "connection": "{{item.connection}}",
+        "document": "{{item.source_title}}",
+        "state": "{{item.state}}",
+        "source_root": "{{item.source_root}}",
+        "checking": "{{item.busy}}",
+        "result": "{{item.last_result}}",
+        "checked": "{{item.last_checked_at}}",
+        "asset_id": "{{item.asset_id}}",
+        "actions": [
+          {
+            "kind": "recipe.run",
+            "label": "Change sync",
+            "recipe_id": "set-paperless-sync-state",
+            "config": {
+              "id": "{{item.id}}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "table",
+      "transform": "to_table",
+      "array": "{{step.rows}}",
+      "columns": [
+        {
+          "field": "connection",
+          "label": "Connection"
+        },
+        {
+          "field": "document",
+          "label": "Source document"
+        },
+        {
+          "field": "state",
+          "label": "Sync"
+        },
+        {
+          "field": "source_root",
+          "label": "Paperless source"
+        },
+        {
+          "field": "checking",
+          "label": "Check in progress"
+        },
+        {
+          "field": "result",
+          "label": "Last result"
+        },
+        {
+          "field": "checked",
+          "label": "Last checked"
+        },
+        {
+          "field": "asset_id",
+          "label": "Asset in Yours"
+        },
+        {
+          "field": "actions",
+          "label": "",
+          "type": "action"
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "transform": "default",
+      "value": [
+        {
+          "kind": "recipe.run",
+          "label": "Connect documents",
+          "recipe_id": "paperless-date-fields",
+          "config": {}
+        },
+        {
+          "kind": "recipe.run",
+          "label": "Sync now",
+          "recipe_id": "sync-paperless-documents",
+          "config": {}
+        }
+      ],
+      "fallback": []
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "table",
+        "source": "step.table"
+      },
+      {
+        "type": "button",
+        "source": "step.actions"
+      }
+    ]
+  }
+}

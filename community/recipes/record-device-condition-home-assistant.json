@@ -1,0 +1,523 @@
+{
+  "recipe_id": "record-device-condition-home-assistant",
+  "version": 2,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Record device conditions",
+    "description": "Use “Record device conditions” in Recued. Checks the Home Assistant entity you linked, using fresh state, history and logbook reads. Confirmed problem and battery readings are recorded right away, and an outage only once it has lasted. Unexplained flicker stays conditional. Nothing is inferred about motion or occupancy.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "home-assistant"
+    ],
+    "tags": [
+      "pack:home-assistant",
+      "asset",
+      "observations"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "asset_id": {
+      "label": "Asset",
+      "type": "string"
+    },
+    "binding_id": {
+      "label": "Observation binding id from Yours",
+      "type": "string"
+    },
+    "entity_id": {
+      "label": "Home Assistant entity id",
+      "type": "string"
+    },
+    "record_unavailable": {
+      "label": "Record availability",
+      "type": "boolean",
+      "default": true
+    },
+    "record_flickering": {
+      "label": "Record unexplained flicker",
+      "type": "boolean",
+      "default": true
+    },
+    "record_problem": {
+      "label": "Record a reported problem",
+      "type": "boolean",
+      "default": true
+    },
+    "record_battery": {
+      "label": "Record battery percentage",
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "requires": [
+    "read_connection_home_assistant"
+  ],
+  "depends_on": [
+    "recued-core.home-assistant"
+  ],
+  "steps": [
+    {
+      "id": "asset",
+      "op": "core.work-entity.get",
+      "args": {
+        "kind": "asset",
+        "id": "{{config.asset_id}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "now_iso",
+      "transform": "date_add",
+      "date": "now",
+      "amount": 0,
+      "unit": "minutes"
+    },
+    {
+      "id": "now",
+      "transform": "date_parse",
+      "input": "{{step.now_iso}}"
+    },
+    {
+      "id": "hold_ms",
+      "transform": "default",
+      "value": "{{step.asset.entity.settings.hold_ms}}",
+      "fallback": 300000
+    },
+    {
+      "id": "flicker_window_ms",
+      "transform": "default",
+      "value": "{{step.asset.entity.settings.flicker_window_ms}}",
+      "fallback": 900000
+    },
+    {
+      "id": "flicker_min_count",
+      "transform": "default",
+      "value": "{{step.asset.entity.settings.flicker_min_count}}",
+      "fallback": 3
+    },
+    {
+      "id": "back_minutes",
+      "transform": "math",
+      "expression": "0 - ({{step.flicker_window_ms}} + {{step.hold_ms}}) / 60000"
+    },
+    {
+      "id": "start",
+      "transform": "date_add",
+      "date": "{{step.now_iso}}",
+      "amount": "{{step.back_minutes}}",
+      "unit": "minutes"
+    },
+    {
+      "id": "current_raw",
+      "op": "recued-core.home-assistant.state.read",
+      "args": {
+        "entity_id": "{{config.entity_id}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "history_raw",
+      "op": "recued-core.home-assistant.history.list",
+      "args": {
+        "start_time": "{{step.start}}",
+        "query.filter_entity_id": "{{config.entity_id}}",
+        "query.end_time": "{{step.now_iso}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "logbook_raw",
+      "op": "recued-core.home-assistant.logbook.list",
+      "args": {
+        "start_time": "{{step.start}}",
+        "query.entity": "{{config.entity_id}}",
+        "query.end_time": "{{step.now_iso}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "current",
+      "transform": "default",
+      "value": "{{step.current_raw.result}}",
+      "fallback": {}
+    },
+    {
+      "id": "history",
+      "transform": "flatten",
+      "array": "{{step.history_raw.result}}"
+    },
+    {
+      "id": "history_at",
+      "transform": "map",
+      "array": "{{step.history}}",
+      "apply": "date_parse",
+      "field": "last_changed",
+      "output_field": "at"
+    },
+    {
+      "id": "entity_history",
+      "transform": "filter",
+      "array": "{{step.history_at}}",
+      "field": "entity_id",
+      "operator": "in",
+      "value": [
+        "{{config.entity_id}}"
+      ]
+    },
+    {
+      "id": "latest_sample",
+      "transform": "map",
+      "array": [
+        "{{step.current}}"
+      ],
+      "expression": {
+        "state": "{{item.state}}",
+        "at": "{{step.now}}"
+      }
+    },
+    {
+      "id": "samples",
+      "transform": "flatten",
+      "array": [
+        "{{step.entity_history}}",
+        "{{step.latest_sample}}"
+      ]
+    },
+    {
+      "id": "hold",
+      "transform": "held",
+      "rows": "{{step.samples}}",
+      "time_field": "at",
+      "state_field": "state",
+      "hold_ms": "{{step.hold_ms}}",
+      "now": "{{step.now}}"
+    },
+    {
+      "id": "flicker",
+      "transform": "transitions",
+      "rows": "{{step.entity_history}}",
+      "time_field": "at",
+      "state_field": "state",
+      "window_ms": "{{step.flicker_window_ms}}",
+      "min_count": "{{step.flicker_min_count}}",
+      "now": "{{step.now}}"
+    },
+    {
+      "id": "causes_at",
+      "transform": "map",
+      "array": "{{step.logbook_raw.result}}",
+      "apply": "date_parse",
+      "field": "when",
+      "output_field": "at"
+    },
+    {
+      "id": "causes",
+      "transform": "enrich_by",
+      "array": "{{step.entity_history}}",
+      "with": "{{step.causes_at}}",
+      "key": "at",
+      "fields": {
+        "cause_domain": "context_domain",
+        "cause_user": "context_user_id",
+        "cause_entity": "context_entity_id",
+        "cause_state": "state"
+      }
+    },
+    {
+      "id": "changed_rows",
+      "transform": "slice",
+      "array": "{{step.causes}}",
+      "start": 1,
+      "end": 20000
+    },
+    {
+      "id": "uncommanded",
+      "transform": "filter",
+      "array": "{{step.changed_rows}}",
+      "mode": "all",
+      "conditions": [
+        {
+          "field": "cause_user",
+          "operator": "is_null"
+        },
+        {
+          "field": "cause_domain",
+          "operator": "not_in",
+          "value": [
+            "automation",
+            "script",
+            "scene",
+            "light"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "uncommanded_count",
+      "transform": "count",
+      "input": "{{step.uncommanded}}"
+    },
+    {
+      "id": "change_count",
+      "transform": "count",
+      "input": "{{step.changed_rows}}"
+    },
+    {
+      "id": "intended",
+      "transform": "all",
+      "conditions": [
+        "{{step.uncommanded_count}} equal 0",
+        "{{step.change_count}} greater 0"
+      ]
+    },
+    {
+      "id": "ignore_flicker",
+      "transform": "any",
+      "conditions": [
+        "{{step.intended}} equal true",
+        "{{step.asset.entity.settings.expected_flicker}} equal true"
+      ]
+    },
+    {
+      "id": "settled",
+      "transform": "compare",
+      "left": "{{step.hold.status}}",
+      "operator": "equal",
+      "right": "settled"
+    },
+    {
+      "id": "unavailable",
+      "transform": "compare",
+      "left": "{{step.current.state}}",
+      "operator": "equal",
+      "right": "unavailable"
+    },
+    {
+      "id": "current_known",
+      "transform": "compare",
+      "left": "{{step.current.state}}",
+      "operator": "not_in",
+      "right": [
+        "unknown",
+        null,
+        ""
+      ]
+    },
+    {
+      "id": "can_write_hold",
+      "transform": "all",
+      "conditions": [
+        "{{step.settled}} equal true",
+        "{{step.current_known}} equal true",
+        "{{config.record_unavailable}} not_equal false"
+      ]
+    },
+    {
+      "id": "history_evidence",
+      "transform": "json_stringify",
+      "input": "{{step.hold}}"
+    },
+    {
+      "id": "flicker_evidence",
+      "transform": "json_stringify",
+      "input": "{{step.flicker}}"
+    },
+    {
+      "id": "unavailable_write",
+      "op": "core.work-entity.asset.observe",
+      "args": {
+        "binding_id": "{{config.binding_id}}",
+        "observations": {
+          "unavailable": {
+            "active": "{{step.unavailable}}",
+            "certainty": "confirmed",
+            "as_of": "{{step.now}}",
+            "evidence": [
+              {
+                "collection": "home-assistant",
+                "id": "{{config.entity_id}}",
+                "field": "state",
+                "value": "{{step.history_evidence}}"
+              }
+            ]
+          }
+        }
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.can_write_hold}} not_equal true"
+    },
+    {
+      "id": "flicker_known",
+      "transform": "all",
+      "conditions": [
+        "{{step.flicker.flickering}} not_equal unknown",
+        "{{config.record_flickering}} not_equal false"
+      ]
+    },
+    {
+      "id": "flicker_active",
+      "transform": "all",
+      "conditions": [
+        "{{step.flicker.flickering}} equal true",
+        "{{step.ignore_flicker}} equal false"
+      ]
+    },
+    {
+      "id": "flicker_write",
+      "op": "core.work-entity.asset.observe",
+      "args": {
+        "binding_id": "{{config.binding_id}}",
+        "observations": {
+          "flickering": {
+            "active": "{{step.flicker_active}}",
+            "certainty": "conditional",
+            "as_of": "{{step.now}}",
+            "evidence": [
+              {
+                "collection": "home-assistant",
+                "id": "{{config.entity_id}}",
+                "field": "transitions",
+                "value": "{{step.flicker_evidence}}"
+              }
+            ]
+          }
+        }
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.flicker_known}} not_equal true"
+    },
+    {
+      "id": "problem_type",
+      "transform": "compare",
+      "left": "{{step.current.attributes.device_class}}",
+      "operator": "equal",
+      "right": "problem"
+    },
+    {
+      "id": "problem_state_known",
+      "transform": "compare",
+      "left": "{{step.current.state}}",
+      "operator": "in",
+      "right": [
+        "on",
+        "off"
+      ]
+    },
+    {
+      "id": "is_problem",
+      "transform": "all",
+      "conditions": [
+        "{{step.problem_type}} equal true",
+        "{{step.problem_state_known}} equal true",
+        "{{config.record_problem}} not_equal false"
+      ]
+    },
+    {
+      "id": "problem_active",
+      "transform": "compare",
+      "left": "{{step.current.state}}",
+      "operator": "equal",
+      "right": "on"
+    },
+    {
+      "id": "problem_write",
+      "op": "core.work-entity.asset.observe",
+      "args": {
+        "binding_id": "{{config.binding_id}}",
+        "observations": {
+          "problem": {
+            "active": "{{step.problem_active}}",
+            "certainty": "confirmed",
+            "as_of": "{{step.now}}",
+            "evidence": [
+              {
+                "collection": "home-assistant",
+                "id": "{{config.entity_id}}",
+                "field": "state",
+                "value": "{{step.current.state}}"
+              }
+            ]
+          }
+        }
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.is_problem}} not_equal true"
+    },
+    {
+      "id": "battery_type",
+      "transform": "compare",
+      "left": "{{step.current.attributes.device_class}}",
+      "operator": "equal",
+      "right": "battery"
+    },
+    {
+      "id": "battery_unit",
+      "transform": "compare",
+      "left": "{{step.current.attributes.unit_of_measurement}}",
+      "operator": "equal",
+      "right": "%"
+    },
+    {
+      "id": "battery_value",
+      "transform": "to_number",
+      "input": "{{step.current.state}}"
+    },
+    {
+      "id": "battery_number",
+      "transform": "compare",
+      "left": "{{step.battery_value}}",
+      "operator": "is_not_null",
+      "right": null
+    },
+    {
+      "id": "battery_valid",
+      "transform": "all",
+      "conditions": [
+        "{{step.battery_type}} equal true",
+        "{{step.battery_unit}} equal true",
+        "{{step.battery_number}} equal true",
+        "{{config.record_battery}} not_equal false"
+      ]
+    },
+    {
+      "id": "battery_write",
+      "op": "core.work-entity.asset.observe",
+      "args": {
+        "binding_id": "{{config.binding_id}}",
+        "readings": {
+          "battery": {
+            "value": "{{step.battery_value}}",
+            "unit": "%",
+            "as_of": "{{step.now}}",
+            "evidence": [
+              {
+                "collection": "home-assistant",
+                "id": "{{config.entity_id}}",
+                "field": "battery",
+                "value": "{{step.battery_value}}"
+              }
+            ]
+          }
+        }
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.battery_valid}} not_equal true"
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "json",
+        "source": "step.hold",
+        "label": "State hold and evidence"
+      },
+      {
+        "type": "json",
+        "source": "step.flicker",
+        "label": "Transition window and evidence"
+      }
+    ]
+  }
+}

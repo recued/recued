@@ -1,0 +1,284 @@
+{
+  "recipe_id": "check-house-before-leaving-home-assistant",
+  "version": 2,
+  "chat_exposed": true,
+  "ttl": 0,
+  "metadata": {
+    "name": "Home Assistant house check before leaving",
+    "description": "Use “Home Assistant house check before leaving” in Recued. Lists open doors and windows, unlocked locks, an open garage door or gate, a disarmed alarm and lights left on. Read-only: it never locks, closes or switches anything off.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "home-assistant"
+    ],
+    "variant_group": "check-house-before-leaving",
+    "tags": [
+      "home-assistant",
+      "smart-home",
+      "security",
+      "doors",
+      "locks",
+      "lights",
+      "pack:home-assistant"
+    ],
+    "budget_ms": 15000
+  },
+  "variables": {
+    "include_lights": {
+      "label": "Include lights left on",
+      "type": "boolean",
+      "default": true
+    },
+    "row_limit": {
+      "label": "Max rows to show",
+      "type": "number",
+      "default": 50
+    }
+  },
+  "requires": [
+    "read_connection_home_assistant"
+  ],
+  "depends_on": [
+    "recued-core.home-assistant"
+  ],
+  "steps": [
+    {
+      "id": "states_raw",
+      "op": "recued-core.home-assistant.state.list",
+      "cache": "fresh",
+      "args": {}
+    },
+    {
+      "id": "states",
+      "transform": "default",
+      "value": "{{step.states_raw.result}}",
+      "fallback": []
+    },
+    {
+      "id": "entity_count",
+      "transform": "count",
+      "input": "{{step.states}}"
+    },
+    {
+      "id": "states_with_domain",
+      "transform": "map",
+      "array": "{{step.states}}",
+      "apply": "split",
+      "field": "entity_id",
+      "delimiter": ".",
+      "output_field": "entity_parts"
+    },
+    {
+      "id": "open_openings",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "entity_parts.0", "operator": "equal", "value": "binary_sensor" },
+        { "field": "attributes.device_class", "operator": "in", "value": ["door", "window", "garage_door", "opening"] },
+        { "field": "state", "operator": "equal", "value": "on" }
+      ]
+    },
+    {
+      "id": "open_openings_rows",
+      "transform": "map",
+      "array": "{{step.open_openings}}",
+      "expression": {
+        "check": "Open door or window",
+        "name": "{{item.attributes.friendly_name}}",
+        "state": "open",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "unlocked",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "entity_parts.0", "operator": "equal", "value": "lock" },
+        { "field": "state", "operator": "in", "value": ["unlocked", "unlocking", "open", "opening", "jammed"] }
+      ]
+    },
+    {
+      "id": "unlocked_rows",
+      "transform": "map",
+      "array": "{{step.unlocked}}",
+      "expression": {
+        "check": "Lock not locked",
+        "name": "{{item.attributes.friendly_name}}",
+        "state": "{{item.state}}",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "open_covers",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "entity_parts.0", "operator": "equal", "value": "cover" },
+        { "field": "attributes.device_class", "operator": "in", "value": ["garage", "gate", "door", "window"] },
+        { "field": "state", "operator": "in", "value": ["open", "opening"] }
+      ]
+    },
+    {
+      "id": "open_covers_rows",
+      "transform": "map",
+      "array": "{{step.open_covers}}",
+      "expression": {
+        "check": "Garage door, gate or window open",
+        "name": "{{item.attributes.friendly_name}}",
+        "state": "{{item.state}}",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "open_unclassed_covers",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "entity_parts.0", "operator": "equal", "value": "cover" },
+        { "field": "attributes.device_class", "operator": "is_null" },
+        { "field": "state", "operator": "in", "value": ["open", "opening"] }
+      ]
+    },
+    {
+      "id": "open_unclassed_covers_rows",
+      "transform": "map",
+      "array": "{{step.open_unclassed_covers}}",
+      "expression": {
+        "check": "Cover open (could be a window)",
+        "name": "{{item.attributes.friendly_name}}",
+        "state": "{{item.state}}",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "disarmed",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "entity_parts.0", "operator": "equal", "value": "alarm_control_panel" },
+        { "field": "state", "operator": "equal", "value": "disarmed" }
+      ]
+    },
+    {
+      "id": "disarmed_rows",
+      "transform": "map",
+      "array": "{{step.disarmed}}",
+      "expression": {
+        "check": "Alarm disarmed",
+        "name": "{{item.attributes.friendly_name}}",
+        "state": "disarmed",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "lights_on",
+      "skip_when": "{{config.include_lights}} equal false",
+      "transform": "filter",
+      "array": "{{step.states_with_domain}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "entity_parts.0", "operator": "equal", "value": "light" },
+        { "field": "state", "operator": "equal", "value": "on" }
+      ]
+    },
+    {
+      "id": "lights_on_list",
+      "transform": "default",
+      "value": "{{step.lights_on}}",
+      "fallback": []
+    },
+    {
+      "id": "lights_on_rows",
+      "transform": "map",
+      "array": "{{step.lights_on_list}}",
+      "expression": {
+        "check": "Light on",
+        "name": "{{item.attributes.friendly_name}}",
+        "state": "on",
+        "entity_id": "{{item.entity_id}}"
+      }
+    },
+    {
+      "id": "findings",
+      "transform": "flatten",
+      "array": [
+        "{{step.open_openings_rows}}",
+        "{{step.unlocked_rows}}",
+        "{{step.open_covers_rows}}",
+        "{{step.open_unclassed_covers_rows}}",
+        "{{step.disarmed_rows}}",
+        "{{step.lights_on_rows}}"
+      ]
+    },
+    {
+      "id": "finding_count",
+      "transform": "count",
+      "input": "{{step.findings}}"
+    },
+    {
+      "id": "light_count",
+      "transform": "count",
+      "input": "{{step.lights_on_rows}}"
+    },
+    {
+      "id": "security_count",
+      "transform": "math",
+      "expression": "{{step.finding_count}} - {{step.light_count}}"
+    },
+    {
+      "id": "all_clear",
+      "transform": "compare",
+      "left": "{{step.finding_count}}",
+      "operator": "equal",
+      "right": 0
+    },
+    {
+      "id": "status_text",
+      "transform": "ternary",
+      "if": "{{step.all_clear}}",
+      "then": "All clear: everything is closed, locked and off",
+      "else": "Some things need a look before you leave"
+    },
+    {
+      "id": "finding_rows",
+      "transform": "slice",
+      "array": "{{step.findings}}",
+      "start": 0,
+      "end": "{{config.row_limit}}"
+    },
+    {
+      "id": "finding_table",
+      "transform": "to_table",
+      "array": "{{step.finding_rows}}",
+      "columns": [
+        { "field": "check", "label": "Check" },
+        { "field": "name", "label": "Name" },
+        { "field": "state", "label": "State" },
+        { "field": "entity_id", "label": "Entity" }
+      ]
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Status", "value": "{{step.status_text}}" },
+        { "label": "Doors, windows, locks and alarm", "value": "{{step.security_count:number}} to check" },
+        { "label": "Lights on", "value": "{{step.light_count:number}}" },
+        { "label": "Entities checked", "value": "{{step.entity_count:number}}" },
+        { "label": "Scope", "value": "Read-only; nothing in Home Assistant was changed." }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" },
+      { "type": "table", "source": "step.finding_table", "label": "Before you leave" },
+      { "type": "json", "source": "step.findings", "label": "Every finding" }
+    ]
+  }
+}

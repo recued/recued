@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import type { ChatMessageSearchRequest, InstancePrefs } from '@recued/contracts';
 import type { createMessengerListFixture as CreateFixture } from './harness/chat-messenger-list-backend.js';
 import type { MessengerSessionListReply } from '../src/chat/messenger-session-list.js';
-import { openChatHistory } from './helpers/chat-history.js';
+import { openChatHistory, openChatHistoryFilters } from './helpers/chat-history.js';
 
 let createFixture: typeof CreateFixture;
 test.beforeAll(async () => {
@@ -25,6 +25,7 @@ const boot = async (page: Page) => {
   await page.goto('/chat-queue-harness.html');
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('[data-chat-messenger-row="telegram-chat"]')).toContainText('Receive: Receiving');
+  await openChatHistoryFilters(page);
 };
 const seed = async (fixture: ReturnType<typeof createFixture>) => {
   for (const session of ['s', 'telegram-chat', 'slack-chat', 'discord-chat']) {
@@ -182,7 +183,7 @@ test('slow preference reads cannot replace edits and rapid changes persist in or
       }
       await route.fulfill({ json: { result: await fixture.rpc(method, args) } });
     });
-    await page.goto('/chat-queue-harness.html'); await expect(filter(page, 'vendor')).toBeVisible();
+    await page.goto('/chat-queue-harness.html'); await openChatHistoryFilters(page); await expect(filter(page, 'vendor')).toBeVisible();
     await filter(page, 'vendor').selectOption('telegram'); await expect.poll(() => writing).toBe(true);
     await filter(page, 'vendor').selectOption('discord'); await filter(page, 'scope').selectOption('current');
     releaseRead(); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
@@ -209,7 +210,11 @@ test('unavailable status clears scoped hits and a failed preference save can be 
     await boot(page); await filter(page, 'vendor').selectOption('telegram'); await search(page).fill('needle');
     await expect(hits(page)).toHaveCount(1);
     await expect(page.locator('.chat-history-filter-note')).toContainText('Recued will forget them');
+    const filterSummary = page.locator('.chat-history-filter-panel summary');
+    await filterSummary.click(); await expect(filterSummary).toContainText('Not saved');
+    await filterSummary.click();
     failSave = false; await filter(page, 'retry').click(); await expect(filter(page, 'retry')).toBeHidden();
+    await expect(filterSummary).not.toContainText('Not saved');
     unavailable = true;
     await expect(page.locator('[data-recued-chat-history-messages]')).toContainText('Recued cannot tell whether Chat is connected');
     await expect(hits(page)).toHaveCount(0);

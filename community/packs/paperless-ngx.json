@@ -1,0 +1,369 @@
+{
+  "manifest_version": 2,
+  "slug": "paperless-ngx",
+  "publisher": "recued-core",
+  "name": "Paperless documents",
+  "description": "Use Paperless documents to connect selected document expiry dates to Yours. Review one document or a batch, import once or keep dates current with a scheduled sync, and pause or ignore source links while keeping your assets and reminders.",
+  "version": 7,
+  "bundled": true,
+  "recipes": [],
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "tags": [
+    "pack:paperless-ngx",
+    "documents",
+    "assets",
+    "self-hosted"
+  ],
+  "pack_kind": "app_pack",
+  "service_kind": "storage",
+  "contents": [
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "paperless-sync",
+        "ingredients": [
+          {
+            "slug": "paperless-sync-records",
+            "kind": "storage",
+            "entities": {
+              "sync_link": {
+                "fields": [
+                  {
+                    "maps_to": "id",
+                    "field_path": "pk",
+                    "type": "string",
+                    "source_operation": "sync_link.get",
+                    "pii": "external_id"
+                  },
+                  {
+                    "maps_to": "connection",
+                    "field_path": "s1",
+                    "type": "string",
+                    "source_operation": "sync_link.get",
+                    "pii": "external_id"
+                  },
+                  {
+                    "maps_to": "document_id",
+                    "field_path": "n1",
+                    "type": "number",
+                    "source_operation": "sync_link.get"
+                  },
+                  {
+                    "maps_to": "custom_field_id",
+                    "field_path": "n2",
+                    "type": "number",
+                    "source_operation": "sync_link.get"
+                  },
+                  {
+                    "maps_to": "asset_id",
+                    "field_path": "s2",
+                    "type": "string",
+                    "source_operation": "sync_link.get",
+                    "optional": true,
+                    "pii": "external_id"
+                  },
+                  {
+                    "maps_to": "source_title",
+                    "field_path": "s3",
+                    "type": "string",
+                    "source_operation": "sync_link.get",
+                    "optional": true,
+                    "pii": "content"
+                  },
+                  {
+                    "maps_to": "state",
+                    "field_path": "s4",
+                    "type": "string",
+                    "source_operation": "sync_link.get"
+                  },
+                  {
+                    "maps_to": "last_result",
+                    "field_path": "s5",
+                    "type": "string",
+                    "source_operation": "sync_link.get",
+                    "optional": true
+                  },
+                  {
+                    "maps_to": "busy",
+                    "field_path": "b1",
+                    "type": "boolean",
+                    "source_operation": "sync_link.get"
+                  },
+                  {
+                    "maps_to": "source_root",
+                    "field_path": "s7",
+                    "type": "string",
+                    "source_operation": "sync_link.get",
+                    "pii": "url"
+                  },
+                  {
+                    "maps_to": "last_applied_date",
+                    "field_path": "s6",
+                    "type": "string",
+                    "source_operation": "sync_link.get",
+                    "optional": true
+                  },
+                  {
+                    "maps_to": "last_checked_at",
+                    "field_path": "dt1",
+                    "type": "datetime",
+                    "source_operation": "sync_link.get",
+                    "optional": true,
+                    "date_granularity": "datetime"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "sync_link.create",
+            "ingredient": "paperless-sync-records",
+            "risk": "write",
+            "approval": "never",
+            "description": "create Paperless source-link bookkeeping; accepted assets live in Yours.",
+            "args": [
+              {
+                "key": "id",
+                "type": "string"
+              },
+              {
+                "key": "values",
+                "type": "object",
+                "required": true
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "create",
+              "entity": "sync_link"
+            }
+          },
+          {
+            "op": "sync_link.get",
+            "ingredient": "paperless-sync-records",
+            "risk": "read",
+            "approval": "never",
+            "description": "get Paperless source-link bookkeeping; accepted assets live in Yours.",
+            "args": [
+              {
+                "key": "id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "get",
+              "entity": "sync_link"
+            }
+          },
+          {
+            "op": "sync_link.search",
+            "ingredient": "paperless-sync-records",
+            "risk": "read",
+            "approval": "never",
+            "description": "search Paperless source-link bookkeeping; accepted assets live in Yours.",
+            "args": [
+              {
+                "key": "filters",
+                "type": "object"
+              },
+              {
+                "key": "sort",
+                "type": "string"
+              },
+              {
+                "key": "limit",
+                "type": "number"
+              },
+              {
+                "key": "cursor",
+                "type": "string"
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "search",
+              "entity": "sync_link",
+              "filter_fields": [
+                "connection",
+                "state",
+                "document_id",
+                "busy"
+              ],
+              "sort_fields": [
+                "last_checked_at",
+                "_record.updated_at"
+              ]
+            }
+          },
+          {
+            "op": "sync_link.update",
+            "ingredient": "paperless-sync-records",
+            "risk": "write",
+            "approval": "never",
+            "description": "update Paperless source-link bookkeeping; accepted assets live in Yours.",
+            "args": [
+              {
+                "key": "id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "set",
+                "type": "object"
+              },
+              {
+                "key": "unset",
+                "type": "array"
+              },
+              {
+                "key": "expected_version",
+                "type": "number",
+                "required": true
+              },
+              {
+                "key": "expected_revision",
+                "type": "number",
+                "required": true
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "update",
+              "entity": "sync_link"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "asset_class",
+      "preset": {
+        "id": "paperless_document",
+        "name": "Document with an expiry date",
+        "version": 1,
+        "origin": "pack:recued-core/paperless-ngx",
+        "fields": {
+          "dates": {
+            "expires_on": null
+          },
+          "readings": {},
+          "observations": {
+            "document_evidence": null
+          },
+          "settings": {}
+        },
+        "audience": "owner",
+        "retirement": "part",
+        "rules": [
+          {
+            "id": "renew",
+            "title": "Review expiry",
+            "enabled": true,
+            "muted": false,
+            "pinned": false,
+            "when": {
+              "kind": "expiry",
+              "field": "expires_on"
+            },
+            "consequence": "routine",
+            "expiry_policy": "escalate_overdue",
+            "reaction": {
+              "notify": true,
+              "occurrence": "action",
+              "emit": false
+            },
+            "schedule": {
+              "before": [
+                {
+                  "amount": 1,
+                  "unit": "months"
+                }
+              ],
+              "on_day": true,
+              "after": {
+                "amount": 1,
+                "unit": "months"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "recipe",
+      "slug": "paperless-date-fields",
+      "version": 5,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "find-paperless-documents",
+      "version": 5,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "preview-paperless-sync",
+      "version": 5,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "configure-paperless-sync",
+      "version": 5,
+      "visible": false
+    },
+    {
+      "type": "recipe",
+      "slug": "sync-paperless-documents",
+      "version": 5,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "paperless-sync-status",
+      "version": 5,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "set-paperless-sync-state",
+      "version": 5,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "ignore-paperless-document",
+      "version": 5,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "record-asset-evidence-paperless",
+      "version": 5,
+      "visible": false
+    },
+    {
+      "type": "recipe",
+      "slug": "paperless-sync-require-records-runtime",
+      "version": 1,
+      "visible": false
+    }
+  ],
+  "dependencies": [
+    {
+      "type": "pack",
+      "slug": "paperless-ngx-api",
+      "min_version": 2
+    }
+  ]
+}

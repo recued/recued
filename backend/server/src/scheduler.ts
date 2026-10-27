@@ -389,6 +389,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         execution_source: {
           channel: 'schedule',
           actor: 'system',
+          schedule_id: schedule.schedule_id,
           cron: schedule.cron_expression,
           source_recipe: schedule.recipe_id,
           // ⛔ D-215 slice 1a — NO `contract_id` here, deliberately.

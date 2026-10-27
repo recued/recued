@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "99f6c514440f705caef83b05d69dba666ea08162",
-    "tree": "e7d66e07398e317c1f20d2f7bf96f244d1153d42",
-    "committed_at": "2026-10-26T19:30:56-07:00"
+    "commit": "5e93a1730abdc37e4a7f3910cf0d880e842b6fe0",
+    "tree": "13bcd42964bd80ed082a416193afac25e494df5c",
+    "committed_at": "2026-10-27T09:15:01-07:00"
   },
-  "export_manifest_sha256": "66d15043ee2ad70d51cf7982f97ec9f9dcc0ef350194103b75a07c1ec687ed10",
-  "version": "26.10.26",
+  "export_manifest_sha256": "4d3473a6312c7d80108ac350b897c393f165cf91c1836a4ec036dbc45e6771ab",
+  "version": "26.10.27",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -287,7 +287,6 @@
       "backend/server/src/__tests__/d-325-device-observations.test.ts",
       "backend/server/src/__tests__/d-325-evidence-refresh-batch.test.ts",
       "backend/server/src/__tests__/d-325-final-observation-bindings.test.ts",
-      "backend/server/src/__tests__/d-325-paperless-evidence.test.ts",
       "backend/server/src/__tests__/d-325-read-scope-sources.test.ts",
       "backend/server/src/__tests__/d-325-summary-history-projection.test.ts",
       "backend/server/src/__tests__/d-325-travel-documents.test.ts",
@@ -370,6 +369,7 @@
       "backend/server/src/__tests__/pack-reparse-corpus.test.ts",
       "backend/server/src/__tests__/pack-resolve-bundled-records.test.ts",
       "backend/server/src/__tests__/pack-resource-access.test.ts",
+      "backend/server/src/__tests__/paperless-pack-sync.test.ts",
       "backend/server/src/__tests__/parcels-pack-live.test.ts",
       "backend/server/src/__tests__/peer-appointment-semi-live.test.ts",
       "backend/server/src/__tests__/photo-attribution-drive.test.ts",
@@ -868,7 +868,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "385270b156bc22d5cec1caebcc1d16ec45e37e28df3af80dc782cc48305e9230",
+    "sha256": "9aba1076d61ca784770886feddaa9a6ffc439f8be6de3fc8488db56d1c91cc6d",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -918,9 +918,12 @@
       "id": "foundation-packs",
       "root": "community",
       "derivation": "foundation_pack_closure",
-      "file_count": 35,
-      "sha256": "aadfb92559e3ec7be262b2487fba763d4c562e806f5b1f947ba7bf27063875a5",
+      "file_count": 54,
+      "sha256": "313301e8951481d80e3c93d87a03f87f5888f07e593d41700d9e2c1e32f8e7fe",
       "paths": [
+        "community/packs/home-assistant.json",
+        "community/packs/paperless-ngx-api.json",
+        "community/packs/paperless-ngx.json",
         "community/packs/personal-organizer-foundation.json",
         "community/packs/recued-core/mail-compose-foundation.json",
         "community/packs/recued-core/reception-approval.json",
@@ -929,11 +932,22 @@
         "community/packs/recued-core/reception-scheduling.json",
         "community/recipes/cancel-reminder.json",
         "community/recipes/change-reminder.json",
+        "community/recipes/check-camera-home-assistant.json",
+        "community/recipes/check-device-health-home-assistant.json",
+        "community/recipes/check-house-before-leaving-home-assistant.json",
+        "community/recipes/configure-paperless-sync.json",
+        "community/recipes/control-device-home-assistant.json",
         "community/recipes/extract-commitments-from-mail.json",
         "community/recipes/extract-tasks-from-mail.json",
+        "community/recipes/find-paperless-documents.json",
+        "community/recipes/ignore-paperless-document.json",
         "community/recipes/list-folders.json",
         "community/recipes/list-reminders.json",
         "community/recipes/open-commitments.json",
+        "community/recipes/paperless-date-fields.json",
+        "community/recipes/paperless-sync-require-records-runtime.json",
+        "community/recipes/paperless-sync-status.json",
+        "community/recipes/preview-paperless-sync.json",
         "community/recipes/recent-notes-by-topic.json",
         "community/recipes/reception-approval-workflow.json",
         "community/recipes/reception-customer-account-payment-correction.json",
@@ -945,6 +959,8 @@
         "community/recipes/reception-customer-refund.json",
         "community/recipes/reception-quote-completion-review.json",
         "community/recipes/reception-quote-signoff-release.json",
+        "community/recipes/record-asset-evidence-paperless.json",
+        "community/recipes/record-device-condition-home-assistant.json",
         "community/recipes/remind-me-of.json",
         "community/recipes/reschedule-booking-managed.json",
         "community/recipes/reschedule-booking.json",
@@ -953,7 +969,10 @@
         "community/recipes/save-composed-draft-to-mailbox.json",
         "community/recipes/save-file-to-folder.json",
         "community/recipes/send-composed-mail.json",
+        "community/recipes/set-paperless-sync-state.json",
         "community/recipes/stalled-projects.json",
+        "community/recipes/summarize-energy-use-weekly-home-assistant.json",
+        "community/recipes/sync-paperless-documents.json",
         "community/recipes/today.json",
         "community/recipes/triage-inbox.json"
       ]
@@ -996,7 +1015,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 7805,
-    "sha256": "0eb5e5433143ca86992daaba04218e0ba9a5e1b5ef8fe32f11439247e95fbac4"
+    "file_count": 7837,
+    "sha256": "a6d0fb41ea002e567270e294776e955fc8ff2a43437f277d5ed2977a21244e18"
   }
 }

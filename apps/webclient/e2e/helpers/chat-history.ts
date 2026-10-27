@@ -9,3 +9,9 @@ export const openChatHistory = async (page: Page): Promise<void> => {
   }
   await expect(history).toBeVisible();
 };
+
+export const openChatHistoryFilters = async (page: Page): Promise<void> => {
+  await openChatHistory(page);
+  const panel = page.locator('.chat-history-filter-panel');
+  if (await panel.getAttribute('open') === null) await panel.locator('summary').click();
+};

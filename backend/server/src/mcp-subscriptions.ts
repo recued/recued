@@ -45,7 +45,16 @@
  *  revocation does not depend on it: the door probes contract liveness live on
  *  every dispatch, so a stale catalog can only cause a call that is refused.
  *
- *  ⚠ WORK IS PER TOKEN, NOT PER STREAM. Four streams on one bearer see one
+ *  ── The 2025-era stream (`openLegacy`) ──
+ *  A 2025-era client has no `subscriptions/listen`. The server's channel there
+ *  is the SSE stream the client opens with `GET /mcp` (the optional stream of
+ *  Streamable HTTP, or the 2024 transport's only one), and a notice on it is a
+ *  plain `notifications/tools/list_changed`: no acknowledgement, no filter, no
+ *  `_meta`. Gemini CLI, OpenCode, OpenClaw and VS Code re-list on it (checked
+ *  2026-10-27); clients that ignore it lose nothing. It shares the bearer's
+ *  check below, so one catalog read serves both eras.
+ *
+ *  ⚠ WORK IS PER TOKEN, NOT PER STREAM. Every stream on one bearer sees one
  *  catalog, so they share one check and one in-flight promise. Otherwise the
  *  per-token stream cap would multiply the cost of the very thing it bounds. */
 
@@ -85,10 +94,32 @@ export const MCP_CATALOG_FINGERPRINT_MIN_GAP_MS = 2_000;
  *  the next tick simply tries again. */
 export const MCP_CATALOG_FINGERPRINT_TIMEOUT_MS = 15_000;
 
+/** How long a bearer's last fingerprint outlives its last stream.
+ *
+ *  ⛔ A RECONNECT MUST NOT BASELINE ON A CATALOG ITS CLIENT NEVER SAW. A
+ *  2025-era client whose GET stream dropped (a proxy, a laptop sleeping)
+ *  reconnects WITHOUT re-listing, so a change made while it was away would be
+ *  absorbed into the new stream's baseline and never announced. Remembering the
+ *  digest for a few minutes makes the reconnect compare against what the client
+ *  last heard of. A client that did re-list gets one spurious notice, which
+ *  costs it one re-list. Only the digests are kept: the raw bearer still goes
+ *  with the last stream. */
+export const MCP_CATALOG_FINGERPRINT_GRACE_MS = 5 * 60_000;
+
+/** Bound on remembered fingerprints; the oldest is dropped first. */
+export const MCP_CATALOG_FINGERPRINTS_REMEMBERED_MAX = 256;
+
 export type McpNotificationFrame = {
   jsonrpc: '2.0';
   method: string;
   params: Record<string, unknown>;
+};
+
+/** What a 2025-era stream carries: the bare notification, as SDK servers of
+ *  that era send it. */
+export type McpLegacyNotificationFrame = {
+  jsonrpc: '2.0';
+  method: string;
 };
 
 export interface McpSubscriptionsDeps {
@@ -122,7 +153,13 @@ export interface McpSubscriptions {
     /** Write one frame to this client's stream. */
     send: (frame: McpNotificationFrame) => void;
   }): Promise<McpListenSession>;
-  /** Open stream count (caps + diagnostics). */
+  /** Watch the catalog for a 2025-era client's SSE GET stream. Nothing is
+   *  sent on open: that era has no acknowledgement. */
+  openLegacy(input: {
+    token: string;
+    send: (frame: McpLegacyNotificationFrame) => void;
+  }): { close(): void };
+  /** Open stream count, both eras (caps + diagnostics). */
   activeStreamCount(): number;
 }
 
@@ -188,8 +225,9 @@ const tokenKeyOf = (token: string): string =>
   createHash('sha256').update(token, 'utf8').digest('hex');
 
 interface TokenWatch {
-  /** Every open stream on this bearer. */
-  streams: Set<{ send: (frame: McpNotificationFrame) => void; subscription_id: string | number | null }>;
+  /** Every open stream on this bearer, of either era. Each writes its own
+   *  era's frame. */
+  streams: Set<{ notify: () => void }>;
   fingerprint: string | null;
   /** ⚠ A BASELINE THAT NEVER LANDED IS NOT THE SAME AS A FRESH STREAM. If the
    *  first read fails, the client has meanwhile listed the catalog itself and
@@ -221,6 +259,30 @@ export const createMcpSubscriptions = (
 
   const watches = new Map<string, TokenWatch>();
   let cancelTimer: (() => void) | undefined;
+  /** Token key → the fingerprint its last stream closed on. Insertion order is
+   *  age order: `remember` re-inserts. */
+  const remembered = new Map<string, { fingerprint: string; at: number }>();
+
+  const remember = (key: string, fingerprint: string | null): void => {
+    remembered.delete(key);
+    if (fingerprint !== null) remembered.set(key, { fingerprint, at: now() });
+    for (const [oldest, entry] of remembered) {
+      if (
+        remembered.size <= MCP_CATALOG_FINGERPRINTS_REMEMBERED_MAX
+        && now() - entry.at <= MCP_CATALOG_FINGERPRINT_GRACE_MS
+      ) break;
+      remembered.delete(oldest);
+    }
+  };
+
+  /** The fingerprint a reconnecting bearer's clients last heard of, if recent. */
+  const recall = (key: string): string | null => {
+    const entry = remembered.get(key);
+    remembered.delete(key);
+    return entry !== undefined && now() - entry.at <= MCP_CATALOG_FINGERPRINT_GRACE_MS
+      ? entry.fingerprint
+      : null;
+  };
 
   /** One real `tools/list`, through the door's own authority path — bounded,
    *  so a dispatch that never settles cannot wedge this bearer. A timeout
@@ -302,18 +364,7 @@ export const createMcpSubscriptions = (
       if (previous === null && !recovering) return;
       for (const stream of watch.streams) {
         try {
-          stream.send({
-            jsonrpc: '2.0',
-            method: MCP_TOOLS_LIST_CHANGED_METHOD,
-            params: {
-              _meta: {
-                [MCP_PROTOCOL_VERSION_META_KEY]: MCP_MODERN_PROTOCOL_VERSION,
-                ...(stream.subscription_id !== null
-                  ? { [MCP_SUBSCRIPTION_ID_META_KEY]: stream.subscription_id }
-                  : {}),
-              },
-            },
-          });
+          stream.notify();
         } catch {
           // One broken socket must not deny the notification to the others;
           // the response's own `close` handler removes it.
@@ -344,11 +395,51 @@ export const createMcpSubscriptions = (
     cancelTimer = undefined;
   };
 
+  /** Add one stream to its bearer's watch; returns its close. */
+  const attach = (token: string, notify: () => void): (() => void) => {
+    const key = tokenKeyOf(token);
+    const stream = { notify };
+    let watch = watches.get(key);
+    if (watch === undefined) {
+      watch = {
+        streams: new Set(),
+        // A bearer back within the grace compares against what its clients
+        // last heard of; anything else baselines afresh.
+        fingerprint: recall(key),
+        baselineFailed: false,
+        lastCheckedAt: 0,
+        inFlight: undefined,
+        token,
+      };
+      watches.set(key, watch);
+    }
+    watch.streams.add(stream);
+    ensureTimer();
+    // Baseline now, so the first CHANGE is a change and not this client's
+    // own arrival. `fingerprint === null` suppresses the first emit.
+    void check(key);
+
+    let closed = false;
+    return () => {
+      if (closed) return;
+      closed = true;
+      const live = watches.get(key);
+      if (live === undefined) return;
+      live.streams.delete(stream);
+      if (live.streams.size === 0) {
+        watches.delete(key);
+        // ⚠ A check still in flight settles on the deleted watch and notifies
+        // nobody, so the remembered value is the last one a client was told
+        // about — which is the right one to compare a reconnect against.
+        remember(key, live.fingerprint);
+      }
+      stopTimerIfIdle();
+    };
+  };
+
   return {
     async open({ token, filter, subscription_id, send }) {
       const acknowledged = acknowledgeableFilter(parseFilter(filter));
-      const key = tokenKeyOf(token);
-      const stream = { send, subscription_id };
 
       // The acknowledgement goes out FIRST and unconditionally — before any
       // watching, and even when we honour nothing. It is the client's only way
@@ -373,36 +464,27 @@ export const createMcpSubscriptions = (
         return { acknowledged, close: () => {} };
       }
 
-      let watch = watches.get(key);
-      if (watch === undefined) {
-        watch = {
-          streams: new Set(),
-          fingerprint: null,
-          baselineFailed: false,
-          lastCheckedAt: 0,
-          inFlight: undefined,
-          token,
-        };
-        watches.set(key, watch);
-      }
-      watch.streams.add(stream);
-      ensureTimer();
-      // Baseline now, so the first CHANGE is a change and not this client's
-      // own arrival. `fingerprint === null` suppresses the first emit.
-      void check(key);
-
-      let closed = false;
+      const close = attach(token, () => {
+        send({
+          jsonrpc: '2.0',
+          method: MCP_TOOLS_LIST_CHANGED_METHOD,
+          params: {
+            _meta: {
+              [MCP_PROTOCOL_VERSION_META_KEY]: MCP_MODERN_PROTOCOL_VERSION,
+              ...(subscription_id !== null
+                ? { [MCP_SUBSCRIPTION_ID_META_KEY]: subscription_id }
+                : {}),
+            },
+          },
+        });
+      });
+      return { acknowledged, close };
+    },
+    openLegacy({ token, send }) {
       return {
-        acknowledged,
-        close: () => {
-          if (closed) return;
-          closed = true;
-          const live = watches.get(key);
-          if (live === undefined) return;
-          live.streams.delete(stream);
-          if (live.streams.size === 0) watches.delete(key);
-          stopTimerIfIdle();
-        },
+        close: attach(token, () => {
+          send({ jsonrpc: '2.0', method: MCP_TOOLS_LIST_CHANGED_METHOD });
+        }),
       };
     },
     activeStreamCount: () => {

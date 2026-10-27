@@ -1,6 +1,7 @@
 /** Host-owned participation in a local write transaction. A receipt proves a
  * committed effect; it is never an admission decision or a replay permit. */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { consumeScheduledLocalAuthority } from './scheduled-local-authority-context.js';
 import type Database from 'better-sqlite3';
 import { RpcError, type LocalMutationReceiptSummary, type ResourceReview } from '@recued/contracts';
 import { currentRunAbortContext } from './execution/run-abort-context.js';
@@ -16,6 +17,7 @@ export const withLocalMutationScope = <T>(scope: LocalMutationScope | undefined,
  * before committing. Receipt failure must roll back the entire mutation. */
 export const recordLocalMutation = (db: Database.Database, kind: LocalMutationReceiptSummary['kind'], review: ResourceReview,
   inverse?: LocalUpdateInverse): void => {
+  consumeScheduledLocalAuthority(db);
   const scope = scopes.getStore();
   if (!scope) return;
   if (!db.inTransaction) throw new Error('Local mutation evidence requires the mutation transaction.');

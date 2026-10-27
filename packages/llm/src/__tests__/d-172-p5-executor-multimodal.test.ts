@@ -52,6 +52,14 @@ const textOnlyConfig: LLMConfig = {
 };
 
 describe('executeLLM — multimodal (llm.content_parts)', () => {
+  it('keeps cooldown recovery for a capable vision source without calling it or claiming unsupported media', async () => {
+    const adapter = recordingAdapter(); const deps = makeDeps(adapter, visionConfig);
+    deps.quota.markRateLimited('slot_1');
+    await expect(executeLLM(manifest,
+      { 'llm.data': '[image]', 'llm.categories': ['a'], 'llm.content_parts': [imagePart] }, deps,
+    )).rejects.toMatchObject({ code: 'AI_LLM_UNAVAILABLE', details: { cooldown_sources: ['slot_1'], requireModalities: { image: true } } });
+    expect(adapter.complete).not.toHaveBeenCalled();
+  });
   it('attaches media to the user turn (lead text + image part) and routes to the vision slot', async () => {
     const adapter = recordingAdapter();
     const result = await executeLLM(

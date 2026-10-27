@@ -7,6 +7,78 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.27 — 2026-10-27
+
+Paperless can keep document dates in Yours up to date: the Paperless pack links a document's date
+to an item, imports it once or keeps it in sync on a schedule, and a schedule's reviewed updates can
+now run without asking for 30 days. A conversation can be renamed and remembers where you were
+reading, and History search shows the matching messages first. A chat turn that stops early says why
+and keeps what it had written, and a provider that just failed says when to try again. An AI app
+connected over HTTP hears when the tools it may use change.
+
+### Added
+
+- **Paperless documents in Yours.** The Paperless documents pack and its new Paperless API pack link
+  the custom date field of the Paperless documents you pick to items in Yours. Find a document,
+  review its date, and import it once or keep it in sync on a schedule; a new item gets an expiry
+  date and its reminders. A date you entered or confirmed yourself keeps priority, and the sync
+  reports it as kept instead of overwriting it. No document is downloaded and no AI runs. Both
+  packs, and the Home Assistant pack, are now built into the server, so every install, npm and
+  Docker included, can add them from Packs. Update Recued before the pack: on an older server, a
+  scheduled sync asks for approval on every run. If you set up **Review a Paperless document date**
+  on an item yourself, link the document through the pack instead; that recipe changed, so its setup
+  must be reviewed again before it writes.
+- **A schedule's reviewed updates can run without asking.** In Automation → Schedules, **Scheduled
+  local writes** shows the local updates a schedule's recipe makes: named bookkeeping fields, and
+  dates on the items it is linked to. **Allow local writes for 30 days** lets them run without an
+  approval each time, up to 1,000 writes. Creating or deleting anything, any other field, and
+  anything sent to another service still ask. **Take back authorization** ends it, and so does any
+  change to the schedule, its recipe, its connection or the reviewed links. The Paperless sync is
+  the first recipe that uses it.
+- **Rename a conversation.** A conversation's menu in History has **Rename**, for a name of up to
+  160 characters. Renaming changes only the name: the conversation keeps its messages, its draft and
+  its place in History, and your other devices show the new name at once.
+- **AI apps hear when their tools change.** When a contract switch, a pack install or a revoked
+  key changes the tools an AI app may use, Recued now tells an app connected over HTTP at once,
+  whichever version of MCP it speaks. Apps that act on the notice, such as Gemini CLI and
+  OpenCode, pick up the new tools without reconnecting; some apps ignore it. An idle connection
+  is kept open through proxies, and one key can now hold up to 16 of these connections (was 4),
+  so several sessions on one key all hear the change.
+
+### Changed
+
+- **A long conversation keeps your reading place.** While the app is open, switching back to a
+  conversation returns you to where you were reading, with your draft, and **Latest** takes you to
+  the newest messages. A conversation is marked read only once its newest message is on screen.
+- **History search shows the matching messages first**, with the matched words highlighted. Its
+  filters start collapsed, with a summary of those in use.
+- **Yours is easier to read.** An item has a compact header and shorter rows. A proposal shows
+  the current and the proposed value together and names what accepting it does, rules read as
+  summaries, and Automatic updates keeps the source, the approval and the status apart and appears
+  only on an item with a field Home Assistant can update. An item's Files tab groups the ways to
+  attach a file, Activity groups events by date, and on a touch screen the source details and the
+  links in an item's relationships are as easy to tap as Yours' other controls.
+
+### Fixed
+
+- **A chat turn that stops early says why, and keeps what it had written.** When the AI provider
+  failed, the model's reply could not be read, or the turn used its whole tool budget or reached the
+  model's output limit, the saved reply was empty, or held the partial text as if it were the
+  answer. It now keeps what the turn had written and says why it stopped, also when you reopen the
+  conversation later.
+- **A provider that just failed says when to try again.** A provider failure such as too many
+  requests pauses that AI source for a while, and a message sent during the pause was told that no
+  AI model was set up. Chat now says the source is paused and when to try again (the time is in
+  UTC), without calling the provider again. The failure itself gives the time too when Recued knows
+  it.
+- **A send-only mail account no longer reads as a mailbox that has not synced.** The Digest
+  listed it as needing attention every day, and the chat treated an empty mail search as
+  possibly out of date because of it. Its sent copies are still searched and read.
+- **A mailbox whose outgoing mail keeps failing says so again.** Since 26.10.26, a send from an
+  IMAP mailbox that failed because its mail server could not be reached or refused the sign-in
+  no longer counted in the mailbox's health, so the Digest did not flag it. It counts again; a
+  recipient the mail server refused still does not.
+
 ## 26.10.26 — 2026-10-26
 
 An update now goes through while an AI app is connected to Recued, and an update that did not

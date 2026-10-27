@@ -1,4 +1,5 @@
 export * from './customer-refunds.js';
+export { isLlmRetryTime, formatLlmRetryTime } from './llm-retry-time.js';
 // D-329 §3.4 — the write rules an AI's approvals teach.
 export * from './write-approval-rule.js';
 export type { LocalUpdateUndoReview, LocalUpdateUndoDecision, LocalUpdateUndoResult } from './local-update-undo.js';
@@ -4722,6 +4723,7 @@ export {
   isChatBroadcastEventKind,
   CHAT_HISTORY_WINDOW,
   CHAT_HISTORY_WINDOW_MAX,
+  CHAT_SESSION_TITLE_MAX_LENGTH,
   CHAT_SESSION_CHANGED_FIELDS,
   CHAT_SESSION_CHANGED_FIELD_SET,
   isChatSessionChangedField,
@@ -4826,6 +4828,8 @@ export type {
   ChatMessageSearchMatch,
   ChatMessageSearchResult,
   ChatSessionGetRequest,
+  ChatSessionRenameRequest,
+  ChatSessionRenameResult,
   ChatSessionChangedField,
   ChatTableName,
   // D-137 W2.3 — Tier 3 (connection.mcp.*) catalog substrate
@@ -7098,3 +7102,4 @@ export { formatAssetChatQuestion, parseAssetChatQuestion, type ChatAssetQuestion
 
 export * from './common-words.js';
 export * from './mail-account-capabilities.js';
+export type { LocalAutomationScope, LocalAutomationReview, LocalAutomationHooks } from './local-automation.js';

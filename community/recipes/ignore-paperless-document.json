@@ -1,0 +1,165 @@
+{
+  "recipe_id": "ignore-paperless-document",
+  "version": 5,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Ignore Paperless document",
+    "description": "Use “Ignore Paperless document” in Recued. Remember an excluded source document without creating or removing an asset.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "paperless-ngx"
+    ],
+    "recipe_bundle": "recued-core/paperless-ngx",
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "sync"
+    ],
+    "budget_ms": 120000,
+    "retired_connections": {
+      "paperless_ngx": "paperless-ngx-api"
+    }
+  },
+  "depends_on": [
+    "recued-core.paperless-ngx",
+    "recued-core.paperless-ngx-api"
+  ],
+  "requires": [
+    "read_connection_paperless_ngx"
+  ],
+  "variables": {
+    "document_id": {
+      "label": "Document",
+      "type": "number"
+    },
+    "custom_field_id": {
+      "label": "Date field",
+      "type": "number"
+    }
+  },
+  "steps": [
+    {
+      "id": "connection_required",
+      "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+      "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+    },
+    {
+      "id": "source_server",
+      "op": "recued-core.paperless-ngx-api.document.api-root",
+      "args": {},
+      "cache": "fresh"
+    },
+    {
+      "id": "source_identity",
+      "guard": "{{step.source_server.result.documents}} is_empty",
+      "fail_reason": "Paperless did not return its document API identity. Nothing was connected."
+    },
+    {
+      "id": "document",
+      "op": "recued-core.paperless-ngx-api.document.get",
+      "args": {
+        "document_id": "{{config.document_id}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "same_document",
+      "guard": "{{step.document.result.id}} not_equal {{config.document_id}}",
+      "fail_reason": "The source returned another document. Nothing was ignored."
+    },
+    {
+      "id": "existing",
+      "op": "recued-core.paperless-ngx.sync_link.search",
+      "args": {
+        "filters": {
+          "connection": "{{context.connections.paperless-ngx-api}}",
+          "document_id": "{{config.document_id}}"
+        },
+        "limit": 1
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "same_root",
+      "transform": "any",
+      "conditions": [
+        "{{step.existing.records.0.id}} is_empty",
+        "{{step.existing.records.0.source_root}} equal {{step.source_server.result.documents}}"
+      ]
+    },
+    {
+      "id": "same_source",
+      "guard": "{{step.same_root}} equal false",
+      "fail_reason": "Choose the connection this document was selected from; its Paperless server changed."
+    },
+    {
+      "id": "seed",
+      "transform": "default",
+      "value": "{{context.connections.paperless-ngx-api}}/{{config.document_id}}",
+      "fallback": ""
+    },
+    {
+      "id": "key",
+      "transform": "sha256",
+      "input": "{{step.seed}}"
+    },
+    {
+      "id": "created",
+      "op": "recued-core.paperless-ngx.sync_link.create",
+      "args": {
+        "id": "{{step.key}}",
+        "values": {
+          "connection": "{{context.connections.paperless-ngx-api}}",
+          "document_id": "{{config.document_id}}",
+          "custom_field_id": "{{config.custom_field_id}}",
+          "asset_id": "",
+          "source_root": "{{step.source_server.result.documents}}",
+          "source_title": "{{step.document.result.title}}",
+          "state": "ignored",
+          "busy": false,
+          "last_result": "Ignored by you"
+        }
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.existing.records.0.id}} is_not_empty"
+    },
+    {
+      "id": "updated",
+      "op": "recued-core.paperless-ngx.sync_link.update",
+      "args": {
+        "id": "{{step.existing.records.0.id}}",
+        "expected_version": 7,
+        "expected_revision": "{{step.existing.records.0._record.revision}}",
+        "set": {
+          "state": "ignored",
+          "last_result": "Ignored by you"
+        }
+      },
+      "cache": "fresh",
+      "skip_when": "{{step.existing.records.0.id}} is_empty"
+    },
+    {
+      "id": "receipt",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Document",
+          "value": "{{step.document.result.title}}"
+        },
+        {
+          "label": "Sync",
+          "value": "Ignored. An existing asset and its reminders are kept. Review this document again to reconnect it."
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.receipt"
+      }
+    ]
+  }
+}

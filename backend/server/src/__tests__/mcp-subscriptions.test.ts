@@ -28,6 +28,7 @@ import {
 } from '../ports/mcp/handler.js';
 import {
   createMcpSubscriptions,
+  MCP_CATALOG_FINGERPRINT_GRACE_MS,
   MCP_CATALOG_FINGERPRINT_INTERVAL_MS,
 } from '../mcp-subscriptions.js';
 
@@ -41,6 +42,10 @@ interface Harness {
    *  2s floor. Opens that happen WITHOUT a tick share a clock instant, so the
    *  floor absorbs them, which is the behaviour it exists for. */
   tick(): void;
+  /** Move the clock without firing the re-check. */
+  advance(ms: number): void;
+  /** Streams the port is watching, both eras. */
+  streams(): number;
   close(): Promise<void>;
 }
 
@@ -51,6 +56,7 @@ const startDoor = async (opts: {
   /** Return a JSON-RPC error envelope instead of a result. */
   fail?: () => boolean;
   onDispatch?: (method: string) => void;
+  keepaliveMs?: number;
 } ): Promise<Harness> => {
   const dispatch = async (envelope: unknown): Promise<unknown> => {
     const method = (envelope as { method?: string }).method ?? '';
@@ -86,6 +92,7 @@ const startDoor = async (opts: {
     limiter: createRateLimiter({ capacity: 1_000, refill_window_ms: 60_000 }),
     dispatch,
     subscriptions,
+    ...(opts.keepaliveMs !== undefined ? { sse_keepalive_ms: opts.keepaliveMs } : {}),
   });
   const server: Server = createServer((req, res) => { void handler(req, res); });
   await new Promise<void>((ready) => { server.listen(0, '127.0.0.1', ready); });
@@ -97,6 +104,8 @@ const startDoor = async (opts: {
       clock += MCP_CATALOG_FINGERPRINT_INTERVAL_MS;
       for (const fn of [...ticks]) fn();
     },
+    advance: (ms) => { clock += ms; },
+    streams: () => subscriptions.activeStreamCount(),
     // ⚠ `close()` alone hangs: every open listen stream is a live socket, and
     // that is the whole point of the feature. Drop them explicitly.
     close: () => new Promise<void>((done) => {
@@ -153,6 +162,53 @@ const collect = (res: Response): { frames: Record<string, unknown>[]; stop: () =
   })();
   return { frames, stop: () => { stopped = true; void reader.cancel().catch(() => undefined); } };
 };
+
+/** Open the `GET /mcp` stream, as a 2025-era client does after its handshake.
+ *  `abort` drops the connection, which is what the server sees when a client
+ *  goes away. */
+const openGet = async (url: string): Promise<{ res: Response; abort: () => void }> => {
+  const controller = new AbortController();
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${TOKEN}`, accept: 'text/event-stream' },
+    signal: controller.signal,
+  });
+  return { res, abort: () => { controller.abort(); } };
+};
+
+/** Every SSE block a stream carries, events and comments kept apart. */
+const collectBlocks = (res: Response): {
+  events: { event?: string; data: string }[];
+  comments: string[];
+  stop: () => void;
+} => {
+  const events: { event?: string; data: string }[] = [];
+  const comments: string[] = [];
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let stopped = false;
+  void (async () => {
+    while (!stopped) {
+      const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true }));
+      if (done) break;
+      buffer += decoder.decode(value as Uint8Array, { stream: true });
+      let cut = buffer.indexOf('\n\n');
+      while (cut >= 0) {
+        const lines = buffer.slice(0, cut).split('\n');
+        buffer = buffer.slice(cut + 2);
+        const event = lines.find((l) => l.startsWith('event: '))?.slice(7);
+        const data = lines.filter((l) => l.startsWith('data: ')).map((l) => l.slice(6)).join('\n');
+        for (const l of lines) if (l.startsWith(':')) comments.push(l.slice(1).trim());
+        if (data !== '') events.push({ ...(event !== undefined ? { event } : {}), data });
+        cut = buffer.indexOf('\n\n');
+      }
+    }
+  })();
+  return { events, comments, stop: () => { stopped = true; void reader.cancel().catch(() => undefined); } };
+};
+
+const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 60));
 
 let door: Harness | undefined;
 afterEach(async () => {
@@ -259,6 +315,123 @@ describe('what a client is actually told', () => {
   });
 });
 
+describe("a 2025-era client's GET stream", () => {
+  const countReads = (): { reads: () => number; onDispatch: (method: string) => void } => {
+    let n = 0;
+    return { reads: () => n, onDispatch: (m) => { if (m === 'tools/list') n += 1; } };
+  };
+
+  it('🎯 carries tools/list_changed as a plain message event when the catalog moves', async () => {
+    let tools: unknown[] = [{ name: 'recued_listRecipes' }];
+    const counter = countReads();
+    door = await startDoor({ tools: () => tools, onDispatch: counter.onDispatch });
+    const get = await openGet(door.url);
+    const stream = collectBlocks(get.res);
+    // The endpoint line, then the baseline read: the client's arrival is not a change.
+    await vi.waitFor(() => {
+      expect(stream.events).toHaveLength(1);
+      expect(counter.reads()).toBe(1);
+    });
+    expect(stream.events[0]!.event).toBe('endpoint');
+    door.tick();
+    await settle();
+    expect(stream.events).toHaveLength(1);
+
+    tools = [...tools, { name: 'recued_ingredient_new-thing' }];
+    door.tick();
+    await vi.waitFor(() => { expect(stream.events).toHaveLength(2); });
+    expect(stream.events[1]!.event).toBe('message');
+    // ⛔ The 2025 frame is bare: that era has no acknowledgement and no `_meta`
+    // subscription id to correlate, and SDK servers of the era send exactly this.
+    expect(JSON.parse(stream.events[1]!.data)).toEqual({
+      jsonrpc: '2.0',
+      method: MCP_TOOLS_LIST_CHANGED_METHOD,
+    });
+    stream.stop();
+    get.abort();
+  });
+
+  it("⚠ shares one catalog read with the same bearer's listen feed, each told in its own era", async () => {
+    let tools: unknown[] = [{ name: 'a' }];
+    const counter = countReads();
+    door = await startDoor({ tools: () => tools, onDispatch: counter.onDispatch });
+    const modern = collect(await listen(door.url, { toolsListChanged: true }));
+    const get = await openGet(door.url);
+    const legacy = collectBlocks(get.res);
+    await vi.waitFor(() => {
+      expect(modern.frames).toHaveLength(1);
+      expect(legacy.events).toHaveLength(1);
+    });
+    await settle();
+    const before = counter.reads();
+
+    tools = [{ name: 'a' }, { name: 'b' }];
+    door.tick();
+    await vi.waitFor(() => {
+      expect(modern.frames).toHaveLength(2);
+      expect(legacy.events).toHaveLength(2);
+    });
+    expect(counter.reads()).toBe(before + 1);
+    expect((modern.frames[1]!.params as { _meta: Record<string, unknown> })
+      ._meta['io.modelcontextprotocol/subscriptionId']).toBe(42);
+    expect(JSON.parse(legacy.events[1]!.data)).toEqual({
+      jsonrpc: '2.0',
+      method: MCP_TOOLS_LIST_CHANGED_METHOD,
+    });
+    modern.stop();
+    legacy.stop();
+    get.abort();
+  });
+
+  it('⛔ announces a change made while the client was away, when it is back within the grace', async () => {
+    // A 2025-era client reconnects its GET stream WITHOUT re-listing, so
+    // baselining the reconnect on the already-changed catalog would hide the
+    // change for the rest of its session.
+    let tools: unknown[] = [{ name: 'a' }];
+    const counter = countReads();
+    door = await startDoor({ tools: () => tools, onDispatch: counter.onDispatch });
+    const first = await openGet(door.url);
+    const away = collectBlocks(first.res);
+    await vi.waitFor(() => { expect(counter.reads()).toBe(1); });
+    away.stop();
+    first.abort();
+    await vi.waitFor(() => { expect(door!.streams()).toBe(0); });
+
+    tools = [{ name: 'a' }, { name: 'b' }];
+    door.advance(60_000);
+    const again = await openGet(door.url);
+    const back = collectBlocks(again.res);
+    // No tick: the reconnect's own first read compares against what the client
+    // last heard of.
+    await vi.waitFor(() => { expect(back.events).toHaveLength(2); });
+    expect(back.events[1]!.event).toBe('message');
+    back.stop();
+    again.abort();
+  });
+
+  it('…and past the grace, a reconnect starts a fresh baseline', async () => {
+    let tools: unknown[] = [{ name: 'a' }];
+    const counter = countReads();
+    door = await startDoor({ tools: () => tools, onDispatch: counter.onDispatch });
+    const first = await openGet(door.url);
+    const away = collectBlocks(first.res);
+    await vi.waitFor(() => { expect(counter.reads()).toBe(1); });
+    away.stop();
+    first.abort();
+    await vi.waitFor(() => { expect(door!.streams()).toBe(0); });
+
+    tools = [{ name: 'a' }, { name: 'b' }];
+    door.advance(MCP_CATALOG_FINGERPRINT_GRACE_MS + 1);
+    const again = await openGet(door.url);
+    const back = collectBlocks(again.res);
+    await vi.waitFor(() => { expect(counter.reads()).toBe(2); });
+    await settle();
+    expect(back.events.map((e) => e.event)).toEqual(['endpoint']);
+    back.stop();
+    again.abort();
+  });
+});
+
 describe('only a modern request is served a stream', () => {
   it('⛔ answers a legacy-era subscriptions/listen as the unknown method it is there', async () => {
     const dispatched: string[] = [];
@@ -325,5 +498,27 @@ describe('cost and caps', () => {
     expect(overflow.status).toBe(503);
     await overflow.text();
     for (const stream of open) stream.stop();
+  });
+});
+
+describe('keep-alive', () => {
+  it('keeps both kinds of stream busy for a proxy with SSE comments, never events', async () => {
+    // An empty `data:` event would do the same for a proxy, and Gemini CLI would
+    // fail to parse it as JSON and mark the server disconnected.
+    door = await startDoor({ tools: () => [], keepaliveMs: 25 });
+    const get = await openGet(door.url);
+    const legacy = collectBlocks(get.res);
+    const modern = collectBlocks(await listen(door.url, { toolsListChanged: true }));
+    await vi.waitFor(() => {
+      expect(legacy.comments.length).toBeGreaterThanOrEqual(2);
+      expect(modern.comments.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(new Set([...legacy.comments, ...modern.comments])).toEqual(new Set(['keep-alive']));
+    // The endpoint line and the acknowledgement are still the only events.
+    expect(legacy.events.map((e) => e.event)).toEqual(['endpoint']);
+    expect(modern.events).toHaveLength(1);
+    legacy.stop();
+    modern.stop();
+    get.abort();
   });
 });

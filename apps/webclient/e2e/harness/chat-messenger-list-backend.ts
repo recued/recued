@@ -4,7 +4,7 @@ import { createChatStore, ensureChatSchema } from '../../../../backend/server/sr
 import { createChatOrchestrator, type ChatBroadcastEmitter } from '../../../../backend/server/src/chat-orchestrator.js';
 import { createChatMessengerBridge } from '../../../../backend/server/src/chat-messenger-bridge.js';
 import { withQueuedChatTurns } from '../../../../backend/server/src/chat-turn-queue.js';
-import { handleChatDelivery, handleChatQueue, handleMessagesSearch, handleSessionGet, handleSessionsList } from '../../../../backend/server/src/chat-handler.js';
+import { handleChatDelivery, handleChatQueue, handleMessagesSearch, handleSessionGet, handleSessionsList, handleSessionRename } from '../../../../backend/server/src/chat-handler.js';
 
 /** Real list, storage, queue and delivery handlers; only vendor I/O is local. */
 export const createMessengerListFixture = (broadcast: ChatBroadcastEmitter) => {
@@ -31,7 +31,7 @@ export const createMessengerListFixture = (broadcast: ChatBroadcastEmitter) => {
       } });
   }
   const orchestrator = withQueuedChatTurns(raw, { db, store, broadcast, messengerBridge: bridge });
-  const deps = { store, orchestrator, selfSignature, messengerReceiveStatus: (vendor: string) => receive.get(vendor) ?? 'unknown' as const };
+  const deps = { store, orchestrator, selfSignature, broadcast, messengerReceiveStatus: (vendor: string) => receive.get(vendor) ?? 'unknown' as const };
   const preferences = new Map<string, InstancePrefs>();
   return {
     addMessage: (session_id: string, id: string, content: string, ts = Date.now()) => store.appendMessage({
@@ -51,6 +51,7 @@ export const createMessengerListFixture = (broadcast: ChatBroadcastEmitter) => {
     async rpc(method: string, args: unknown, client = 'paired'): Promise<unknown> {
       if (method === 'chat.sessions.list') return handleSessionsList(deps);
       if (method === 'chat.session.get') return handleSessionGet(deps, args as Parameters<typeof handleSessionGet>[1]);
+      if (method === 'chat.session.rename') return handleSessionRename(deps, args as Parameters<typeof handleSessionRename>[1]);
       if (method === 'chat.deliveries.list') return handleChatDelivery(deps, 'list', args);
       if (method === 'chat.delivery.retry') return handleChatDelivery(deps, 'retry', args);
       if (method === 'chat.delivery.skip') return handleChatDelivery(deps, 'skip', args);

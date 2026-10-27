@@ -500,6 +500,71 @@ describe('D-127 P1.5 — SMTP error mapping', () => {
   });
 });
 
+describe('a failed send counts in the mailbox health, as a Gmail or Outlook one does', () => {
+  // ⛔ Lost once: submission moved into `submitSmtp` (SMTP-only accounts), which
+  // owns no health, and every failed send left `error_count_24h` at 0.
+  const smtpErr = (fields: Record<string, unknown>): Error =>
+    Object.assign(new Error(String(fields.message ?? 'smtp failed')), fields);
+  const sendFailing = async (smtpThrowOn: Error) => {
+    const logged: string[] = [];
+    const provider = createImapProvider({
+      slug: 'work',
+      config: () => baseConfig(),
+      clientFactory: () => new FakeImapClient(),
+      smtpFactory: () => Object.assign(new FakeSmtpTransport(), { throwOnSend: smtpThrowOn }),
+      messageIdUuid: () => 'fixed-uuid-1234',
+      log: (_level, msg) => { logged.push(msg); },
+    });
+    await provider.connect();
+    assertSendCapable(provider);
+    expect(provider.health().error_count_24h).toBe(0);
+    await expect(provider.send(minimalMsg)).rejects.toBeInstanceOf(IngredientError);
+    return { errors: provider.health().error_count_24h, logged };
+  };
+
+  it.each([
+    ['a refused sign-in', { code: 'EAUTH', responseCode: 535, message: 'Authentication failed' }, 'code=EAUTH response=535'],
+    ['a reset connection', { code: 'ESOCKET', message: 'Connection reset' }, 'code=ESOCKET response=none'],
+    ['an unknown failure', { message: 'generic boom' }, 'code=none response=none'],
+  ])('counts %s', async (_label, fields, named) => {
+    const { errors, logged } = await sendFailing(smtpErr(fields));
+    expect(errors).toBe(1);
+    expect(logged).toEqual([`imap SMTP submission failed ${named}`]);
+  });
+
+  it.each([
+    ['a refused recipient', { code: 'EENVELOPE', responseCode: 550, message: 'No such user' }],
+    ['a refused message', { code: 'EMESSAGE', responseCode: 552, message: 'Message size limit' }],
+  ])('does not count %s: it is the message, not the account', async (_label, fields) => {
+    const { errors, logged } = await sendFailing(smtpErr(fields));
+    expect(errors).toBe(0);
+    expect(logged).toEqual([]);
+  });
+
+  it('counts a transport that cannot be built', async () => {
+    const provider = createImapProvider({
+      slug: 'work',
+      config: () => baseConfig(),
+      clientFactory: () => new FakeImapClient(),
+      smtpFactory: () => { throw new ReferenceError('require is not defined'); },
+      messageIdUuid: () => 'fixed-uuid-1234',
+    });
+    await provider.connect();
+    assertSendCapable(provider);
+    await expect(provider.send(minimalMsg)).rejects.toBeInstanceOf(IngredientError);
+    expect(provider.health().error_count_24h).toBe(1);
+  });
+
+  it('a send that goes counts nothing', async () => {
+    const h = newHarness({}, { listEntries: [{ path: 'Sent', specialUse: '\\Sent' }] });
+    await h.provider.connect();
+    assertSendCapable(h.provider);
+    // No warning: the copy reached Sent, whose failure counts on its own.
+    expect((await h.provider.send(minimalMsg)).warnings).toBeUndefined();
+    expect(h.provider.health().error_count_24h).toBe(0);
+  });
+});
+
 describe('which SMTP failures PROVE the message never left (`not_sent`)', () => {
   const smtpErr = (fields: Record<string, unknown>): Error =>
     Object.assign(new Error(String(fields.message ?? 'smtp failed')), fields);

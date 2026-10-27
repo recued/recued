@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { matchLLM } from '../match.js';
 import { buildAvailability } from '../availability.js';
 import { createQuotaTracker } from '../quota.js';
 import type { FreePoolEntry, LLMConfig } from '../types.js';
+import { LLMError } from '../types.js';
 import type { LLMRequirements, WebChatTab } from '@recued/contracts';
 
 const noTabs = async (): Promise<Set<WebChatTab>> => new Set();
@@ -23,6 +24,69 @@ const apiEntry = (id: string, over: Partial<Extract<FreePoolEntry, { type: 'api'
   supports_json: true,
   enabled: true,
   ...over,
+});
+
+describe('matchLLM — cooldown failure guidance', () => {
+  const failure = async (config: LLMConfig, quota: ReturnType<typeof createQuotaTracker>, request: Parameters<typeof matchLLM>[0]) => {
+    const availability = await buildAvailability({ config, quota, tabProbe: noTabs });
+    try { matchLLM(request, { config, availability, quota, strategy: 'round_robin' }); }
+    catch (error) { expect(error).toBeInstanceOf(LLMError); return error as LLMError; }
+    throw new Error('Expected a match failure');
+  };
+  const slot = { provider: 'openai' as const, model: 'fixture', api_key: 'fixture', speed: 'fast' as const, supports_json: true };
+
+  it('reports the first eligible expiry, honors a pin, and omits unknown expiry times', async () => {
+    const clock = Date.parse('2026-10-26T20:00:00Z');
+    const date = vi.spyOn(Date, 'now').mockReturnValue(clock);
+    try {
+      const config: LLMConfig = { slot_1: slot, slot_2: slot, free_pool: [apiEntry('pool')] };
+      const quota = createQuotaTracker();
+      quota.markRateLimited('slot_1', 20_000); quota.markRateLimited('slot_2', 10_000); quota.markRateLimited('pool', 5_000);
+      const request = { requires: requires(), allowUpgrade: false, forceLayer: 'byok' as const };
+      expect((await failure(config, quota, request)).details?.retry_at).toBe(clock + 10_000);
+      expect((await failure(config, quota, { ...request, pinSlot: 'slot_1' })).details?.retry_at).toBe(clock + 20_000);
+      expect((await failure(config, quota, { ...request, forceLayer: 'free' })).details?.retry_at).toBe(clock + 5_000);
+      const { cooldownUntil: _readExpiry, ...legacy } = quota;
+      expect((await failure(config, legacy, request)).details?.retry_at).toBeUndefined();
+      const partial = { ...quota, cooldownUntil: (id: string) => id === 'slot_2' ? undefined : quota.cooldownUntil?.(id) };
+      expect((await failure(config, partial, request)).details?.retry_at).toBeUndefined();
+    } finally { date.mockRestore(); }
+  });
+
+  it('identifies matching cooldowns within the requested layer and pinned slot', async () => {
+    const config: LLMConfig = { slot_1: slot, free_pool: [apiEntry('pool')] }; const quota = createQuotaTracker();
+    quota.markRateLimited('slot_1'); quota.markRateLimited('pool');
+    const request = { requires: requires({ output_format: 'json' }), allowUpgrade: false };
+    expect((await failure(config, quota, { ...request, forceLayer: 'byok', pinSlot: 'slot_1' })).details?.cooldown_sources).toEqual(['slot_1']);
+    expect((await failure(config, quota, { ...request, forceLayer: 'free' })).details?.cooldown_sources).toEqual(['pool']);
+  });
+
+  it('does not offer cooldown recovery for incompatible or unselected sources', async () => {
+    const config: LLMConfig = { slot_1: { ...slot, speed: 'quality' }, slot_2: { ...slot, supports_json: false } };
+    const quota = createQuotaTracker(); quota.markRateLimited('slot_1'); quota.markRateLimited('slot_2');
+    const request = { requires: requires({ output_format: 'json' }), allowUpgrade: false };
+    expect((await failure(config, quota, request)).details?.cooldown_sources).toBeUndefined();
+    expect((await failure(config, quota, { ...request, forceLayer: 'free' })).details?.cooldown_sources).toBeUndefined();
+  });
+
+  it('keeps disabled, missing-key, spent-budget and rejected sources out of cooldown advice', async () => {
+    const config: LLMConfig = { slot_1: { ...slot, daily_budget_tokens: 1 }, free_pool: [
+      apiEntry('disabled', { enabled: false }), apiEntry('missing', { api_key: '' }), apiEntry('spent', { daily_cap_tokens: 1 }), apiEntry('rejected'),
+    ] };
+    const quota = createQuotaTracker();
+    for (const id of ['slot_1', 'disabled', 'missing', 'spent', 'rejected']) quota.markRateLimited(id);
+    quota.recordUsage('slot_1', 1); quota.recordUsage('spent', 1);
+    const availability = await buildAvailability({ config, quota, tabProbe: noTabs });
+    try { matchLLM({ requires: requires(), allowUpgrade: false }, { config, availability, quota, rejectSet: new Set(['rejected']), strategy: 'round_robin' }); }
+    catch (error) { expect(error).toBeInstanceOf(LLMError); expect((error as LLMError).details?.cooldown_sources).toBeUndefined(); return; }
+    throw new Error('Expected a match failure');
+  });
+
+  it('checks cooldowns only along permitted tier relaxations', async () => {
+    const config: LLMConfig = { slot_1: { ...slot, speed: 'quality' } }; const quota = createQuotaTracker(); quota.markRateLimited('slot_1');
+    expect((await failure(config, quota, { requires: requires(), allowUpgrade: false })).details?.cooldown_sources).toBeUndefined();
+    expect((await failure(config, quota, { requires: requires(), allowUpgrade: true })).details?.cooldown_sources).toEqual(['slot_1']);
+  });
 });
 
 describe('matchLLM — auto free-before-BYOK ranking', () => {

@@ -1,0 +1,774 @@
+{
+  "recipe_id": "configure-paperless-sync",
+  "version": 5,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Approve Paperless documents",
+    "description": "Use “Approve Paperless documents” in Recued. Recheck a reviewed selection and save source links. Run Sync Paperless documents to perform the import.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "paperless-ngx"
+    ],
+    "recipe_bundle": "recued-core/paperless-ngx",
+    "tags": [
+      "pack:paperless-ngx",
+      "documents",
+      "sync"
+    ],
+    "budget_ms": 120000,
+    "retired_connections": {
+      "paperless_ngx": "paperless-ngx-api"
+    }
+  },
+  "depends_on": [
+    "recued-core.paperless-ngx",
+    "recued-core.paperless-ngx-api"
+  ],
+  "requires": [
+    "read_connection_paperless_ngx"
+  ],
+  "variables": {
+    "document_ids": {
+      "label": "Documents",
+      "type": "array",
+      "help": "Choose one document or the displayed batch from Find Paperless documents."
+    },
+    "custom_field_id": {
+      "label": "Document date field",
+      "type": "number"
+    },
+    "asset_id": {
+      "label": "Existing asset (optional)",
+      "type": "string",
+      "default": "",
+      "page_binding": {
+        "kind": "asset",
+        "field": "id"
+      },
+      "help": "Leave blank to create assets. An existing asset can be linked to one document; manual dates retain their priority."
+    },
+    "mode": {
+      "label": "After the first import",
+      "type": "string",
+      "default": "sync",
+      "options": [
+        "sync",
+        "once"
+      ],
+      "help": "Keep in sync, or import once. Schedule Sync Paperless documents using the existing automation controls."
+    },
+    "expected_hash": {
+      "label": "Reviewed selection",
+      "type": "string"
+    }
+  },
+  "steps": [
+    {
+      "id": "connection_required",
+      "guard": "{{context.connections.paperless-ngx-api}} is_empty",
+      "fail_reason": "Choose the enrolled Paperless connection for this recipe."
+    },
+    {
+      "id": "source_server",
+      "op": "recued-core.paperless-ngx-api.document.api-root",
+      "args": {},
+      "cache": "fresh"
+    },
+    {
+      "id": "source_identity",
+      "guard": "{{step.source_server.result.documents}} is_empty",
+      "fail_reason": "Paperless did not return its document API identity. Nothing was connected."
+    },
+    {
+      "id": "ids",
+      "transform": "unique",
+      "array": "{{config.document_ids}}"
+    },
+    {
+      "id": "selection_count",
+      "transform": "count",
+      "input": "{{step.ids}}"
+    },
+    {
+      "id": "selection_ok",
+      "transform": "all",
+      "conditions": [
+        "{{step.selection_count}} greater 0",
+        "{{step.selection_count}} less_or_equal 50",
+        "{{config.custom_field_id}} greater 0"
+      ]
+    },
+    {
+      "id": "selection_required",
+      "guard": "{{step.selection_ok}} equal false",
+      "fail_reason": "Choose between one and fifty documents and a date field."
+    },
+    {
+      "id": "mode_ok",
+      "transform": "compare",
+      "left": "{{config.mode}}",
+      "operator": "in",
+      "right": [
+        "sync",
+        "once"
+      ]
+    },
+    {
+      "id": "mode_required",
+      "guard": "{{step.mode_ok}} equal false",
+      "fail_reason": "Choose sync or import once."
+    },
+    {
+      "id": "single_existing",
+      "transform": "any",
+      "conditions": [
+        "{{config.asset_id}} is_empty",
+        "{{step.selection_count}} equal 1"
+      ]
+    },
+    {
+      "id": "existing_selection",
+      "guard": "{{step.single_existing}} equal false",
+      "fail_reason": "An existing asset can be linked to only one selected document."
+    },
+    {
+      "id": "existing_asset",
+      "op": "core.work-entity.get",
+      "args": {
+        "kind": "asset",
+        "id": "{{config.asset_id}}"
+      },
+      "cache": "fresh",
+      "skip_when": "{{config.asset_id}} is_empty"
+    },
+    {
+      "id": "existing_expiry",
+      "transform": "pick",
+      "source": "{{step.existing_asset.entity.dates}}",
+      "fields": [
+        "expires_on"
+      ]
+    },
+    {
+      "id": "expiry_fields",
+      "transform": "count",
+      "input": "{{step.existing_expiry}}"
+    },
+    {
+      "id": "missing_target",
+      "transform": "all",
+      "conditions": [
+        "{{config.asset_id}} is_not_empty",
+        "{{step.expiry_fields}} equal 0"
+      ]
+    },
+    {
+      "id": "compatible_asset",
+      "guard": "{{step.missing_target}} equal true",
+      "fail_reason": "This asset has no expiry date field. Choose an asset with expires_on or leave Existing asset blank to create a document asset."
+    },
+    {
+      "id": "existing_field_source",
+      "transform": "rename",
+      "source": "{{step.existing_asset.entity.field_sources}}",
+      "mapping": {
+        "dates.expires_on": "expiry_source"
+      }
+    },
+    {
+      "id": "existing_authority",
+      "transform": "switch",
+      "input": "{{step.existing_field_source.expiry_source.kind}}",
+      "cases": {
+        "owner": "Your entry stays protected",
+        "confirmed_document": "Your confirmed date stays protected",
+        "extracted": "An extracted date is already recorded; another source may control it"
+      },
+      "default": "No saved date authority"
+    },
+    {
+      "id": "field",
+      "op": "recued-core.paperless-ngx-api.custom_field.get",
+      "args": {
+        "custom_field_id": "{{config.custom_field_id}}"
+      },
+      "cache": "fresh"
+    },
+    {
+      "id": "same_field",
+      "guard": "{{step.field.result.id}} not_equal {{config.custom_field_id}}",
+      "fail_reason": "Paperless returned another custom field. Nothing was connected."
+    },
+    {
+      "id": "date_field_required",
+      "guard": "{{step.field.result.data_type}} not_equal date",
+      "fail_reason": "Choose a Paperless custom field declared as a date."
+    },
+    {
+      "id": "documents",
+      "op": "recued-core.paperless-ngx-api.document.get",
+      "args": {
+        "document_id": "{{item}}"
+      },
+      "cache": "fresh",
+      "foreach": "{{step.ids}}"
+    },
+    {
+      "id": "source_rows",
+      "transform": "map",
+      "array": "{{step.documents}}",
+      "expression": {
+        "document_id": "{{item.item}}",
+        "returned_id": "{{item.result.result.id}}",
+        "title": "{{item.result.result.title}}",
+        "custom_fields": "{{item.result.result.custom_fields}}",
+        "read_ok": "{{item.ok}}",
+        "custom_field_id": "{{config.custom_field_id}}"
+      }
+    },
+    {
+      "id": "date_values",
+      "transform": "find",
+      "array": "{{item.custom_fields}}",
+      "field": "field",
+      "operator": "equal",
+      "value": "{{item.custom_field_id}}",
+      "foreach": "{{step.source_rows}}"
+    },
+    {
+      "id": "with_dates",
+      "transform": "enrich_by",
+      "array": "{{step.source_rows}}",
+      "with": "{{step.date_values}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "source_date": "result.value"
+      }
+    },
+    {
+      "id": "parsed_dates",
+      "transform": "map",
+      "array": "{{step.with_dates}}",
+      "apply": "date_parse",
+      "field": "source_date",
+      "output_field": "date_ms"
+    },
+    {
+      "id": "date_lengths",
+      "transform": "map",
+      "array": "{{step.parsed_dates}}",
+      "apply": "string_length",
+      "field": "source_date",
+      "output_field": "date_length"
+    },
+    {
+      "id": "parseable_dates",
+      "transform": "filter",
+      "array": "{{step.date_lengths}}",
+      "conditions": [
+        {
+          "field": "date_ms",
+          "operator": "is_not_null",
+          "value": null
+        },
+        {
+          "field": "date_length",
+          "operator": "equal",
+          "value": 10
+        },
+        {
+          "field": "read_ok",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "date_iso",
+      "transform": "map",
+      "array": "{{step.parseable_dates}}",
+      "apply": "date_add",
+      "field": "date_ms",
+      "amount": 0,
+      "unit": "seconds",
+      "output_field": "iso"
+    },
+    {
+      "id": "date_parts",
+      "transform": "map",
+      "array": "{{step.date_iso}}",
+      "apply": "split",
+      "field": "iso",
+      "delimiter": "T",
+      "output_field": "parts"
+    },
+    {
+      "id": "date_roundtrips",
+      "transform": "compare",
+      "left": "{{item.source_date}}",
+      "operator": "equal",
+      "right": "{{item.parts.0}}",
+      "foreach": "{{step.date_parts}}"
+    },
+    {
+      "id": "date_proofs",
+      "transform": "enrich_by",
+      "array": "{{step.date_parts}}",
+      "with": "{{step.date_roundtrips}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "date_valid": "result"
+      }
+    },
+    {
+      "id": "identity_proofs",
+      "transform": "compare",
+      "left": "{{item.document_id}}",
+      "operator": "equal",
+      "right": "{{item.returned_id}}",
+      "foreach": "{{step.date_proofs}}"
+    },
+    {
+      "id": "identity_dates",
+      "transform": "enrich_by",
+      "array": "{{step.date_proofs}}",
+      "with": "{{step.identity_proofs}}",
+      "key": "document_id",
+      "with_key": "item.document_id",
+      "fields": {
+        "identity_valid": "result"
+      }
+    },
+    {
+      "id": "valid_dates",
+      "transform": "filter",
+      "array": "{{step.identity_dates}}",
+      "conditions": [
+        {
+          "field": "date_valid",
+          "operator": "equal",
+          "value": true
+        },
+        {
+          "field": "identity_valid",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "valid_markers",
+      "transform": "map",
+      "array": "{{step.valid_dates}}",
+      "expression": {
+        "document_id": "{{item.document_id}}",
+        "valid": true
+      }
+    },
+    {
+      "id": "dated_rows",
+      "transform": "enrich_by",
+      "array": "{{step.with_dates}}",
+      "with": "{{step.valid_markers}}",
+      "key": "document_id",
+      "with_key": "document_id",
+      "fields": {
+        "valid": "valid"
+      }
+    },
+    {
+      "id": "links",
+      "op": "recued-core.paperless-ngx.sync_link.search",
+      "args": {
+        "filters": {
+          "connection": "{{context.connections.paperless-ngx-api}}"
+        },
+        "limit": 200
+      },
+      "cache": "fresh",
+      "pages": "all"
+    },
+    {
+      "id": "complete_links",
+      "guard": "{{step.links.next_cursor}} is_not_empty",
+      "fail_reason": "Too many sync links to review completely. Narrow this source first."
+    },
+    {
+      "id": "review_rows",
+      "transform": "enrich_by",
+      "array": "{{step.dated_rows}}",
+      "with": "{{step.links.records}}",
+      "key": "document_id",
+      "with_key": "document_id",
+      "fields": {
+        "link_id": "id",
+        "revision": "_record.revision",
+        "existing_asset_id": "asset_id",
+        "source_root": "source_root",
+        "state": "state",
+        "busy": "busy"
+      }
+    },
+    {
+      "id": "review_material",
+      "transform": "map",
+      "array": "{{step.review_rows}}",
+      "expression": {
+        "connection": "{{context.connections.paperless-ngx-api}}",
+        "document_id": "{{item.document_id}}",
+        "title": "{{item.title}}",
+        "date": "{{item.source_date}}",
+        "valid": "{{item.valid}}",
+        "field": "{{config.custom_field_id}}",
+        "field_name": "{{step.field.result.name}}",
+        "field_type": "{{step.field.result.data_type}}",
+        "asset_id": "{{config.asset_id}}",
+        "baseline": "{{step.existing_asset.entity.dates.expires_on}}",
+        "baseline_source": "{{step.existing_field_source.expiry_source}}",
+        "mode": "{{config.mode}}",
+        "source_root": "{{step.source_server.result.documents}}",
+        "link_id": "{{item.link_id}}",
+        "revision": "{{item.revision}}",
+        "existing_asset_id": "{{item.existing_asset_id}}",
+        "state": "{{item.state}}"
+      }
+    },
+    {
+      "id": "review_json",
+      "transform": "json_stringify",
+      "input": "{{step.review_material}}"
+    },
+    {
+      "id": "review_hash",
+      "transform": "sha256",
+      "input": "{{step.review_json}}"
+    },
+    {
+      "id": "same_review",
+      "guard": "{{step.review_hash}} not_equal {{config.expected_hash}}",
+      "fail_reason": "The documents, mapping or saved setup changed. Open a fresh review before approving."
+    },
+    {
+      "id": "invalid",
+      "transform": "filter",
+      "array": "{{step.review_rows}}",
+      "conditions": [
+        {
+          "field": "valid",
+          "operator": "not_equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "invalid_count",
+      "transform": "count",
+      "input": "{{step.invalid}}"
+    },
+    {
+      "id": "valid_selection",
+      "guard": "{{step.invalid_count}} greater 0",
+      "fail_reason": "Every selected document must have the chosen field and a real YYYY-MM-DD date. Review a smaller selection."
+    },
+    {
+      "id": "checking",
+      "transform": "filter",
+      "array": "{{step.review_rows}}",
+      "conditions": [
+        {
+          "field": "busy",
+          "operator": "equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "checking_count",
+      "transform": "count",
+      "input": "{{step.checking}}"
+    },
+    {
+      "id": "settled_selection",
+      "guard": "{{step.checking_count}} greater 0",
+      "fail_reason": "A selected source link still has a check in progress. Let it finish, or stop its run and reset the interrupted check in Sync settings."
+    },
+    {
+      "id": "existing_roots",
+      "transform": "default",
+      "value": "{{step.links.records}}",
+      "fallback": []
+    },
+    {
+      "id": "same_roots",
+      "transform": "compare",
+      "left": "{{item.source_root}}",
+      "operator": "equal",
+      "right": "{{step.source_server.result.documents}}",
+      "foreach": "{{step.existing_roots}}"
+    },
+    {
+      "id": "other_roots",
+      "transform": "filter",
+      "array": "{{step.same_roots}}",
+      "conditions": [
+        {
+          "field": "result",
+          "operator": "not_equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "other_root_count",
+      "transform": "count",
+      "input": "{{step.other_roots}}"
+    },
+    {
+      "id": "same_source",
+      "guard": "{{step.other_root_count}} greater 0",
+      "fail_reason": "This connection name now points to another Paperless server. Enroll it under a different connection name before connecting these documents."
+    },
+    {
+      "id": "existing_choice",
+      "transform": "compare",
+      "left": "{{config.asset_id}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "linked_assets",
+      "transform": "filter",
+      "array": "{{step.review_rows}}",
+      "conditions": [
+        {
+          "field": "existing_asset_id",
+          "operator": "is_not_empty",
+          "value": null
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "asset_targets",
+      "transform": "compare",
+      "left": "{{item.existing_asset_id}}",
+      "operator": "equal",
+      "right": "{{config.asset_id}}",
+      "foreach": "{{step.linked_assets}}"
+    },
+    {
+      "id": "different_assets",
+      "transform": "filter",
+      "array": "{{step.asset_targets}}",
+      "conditions": [
+        {
+          "field": "result",
+          "operator": "equal",
+          "value": false
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "different_asset_count",
+      "transform": "count",
+      "input": "{{step.different_assets}}"
+    },
+    {
+      "id": "changed_target",
+      "transform": "all",
+      "conditions": [
+        "{{step.existing_choice}} equal true",
+        "{{step.different_asset_count}} greater 0"
+      ]
+    },
+    {
+      "id": "stable_target",
+      "guard": "{{step.changed_target}} equal true",
+      "fail_reason": "This document is already linked to another asset. Keep that link; disconnecting does not move or delete the accepted asset."
+    },
+    {
+      "id": "key_seeds",
+      "transform": "map",
+      "array": "{{step.review_rows}}",
+      "expression": {
+        "document_id": "{{item.document_id}}",
+        "title": "{{item.title}}",
+        "link_id": "{{item.link_id}}",
+        "revision": "{{item.revision}}",
+        "existing_asset_id": "{{item.existing_asset_id}}",
+        "seed": "{{context.connections.paperless-ngx-api}}/{{item.document_id}}"
+      }
+    },
+    {
+      "id": "target_rows",
+      "transform": "map",
+      "array": "{{step.key_seeds}}",
+      "expression": {
+        "$ternary": {
+          "if": "{{step.existing_choice}}",
+          "then": "{{config.asset_id}}",
+          "else": "{{item.existing_asset_id}}"
+        }
+      },
+      "output_field": "target_asset_id"
+    },
+    {
+      "id": "keys",
+      "transform": "map",
+      "array": "{{step.target_rows}}",
+      "apply": "sha256",
+      "field": "seed",
+      "output_field": "key"
+    },
+    {
+      "id": "new",
+      "transform": "filter",
+      "array": "{{step.keys}}",
+      "conditions": [
+        {
+          "field": "link_id",
+          "operator": "is_empty",
+          "value": null
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "existing",
+      "transform": "filter",
+      "array": "{{step.keys}}",
+      "conditions": [
+        {
+          "field": "link_id",
+          "operator": "is_not_empty",
+          "value": null
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "created",
+      "op": "recued-core.paperless-ngx.sync_link.create",
+      "args": {
+        "id": "{{item.key}}",
+        "values": {
+          "connection": "{{context.connections.paperless-ngx-api}}",
+          "document_id": "{{item.document_id}}",
+          "custom_field_id": "{{config.custom_field_id}}",
+          "asset_id": "{{config.asset_id}}",
+          "source_root": "{{step.source_server.result.documents}}",
+          "source_title": "{{item.title}}",
+          "state": "{{config.mode}}",
+          "busy": false,
+          "last_result": "Ready for first sync"
+        }
+      },
+      "cache": "fresh",
+      "foreach": "{{step.new}}"
+    },
+    {
+      "id": "updated",
+      "op": "recued-core.paperless-ngx.sync_link.update",
+      "args": {
+        "id": "{{item.link_id}}",
+        "expected_version": 7,
+        "expected_revision": "{{item.revision}}",
+        "set": {
+          "custom_field_id": "{{config.custom_field_id}}",
+          "state": "{{config.mode}}",
+          "asset_id": "{{item.target_asset_id}}"
+        }
+      },
+      "cache": "fresh",
+      "foreach": "{{step.existing}}"
+    },
+    {
+      "id": "saved_links",
+      "transform": "flatten",
+      "array": [
+        "{{step.created}}",
+        "{{step.updated}}"
+      ]
+    },
+    {
+      "id": "failed_links",
+      "transform": "filter",
+      "array": "{{step.saved_links}}",
+      "conditions": [
+        {
+          "field": "ok",
+          "operator": "not_equal",
+          "value": true
+        }
+      ],
+      "mode": "all"
+    },
+    {
+      "id": "failed_count",
+      "transform": "count",
+      "input": "{{step.failed_links}}"
+    },
+    {
+      "id": "saved_selection",
+      "guard": "{{step.failed_count}} greater 0",
+      "fail_reason": "Some links could not be saved. Review the selection again; existing links and stable asset identities are retained."
+    },
+    {
+      "id": "receipt",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Next step",
+          "value": "Run Sync Paperless documents to import the approved selection."
+        },
+        {
+          "label": "Automation",
+          "value": "Complete the first import, then schedule this recipe with the same connection saved on its dish. In Automation, open the schedule and review Scheduled local writes to allow recurring updates. Manage source links in Sync settings."
+        },
+        {
+          "label": "Selected documents",
+          "value": "{{step.selection_count}}"
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "transform": "default",
+      "value": [
+        {
+          "kind": "recipe.run",
+          "label": "Sync now",
+          "recipe_id": "sync-paperless-documents",
+          "config": {}
+        },
+        {
+          "kind": "recipe.run",
+          "label": "Open sync settings",
+          "recipe_id": "paperless-sync-status",
+          "config": {}
+        }
+      ],
+      "fallback": []
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.receipt"
+      },
+      {
+        "type": "button",
+        "source": "step.actions"
+      }
+    ]
+  }
+}

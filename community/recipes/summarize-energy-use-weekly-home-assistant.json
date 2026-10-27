@@ -1,0 +1,355 @@
+{
+  "recipe_id": "summarize-energy-use-weekly-home-assistant",
+  "version": 2,
+  "chat_exposed": false,
+  "ttl": 300,
+  "metadata": {
+    "name": "Home Assistant weekly energy use",
+    "description": "Use “Home Assistant weekly energy use” in Recued. Shows how much energy each meter and smart plug used over the last week, biggest first; a net meter reads below zero when it sent out more than it took in. Read-only. Readings are never added up, since a whole-home meter already counts the others.",
+    "author": "recued-core",
+    "supported_platforms": [
+      "home-assistant"
+    ],
+    "variant_group": "summarize-energy-use",
+    "tags": [
+      "home-assistant",
+      "smart-home",
+      "energy",
+      "electricity",
+      "weekly",
+      "digest",
+      "pack:home-assistant"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "days": {
+      "label": "Days to look back",
+      "type": "number",
+      "default": 7,
+      "help": "Home Assistant keeps 10 days of history by default."
+    },
+    "row_limit": {
+      "label": "Max rows to show",
+      "type": "number",
+      "default": 25
+    },
+    "notify_with_summary": {
+      "label": "Send the summary as a notification",
+      "type": "boolean",
+      "default": false,
+      "help": "Turn on for a weekly schedule."
+    },
+    "channels": {
+      "label": "Notification channels",
+      "type": "array",
+      "options": [
+        "@notification_channels"
+      ],
+      "optional": true
+    }
+  },
+  "requires": [
+    "read_connection_home_assistant",
+    "notification_send"
+  ],
+  "depends_on": [
+    "recued-core.home-assistant"
+  ],
+  "steps": [
+    {
+      "id": "states_raw",
+      "op": "recued-core.home-assistant.state.list",
+      "args": {}
+    },
+    {
+      "id": "states",
+      "transform": "default",
+      "value": "{{step.states_raw.result}}",
+      "fallback": []
+    },
+    {
+      "id": "energy_sensors",
+      "transform": "filter",
+      "array": "{{step.states}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "attributes.device_class", "operator": "equal", "value": "energy" },
+        { "field": "attributes.state_class", "operator": "in", "value": ["total_increasing", "total"] },
+        { "field": "state", "operator": "not_in", "value": ["unknown", "unavailable", ""] }
+      ]
+    },
+    {
+      "id": "energy_count",
+      "transform": "count",
+      "input": "{{step.energy_sensors}}"
+    },
+    {
+      "id": "has_sensors",
+      "transform": "compare",
+      "left": "{{step.energy_count}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "entity_ids",
+      "transform": "pluck",
+      "array": "{{step.energy_sensors}}",
+      "field": "entity_id"
+    },
+    {
+      "id": "ids_csv",
+      "transform": "join",
+      "array": "{{step.entity_ids}}",
+      "separator": ","
+    },
+    {
+      "id": "back_days",
+      "transform": "math",
+      "expression": "0 - {{config.days}}"
+    },
+    {
+      "id": "window_start",
+      "transform": "date_add",
+      "date": "now",
+      "amount": "{{step.back_days}}",
+      "unit": "days"
+    },
+    {
+      "id": "window_start_end",
+      "transform": "date_add",
+      "date": "{{step.window_start}}",
+      "amount": 1,
+      "unit": "hours"
+    },
+    {
+      "id": "history_raw",
+      "skip_when": "{{step.has_sensors}} equal false",
+      "op": "recued-core.home-assistant.history.list",
+      "args": {
+        "start_time": "{{step.window_start}}",
+        "query.filter_entity_id": "{{step.ids_csv}}",
+        "query.end_time": "{{step.window_start_end}}",
+        "query.minimal_response": true,
+        "query.no_attributes": true
+      }
+    },
+    {
+      "id": "history",
+      "transform": "default",
+      "value": "{{step.history_raw.result}}",
+      "fallback": []
+    },
+    {
+      "id": "start_values",
+      "transform": "map",
+      "array": "{{step.history}}",
+      "expression": {
+        "entity_id": "{{item.0.entity_id}}",
+        "start": "{{item.0.state}}"
+      }
+    },
+    {
+      "id": "matched",
+      "foreach": "{{step.energy_sensors}}",
+      "transform": "find",
+      "array": "{{step.start_values}}",
+      "field": "entity_id",
+      "operator": "equal",
+      "value": "{{item.entity_id}}"
+    },
+    {
+      "id": "matched_list",
+      "transform": "default",
+      "value": "{{step.matched}}",
+      "fallback": []
+    },
+    {
+      "id": "usage_raw",
+      "transform": "map",
+      "array": "{{step.matched_list}}",
+      "expression": {
+        "name": "{{item.item.attributes.friendly_name}}",
+        "entity_id": "{{item.item.entity_id}}",
+        "unit": "{{item.item.attributes.unit_of_measurement}}",
+        "now_value": "{{item.item.state}}",
+        "start_value": "{{item.result.start}}",
+        "state_class": "{{item.item.attributes.state_class}}",
+        "last_reset": "{{item.item.attributes.last_reset}}"
+      }
+    },
+    {
+      "id": "usage_known",
+      "transform": "filter",
+      "array": "{{step.usage_raw}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "start_value", "operator": "is_not_null" },
+        { "field": "start_value", "operator": "not_in", "value": ["unknown", "unavailable", ""] }
+      ]
+    },
+    {
+      "id": "usage_calc",
+      "transform": "map",
+      "array": "{{step.usage_known}}",
+      "expression": "{{item.now_value}} - {{item.start_value}}",
+      "output_field": "used_raw"
+    },
+    {
+      "id": "usage_reset_hours",
+      "transform": "map",
+      "array": "{{step.usage_calc}}",
+      "apply": "date_diff",
+      "field": "last_reset",
+      "to": "{{step.window_start}}",
+      "unit": "hours",
+      "output_field": "reset_hours"
+    },
+    {
+      "id": "usage_counting",
+      "transform": "filter",
+      "array": "{{step.usage_reset_hours}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "state_class", "operator": "equal", "value": "total_increasing" },
+        { "field": "used_raw", "operator": "is_not_null" },
+        { "field": "used_raw", "operator": "greater_or_equal", "value": 0 }
+      ]
+    },
+    {
+      "id": "usage_net_never_reset",
+      "transform": "filter",
+      "array": "{{step.usage_reset_hours}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "state_class", "operator": "equal", "value": "total" },
+        { "field": "used_raw", "operator": "is_not_null" },
+        { "field": "last_reset", "operator": "is_null" }
+      ]
+    },
+    {
+      "id": "usage_net_reset_before",
+      "transform": "filter",
+      "array": "{{step.usage_reset_hours}}",
+      "mode": "all",
+      "conditions": [
+        { "field": "state_class", "operator": "equal", "value": "total" },
+        { "field": "used_raw", "operator": "is_not_null" },
+        { "field": "reset_hours", "operator": "is_not_null" },
+        { "field": "reset_hours", "operator": "greater_or_equal", "value": 0 }
+      ]
+    },
+    {
+      "id": "usage_valid",
+      "transform": "flatten",
+      "array": ["{{step.usage_counting}}", "{{step.usage_net_never_reset}}", "{{step.usage_net_reset_before}}"]
+    },
+    {
+      "id": "usage_rounded",
+      "transform": "map",
+      "array": "{{step.usage_valid}}",
+      "apply": "round",
+      "field": "used_raw",
+      "precision": 2,
+      "output_field": "used"
+    },
+    {
+      "id": "usage_sorted",
+      "transform": "sort",
+      "array": "{{step.usage_rounded}}",
+      "fields": [{ "field": "used", "direction": "desc" }]
+    },
+    {
+      "id": "measured_count",
+      "transform": "count",
+      "input": "{{step.usage_sorted}}"
+    },
+    {
+      "id": "unmeasured_count",
+      "transform": "math",
+      "expression": "{{step.energy_count}} - {{step.measured_count}}"
+    },
+    {
+      "id": "has_rows",
+      "transform": "compare",
+      "left": "{{step.measured_count}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "biggest_text",
+      "transform": "ternary",
+      "if": "{{step.has_rows}}",
+      "then": "{{step.usage_sorted.0.name}}: {{step.usage_sorted.0.used}} {{step.usage_sorted.0.unit}}",
+      "else": "No meter could be measured"
+    },
+    {
+      "id": "period_start",
+      "transform": "date_format",
+      "date": "{{step.window_start}}",
+      "format": "YYYY-MM-DD HH:mm"
+    },
+    {
+      "id": "usage_rows",
+      "transform": "slice",
+      "array": "{{step.usage_sorted}}",
+      "start": 0,
+      "end": "{{config.row_limit}}"
+    },
+    {
+      "id": "usage_table",
+      "transform": "to_table",
+      "array": "{{step.usage_rows}}",
+      "columns": [
+        { "field": "name", "label": "Meter" },
+        { "field": "used", "label": "Used" },
+        { "field": "unit", "label": "Unit" },
+        { "field": "entity_id", "label": "Entity" }
+      ]
+    },
+    {
+      "id": "notify_enabled",
+      "transform": "compare",
+      "left": "{{config.notify_with_summary}}",
+      "operator": "equal",
+      "right": true
+    },
+    {
+      "id": "should_notify",
+      "transform": "all",
+      "conditions": [
+        "{{step.has_rows}} equal true",
+        "{{step.notify_enabled}} equal true"
+      ]
+    },
+    {
+      "id": "notify",
+      "skip_when": "{{step.should_notify}} not_equal true",
+      "op": "core.notification.send",
+      "args": {
+        "channels": "{{config.channels}}",
+        "title": "Home Assistant energy, last {{config.days}} days",
+        "text": "Biggest user: {{step.biggest_text}}. {{step.measured_count:number}} meter(s) measured since {{step.period_start}}. Open the weekly energy summary in Recued for the list."
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Period", "value": "Since {{step.period_start}} ({{config.days}} days)" },
+        { "label": "Biggest user", "value": "{{step.biggest_text}}" },
+        { "label": "Meters measured", "value": "{{step.measured_count:number}} of {{step.energy_count:number}}" },
+        { "label": "Not measured", "value": "{{step.unmeasured_count:number}}: no reading at the start of the period, a meter that only counts up went down (it was reset), or a meter restarted its count during the period" },
+        { "label": "Note", "value": "Readings are not added up: one of them may be a whole-home meter that already includes the others. A reading below zero is a net meter that sent out more than it took in, such as solar export." },
+        { "label": "Scope", "value": "Read-only; nothing in Home Assistant was changed." }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" },
+      { "type": "table", "source": "step.usage_table", "label": "Energy used, biggest first" },
+      { "type": "json", "source": "step.usage_sorted", "label": "Every measured meter" }
+    ]
+  }
+}

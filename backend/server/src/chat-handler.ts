@@ -74,6 +74,9 @@ import {
   type ChatSessionChangedField,
   CHAT_HISTORY_WINDOW_MAX,
   CHAT_HISTORY_WINDOW,
+  CHAT_SESSION_TITLE_MAX_LENGTH,
+  type ChatSessionRenameRequest,
+  type ChatSessionRenameResult,
   type ChatHistoryCursor,
   type ChatSessionGetRequest,
   type ChatSessionSummary,
@@ -292,6 +295,7 @@ type ChatMethods =
   | 'chat.messages.search'
   | 'chat.session.get'
   | 'chat.session.create'
+  | 'chat.session.rename'
   | 'chat.session.delete'
   | 'chat.session.mark_seen'
   | 'chat.session.export'
@@ -560,6 +564,9 @@ export const handleSessionGet = async (
     safe.session_id,
   );
   const session = ensureSession(deps, session_id);
+  if (safe.mark_seen !== undefined && typeof safe.mark_seen !== 'boolean') {
+    throw new RpcError('bad_request', 'chat.session.get: mark_seen must be boolean', 400);
+  }
   // ⛔ ABSENT `limit` MUST STILL MEAN "EVERYTHING", and that is a compatibility
   // rule rather than a default worth debating. A webclient older than this
   // slice sends no limit and has no "load earlier" control; if the server
@@ -599,11 +606,13 @@ export const handleSessionGet = async (
     deps.planApprovalStore?.listForSession === undefined
       ? []
       : await deps.planApprovalStore.listForSession(session_id);
-  // 🔑 OPENING A SESSION IS SEEING IT, so the common case costs no extra round
-  // trip and cannot be forgotten by a client. ⚠ Stamped AFTER the read, so the
-  // caller still receives whatever was unread — the mark describes what they
-  // are being handed, not what they had before.
-  deps.store.markSessionSeen?.(session_id);
+  // An ordinary open acknowledges the tail without an extra round trip.
+  // Inspecting an older message/page or refreshing in the background does not
+  // establish that the owner saw a newer reply. Legacy complete reads retain
+  // their acknowledgement behavior.
+  if (safe.mark_seen !== false && around === undefined && before === null && after === undefined) {
+    deps.store.markSessionSeen?.(session_id);
+  }
   // ⛔ `has_more` is reported ONLY when a window was actually applied. An old
   // server omits it because it knows nothing about it, and a new server
   // omits it when the caller asked for everything — and in BOTH cases the
@@ -756,6 +765,33 @@ export const handleSessionCreate = async (
     }),
   );
   return { session_id };
+};
+
+export const handleSessionRename = async (
+  deps: ChatRpcDeps,
+  args: ChatSessionRenameRequest,
+): Promise<ChatSessionRenameResult> => {
+  const safe = ensureRecordArgs('chat.session.rename', args);
+  const session_id = ensureNonEmptyString('chat.session.rename', 'session_id', safe.session_id);
+  const title = ensureNonEmptyString('chat.session.rename', 'title', safe.title).trim();
+  if (!title || title.length > CHAT_SESSION_TITLE_MAX_LENGTH || /[\u0000-\u001f\u007f-\u009f]/u.test(title)) {
+    throw new RpcError('bad_request', `Use a chat name on one line, up to ${CHAT_SESSION_TITLE_MAX_LENGTH} characters.`, 400);
+  }
+  if (safe.expected_title !== null && typeof safe.expected_title !== 'string') {
+    throw new RpcError('bad_request', 'The previous chat name is required.', 400);
+  }
+  const session = ensureSession(deps, session_id);
+  // A lost reply can be retried without another write or broadcast.
+  if (session.title === title) return { session_id, title };
+  if ((session.title ?? null) !== safe.expected_title) {
+    throw new RpcError('conflict', 'This chat was renamed elsewhere. Cancel and open Rename again to use its current name.', 409);
+  }
+  // No await between reading the expected name and writing it. Naming is
+  // metadata: it changes neither recency, messages nor unread state.
+  if (!deps.store.setTitle(session_id, title)) throw new RpcError('not_found', 'This chat is no longer available.', 404);
+  safeBroadcast(deps.broadcast, 'title', session_id, title);
+  await safeLogActivity(deps.auditLog, 'chat_session_renamed', session_id);
+  return { session_id, title };
 };
 
 export const handleSessionDelete = async (
@@ -3163,6 +3199,7 @@ export const makeChatHandlers = (
       'chat.messages.search',
       'chat.session.get',
       'chat.session.create',
+      'chat.session.rename',
       'chat.session.delete',
       'chat.session.export',
       'chat.egress.get',
@@ -3220,6 +3257,10 @@ export const makeChatHandlers = (
         handleSessionGet(deps, args),
       'chat.session.create': async (args) =>
         handleSessionCreate(deps, args as { title?: string } | void),
+      'chat.session.rename': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Renaming a chat requires a paired client.', 401);
+        return handleSessionRename(deps, args);
+      },
       'chat.session.delete': async (args) =>
         handleSessionDelete(deps, args as { session_id: string }),
       'chat.session.export': async (args) =>

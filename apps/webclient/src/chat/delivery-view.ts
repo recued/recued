@@ -129,6 +129,9 @@ export const createChatDeliveryView = (conn: ChatDeliveryClient, changed: () => 
     button.setAttribute('data-delivery-control', id); button.disabled = disabled || busy.has(id);
     button.addEventListener('click', () => {
       if (busy.has(id) || button.disabled) return;
+      // WebKit mouse clicks need not focus buttons. Establish this action's
+      // keyboard owner before its busy state replaces or disables the control.
+      button.focus({ preventScroll: true });
       const ownedFocus = doc.activeElement === button;
       busy.add(id); button.disabled = true;
       void action().then(() => { state(session).error = undefined; })

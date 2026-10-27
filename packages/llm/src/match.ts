@@ -1,4 +1,4 @@
-import { type LLMRequirements, type ModelHint } from '@recued/contracts';
+import { isLlmRetryTime, type LLMRequirements, type ModelHint } from '@recued/contracts';
 import type {
   AvailabilitySnapshot,
   CoordinationStrategy,
@@ -83,6 +83,10 @@ export interface MatchDeps {
 /** Diagnostic payload attached to AI_LLM_UNAVAILABLE errors. */
 export interface MatchFailureDetails {
   rejected: string[];
+  /** Otherwise eligible sources blocked by a live provider cooldown. */
+  cooldown_sources?: string[];
+  /** Earliest eligible expiry, only when every blocked source's expiry is known. */
+  retry_at?: number;
   snapshot: AvailabilitySnapshot;
   requires: LLMRequirements;
   forceLayer?: ForceLayer;
@@ -180,6 +184,7 @@ const collectCandidates = (
   forceLayer: ForceLayer,
   pinSlot: PinnedSlot | undefined,
   deps: MatchDeps,
+  cooldownSources?: Set<string>,
 ): Candidate[] => {
   const { config, availability, rejectSet } = deps;
   const rejected = rejectSet ?? new Set<string>();
@@ -199,8 +204,14 @@ const collectCandidates = (
     for (const e of pool) {
       if (e.type !== 'api') continue;
       if (rejected.has(e.id)) continue;
-      if (!poolStatusById.get(e.id)?.status.available) continue;
       if (!apiEntryMatches(e, filter)) continue;
+      const status = poolStatusById.get(e.id)?.status;
+      if (!status?.available) {
+        if (status?.reason === 'quota_exhausted' && e.enabled && e.api_key && e.model
+          && (e.daily_cap_tokens == null || deps.quota.tokensToday(e.id) < e.daily_cap_tokens)
+          && deps.quota.isInCooldown(e.id)) cooldownSources?.add(e.id);
+        continue;
+      }
       out.push({
         kind: 'pool', id: e.id, free: true, weight: e.weight ?? 1,
         toMatch: (resolved_hint, used_downgrade, used_upgrade) => ({
@@ -220,13 +231,16 @@ const collectCandidates = (
       if (pinSlot !== undefined && slotKey !== pinSlot) continue;
       if (rejected.has(slotKey)) continue;
       const baseStatus = availability[slotKey];
-      if (!baseStatus.available) continue;
       // Budget cutoff deranks rather than excludes — a slot over its
       // scheduled-cutoff is last-resort. Practically, because free
       // candidates always sort ahead of BYOK, an over-budget slot fires
       // only when nothing else matches.
       if (availability.slot_budget[slotKey].over_cutoff) continue;
       if (!slotMatches(slot, filter)) continue;
+      if (!baseStatus.available) {
+        if (baseStatus.reason === 'quota_exhausted' && deps.quota.isInCooldown(slotKey)) cooldownSources?.add(slotKey);
+        continue;
+      }
       out.push({
         kind: 'slot', id: slotKey, free: false, weight: 1,
         toMatch: (resolved_hint, used_downgrade, used_upgrade) => ({
@@ -357,10 +371,11 @@ export const matchLLM = (request: MatchRequest, deps: MatchDeps): Match => {
       : {}),
   };
   const rng = deps.rng ?? Math.random;
+  const cooldownSources = new Set<string>();
 
   // Pass 1 — strict speed tier.
   {
-    const candidates = collectCandidates(base, forceLayer, pinSlot, deps);
+    const candidates = collectCandidates(base, forceLayer, pinSlot, deps, cooldownSources);
     const picked = pickCandidate(candidates, base.speed, deps.strategy, deps.quota, rng);
     if (picked) return picked.candidate.toMatch(base.speed, false, false);
   }
@@ -369,7 +384,7 @@ export const matchLLM = (request: MatchRequest, deps: MatchDeps): Match => {
   if (requires.allow_downgrade) {
     for (const relaxed of DOWNGRADE_ORDER[requires.speed].slice(1)) {
       const filter = { ...base, speed: relaxed };
-      const candidates = collectCandidates(filter, forceLayer, pinSlot, deps);
+      const candidates = collectCandidates(filter, forceLayer, pinSlot, deps, cooldownSources);
       const picked = pickCandidate(candidates, relaxed, deps.strategy, deps.quota, rng);
       if (picked) return picked.candidate.toMatch(relaxed, true, false);
     }
@@ -380,7 +395,7 @@ export const matchLLM = (request: MatchRequest, deps: MatchDeps): Match => {
   if (request.allowUpgrade) {
     for (const climbed of UPGRADE_ORDER[requires.speed].slice(1)) {
       const filter = { ...base, speed: climbed };
-      const candidates = collectCandidates(filter, forceLayer, pinSlot, deps);
+      const candidates = collectCandidates(filter, forceLayer, pinSlot, deps, cooldownSources);
       const picked = pickCandidate(candidates, climbed, deps.strategy, deps.quota, rng);
       if (picked) return picked.candidate.toMatch(climbed, false, true);
     }
@@ -390,7 +405,7 @@ export const matchLLM = (request: MatchRequest, deps: MatchDeps): Match => {
       for (const climbed of UPGRADE_ORDER[requires.speed].slice(1)) {
         for (const relaxed of DOWNGRADE_ORDER[climbed].slice(1)) {
           const filter = { ...base, speed: relaxed };
-          const candidates = collectCandidates(filter, forceLayer, pinSlot, deps);
+          const candidates = collectCandidates(filter, forceLayer, pinSlot, deps, cooldownSources);
           const picked = pickCandidate(candidates, relaxed, deps.strategy, deps.quota, rng);
           if (picked) return picked.candidate.toMatch(relaxed, true, true);
         }
@@ -402,8 +417,12 @@ export const matchLLM = (request: MatchRequest, deps: MatchDeps): Match => {
     ? (Object.keys(base.require_modalities) as Array<keyof Modalities>)
         .filter((k) => base.require_modalities?.[k] === true)
     : [];
+  const expiries = [...cooldownSources].map(id => deps.quota.cooldownUntil?.(id));
+  const retryAt = expiries.length > 0 && expiries.every(isLlmRetryTime) ? Math.min(...expiries) : undefined;
   const details: MatchFailureDetails = {
     rejected: Array.from(deps.rejectSet ?? []),
+    ...(cooldownSources.size > 0 ? { cooldown_sources: [...cooldownSources] } : {}),
+    ...(retryAt !== undefined ? { retry_at: retryAt } : {}),
     snapshot: deps.availability,
     requires,
     forceLayer,
