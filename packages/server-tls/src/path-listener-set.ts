@@ -344,9 +344,16 @@ export interface PathListenerSet {
     next: Record<PathRole, PathResolution>,
     ports?: { lan?: number; public?: number },
   ): Promise<PathListenerStatus[]>;
-  /** Stop every active listener. Pending requests drain; a hard
-   *  deadline is the caller's responsibility (§ A.6.6 calls out the
-   *  30s window on the WS path specifically). */
+  /** Stop every active listener and drop every connection still open on it.
+   *  ⛔ FORCED, NOT GRACEFUL. This used to let pending requests drain and
+   *  leave the deadline to the caller, but `server.close()` waits for every
+   *  open connection and an AI app's MCP event stream never ends on its own.
+   *  The stop then ran until the restart drain's close_ws deadline, and an
+   *  update refuses to swap when a drain step does not finish: on 2026-10-26
+   *  a Cline session's stream turned two updates on the owner's server into
+   *  nothing. The drain reaches this only after it has stopped taking
+   *  requests and awaited in-flight runs, so what is left is streams and idle
+   *  sockets; a client that reconnects reaches the next process. */
   stop(): Promise<void>;
   /** Per-listener status snapshot. Reads in-memory state — no IO. */
   status(): PathListenerStatus[];
@@ -376,8 +383,8 @@ interface ActivePathListener {
   /** Live sockets on this listener, tracked via the server's `connection`
    *  event. Needed for a FORCED close: Node's `server.close()` blocks on
    *  any open connection and `closeAllConnections()` does NOT drop an
-   *  upgraded (WebSocket) socket — so an electively-retired listener
-   *  destroys these directly to release the bind. */
+   *  upgraded (WebSocket) socket — so a stopping listener destroys these
+   *  directly to release the bind. */
   sockets: Set<Socket>;
 }
 
@@ -612,7 +619,7 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
       });
     }
     const { server, tls } = built;
-    // Track every socket so an elective (forced) unbind can drop live
+    // Track every socket so stopping the listener can drop live
     // connections — `server.close()` blocks on them and Node's
     // `closeAllConnections()` misses upgraded WS sockets. The `connection`
     // event fires for ALL inbound sockets (before any HTTP upgrade), so
@@ -673,7 +680,7 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
     });
   };
 
-  const stopListener = (listener: PathRouterListener, force = false): Promise<void> => {
+  const stopListener = (listener: PathRouterListener): Promise<void> => {
     const entry = active.get(listener);
     if (!entry) return Promise.resolve();
     return new Promise<void>((resolve) => {
@@ -682,17 +689,17 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
         log?.('info', 'path listener unbound', { listener });
         resolve();
       });
-      if (force) {
-        // The listener is being electively retired (its resolution bit
-        // flipped off) — drop live connections so `close()` completes
-        // instead of blocking forever on a long-lived WS that never
-        // drains on its own. Destroy the tracked sockets directly:
-        // Node's `closeAllConnections()` does NOT drop an upgraded
-        // (WebSocket) socket, so tracking + destroy is the only reliable
-        // release path.
-        for (const s of entry.sockets) {
-          try { s.destroy(); } catch { /* already destroyed */ }
-        }
+      // A listener stops only when its connections are meant to go: its
+      // resolution bit flipped off, its port or TLS mode moved, or the whole
+      // set is stopping. Drop them so `close()` completes instead of
+      // blocking forever on a WebSocket or an event stream that never ends
+      // on its own. ⛔ There is deliberately no graceful variant: the one
+      // caller that had it was `stop()`, and that is what held updates open
+      // (see `PathListenerSet.stop`). Destroy the tracked sockets directly:
+      // Node's `closeAllConnections()` does NOT drop an upgraded (WebSocket)
+      // socket, so tracking + destroy is the only reliable release path.
+      for (const s of entry.sockets) {
+        try { s.destroy(); } catch { /* already destroyed */ }
       }
     });
   };
@@ -783,7 +790,7 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
         // stale failure (the old full-rebuild path got a fresh failures
         // map each transition; the in-place path must clear it itself).
         if (!shouldBind) {
-          if (isUp) await stopListener(listener, true);
+          if (isUp) await stopListener(listener);
           failures.delete(listener);
           return buildStatus(listener);
         }
@@ -816,7 +823,7 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
         // stable", "does NOT wedge while a live WS is held").
         const portMoved = port !== 0 && entry.port !== port;
         if (entry.tls !== wantsTls || portMoved) {
-          await stopListener(listener, true);
+          await stopListener(listener);
           return startListener(listener, true, port, bind_address, build);
         }
         return buildStatus(listener);

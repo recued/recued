@@ -20,7 +20,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   FetchMessageObject,
   FetchQueryObject,
@@ -31,11 +31,13 @@ import type {
 import {
   canonicalizeImap,
   createImapProvider,
+  IMAP_LOGOUT_GRACE_MS,
   imapMessageDirectionForMailbox,
   type ImapClient,
   type ImapClientFactory,
   type ImapProviderConfig,
 } from '../collections/mail/imap-provider.js';
+import { CollectionStoppedError } from '../collections/stop-signal.js';
 import type {
   MailProvider,
   ProviderSyncCallback,
@@ -84,24 +86,41 @@ interface FakeState {
   /** Messages the open folder claims beyond those it holds: a FETCH then
    *  comes back short of its EXISTS count. */
   phantomExists?: number;
+  /** LOGOUT is sent but never answered (until the client closes). */
+  logoutHangs?: boolean;
+  /** CONNECT never completes (until the client closes). */
+  connectHolds?: boolean;
+  /** A FETCH stalls after this many messages (until the client closes). */
+  fetchHoldsAfter?: number;
 }
 
 class FakeClient extends EventEmitter implements ImapClient {
   usable = false;
   path = '';
   closed = false;
+  logoutCalls = 0;
+  /** Commands waiting on the server: closing rejects them, as imapflow's
+   *  `close()` rejects every queued request. */
+  private readonly waiting = new Set<(err: Error) => void>();
 
   constructor(private readonly state: FakeState) {
     super();
     state.clients.push(this);
   }
 
+  private held(): Promise<never> {
+    return new Promise<never>((_resolve, reject) => { this.waiting.add(reject); });
+  }
+
   async connect(): Promise<void> {
     if (this.state.connectError) throw this.state.connectError;
+    if (this.state.connectHolds) await this.held();
     this.usable = true;
   }
 
   async logout(): Promise<void> {
+    this.logoutCalls += 1;
+    if (this.state.logoutHangs) await this.held();
     this.usable = false;
     this.closed = true;
   }
@@ -109,6 +128,8 @@ class FakeClient extends EventEmitter implements ImapClient {
   close(): void {
     this.usable = false;
     this.closed = true;
+    for (const reject of this.waiting) reject(Object.assign(new Error('Connection not available'), { code: 'NoConnection' }));
+    this.waiting.clear();
   }
 
   async mailboxOpen(path: string): Promise<MailboxObject> {
@@ -132,10 +153,11 @@ class FakeClient extends EventEmitter implements ImapClient {
     } as unknown as MailboxObject;
   }
 
-  /** The open folder as the server last described it, as imapflow keeps it. */
+  /** The open folder as the server last described it, as imapflow keeps it;
+   *  `false` once closed, as imapflow clears it. */
   get mailbox(): MailboxObject | false {
     const folder = this.path ? this.state.folders.get(this.path) : undefined;
-    if (!folder) return false;
+    if (!folder || this.closed) return false;
     return { path: this.path, exists: folder.messages.length + (this.state.phantomExists ?? 0) } as unknown as MailboxObject;
   }
 
@@ -144,6 +166,8 @@ class FakeClient extends EventEmitter implements ImapClient {
   }
 
   async search(query: SearchObject, _o?: { uid?: boolean }): Promise<number[] | false> {
+    // imapflow answers `undefined` once its connection is gone (no mailbox).
+    if (this.closed) return undefined as unknown as false;
     const folder = this.state.folders.get(this.path);
     if (!folder) return [];
     const since = query.since ? new Date(query.since as string) : null;
@@ -185,8 +209,11 @@ class FakeClient extends EventEmitter implements ImapClient {
           );
           return message ? [message] : [];
         });
+    let yielded = 0;
     for (const m of selected) {
       if (!m) continue;
+      if (this.state.fetchHoldsAfter !== undefined && yielded >= this.state.fetchHoldsAfter) await this.held();
+      yielded += 1;
       const index = folder.messages.indexOf(m);
       yield {
         seq: m.seq ?? index + 1,
@@ -705,6 +732,26 @@ describe('ImapProvider — catching up on what it missed', () => {
     expect(h.events.some((e) => e.source_id === '1@INBOX')).toBe(false);
   });
 
+  // Nothing listened for its `close` yet, so IDLE attached to a dead connection
+  // and the folder heard nothing until the next restart.
+  it('reconnects a folder whose connection closed before sync started, and fetches what came meanwhile', async () => {
+    h = newHarness({ seed: { INBOX: [mail(1, Date.now())] } });
+    await h.provider.connect();
+    await scan(30);
+    h.state.folders.get('INBOX')!.messages.push(mail(2, Date.now()));
+    const [first] = h.state.clients;
+    first!.close();
+    first!.emit('close');
+    await h.provider.startSync(h.cb);
+    expect(await waitForCondition(() => h.state.clients.length === 2)).toBe(true);
+    expect(await waitForEvent(h.events, (e) => e.kind === 'created' && e.source_id === '2@INBOX')).toBeDefined();
+    // And IDLE listens on the new connection.
+    h.state.folders.get('INBOX')!.messages.push(mail(3, Date.now()));
+    h.state.clients[1]!.emit('exists', { count: 3, prevCount: 2, path: 'INBOX' });
+    expect(await waitForEvent(h.events, (e) => e.kind === 'created' && e.source_id === '3@INBOX')).toBeDefined();
+    expect(h.events.some((e) => e.source_id === '1@INBOX')).toBe(false);
+  });
+
   // A restart: the stored UID cursor reaches what was added while the server
   // was down, so the collection lists only the days since the last sync.
   describe('across a restart, from the stored cursor', () => {
@@ -737,6 +784,25 @@ describe('ImapProvider — catching up on what it missed', () => {
       expect(scanned.sort()).toEqual(['1@INBOX', '3@INBOX']);
       expect(h.events.some((e) => e.source_id === '3@INBOX')).toBe(false);
       expect(await waitForCondition(() => cursorOf(store) === 4)).toBe(true);
+    });
+
+    // The reconnect stands in for the start: from the stored cursor, not from
+    // this open's UIDNEXT, which is past the mail moved in while down.
+    it('reconnects a folder that closed during the scan, and still fetches mail moved in while the server was down', async () => {
+      const store = makeDeliveryStore();
+      await firstSession(store);
+      h = newHarness({ seed: { INBOX: [mail(1, Date.now()), mail(2, Date.now() - 200 * DAY)] }, deliveryStore: store });
+      await h.provider.connect();
+      await scan(2);
+      const [first] = h.state.clients;
+      first!.close();
+      first!.emit('close');
+      await h.provider.startSync(h.cb);
+      expect(await waitForCondition(() => h.state.clients.length === 2)).toBe(true);
+      expect(await waitForEvent(h.events, (e) => e.kind === 'created' && e.source_id === '2@INBOX')).toBeDefined();
+      // The restart's read of every message's flags, as the start would have.
+      expect(await waitForEvent(h.events, (e) => e.kind === 'folder')).toBeDefined();
+      expect(await waitForCondition(() => cursorOf(store) === 3)).toBe(true);
     });
 
     it('does not resume a mailbox renumbered while the server was down', async () => {
@@ -863,6 +929,50 @@ describe('ImapProvider — reconnect', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
+// An 'error' nobody listens for ends the server
+// ────────────────────────────────────────────────────────────────
+
+/** What imapflow emits once `connect()` has resolved and the socket is reset. */
+const resetError = (): Error => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+
+// An emitter with no 'error' listener throws the error — out of a socket
+// callback, where the server's crash handler exits. A folder's client listened
+// only once sync started.
+describe('ImapProvider — a folder connection always listens for errors', () => {
+  it('during the first scan, before sync starts', async () => {
+    h = newHarness({ seed: { INBOX: [], Archive: [] } });
+    await h.provider.connect();
+    for (const client of h.state.clients) {
+      expect(() => client.emit('error', resetError())).not.toThrow();
+    }
+    // Counted, not swallowed.
+    expect(h.provider.health().error_count_24h).toBe(2);
+  });
+
+  it('while a reconnect opens the folder', async () => {
+    h = newHarness();
+    await h.provider.connect();
+    await h.provider.startSync(h.cb);
+    h.state.connectHolds = true;
+    h.state.clients[0]!.emit('close');
+    expect(await waitForCondition(() => h.state.clients.length === 2)).toBe(true);
+    expect(() => h.state.clients[1]!.emit('error', resetError())).not.toThrow();
+  });
+
+  it('while a stop logs the folder out, its sync listeners gone', async () => {
+    h = newHarness();
+    await h.provider.connect();
+    const stop = await h.provider.startSync(h.cb);
+    await stop();
+    h.state.logoutHangs = true;
+    const closing = h.provider.close();
+    expect(await waitForCondition(() => h.state.clients[0]!.logoutCalls === 1)).toBe(true);
+    expect(() => h.state.clients[0]!.emit('error', resetError())).not.toThrow();
+    await closing;
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
 // close / idempotency / health
 // ────────────────────────────────────────────────────────────────
 
@@ -888,6 +998,165 @@ describe('ImapProvider — close + health', () => {
     expect(hr.last_successful_sync_at).toBeGreaterThan(0);
     expect(hr.error_count_24h).toBe(0);
     expect(hr.pending_queue_size).toBe(0);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Stopping within the grace — the lifecycle drain's 5 s step
+// ────────────────────────────────────────────────────────────────
+
+/** Whether a promise has settled yet, readable without awaiting it. */
+const track = (work: Promise<unknown>): { readonly done: boolean } => {
+  const settled = { done: false };
+  void work.then(() => { settled.done = true; }, () => { settled.done = true; });
+  return settled;
+};
+
+describe('ImapProvider — close returns within the grace', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('logs every folder out at once, and closes the sockets whose LOGOUT is never answered', async () => {
+    h = newHarness({ seed: { INBOX: [], Archive: [] } });
+    await h.provider.connect();
+    h.state.logoutHangs = true;
+    vi.useFakeTimers();
+
+    const closing = track(h.provider.close());
+    await vi.advanceTimersByTimeAsync(0);
+    // Both LOGOUTs went out before either was answered: side by side, not one
+    // queued behind the other.
+    expect(h.state.clients.map((client) => client.logoutCalls)).toEqual([1, 1]);
+    expect(closing.done).toBe(false);
+    await vi.advanceTimersByTimeAsync(IMAP_LOGOUT_GRACE_MS);
+    expect(closing.done).toBe(true);
+    expect(h.state.clients.every((client) => client.closed)).toBe(true);
+  });
+
+  it('closes a client mid-FETCH without a LOGOUT, and the first scan it cut short rejects', async () => {
+    const now = Date.now();
+    h = newHarness({ seed: { INBOX: [1, 2, 3].map((uid) => ({
+      uid, source: makeRfc822({ messageId: `m${uid}@example.com` }), internalDate: new Date(now),
+    })) } });
+    h.state.fetchHoldsAfter = 1;
+    await h.provider.connect();
+    const scanned: string[] = [];
+    const scanning = h.provider.initialScan({
+      backfill_days: 30,
+      onMessage: async (message) => { scanned.push(message.source_id); return true; },
+    });
+    scanning.catch(() => {});
+    expect(await waitForCondition(() => scanned.length === 1)).toBe(true);
+
+    vi.useFakeTimers();
+    const closing = track(h.provider.close());
+    // No LOGOUT to wait for: it would queue behind the rest of the FETCH.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(closing.done).toBe(true);
+    const [client] = h.state.clients;
+    expect(client!.logoutCalls).toBe(0);
+    expect(client!.closed).toBe(true);
+    vi.useRealTimers();
+    // A scan that did not reach the end of the folder is not complete.
+    await expect(scanning).rejects.toBeInstanceOf(CollectionStoppedError);
+    expect(scanned).toEqual(['1@INBOX']);
+  });
+
+  it('reaches a folder still connecting, and the connect it cut short fails', async () => {
+    h = newHarness({ seed: { INBOX: [], Archive: [] } });
+    h.state.connectHolds = true;
+    const connecting = h.provider.connect();
+    connecting.catch(() => {});
+    expect(await waitForCondition(() => h.state.clients.length === 1)).toBe(true);
+
+    await h.provider.close();
+    await expect(connecting).rejects.toBeDefined();
+    // The first folder's client was closed; the second never began.
+    expect(h.state.clients).toHaveLength(1);
+    expect(h.state.clients[0]!.closed).toBe(true);
+    // Nothing of that connection is left for a later start to trip over.
+    await expect(h.provider.startSync(h.cb)).rejects.toThrow(/before connect/);
+  });
+
+  it('gives a one-off lookup client short timeouts, and a folder\'s IDLE client none', async () => {
+    const state: FakeState = {
+      folders: new Map([['INBOX', { path: 'INBOX', messages: [{
+        uid: 1, source: makeRfc822({}), internalDate: new Date(),
+      }] }]]),
+      clients: [],
+      fetches: [],
+    };
+    const made: Array<{ options: Parameters<ImapClientFactory>[0]; client: FakeClient }> = [];
+    h = {
+      state,
+      provider: createImapProvider({
+        slug: 'work',
+        config: () => mkConfig({ folders: ['INBOX'] }),
+        clientFactory: (options) => {
+          const client = new FakeClient(state);
+          made.push({ options, client });
+          return client;
+        },
+        sleep: () => Promise.resolve(),
+      }),
+      events: [],
+      cb: async () => {},
+      cfg: () => mkConfig({ folders: ['INBOX'] }),
+    };
+    await h.provider.connect();
+    await h.provider.startSync(h.cb);
+    // The folder's connection drops, and the reconnect opens another.
+    made[0]!.client.emit('close');
+    expect(await waitForCondition(() => made.length === 2)).toBe(true);
+    // One message read again, on a connection of its own.
+    await h.provider.fetchMessage!('1@INBOX');
+    expect(made).toHaveLength(3);
+
+    const [folder, reconnected, lookup] = made;
+    for (const sync of [folder!, reconnected!]) {
+      expect(sync.options).not.toHaveProperty('socketTimeout');
+      expect(sync.options).not.toHaveProperty('connectionTimeout');
+      expect(sync.options).not.toHaveProperty('greetingTimeout');
+    }
+    expect(lookup!.options).toMatchObject({ connectionTimeout: 15_000, greetingTimeout: 15_000, socketTimeout: 15_000 });
+    // imapflow reports a socket timeout as an 'error' event, which an emitter
+    // with no listener throws — out of a socket callback, taking the process.
+    expect(() => lookup!.client.emit('error', Object.assign(new Error('Socket timeout'), { code: 'ETIMEOUT' })))
+      .not.toThrow();
+  });
+
+  it('leaves the stored cursor where it was when a catch-up resumes after the close', async () => {
+    const store = makeDeliveryStore();
+    const cursorKey = `imap.work.cursor.${Buffer.from('INBOX', 'utf8').toString('base64url')}`;
+    // The last session delivered uid 1; 2 and 3 arrived while the server was down.
+    store.data.set(cursorKey, JSON.stringify({ schema_version: 1, uid_validity: '1', uid_next: 2 }));
+    const now = Date.now();
+    h = newHarness({
+      seed: { INBOX: [1, 2, 3].map((uid) => ({
+        uid, source: makeRfc822({ messageId: `m${uid}@example.com` }), internalDate: new Date(now),
+      })) },
+      deliveryStore: store,
+    });
+    await h.provider.connect();
+    let releaseFolder!: () => void;
+    const folderHeld = new Promise<void>((resolve) => { releaseFolder = resolve; });
+    let folderSeen = false;
+    // The collection is still storing the folder's flags when the stop comes.
+    await h.provider.startSync(async (event) => {
+      if (event.kind === 'folder') { folderSeen = true; await folderHeld; return; }
+      h.events.push(event);
+    });
+    expect(await waitForCondition(() => folderSeen)).toBe(true);
+
+    const closing = h.provider.close();
+    releaseFolder();
+    await closing;
+    await sleep(25);
+
+    // Read against the closed connection, the folder would look empty and the
+    // cursor would move past 2 and 3, which the next start would then never
+    // fetch. It stays, and the next start fetches them.
+    expect(JSON.parse(store.data.get(cursorKey)!)).toMatchObject({ uid_next: 2 });
+    expect(h.events).toEqual([]);
   });
 });
 

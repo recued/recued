@@ -139,7 +139,7 @@ describe('qualified asset identity in retained fact context', () => {
     expect(value.nodes[0]).toMatchObject({ known: true, value: null, value_omitted: true }); expect(value.missing).toEqual([]);
     expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThanOrEqual(ASSET_CONTEXT_LIMITS.bytes);
     const result = { clusters: [], omitted: 0, ambiguous: [], fact_context: value };
-    expect(situationSourceCitations(result, situationModelProjection(result)).source_citations).toBeUndefined();
+    expect(situationSourceCitations(result, situationModelProjection(result)).source_citations?.some(source => source.kind === 'asset_projection' && source.projection.kind === 'field')).toBe(false);
   });
 
   it.each(['orphaned', 'tombstoned'] as const)('refuses a %s row and cancelled reads', state => {

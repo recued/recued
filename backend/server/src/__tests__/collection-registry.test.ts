@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createCollectionRegistry } from '../collections/registry.js';
 import type { Collection, CollectionSyncAdapter } from '../collections/types.js';
 import type {
@@ -179,6 +180,31 @@ describe('CollectionRegistry — dispose', () => {
 
     release();
     await first;
+  });
+
+  it('stops waiting for a close that never settles once the grace is up', async () => {
+    vi.useFakeTimers();
+    try {
+      const reg = createCollectionRegistry();
+      let closed = 0;
+      reg.register(stubCollection('mail', 'stuck', {
+        // A close waiting on a server that never answers.
+        close: () => { closed += 1; return new Promise<void>(() => {}); },
+      }));
+      reg.register(stubCollection('file', 'ok', {
+        close: async () => { closed += 1; },
+      }));
+      let disposed = false;
+      const disposing = reg.dispose().then(() => { disposed = true; });
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS - 1);
+      expect(disposed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await disposing;
+      expect(disposed).toBe(true);
+      expect(closed).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects register() after dispose', async () => {

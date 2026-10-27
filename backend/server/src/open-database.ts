@@ -27,6 +27,7 @@ import {
 import { resolveServerBundleSwapMarkerPath } from './archive/server-bundle-swap.js';
 import { manualRollbackJournalPathForDb } from './update/manual-rollback-journal.js';
 import { runningAsPackagedBinary } from './packaged-binary.js';
+import { DatabaseStillOpenError } from './database-still-open-error.js';
 import { DATABASE_SCHEMA_VERSION, readDatabaseSchema, readStoredDatabaseSchemaVersion } from './database-schema.js';
 
 type CipherDatabaseHandle = Database.Database & {
@@ -720,14 +721,18 @@ export const copyDatabaseForSnapshot = async (
  *  something else has this realm open — exactly the state a snapshot must not be
  *  taken in, because the copy would be missing its committed tail. Throwing is
  *  what turns that into a refused apply rather than a snapshot that silently is
- *  not one. */
+ *  not one.
+ *
+ *  🔑 The refusal is typed (`DatabaseStillOpenError`), so the update can tell the
+ *  owner WHY: another process had the database open, typically an AI app's
+ *  `recued --mcp` from a release before it stepped aside for updates. */
 export const copyClosedDatabaseForSnapshot = async (
   dbPath: string,
   destination: string,
 ): Promise<void> => {
   const wal = `${dbPath}-wal`;
   if (existsSync(wal) && statSync(wal).size > 0) {
-    throw new Error(
+    throw new DatabaseStillOpenError(
       `copyClosedDatabaseForSnapshot: ${wal} survived the close, so this realm is still open `
       + 'somewhere and the copy would be incomplete',
     );

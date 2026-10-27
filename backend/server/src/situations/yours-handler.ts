@@ -11,8 +11,8 @@ const errors = async <T>(fn: () => Promise<T>): Promise<T> => {
   try { return await fn(); }
   catch (error) { if (error instanceof RpcError) throw error; throw new RpcError('bad_request', error instanceof Error ? error.message : String(error), 400); }
 };
-export const makeYoursHandlers = (service?: YoursService): HandlerSlice<ServerRpcRegistry, 'yours.read' | 'yours.context' | 'yours.change' | 'yours.today' | 'yours.delivery' | 'yours.learning' | 'yours.household_lists' | 'yours.sphere' | 'yours.spheres', WsClient> | undefined => service ? {
-  methods: ['yours.read', 'yours.context', 'yours.change', 'yours.today', 'yours.delivery', 'yours.learning', 'yours.household_lists', 'yours.sphere', 'yours.spheres'],
+export const makeYoursHandlers = (service?: YoursService): HandlerSlice<ServerRpcRegistry, 'yours.read' | 'yours.context' | 'yours.change' | 'yours.today' | 'yours.delivery' | 'yours.learning' | 'yours.household_lists' | 'yours.sphere' | 'yours.spheres' | 'yours.writer.read' | 'yours.writer.preview' | 'yours.writer.change', WsClient> | undefined => service ? {
+  methods: ['yours.read', 'yours.context', 'yours.change', 'yours.today', 'yours.delivery', 'yours.learning', 'yours.household_lists', 'yours.sphere', 'yours.spheres', 'yours.writer.read', 'yours.writer.preview', 'yours.writer.change'],
   handlers: {
     'yours.delivery': async (_args, client) => { owner(client); return errors(async () => service.deliveryStatus()); },
     'yours.learning': async (_args, client) => { owner(client); return errors(() => service.learningStatus()); },
@@ -20,6 +20,9 @@ export const makeYoursHandlers = (service?: YoursService): HandlerSlice<ServerRp
     'yours.today': async (args, client) => { owner(client); return errors(() => service.today(args)); },
     'yours.read': async (args, client) => { owner(client); return errors(() => service.snapshot((args ?? {}) as YoursReadRequest)); },
     'yours.context': async (args, client) => { owner(client); return errors(async () => service.context(args)); },
+    'yours.writer.read': async (args, client) => { owner(client); return errors(() => service.writerRead(args)); },
+    'yours.writer.preview': async (args, client) => { owner(client); return errors(() => service.writerPreview(args)); },
+    'yours.writer.change': async (args, client) => { const actor = owner(client); return errors(() => service.writerChange(args, actor)); },
     'yours.sphere': async (args, client) => { owner(client); return errors(async () => service.placement(args?.ref)); },
     'yours.spheres': async (args, client) => { owner(client); return errors(async () => {
       if (!Array.isArray(args?.refs) || args.refs.length > 500) throw new Error('Choose up to 500 records to place');

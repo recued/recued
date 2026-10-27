@@ -139,6 +139,7 @@ const noopBackgroundServices: BackgroundServiceRegistry = {
   register: () => {},
   registerInterval: () => () => {},
   stopAll: async () => {},
+  settledAll: async () => {},
   list: () => [],
 };
 

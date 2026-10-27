@@ -250,12 +250,17 @@ const pendingListFocusByDocument = new WeakMap<Document, string>();
 const TOKEN_PLACEHOLDER = '<this contract\'s key>';
 
 export interface McpClientSnippet {
-  readonly id: 'claude' | 'claude-code' | 'cursor' | 'cline' | 'codex' | 'custom';
+  readonly id: 'claude' | 'claude-code' | 'cursor' | 'cline' | 'codex' | 'openclaw' | 'custom';
   readonly label: string;
   readonly body: string;
 }
 
 const RECUED_PATH_PLACEHOLDER = '<full path to recued: run `which recued`, or `where recued` on Windows>';
+
+/** OpenClaw's own placeholder, expanded from its environment when it connects.
+ *  Literal text, not a template: the saved server definition holds this, and the
+ *  key stays in `~/.openclaw/.env`. */
+const OPENCLAW_KEY_REFERENCE = 'Bearer ${RECUED_MCP_TOKEN}';
 
 export const mcpEndpointFromServerUrl = (serverUrl: string): string => {
   try {
@@ -325,6 +330,25 @@ export const buildMcpClientSnippets = (
         '[mcp_servers.recued]',
         `url = "${endpoint}"`,
         'bearer_token_env_var = "RECUED_MCP_TOKEN"',
+      ].join('\n'),
+    },
+    // OpenClaw's gateway runs as a service, which does not see the shell's
+    // variables but does load `~/.openclaw/.env`, so the key goes there and the
+    // command carries only OpenClaw's placeholder for it. Tested against a live
+    // door on 2026-10-26 (OpenClaw 2026.10.5).
+    {
+      id: 'openclaw',
+      label: 'OpenClaw',
+      body: [
+        '# ~/.openclaw/.env',
+        `RECUED_MCP_TOKEN=${TOKEN_PLACEHOLDER}`,
+        '',
+        `openclaw mcp set recued '${JSON.stringify({
+          url: endpoint,
+          transport: 'streamable-http',
+          headers: { Authorization: OPENCLAW_KEY_REFERENCE },
+        })}'`,
+        'openclaw daemon restart',
       ].join('\n'),
     },
     {

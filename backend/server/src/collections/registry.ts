@@ -20,8 +20,15 @@
  *    Phase C drain orchestrator).
  *  - Collected errors surface as an `AggregateError`; the drain
  *    step that invokes dispose() records the step as `aborted`.
+ *  - The wait for the closes is bounded (`STOP_GRACE_MS`). Each collection's
+ *    close aborts its own outbound work and bounds its own wait, so this only
+ *    matters for one that does not; the drain step has 5 s and the process
+ *    exits right after the drain, and a step that runs out makes an update
+ *    refuse to swap versions. A close still running past the grace was told
+ *    to stop and keeps running until the exit.
  */
 
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { Collection } from './types.js';
 
 export interface CollectionRegistry {
@@ -49,7 +56,8 @@ export interface CollectionRegistry {
   list(): Collection[];
   /** Close every registered collection and clear the registry. Concurrent
    *  callers coalesce onto the same drain promise; later calls return that
-   *  settled result. Called from the `pause_collections` drain step. */
+   *  settled result. Called from the `pause_collections` drain step; resolves
+   *  within `STOP_GRACE_MS` even if a close never does. */
   dispose(): Promise<void>;
 }
 
@@ -111,8 +119,10 @@ export const createCollectionRegistry = (): CollectionRegistry => {
         try { return Promise.resolve(collection.close()); }
         catch (err) { return Promise.reject(err); }
       });
-      disposePromise = Promise.allSettled(closes).then((results) => {
-        const errors = results
+      const work = Promise.allSettled(closes);
+      disposePromise = settleWithin(work, STOP_GRACE_MS).then(async (waited) => {
+        if (waited === 'timed_out') return;
+        const errors = (await work)
           .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
           .map((result) => result.reason);
         if (errors.length > 0) {

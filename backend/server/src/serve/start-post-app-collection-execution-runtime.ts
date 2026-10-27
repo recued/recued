@@ -145,6 +145,8 @@ export const startPostAppCollectionExecutionRuntime = async (
         // (and its registry) lands before the lifecycle is wired.
         getActiveRunCount: () =>
           execution.executeDeps.inFlightRegistry?.activeRunCount() ?? 0,
+        stopActiveRuns: () =>
+          execution.executeDeps.inFlightRegistry?.killAll() ?? 0,
       },
       recovery: {
         ...options.postExecution.runtime.recovery,

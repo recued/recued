@@ -1,3 +1,4 @@
+import { mailAccountCanReceive, mailAccountHasSentSource } from '@recued/contracts';
 /** D-318 step 7 — Settings → Email chat: switching the email chat door on, its
  *  settings, and the test round trip (§4.12).
  *
@@ -95,6 +96,9 @@ export const MAIL_CHAT_DOOR_TEST_HINT_MS = 2 * 60_000;
 
 /** A connected mailbox, as `collection.mail.list` lists it. */
 export interface MailChatDoorMailboxRow {
+  readonly adapter_type?: string;
+  readonly receive_capable?: boolean;
+  readonly sent_lookup_capable?: boolean;
   readonly slug: string;
   readonly account_email?: string | null;
   readonly send_capable?: boolean;
@@ -976,7 +980,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
           throw new Error('This server does not have email chat yet. Update Recued to use it.');
         }
         acceptSettings(next);
-        mailboxes = [...(listed?.instances ?? [])];
+        mailboxes = [...(listed?.instances ?? [])].filter(row => mailAccountCanReceive(row) && mailAccountHasSentSource(row));
         if (!ownersSeeded) {
           ownersSeeded = true;
           for (const slug of next.owner_mailboxes) if (mailboxes.some((row) => row.slug === slug)) pickOwners.add(slug);

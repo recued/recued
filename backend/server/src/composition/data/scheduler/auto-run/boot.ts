@@ -92,6 +92,9 @@ export const bootAutoRunScheduler = (
       const current = handle;
       if (current) await current.stop();
     },
+    // The stop waits for a fire at most its grace; a pause and a maintenance
+    // window wait for the run as well.
+    settled: async () => { await handle?.settled?.(); },
   });
 
   return {

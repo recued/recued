@@ -35,6 +35,9 @@ export const bootHousekeepingRegistration = (
     stop: async () => {
       await housekeepingSchedulerRegistry.stop();
     },
+    // The stop waits for a step at most its grace; a pause and a maintenance
+    // window wait for the cycle to end as well.
+    settled: () => housekeepingSchedulerRegistry.settled(),
   });
 
   return {

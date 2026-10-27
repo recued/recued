@@ -24,7 +24,11 @@ export const assetContextModelProjection = (input: AssetFactContext): AssetFactC
     nodes: input.nodes.map(node),
     edges: input.edges.map(edge => ({ ...edge, from: ref(edge.from), to: ref(edge.to) })), missing: input.missing.map(ref) };
   while (Buffer.byteLength(JSON.stringify(result), 'utf8') > SITUATION_CONTEXT_MAX_BYTES && result.nodes.length > 1) {
-    const removed = assetFactRefKey(result.nodes.pop()!.ref);
+    const removedNode = result.nodes.pop()!;
+    const removed = assetFactRefKey(removedNode.ref);
+    if (removedNode.kind === 'writer' && result.writer_check?.status === 'complete') {
+      result.writer_check.status = 'partial'; delete result.writer_check.enabled_count;
+    }
     result.edges = result.edges.filter(edge => assetFactRefKey(edge.from) !== removed && assetFactRefKey(edge.to) !== removed);
     result.missing = result.missing.filter(item => assetFactRefKey(item) !== removed);
     result.completeness = 'partial'; if (!result.omitted.includes('byte_budget')) result.omitted.push('byte_budget');

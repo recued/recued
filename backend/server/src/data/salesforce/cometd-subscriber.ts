@@ -26,6 +26,11 @@
  *    4. **Disconnect** (`/meta/disconnect`) — graceful termination
  *       on `stop()`. Best-effort — the abort controller cancels any
  *       in-flight long-poll first so the disconnect doesn't race.
+ *       ⛔ `stop()` never waits on Salesforce past `STOP_GRACE_MS`: it
+ *       awaited the disconnect (up to 30s) and then an uncancellable
+ *       reconnect backoff (up to 60s), so a drain step ran out and an
+ *       update refused to swap versions — for a session that expires on
+ *       its own once we stop polling.
  *
  *  Reconnect strategy:
  *    - Any transport failure (non-OK HTTP, JSON parse error,
@@ -59,6 +64,7 @@ import {
 } from '@recued/contracts';
 
 import type { ConnectionLookup } from '../../housekeeping/reconciliation/vendor-reconciler.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import {
   defaultProviderApiFetch,
   defaultProviderLongPollFetch,
@@ -101,8 +107,9 @@ export interface SalesforceCometDSubscriber {
    *  caller's await chain). The long-poll loop continues in the
    *  background after this resolves. */
   start(): Promise<void>;
-  /** Tear the session down gracefully — abort any in-flight long-poll,
-   *  POST /meta/disconnect best-effort, await the loop. Idempotent;
+  /** Tear the session down gracefully — abort every request the loop has in
+   *  flight and its reconnect backoff, POST /meta/disconnect best-effort,
+   *  and wait for the loop — all of it inside `STOP_GRACE_MS`. Idempotent;
    *  safe to call before `start()` settles. */
   stop(): Promise<void>;
   /** Test-only — current state diagnostic. Production code never reads. */
@@ -146,8 +153,9 @@ export interface BuildSalesforceCometDSubscriberInput {
    *  with a longer ceiling only for `/meta/connect`. Tests inject a stub. */
   fetcher?: typeof fetch;
   /** Sleep — used between reconnect-backoff attempts. Defaults to a
-   *  setTimeout-promise. Tests pass a deterministic stub. */
-  sleep?: (ms: number) => Promise<void>;
+   *  setTimeout-promise that `signal` cancels. Tests pass a deterministic
+   *  stub; one that ignores `signal` is still cut short by `stop()`. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Best-effort logger. Production wires to the daemon's structured
    *  log; tests pass a sink to assert lifecycle traces. */
   log?: (
@@ -238,6 +246,11 @@ export const buildSalesforceCometDSubscriber = (
   let loopPromise: Promise<void> | null = null;
   /** Set when stop() is called. Long-poll loop sees this and bails. */
   let stopRequested = false;
+  let stopPromise: Promise<void> | null = null;
+  /** Aborted by `stop()`. Rides on every handshake / subscribe / connect
+   *  request and cuts the reconnect backoff short, so nothing the loop is
+   *  waiting on outlives the stop. */
+  const lifetime = new AbortController();
 
   /** Build a stable URL — the connection's `instance_url` (= base_url)
    *  plus the versioned CometD endpoint. Refetched per handshake so a
@@ -279,13 +292,17 @@ export const buildSalesforceCometDSubscriber = (
 
   /** Post a Bayeux message batch to `endpoint`. Returns the parsed
    *  response array (Bayeux always returns an array, even for a
-   *  single-message batch). */
+   *  single-message batch). Only `/meta/connect` is a long-poll; the
+   *  others take the ordinary provider ceiling. */
   const postBayeux = async (
     endpoint: string,
     accessToken: string,
     messages: ReadonlyArray<Record<string, unknown>>,
-    signal?: AbortSignal,
+    call: { signal: AbortSignal; longPoll?: boolean },
   ): Promise<ReadonlyArray<BayeuxBaseMessage>> => {
+    // A stopped subscriber sends nothing more (a retry after an auth refresh
+    // that finished during the stop, say).
+    call.signal.throwIfAborted();
     const fetchOptions: RequestInit = {
       method: 'POST',
       headers: {
@@ -295,11 +312,9 @@ export const buildSalesforceCometDSubscriber = (
       },
       body: JSON.stringify(messages),
     };
-    if (signal) {
-      (fetchOptions as RequestInit & { signal?: AbortSignal }).signal = signal;
-    }
+    (fetchOptions as RequestInit & { signal?: AbortSignal }).signal = call.signal;
     const fetcher = input.fetcher
-      ?? (signal === undefined ? defaultProviderApiFetch : defaultProviderLongPollFetch);
+      ?? (call.longPoll === true ? defaultProviderLongPollFetch : defaultProviderApiFetch);
     const response = await fetcher(endpoint, fetchOptions);
     if (response.status === 401) {
       throw new BayeuxAuthExpired();
@@ -331,7 +346,7 @@ export const buildSalesforceCometDSubscriber = (
         ext: { replay: true },
         id: nextMessageId(),
       },
-    ]);
+    ], { signal: lifetime.signal });
     const ack = response.find(
       (m): m is BayeuxHandshakeResponse => m.channel === BAYEUX_HANDSHAKE,
     );
@@ -385,7 +400,7 @@ export const buildSalesforceCometDSubscriber = (
       id: nextMessageId(),
     }));
 
-    const response = await postBayeux(endpoint, accessToken, messages);
+    const response = await postBayeux(endpoint, accessToken, messages, { signal: lifetime.signal });
     const acks = response.filter(
       (m): m is BayeuxSubscribeResponse => m.channel === BAYEUX_SUBSCRIBE,
     );
@@ -427,7 +442,7 @@ export const buildSalesforceCometDSubscriber = (
           id: nextMessageId(),
         },
       ],
-      signal,
+      { signal, longPoll: true },
     );
 
     const events: SalesforceCometDEvent[] = [];
@@ -463,7 +478,9 @@ export const buildSalesforceCometDSubscriber = (
 
   /** /meta/disconnect — best-effort. Failures are swallowed (the
    *  connection might already be gone if the user deleted it out-of-
-   *  band). */
+   *  band). Its own deadline is the stop's grace: `lifetime` is already
+   *  aborted by then, and an unanswered disconnect only means Salesforce
+   *  expires the session itself. */
   const doDisconnect = async (
     endpoint: string,
     accessToken: string,
@@ -476,7 +493,7 @@ export const buildSalesforceCometDSubscriber = (
           clientId: activeClientId,
           id: nextMessageId(),
         },
-      ]);
+      ], { signal: AbortSignal.timeout(STOP_GRACE_MS) });
     } catch (e) {
       log('warn', 'cometd-disconnect failed (ignored)', {
         connection: input.connection_name,
@@ -553,7 +570,7 @@ export const buildSalesforceCometDSubscriber = (
 
     while (!stopRequested) {
       abortController = new AbortController();
-      const cycleSignal = abortController.signal;
+      const cycleSignal = AbortSignal.any([abortController.signal, lifetime.signal]);
 
       // Per-cycle timeout. Server holds /meta/connect for ~110s; the
       // local timeout sits at `longPollTimeoutMs` to absorb jitter.
@@ -573,6 +590,11 @@ export const buildSalesforceCometDSubscriber = (
         clearTimeoutSafe(cycleTimeout);
 
         for (const event of result.events) {
+          // Delivery writes to the database, and a stop must not leave that
+          // running past the drain. An event left undelivered is the same as
+          // one that arrives while the server is down: the reconcilers pick
+          // the change up; this stream only gets it here sooner.
+          if (stopRequested) break;
           try {
             await input.onEvent(event);
           } catch (e) {
@@ -640,14 +662,28 @@ export const buildSalesforceCometDSubscriber = (
           backoff_ms: backoff,
           error: e instanceof Error ? e.message : String(e),
         });
-        await sleep(backoff);
+        await pause(backoff);
       }
     }
   };
 
+  /** Wait out a reconnect backoff, or until `stop()`, whichever is first.
+   *  The injected sleep may ignore the signal, so the stop also ends the wait
+   *  here; the default sleep clears its timer as well. */
+  const pause = (ms: number): Promise<void> => new Promise<void>((resolve) => {
+    if (lifetime.signal.aborted) { resolve(); return; }
+    const done = (): void => {
+      lifetime.signal.removeEventListener('abort', done);
+      resolve();
+    };
+    lifetime.signal.addEventListener('abort', done, { once: true });
+    sleep(ms, lifetime.signal).then(done, done);
+  });
+
   return {
     async start(): Promise<void> {
-      if (state !== 'idle') return;
+      // Not after a stop, even one still inside its grace: `lifetime` is spent.
+      if (state !== 'idle' || stopPromise !== null) return;
       stopRequested = false;
       // Initial handshake + subscribe surfaces synchronously so
       // enrollment-time misconfiguration (no instance_url, expired
@@ -685,42 +721,51 @@ export const buildSalesforceCometDSubscriber = (
         }
       })();
     },
-    async stop(): Promise<void> {
-      if (state === 'stopped') return;
+    stop(): Promise<void> {
+      if (state === 'stopped') return Promise.resolve();
+      // One stop at a time: a second caller (the lifecycle's failed-start
+      // cleanup, say) joins this one rather than sending another disconnect.
+      if (stopPromise) return stopPromise;
       stopRequested = true;
+      // Ends the long-poll, any handshake / subscribe in flight, and the
+      // reconnect backoff — everything the loop could be waiting on.
+      lifetime.abort();
       try { abortController?.abort(); } catch { /* best-effort */ }
 
-      // Best-effort disconnect — fire-and-forget rather than block on
-      // network. A connection that's already been deleted server-side
-      // would 401; we don't want stop() to retry on that.
-      const activeClientId = clientId;
-      const auth = runningAuth;
-      if (activeClientId !== null && auth !== null) {
-        try {
-          const record = await input.lookupConnection(input.connection_name);
-          if (record) {
-            const endpoint = buildEndpoint(record);
-            const token = readAccessToken(auth, input.connection_name);
-            await doDisconnect(endpoint, token, activeClientId);
+      stopPromise = (async () => {
+        // Best-effort disconnect. A connection that's already been deleted
+        // server-side would 401; we don't want stop() to retry on that.
+        const activeClientId = clientId;
+        const auth = runningAuth;
+        const disconnect = (async () => {
+          if (activeClientId === null || auth === null) return;
+          try {
+            const record = await input.lookupConnection(input.connection_name);
+            if (record) {
+              const endpoint = buildEndpoint(record);
+              const token = readAccessToken(auth, input.connection_name);
+              await doDisconnect(endpoint, token, activeClientId);
+            }
+          } catch {
+            // Best-effort — connection might already be deleted.
           }
-        } catch {
-          // Best-effort — connection might already be deleted.
-        }
-      }
+        })();
 
-      if (loopPromise) {
-        try {
-          await loopPromise;
-        } catch {
-          // Already logged inside the loop.
-        }
-      }
+        // The disconnect and the loop's unwinding share one grace. The loop's
+        // waits are all aborted above; this bounds whatever is left (an event
+        // delivery, an auth refresh) so the drain step never runs out on it.
+        await settleWithin(
+          Promise.allSettled([disconnect, loopPromise ?? Promise.resolve()]),
+          STOP_GRACE_MS,
+        );
 
-      state = 'stopped';
-      clientId = null;
-      runningAuth = null;
-      abortController = null;
-      loopPromise = null;
+        state = 'stopped';
+        clientId = null;
+        runningAuth = null;
+        abortController = null;
+        loopPromise = null;
+      })();
+      return stopPromise;
     },
     state(): SubscriberState {
       return state;
@@ -778,8 +823,19 @@ class BayeuxStoppedError extends Error {
 
 const noopLog: NonNullable<BuildSalesforceCometDSubscriberInput['log']> = () => {};
 
-const defaultSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+/** Resolves after `ms`, or as soon as `signal` aborts — and then clears its
+ *  timer, so a stopped subscriber leaves no 60s backoff pending. */
+const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    if (signal?.aborted) finish();
+    else signal?.addEventListener('abort', finish, { once: true });
+  });
 
 const safeReadText = async (response: Response): Promise<string> => {
   try {

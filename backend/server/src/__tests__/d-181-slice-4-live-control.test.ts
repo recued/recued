@@ -305,6 +305,21 @@ describe('InFlightRegistry — nested subprocess ownership', () => {
     await reg.waitForSubprocessDrain('root');
     expect(reg.activeRunCount()).toBe(3);
   });
+
+  // The restart drain's stop, once its grace is up: every run, nested or not,
+  // is killed exactly once, and a second call finds nothing left to kill.
+  it('killAll kills every running run once, subprocesses included', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const aborts = [register(reg, 'root'), register(reg, 'child', 'root'), register(reg, 'unrelated')];
+    const kills = [vi.fn(), vi.fn()];
+    reg.attachSubprocess('child', 31, kills[0]!);
+    reg.attachSubprocess('unrelated', 32, kills[1]!);
+
+    expect(reg.killAll()).toBe(3);
+    for (const abort of aborts) expect(abort).toHaveBeenCalledOnce();
+    for (const kill of kills) expect(kill).toHaveBeenCalled();
+    expect(reg.killAll()).toBe(0);
+  });
 });
 
 describe('InFlightRegistry — D-259 running-twin attachment', () => {

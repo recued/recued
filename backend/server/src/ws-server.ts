@@ -757,6 +757,7 @@ import {
   deriveBearerInstanceId,
   resolveGatedClientInstanceId,
 } from './ws-client-identity.js';
+import { settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 
 /** Pending AI delegation request — server waits for extension to relay. */
 export interface AiDelegation {
@@ -1779,6 +1780,10 @@ const buildWsBinding = (
     operationProfiles: executeDeps?.connectionOperationProfiles,
     localManifestStore: executeDeps?.localManifestStore,
   });
+  const checkedDishDeps = withDishConnectionCheck(dishDeps, packConnectionsDeps);
+  // Yours holds these same dependencies before the RPC dispatcher is built.
+  // Late-bind its direct saves to the same account validation as dishes.create.
+  if (dishDeps && checkedDishDeps?.checkConnectionChoices) dishDeps.checkConnectionChoices = checkedDishDeps.checkConnectionChoices;
   const regressionHandlers = makeRecipeRegressionHandlers(recipeRegressionDeps);
   const reviewedPackInstallDeps = withSharedSignInConnections(packInstallDeps,packConnectionsDeps);
   const packInstallWithReview = reviewedPackInstallDeps ? { ...reviewedPackInstallDeps,
@@ -1801,7 +1806,7 @@ const buildWsBinding = (
     // `not_configured`. Off MCP by catalog omission (like the sibling archive rpc).
     makeArchiveUploadHandlers(archiveUploadDeps),
     makeScheduleHandlers(scheduleDeps),
-    makeDishHandlers(withDishConnectionCheck(dishDeps, packConnectionsDeps)),
+    makeDishHandlers(checkedDishDeps),
     makeCacheHandlers(cacheDeps, peerPrefsFor),
     makeSharedHandlers(sharedDeps),
     makePrefsHandlers(pairedInstances),
@@ -3836,11 +3841,20 @@ const buildWsBinding = (
       // Handler errors are normalized/contained by their dispatch wrappers;
       // allSettled is still deliberate defense-in-depth so teardown itself
       // never rejects merely because a future reply/error path regresses.
-      closePromise = Promise.allSettled([
+      //
+      // ⛔ AND THE WAIT IS BOUNDED. An update, a restart or a stop comes first,
+      // and a client retries a call whose connection closed. Waited on in full,
+      // one slow call (a connection check, a mail send) ran the drain's step
+      // out and refused the update. What is still running after the grace is
+      // left to finish or fail on its own: its client is already gone, the
+      // database closes under it later in the drain, and the process exits.
+      // An online restore stays safe — its swap waits for that close, after
+      // which nothing still running can write.
+      closePromise = settleWithin(Promise.allSettled([
         ...activeRpcDispatches,
         ...activeDataSocketDispatches,
         ...activeUpgradeVerifications,
-      ]).then(() => undefined);
+      ]), STOP_GRACE_MS).then(() => undefined);
       return closePromise;
     },
   };

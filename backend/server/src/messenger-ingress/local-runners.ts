@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 
 import { makeBoundedOriginApiFetch } from '../bounded-origin-http-fetcher.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { MessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
 import type { MessengerWebhookDispatch } from '../composition/bin/wire-inbound-answer-dispatcher.js';
 
@@ -24,6 +25,9 @@ export interface WebSocketLike {
   on(event: 'error', listener: (error: Error) => void): this;
   send(data: string): void;
   close(code?: number, reason?: string): void;
+  /** Drop the connection at once, with no closing handshake. The `ws` socket
+   *  always has it; optional so a minimal stand-in still fits (see `hangUp`). */
+  terminate?(): void;
 }
 
 export type MessengerWebSocketFactory = (url: string) => WebSocketLike;
@@ -67,6 +71,7 @@ export interface DiscordGatewayRunnerOptions extends CommonRunnerOptions {
 
 const WS_OPEN = 1;
 const WS_CONNECTING = 0;
+const WS_CLOSED = 3;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 const WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 30_000;
@@ -89,6 +94,33 @@ const redactCredential = (message: string, credential: string): string => {
   return renderings
     .filter((rendering, index, all) => rendering.length > 0 && all.indexOf(rendering) === index)
     .reduce((redacted, rendering) => redacted.split(rendering).join('***'), message);
+};
+
+/** End a socket now, for a stop.
+ *
+ *  ⛔ Never the polite `close()`. It sends a closing frame and then waits for
+ *  the other end's, and `ws` gives that 30 s (`CLOSE_TIMEOUT`). A socket left
+ *  half-dead by a laptop sleep never answers, so a stop that closed politely
+ *  sat out the 30 s inside a drain step that has 5 — and a step that runs out
+ *  makes an update refuse to swap, while the process exits right after the
+ *  drain anyway. `ws-server.ts` terminates its own clients at shutdown for the
+ *  same reason. A socket already closing (a refresh or a failed dispatch began
+ *  a polite close) is ended too: that close is the one still waiting.
+ *
+ *  Returns `'closed'` only when the socket has no `terminate` and was closed
+ *  with 1000 instead, which Discord takes as the end of the session. */
+const hangUp = (ws: WebSocketLike): 'dropped' | 'closed' => {
+  if (ws.readyState === WS_CLOSED) return 'dropped';
+  try {
+    if (typeof ws.terminate === 'function') {
+      ws.terminate();
+      return 'dropped';
+    }
+    ws.close(1000, 'server stopping');
+    return 'closed';
+  } catch {
+    return 'dropped';
+  }
 };
 
 const retryDelay = (attempt: number, random: () => number): number => {
@@ -241,6 +273,11 @@ export const createTelegramPollRunner = (
             payload: update,
             update_id: String(rawId),
           } as Parameters<MessengerWebhookDispatch>[0]);
+          // A stop that came during the dispatch leaves the offset where it
+          // was: a stopped runner records nothing more (`stop`), so the update
+          // is fetched once more after the restart and the dispatcher's
+          // durable admission recognises it.
+          if (controller.signal.aborted) return;
           const nextOffset = rawId + 1;
           options.stateStore.put({
             vendor: 'telegram',
@@ -282,9 +319,19 @@ export const createTelegramPollRunner = (
       if (task !== null) return;
       task = run();
     },
+    /** Stop within `STOP_GRACE_MS`. The abort ends the long poll and any retry
+     *  wait, and the loop starts no update it has not begun. An update being
+     *  dispatched is not waited for past the grace: the dispatcher takes no
+     *  signal, and the process exits right after a drain anyway.
+     *
+     *  Nothing is lost by it. Telegram counts an update as received only when
+     *  `getUpdates` is next called with an offset above its id (Bot API,
+     *  getUpdates), and keeps the rest for 24 hours. The offset is stored only
+     *  after a dispatch, so the update in flight and every one after it in the
+     *  batch are fetched again from the stored offset after the restart. */
     async stop() {
       controller.abort();
-      await task;
+      if (task !== null) await settleWithin(task, STOP_GRACE_MS);
       options.onState?.('stopped');
     },
   };
@@ -372,6 +419,9 @@ export const createSlackSocketRunner = (
         const envelopeId = envelope.envelope_id;
         if (typeof envelopeId !== 'string' || envelopeId.length === 0) return;
         queue = queue.then(async () => {
+          // ⛔ A STOPPING RUNNER STARTS NO ENVELOPE IT HAS NOT BEGUN. It was
+          // never acknowledged, so Slack sends it again (see `stop`).
+          if (controller.signal.aborted) return;
           await options.dispatch({
             connection_name: options.connectionName,
             payload: envelope.payload,
@@ -392,7 +442,7 @@ export const createSlackSocketRunner = (
           // later turn never leaves a temporarily unhandled rejection.
         });
       });
-      if (controller.signal.aborted) ws.close(1000, 'server stopping');
+      if (controller.signal.aborted) hangUp(ws);
     });
   };
 
@@ -432,12 +482,25 @@ export const createSlackSocketRunner = (
       if (task !== null) return;
       task = run();
     },
+    /** Stop within `STOP_GRACE_MS`: the abort ends `apps.connections.open` and
+     *  any retry wait, the socket is terminated (`hangUp`), and no queued
+     *  envelope starts. One being dispatched is not waited for past the grace.
+     *
+     *  ⚠ WHAT SLACK SENDS AGAIN, AND WHAT IT DOES NOT (Slack docs, checked
+     *  2026-10-26). An envelope is acknowledged only after its dispatch, and a
+     *  stopped socket acknowledges nothing more. Events API events — messages —
+     *  are retried when unacknowledged ("so that Slack knows whether to retry";
+     *  up to 3 times: at once, after 1 minute, after 5), so a runner back within
+     *  those minutes receives them, and the dispatcher's durable admission
+     *  recognises one it had already taken. An interaction (a button press) is
+     *  NOT documented as retried: Slack shows the owner an error instead. A
+     *  press that reached a stopping runner while another envelope was being
+     *  dispatched is therefore not applied — the ask stays open, and the press
+     *  can be made again once the server is back. */
     async stop() {
       controller.abort();
-      if (socket && (socket.readyState === WS_OPEN || socket.readyState === WS_CONNECTING)) {
-        socket.close(1000, 'server stopping');
-      }
-      await task;
+      if (socket !== null) hangUp(socket);
+      if (task !== null) await settleWithin(task, STOP_GRACE_MS);
       options.onState?.('stopped');
     },
   };
@@ -774,7 +837,10 @@ export const createDiscordGatewayRunner = (
           // A cumulative resume cursor cannot cross a failed admission. The
           // socket close is asynchronous: later messages, filtered events and
           // RESUMED may already be queued when the first dispatch rejects.
-          if (dispatchFailed) return;
+          // ⛔ Nor a stop: a stopping runner starts no event it has not begun,
+          // and the cursor stays before it, so the RESUME after the restart
+          // replays it (see `stop`).
+          if (dispatchFailed || controller.signal.aborted) return;
           // The callback request is already in flight and independently
           // observed above. Business dispatch and its durable sequence fence
           // must not wait up to the HTTP timeout for Discord's empty response.
@@ -789,6 +855,10 @@ export const createDiscordGatewayRunner = (
                 : String(sequence),
             } as Parameters<MessengerWebhookDispatch>[0]);
           }
+          // A stop that came during the dispatch records nothing more: this
+          // runner's `resume` may no longer be the newest, and a late write
+          // would put a later runner's cursor back.
+          if (controller.signal.aborted) return;
           persistResume({ ...resume, sequence });
           if (eventType === 'RESUMED') options.onState?.('active');
         }).catch((error) => {
@@ -801,7 +871,7 @@ export const createDiscordGatewayRunner = (
           // the socket closes; keep the queue itself observed in the interim.
         });
       });
-      if (controller.signal.aborted) ws.close(1000, 'server stopping');
+      if (controller.signal.aborted) hangUp(ws);
     });
   };
 
@@ -852,21 +922,36 @@ export const createDiscordGatewayRunner = (
       if (task !== null) return;
       task = run();
     },
+    /** Stop within `STOP_GRACE_MS`: the abort ends the Gateway lookup, an
+     *  interaction acknowledgement in flight and any retry wait, the socket is
+     *  terminated (`hangUp`), and no queued event starts. One being dispatched
+     *  is not waited for past the grace.
+     *
+     *  🔑 THE SESSION IS KEPT, SO NOTHING QUEUED IS LOST. Discord ends a
+     *  session closed with 1000 or 1001; a dropped connection's session "will
+     *  remain active and timeout after a few minutes", and a Resume replays
+     *  every event after the last sequence it is given (Discord Gateway docs,
+     *  checked 2026-10-26). The stored sequence is the last event DISPATCHED,
+     *  so the restarted runner's RESUME replays the event in flight and every
+     *  queued one; the dispatcher's durable admission recognises any it had
+     *  already taken. This stop used to close with 1000 and then delete the
+     *  resume state, which lost them. A restart that comes too late for the
+     *  session is told so (op 9) and identifies afresh, as before. */
     async stop() {
       controller.abort();
-      if (socket && (socket.readyState === WS_OPEN || socket.readyState === WS_CONNECTING)) {
-        socket.close(1000, 'server stopping');
-      }
-      await task;
-      // Close code 1000 invalidates the session, so never offer that state to a
-      // later process as resumable.
-      try {
-        options.stateStore.delete('discord', options.connectionName);
-      } catch (error) {
-        options.log?.('warn', 'Discord resume-state cleanup failed during shutdown', {
-          connection_name: options.connectionName,
-          error: errorMessage(error),
-        });
+      const ended = socket !== null ? hangUp(socket) : 'dropped';
+      if (task !== null) await settleWithin(task, STOP_GRACE_MS);
+      // Only a socket that could not be terminated was closed with 1000, which
+      // ends the session: never offer that state to a later process.
+      if (ended === 'closed') {
+        try {
+          options.stateStore.delete('discord', options.connectionName);
+        } catch (error) {
+          options.log?.('warn', 'Discord resume-state cleanup failed during shutdown', {
+            connection_name: options.connectionName,
+            error: errorMessage(error),
+          });
+        }
       }
       options.onState?.('stopped');
     },

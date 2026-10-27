@@ -3,6 +3,7 @@ import type { NotificationBlock, NotificationMessage } from '@recued/notificatio
 import { CONNECTION_NAME_REGEX, type AuthenticationRepairTarget } from '@recued/contracts';
 import { authenticationRepairTargetHasIssue, type AuthenticationRepairSnapshot } from './authentication-repair-worklist.js';
 import { authenticationAlertGroupSignature, type AuthenticationAlertNotice, type AuthenticationAlertStore } from './authentication-alert-store.js';
+import { PUSH_GRACE_MS, settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 
 /** The same non-secret destinations as the repair worklist. Every target
  * still requires pairing and the existing owner-reviewed repair flow. */
@@ -64,6 +65,8 @@ export const createAuthenticationAlertRuntime = (deps: {
 }) => {
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined; let stopped = false;
+  /** The claimed push in flight, if any (`stop`). */
+  let pushing: Promise<void> | undefined;
   const deliverable = (snapshot: AuthenticationRepairSnapshot, notice: AuthenticationAlertNotice): boolean => {
     const group = snapshot.worklist.groups.find(g => g.id === notice.group_id);
     if (!group) return false;
@@ -95,8 +98,11 @@ export const createAuthenticationAlertRuntime = (deps: {
         if (currentGroup && authenticationAlertGroupSignature(currentGroup) !== authenticationAlertGroupSignature(notice.group)) continue;
         if (!deliverable(snapshot, notice) || !deps.store.claim(notice.id)) continue;
         delivered += 1;
-        try { await deps.notifier.notify(message, undefined, { persisted_activity_id: notice.id, ui_link_url: hash }); }
+        const push = (async () => deps.notifier.notify(message, undefined, { persisted_activity_id: notice.id, ui_link_url: hash }))();
+        pushing = push;
+        try { await push; }
         catch { /* Best-effort external delivery; durable owner history exists. */ }
+        finally { pushing = undefined; }
       }
     })().catch(() => { console.warn('[authentication-alerts] local status or notification history is unavailable; retrying on the next check'); })
       .finally(() => { running = undefined; });
@@ -108,8 +114,18 @@ export const createAuthenticationAlertRuntime = (deps: {
       if (stopped || timer) return;
       timer = setInterval(() => { void tick(); }, deps.intervalMs ?? 60_000); timer.unref(); void tick();
     },
+    /** Claim no further notice, and wait for the check in progress at most
+     *  `STOP_GRACE_MS` — `PUSH_GRACE_MS` while a claimed push is in flight.
+     *
+     *  An unclaimed notice stays in the store and is sent by the first tick
+     *  after the restart. A claimed one is never sent again: "Claimed pushes
+     *  are never replayed on restart" (above), and `notify()` keeps no outbox.
+     *  So its push gets the longer grace, and one still going after it is cut
+     *  by the exit after the drain, leaving only its history row: waiting on
+     *  would run out the drain step, which makes an update refuse to swap. */
     async stop(): Promise<void> {
-      stopped = true; if (timer) clearInterval(timer); timer = undefined; await running;
+      stopped = true; if (timer) clearInterval(timer); timer = undefined;
+      if (running) await settleWithin(running, pushing !== undefined ? PUSH_GRACE_MS : STOP_GRACE_MS);
     },
   };
 };

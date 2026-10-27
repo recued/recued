@@ -13,10 +13,11 @@
  *  sync uses. The block is a fake: `getAsk` / `submitAnswer` are all the funnel
  *  touches. */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NotificationBlock, PendingAsk } from '@recued/notification';
 
 import type { MailUpsertContext } from '../collections/mail/mail-collection.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { mailHeaderMap, type CanonicalMessage } from '../collections/mail/provider.js';
 import {
   composeInboundEmailAnswer,
@@ -440,6 +441,35 @@ describe('composeInboundEmailAnswer — a plain ask is answered on the connectio
     const h = makeHarness({ owner: { accounts: null, enrolled: [ACCOUNTS, HOME] } });
     h.funnel.onMessageUpserted(inboxReply(), ctxIn('alerts'));
     await settle(h.funnel);
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+  });
+});
+
+/** ⛔ A drain step awaits `dispose`, with 5 s, and the process exits right
+ *  after the drain anyway. */
+describe('composeInboundEmailAnswer — disposing within the grace', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('waits no longer than the grace for an answer that does not finish, and admits nothing after', async () => {
+    const getAsk = vi.fn(() => new Promise<PendingAsk | null>(() => {}));
+    const h = makeHarness({ getAsk });
+    h.funnel.onMessageUpserted(sentCopy(), ctxIn('owner'));
+    await vi.waitFor(() => expect(getAsk).toHaveBeenCalledTimes(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let disposed = false;
+    const done = h.funnel.dispose().then(() => { disposed = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+      for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(disposed).toBe(true);
+    await done;
+
+    h.funnel.onMessageUpserted(sentCopy({ rfc_message_id: '<reply-2@example.com>' }), ctxIn('owner'));
+    expect(getAsk).toHaveBeenCalledTimes(1);
     expect(h.submitAnswer).not.toHaveBeenCalled();
   });
 });

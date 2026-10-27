@@ -46,6 +46,13 @@ export interface StoppableService {
   readonly kind: ServiceKind;
   /** Stop hook. May be sync or async; `stopAll()` awaits each. */
   readonly stop: () => Promise<void> | void;
+  /** Resolves once everything the service started before its stop has
+   *  finished, however long that takes. A stop waits for its in-flight work
+   *  at most `STOP_GRACE_MS`, for a restart's sake — the restart then kills
+   *  what is left, and the process exits. A pause or a maintenance window
+   *  kills nothing and needs a quiet database, so it waits here as well
+   *  (`settledAll`). Absent ⇒ the stop already waits for all of it. */
+  readonly settled?: () => Promise<void>;
 }
 
 export interface IntervalServiceSpec {
@@ -88,6 +95,10 @@ export interface BackgroundServiceRegistry {
    *  reverse registration order before any one hook is awaited. Every sibling is attempted;
    *  failures are logged and then surfaced as an AggregateError after all drains settle. */
   stopAll(filter?: StopAllFilter): Promise<void>;
+  /** Wait for every matched service's `settled()`, with no bound — after
+   *  `stopAll`, for a caller that kills nothing and needs what the services
+   *  started to have finished (a pause, a maintenance window). Never rejects. */
+  settledAll(filter?: StopAllFilter): Promise<void>;
   /** Names of registered services matching the optional filter, in registration order. */
   list(filter?: StopAllFilter): readonly string[];
 }
@@ -195,8 +206,14 @@ export const createBackgroundServiceRegistry = (): BackgroundServiceRegistry => 
     }
   };
 
+  const settledAll = async (filter?: StopAllFilter): Promise<void> => {
+    await Promise.allSettled(services
+      .filter((svc) => matches(svc, filter))
+      .map((svc) => (svc.settled ? svc.settled() : undefined)));
+  };
+
   const list = (filter?: StopAllFilter): readonly string[] =>
     services.filter((svc) => matches(svc, filter)).map((s) => s.name);
 
-  return { register, registerInterval, stopAll, list };
+  return { register, registerInterval, stopAll, settledAll, list };
 };

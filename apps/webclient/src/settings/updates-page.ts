@@ -28,8 +28,10 @@ import type {
   UpdateRollbackResponse,
   UpdateRollbackArgs,
   UpdateApplyArgs,
+  UpdateOperationStatusResponse,
+  UpdateRevertReason,
 } from '@recued/contracts';
-import { supervisorWillRespawn } from '@recued/contracts';
+import { compareToolVersions, supervisorWillRespawn } from '@recued/contracts';
 import type {
   ServerUpdateReceiptVerificationState,
 } from '@recued/ui-shared';
@@ -72,6 +74,8 @@ export const UPDATES_APPLY_RESULT_ATTR = 'data-recued-updates-apply-result';
 export const UPDATES_APPLY_CONFIRM_ATTR = 'data-recued-updates-apply-confirm';
 /** The Cancel beside "Confirm update": back to "Update to <version>", nothing sent. */
 export const UPDATES_APPLY_CANCEL_ATTR = 'data-recued-updates-apply-cancel';
+/** Beside "Confirm update": what the restart does to work still running. */
+export const UPDATES_APPLY_WARNING_ATTR = 'data-recued-updates-apply-warning';
 export const UPDATES_MODE_SELECT_ATTR = 'data-recued-updates-mode';
 export const UPDATES_MODE_NOTE_ATTR = 'data-recued-updates-mode-note';
 export const UPDATES_ROLLBACK_BTN_ATTR = 'data-recued-updates-rollback';
@@ -294,6 +298,8 @@ export type UpdateModeSetCaller = (args: { mode: UpdateMode }) => Promise<Update
  *  what surfaced it. */
 export type UpdateApplyCaller = (args: UpdateApplyArgs) => Promise<UpdateApplyResponse>;
 export type UpdateRollbackCaller = (args: UpdateRollbackArgs) => Promise<UpdateRollbackResponse>;
+/** `update.operation_status` for one receipt — read to say why a run reverted. */
+export type UpdateOperationStatusCaller = (operationId: string) => Promise<UpdateOperationStatusResponse>;
 
 interface UpdateProgressEvent {
   phase: string;
@@ -312,6 +318,9 @@ export interface MountUpdatesPageOptions {
   runSetMode?: UpdateModeSetCaller;
   runApply?: UpdateApplyCaller;
   runRollback?: UpdateRollbackCaller;
+  /** Asked once an update did not take effect, for its `revert_reason`. Absent,
+   *  or a server that sends no reason, keeps the version-only line. */
+  runOperationStatus?: UpdateOperationStatusCaller;
   /** `server.getLifecycleState`, read for `supervisor_mode` with every check. A
    *  server nothing restarts refuses `update.apply` and `update.rollback`, since
    *  each ends in a restart (`apply-orchestrator.ts` asks the same contracts check
@@ -469,6 +478,73 @@ const TERMINAL_UPDATE_COPY =
 const TERMINAL_ROLLBACK_COPY =
   'Nothing restarts this server when it stops, so roll back from a terminal: '
   + 'run recued stop, then recued update rollback, then start the server again.';
+
+/** The newest release whose restart waits for every open connection to close.
+ *  An AI app connected over MCP holds a stream that never closes on its own, so
+ *  on these releases the restart ran out of time, the server kept its version,
+ *  and the update did not take effect: twice in a row on the owner's server on
+ *  2026-10-26, with Cline connected. Later releases close every connection
+ *  themselves. ⚠ The SERVER's version decides it, not the target's: the old
+ *  release runs the restart that installs the new one. */
+const LAST_RELEASE_AN_OPEN_CONNECTION_STOPS = '26.10.25';
+
+/** What the page says when the server came back on the version it had. The
+ *  server does not say why (`update.operation_status` carries no detail), so the
+ *  page says what to do next: on the releases above, quit the AI apps first; on
+ *  any, the terminal route, where `recued update apply` prints what went wrong. */
+const updateDidNotTakeEffectCopy = (current: string, target: string): string => {
+  const outcome = `The server is still on ${current}. The update to ${target} did not take effect.`;
+  const fromTerminal = 'If it still does not take effect, run recued stop, then recued update apply, '
+    + 'which says what went wrong, then start the server again.';
+  return compareToolVersions(current, LAST_RELEASE_AN_OPEN_CONNECTION_STOPS) <= 0
+    ? `${outcome} This version cannot finish an update while an AI app such as Cline or OpenClaw `
+      + `is connected to it, so quit those apps and try the update again. ${fromTerminal}`
+    : `${outcome} Try the update again. ${fromTerminal}`;
+};
+
+/** Why, when the server says (`revert_reason`, servers after 26.10.25). Every
+ *  server that sends a reason also closes its connections itself on a restart,
+ *  so none of these names the AI apps. `other` has no line: it keeps the
+ *  version-only one above. */
+const REVERT_REASON_COPY: Readonly<
+  Record<Exclude<UpdateRevertReason, 'other'>, (current: string, target: string) => string>
+> = {
+  download_failed: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: the server `
+    + 'could not download it. Check that the server can reach the internet, then try the update again.',
+  verify_failed: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: the server `
+    + 'could not check who signed the download, so it did not install it. Try the update again later.',
+  drain_incomplete: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: the server `
+    + 'could not stop what it was running in time to switch versions. Try the update again when '
+    + 'no recipe is running.',
+  install_failed: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: installing it `
+    + 'failed. Run recued stop, then recued update apply, which says what went wrong, then start '
+    + 'the server again.',
+  database_in_use: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: another `
+    + "program had Recued's database open, such as an AI app's Recued connection (Claude Desktop "
+    + 'starts one). Quit that app and try the update again.',
+  interrupted: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: the server `
+    + 'stopped before the new version was in place. Try the update again.',
+  new_version_failed: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: ${target} `
+    + `did not start, so the server went back to ${current}. Its log, recued-server.log next to its `
+    + 'database, says why.',
+  not_started: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: it did not `
+    + 'start. Try the update again.',
+};
+
+/** The line for a code, or null for `other` and for a code this page does not
+ *  know (a newer server's): the version-only line stays true for both. */
+const revertReasonCopy = (reason: string, current: string, target: string): string | null =>
+  Object.prototype.hasOwnProperty.call(REVERT_REASON_COPY, reason)
+    ? REVERT_REASON_COPY[reason as keyof typeof REVERT_REASON_COPY](current, target)
+    : null;
 
 const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>> = {
   applying: 'Downloading and verifying the update — this takes a few minutes. You can leave this page.',
@@ -1363,6 +1439,13 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         render();
       });
       availableEl.appendChild(cancelBtn);
+      // The restart does not wait for work to finish (the drain stops it a few
+      // seconds in), so the owner hears it before confirming, not after.
+      availableEl.appendChild(make('p', {
+        text: 'Updating restarts the server: it stops anything still running after a few seconds, '
+          + 'and connected apps reconnect once it is back.',
+        attrs: { [UPDATES_APPLY_WARNING_ATTR]: '' },
+      }));
     }
     // The server refuses a major bump until forced; surface an explicit confirm.
     let forceBtn: HTMLElement | null = null;
@@ -2196,6 +2279,28 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     render();
   }
 
+  /** Ask the server why this run did not take effect, and say so when it can.
+   *  The version-only line is already showing and stays whenever the answer
+   *  adds nothing: no caller, a failed read, a server before `revert_reason`,
+   *  `other`, or a code this page does not know. Replaced only while it is
+   *  still the line on show, so a later action's message is never overwritten. */
+  async function explainRevert(operationId: string, current: string, target: string): Promise<void> {
+    if (opts.runOperationStatus === undefined) return;
+    const shown = state.updateOutcome;
+    let outcome: UpdateOperationStatusResponse;
+    try {
+      outcome = await opts.runOperationStatus(operationId);
+    } catch {
+      return;
+    }
+    if (disposed || state.updateOutcome !== shown) return;
+    if (outcome.status !== 'reverted' || outcome.revert_reason === undefined) return;
+    const explained = revertReasonCopy(outcome.revert_reason, current, target);
+    if (explained === null) return;
+    state.updateOutcome = explained;
+    render();
+  }
+
   async function doCheck(queueIfBusy = false): Promise<void> {
     if (disposed || readServerUpdateProgress() !== null) return;
     if (state.phase === 'checking') {
@@ -2238,12 +2343,16 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         && readServerUpdateProgress() === null
       ) {
         const target = state.applyResult?.to_version ?? applyingToVersion;
+        const operationId = state.applyResult?.operation_id;
         state.applyResult = null;
         state.updateOutcome = target === null
           ? `The server now runs ${res.current_version}.`
           : res.current_version === target
             ? `Updated to ${target}.`
-            : `The server is still on ${res.current_version}. The update to ${target} did not take effect.`;
+            : updateDidNotTakeEffectCopy(res.current_version, target);
+        if (target !== null && res.current_version !== target && operationId !== undefined) {
+          void explainRevert(operationId, res.current_version, target);
+        }
       }
       const retryMarker =
         opts.credentialRotationServerUpdateContinuity?.read() ?? null;

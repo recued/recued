@@ -9,6 +9,7 @@
  *  table implicitly via the `SELECT * FROM event_triggers` table sweep. */
 
 import type Database from 'better-sqlite3';
+import type { WarehouseEvent } from '@recued/warehouse-events';
 import { applyDatabaseMigrationStatements, DATABASE_MIGRATIONS } from '../database-schema.js';
 import type { EventTrigger, EventTriggerOrigin } from '@recued/contracts';
 import {
@@ -24,6 +25,25 @@ export const triggerPreapprovalMaterial = (row: EventTrigger): Record<string, un
 });
 
 const TABLE = 'event_triggers';
+const PARKED_TABLE = 'event_trigger_parked_events';
+
+/** An event a trigger was owed when the dispatcher stopped, kept for the next
+ *  start. `seq` is its place in line; a replayed event that is set aside again
+ *  goes back to the same place. */
+export interface ParkedTriggerEvent {
+  readonly seq: number;
+  readonly trigger_id: string;
+  readonly event: WarehouseEvent;
+  readonly parked_at: number;
+}
+
+export interface ParkTriggerEventInput {
+  readonly trigger_id: string;
+  readonly event: WarehouseEvent;
+  /** Set when the event came out of this table by a replay: it is put back
+   *  where it was, ahead of anything parked after it. */
+  readonly parked_seq?: number;
+}
 
 export interface EventTriggersStore {
   readonly realmDatabase?: Database.Database;
@@ -86,6 +106,17 @@ export interface EventTriggersStore {
   ownerEnabled(trigger_id: string): boolean;
   /** Count rows. Exposed for admin / test visibility. */
   count(): number;
+  /** D-315 — keep events the dispatcher stopped before starting, for the next
+   *  start to replay (`EventTriggerDispatcher.replayParked`). A mail fact's
+   *  event announces its fact once — read again, the fact never fires again —
+   *  so a restart must not drop the ones still queued. In the order given.
+   *  Optional for test doubles; without it they are dropped as they always
+   *  were. */
+  parkTriggerEvents?(entries: ReadonlyArray<ParkTriggerEventInput>, at: number): void;
+  /** Parked events after `after_seq`, oldest first. */
+  listParkedTriggerEvents?(after_seq: number, limit: number): ParkedTriggerEvent[];
+  /** Forget one parked event: it was handed back to its trigger. */
+  unparkTriggerEvent?(seq: number): void;
 }
 
 const parseJsonObject = (raw: string | null): Record<string, unknown> | undefined => {
@@ -171,6 +202,36 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
   // The immutable version-3 initializer also supports isolated store fixtures
   // and legacy/lazy construction. Managed boot applies it transactionally first.
   db.transaction(() => applyDatabaseMigrationStatements(db, DATABASE_MIGRATIONS[0]!.statements))();
+  // Store-local, like every table outside the version-3 baseline. AUTOINCREMENT
+  // so a seq is never reused: an event replayed out of here and set aside again
+  // goes back under its own seq, which a later event can then never have taken.
+  // Plain JSON: a mail fact's own rows are stored the same way (whole-file
+  // encryption at rest, D-212), and parking runs while the vault may be sealed.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${PARKED_TABLE} (
+      seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+      trigger_id TEXT NOT NULL,
+      event_json TEXT NOT NULL,
+      parked_at  INTEGER NOT NULL
+    );
+  `);
+  const parkNew = db.prepare<[string, string, number]>(
+    `INSERT INTO ${PARKED_TABLE} (trigger_id, event_json, parked_at) VALUES (?, ?, ?)`,
+  );
+  const parkAgain = db.prepare<[number, string, string, number]>(
+    `INSERT OR IGNORE INTO ${PARKED_TABLE} (seq, trigger_id, event_json, parked_at) VALUES (?, ?, ?, ?)`,
+  );
+  const listParked = db.prepare<[number, number]>(
+    `SELECT seq, trigger_id, event_json, parked_at FROM ${PARKED_TABLE} WHERE seq > ? ORDER BY seq ASC LIMIT ?`,
+  );
+  const unpark = db.prepare<[number]>(`DELETE FROM ${PARKED_TABLE} WHERE seq = ?`);
+  const parkAll = db.transaction((entries: ReadonlyArray<ParkTriggerEventInput>, at: number) => {
+    for (const entry of entries) {
+      const json = JSON.stringify(entry.event);
+      if (entry.parked_seq !== undefined) parkAgain.run(entry.parked_seq, entry.trigger_id, json, at);
+      else parkNew.run(entry.trigger_id, json, at);
+    }
+  });
 
   const insertStmt = db.prepare<[
     string, string, string, string, number, number, string | null, number | null,
@@ -312,6 +373,39 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
     count() {
       const row = countStmt.get();
       return row?.n ?? 0;
+    },
+
+    parkTriggerEvents(entries, at) {
+      if (entries.length > 0) parkAll(entries, at);
+    },
+
+    listParkedTriggerEvents(after_seq, limit) {
+      const out: ParkedTriggerEvent[] = [];
+      let cursor = after_seq;
+      while (out.length < limit) {
+        const rows = listParked.all(cursor, limit - out.length) as Array<{
+          seq: number; trigger_id: string; event_json: string; parked_at: number;
+        }>;
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          cursor = row.seq;
+          let event: WarehouseEvent;
+          try {
+            event = JSON.parse(row.event_json) as WarehouseEvent;
+          } catch {
+            // Unreadable, it can never be delivered: let it go rather than
+            // stop every event behind it on each start.
+            unpark.run(row.seq);
+            continue;
+          }
+          out.push({ seq: row.seq, trigger_id: row.trigger_id, event, parked_at: row.parked_at });
+        }
+      }
+      return out;
+    },
+
+    unparkTriggerEvent(seq) {
+      unpark.run(seq);
     },
   };
 };

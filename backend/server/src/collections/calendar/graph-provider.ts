@@ -83,6 +83,7 @@ import {
   type ProviderPollScheduler,
   type ProviderPollStop,
 } from '../draining-interval.js';
+import { CollectionStoppedError, throwIfStopped } from '../stop-signal.js';
 
 // ────────────────────────────────────────────────────────────────
 // Config
@@ -434,6 +435,11 @@ export const createGraphCalProvider = (
   let pendingQueueSize = 0;
   let accessToken = '';
   let pollStop: ProviderPollStop | null = null;
+  /** Aborted by `close()`, armed again by `connect()`: the first scan and the
+   *  poll `startSync` runs at once go by it, and each scheduled poll by its
+   *  loop's own signal. A scan or poll captures the signal when it begins, so
+   *  one begun before a close stays stopped across the next connect. */
+  let lifecycle = new AbortController();
   /** `onSyncOutcome` listeners: told of each poll's outcome. */
   const outcomeListeners = new Set<(outcome: CalendarSyncOutcome) => void>();
   const reportOutcome = (outcome: CalendarSyncOutcome): void => {
@@ -498,15 +504,20 @@ export const createGraphCalProvider = (
     Prefer: 'outlook.timezone="UTC"',
   });
 
-  const graphGet = async <T>(url: string, operation: string): Promise<T> => {
+  /** `signal`: a sync's stop, which aborts the request; none starts once it
+   *  fired. */
+  const graphGet = async <T>(url: string, operation: string, signal?: AbortSignal): Promise<T> => {
     const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph calendar');
+    throwIfStopped(signal);
     let token = await ensureToken(false);
-    let res = await fetcher(safeUrl, { method: 'GET', headers: graphHeaders(token) });
+    let res = await fetcher(safeUrl, { method: 'GET', headers: graphHeaders(token), ...(signal ? { signal } : {}) });
     if (res.status === 401 && !opts.managedFetcher) {
+      throwIfStopped(signal);
       token = await ensureToken(true);
       res = await fetcher(safeUrl, {
         method: 'GET',
         headers: graphHeaders(token),
+        ...(signal ? { signal } : {}),
       });
     }
     if (!res.ok) {
@@ -554,7 +565,7 @@ export const createGraphCalProvider = (
   // every sync (`CalendarProvider.accountEmail`). A calendar shared with the
   // account has another owner, so only the default one counts.
   let accountEmail = '';
-  const listCalendars = async (): Promise<GraphCalListEntry[]> => {
+  const listCalendars = async (signal?: AbortSignal): Promise<GraphCalListEntry[]> => {
     const out: GraphCalListEntry[] = [];
     let url: string | undefined = `${GRAPH_API_BASE}/me/calendars?$top=250`;
     const pagination = new ProviderPaginationGuard('graph calendar list', {
@@ -564,6 +575,7 @@ export const createGraphCalProvider = (
       const page: GraphListResponse<GraphCalListEntry> = await graphGet(
         pagination.claim(url),
         'calendars.list',
+        signal,
       );
       for (const entry of page.value ?? []) out.push(entry);
       url = readProviderStringContinuation(
@@ -576,8 +588,8 @@ export const createGraphCalProvider = (
     return out;
   };
 
-  const selectedCalendars = async (): Promise<GraphCalListEntry[]> => {
-    const all = await listCalendars();
+  const selectedCalendars = async (signal?: AbortSignal): Promise<GraphCalListEntry[]> => {
+    const all = await listCalendars(signal);
     const filter = opts.config.calendar_filter ?? [];
     if (filter.length === 0) return all;
     const allow = new Set(filter);
@@ -589,7 +601,7 @@ export const createGraphCalProvider = (
   // occurrences, so a yearly event can become an occasion (D-325 P16). A failed
   // read leaves the occurrence as listed.
   let seriesRules = new Map<string, Promise<string | undefined>>();
-  const seriesRule = (calendarId: string, event: GraphCalEvent): Promise<string | undefined> => {
+  const seriesRule = (calendarId: string, event: GraphCalEvent, signal?: AbortSignal): Promise<string | undefined> => {
     const master = event.seriesMasterId;
     if (!master || event.recurrence?.pattern?.type) return Promise.resolve(undefined);
     const key = JSON.stringify([calendarId, master]);
@@ -597,19 +609,24 @@ export const createGraphCalProvider = (
     if (!rule) {
       const url = new URL(`${GRAPH_API_BASE}/me/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(master)}`);
       url.searchParams.set('$select', 'recurrence');
-      rule = graphGet<Pick<GraphCalEvent, 'recurrence'>>(url.toString(), 'events.get')
+      rule = graphGet<Pick<GraphCalEvent, 'recurrence'>>(url.toString(), 'events.get', signal)
         .then(found => graphRecurrenceRule(found.recurrence), () => undefined);
       seriesRules.set(key, rule);
     }
     return rule;
   };
-  const payloadOf = async (event: GraphCalEvent, calendarId: string, calendarName?: string): Promise<ProviderEventPayload> =>
-    buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event));
+  const payloadOf = async (
+    event: GraphCalEvent, calendarId: string, calendarName?: string, signal?: AbortSignal,
+  ): Promise<ProviderEventPayload> =>
+    buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event, signal));
 
   // ── initial scan ────────────────────────────────────────────
+  /** `signal` stops the scan between pages and events by THROWING: a normal
+   *  return tells the collection the backfill is complete. */
   const runInitialScan = async (
     scanOpts: InitialScanOptions,
     calendars: GraphCalListEntry[],
+    signal: AbortSignal,
   ): Promise<void> => {
     seriesRules = new Map();
     const now = nowOf();
@@ -637,11 +654,15 @@ export const createGraphCalProvider = (
         const page: GraphListResponse<GraphCalEvent> = await graphGet(
           pagination.claim(url),
           'calendarView',
+          signal,
         );
         for (const event of page.value ?? []) {
           if (event['@removed'] || event.isCancelled) continue;
+          // Outside the per-event catch, which would count a stop as one
+          // failed event and read on.
+          throwIfStopped(signal);
           try {
-            const payload = await payloadOf(event, cal.id, cal.name);
+            const payload = await payloadOf(event, cal.id, cal.name, signal);
             const cont = await scanOpts.onEvent(payload);
             lastSuccessfulSyncAt = nowOf();
             if (!cont) {
@@ -649,6 +670,7 @@ export const createGraphCalProvider = (
               break;
             }
           } catch (err) {
+            if (signal.aborted) throw new CollectionStoppedError();
             markError(`graph canonicalize failed id=${event.id}`, err);
             failures.push(err);
           }
@@ -669,13 +691,14 @@ export const createGraphCalProvider = (
     calendar: GraphCalListEntry,
     event: GraphCalEvent,
     cb: CalendarSyncCallback,
+    signal: AbortSignal,
   ): Promise<boolean> => {
     pendingQueueSize++;
     try {
       if (event['@removed'] || event.isCancelled) {
         await cb({ kind: 'deleted', source_id: event.id });
       } else {
-        const payload = await payloadOf(event, calendar.id, calendar.name);
+        const payload = await payloadOf(event, calendar.id, calendar.name, signal);
         await cb({
           kind: 'updated',
           source_id: event.id,
@@ -685,17 +708,22 @@ export const createGraphCalProvider = (
       lastSuccessfulSyncAt = nowOf();
       return true;
     } catch (err) {
-      markError(`graph dispatch failed id=${event.id}`, err);
+      // Not acknowledged, so the delta link stays; a stop is no failure.
+      if (!signal.aborted) markError(`graph dispatch failed id=${event.id}`, err);
       return false;
     } finally {
       pendingQueueSize = Math.max(0, pendingQueueSize - 1);
     }
   };
 
+  /** Walks the window's whole change feed: `signal` stops it between pages and
+   *  events by throwing, so a stopped walk reconciles nothing (its listing is
+   *  partial) and stores no link — the next start walks again. */
   const seedDeltaLink = async (
     calendar: GraphCalListEntry,
     startDateTime: string,
     endDateTime: string,
+    signal: AbortSignal,
     recoveryCallback?: CalendarSyncCallback,
   ): Promise<string | null> => {
     const base = new URL(
@@ -715,11 +743,13 @@ export const createGraphCalProvider = (
       const page: GraphListResponse<GraphCalEvent> = await graphGet(
         pagination.claim(url),
         'calendarView.delta (seed)',
+        signal,
       );
       if (recoveryCallback) {
         for (const event of page.value ?? []) {
+          throwIfStopped(signal);
           if (!event['@removed'] && !event.isCancelled) listed.push(event.id);
-          if (!(await emitDeltaEvent(calendar, event, recoveryCallback))) {
+          if (!(await emitDeltaEvent(calendar, event, recoveryCallback, signal))) {
             deliveryFailed = true;
           }
         }
@@ -747,6 +777,7 @@ export const createGraphCalProvider = (
       );
     }
     if (terminalDeltaLink === undefined) return null;
+    throwIfStopped(signal);
     // A new link's first walk is the window's current state and reports no
     // deletion, and on a 410 it replaces a link that would have: an event the
     // walk did not hold is gone, so its row is removed (`CalendarSnapshot`).
@@ -762,6 +793,7 @@ export const createGraphCalProvider = (
         },
       });
     }
+    throwIfStopped(signal);
     await opts.accountStore.set(deltaLinkKey(calendar.id), terminalDeltaLink);
     await opts.accountStore.set(deltaWindowKey(calendar.id), JSON.stringify({
       seeded_at: nowOf(),
@@ -771,12 +803,14 @@ export const createGraphCalProvider = (
     return terminalDeltaLink;
   };
 
-  const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
+  /** `signal` stops the poll between pages and events by throwing; a stopped
+   *  poll stores no delta link, and the next one replays the range. */
+  const runSyncTick = async (cb: CalendarSyncCallback, signal: AbortSignal): Promise<void> => {
     // Clean until a failure is swallowed: only a tick that read every calendar
     // and delivered every change says the calendar is synced.
     let clean = true;
     seriesRules = new Map();
-    const calendars = await selectedCalendars();
+    const calendars = await selectedCalendars(signal);
     const now = nowOf();
     const startDateTime = new Date(
       now - opts.config.expansion_past_days * 86_400_000,
@@ -799,7 +833,7 @@ export const createGraphCalProvider = (
         } else {
           // No cached link — seed from the current window without
           // emitting (same as mail graph's seed behaviour).
-          const seeded = await seedDeltaLink(cal, startDateTime, endDateTime);
+          const seeded = await seedDeltaLink(cal, startDateTime, endDateTime, signal);
           if (!seeded) { clean = false; break; }
           link = seeded;
           break;
@@ -814,6 +848,7 @@ export const createGraphCalProvider = (
             page = await graphGet<GraphListResponse<GraphCalEvent>>(
               pagination.claim(url),
               'calendarView.delta',
+              signal,
             );
           } catch (err) {
             if (
@@ -834,6 +869,7 @@ export const createGraphCalProvider = (
                   cal,
                   startDateTime,
                   endDateTime,
+                  signal,
                   cb,
                 );
                 if (seeded === null) {
@@ -841,6 +877,8 @@ export const createGraphCalProvider = (
                 }
                 link = seeded;
               } catch (recoveryErr) {
+                // A stop leaves the rejected link for the next poll to recover.
+                if (signal.aborted) throw recoveryErr;
                 markError(`graph delta recovery failed calendar=${cal.id}`, recoveryErr);
                 clean = false;
                 // Not acknowledged: no window re-seed walks it again this tick.
@@ -852,7 +890,8 @@ export const createGraphCalProvider = (
             throw err;
           }
           for (const event of page.value ?? []) {
-            if (!(await emitDeltaEvent(cal, event, cb))) { deliveryFailed = true; clean = false; }
+            throwIfStopped(signal);
+            if (!(await emitDeltaEvent(cal, event, cb, signal))) { deliveryFailed = true; clean = false; }
           }
           const rawDeltaLink = readProviderStringContinuation(
             page['@odata.deltaLink'],
@@ -877,6 +916,7 @@ export const createGraphCalProvider = (
         // every event in the drained range has been acknowledged by the
         // collection; otherwise the next tick replays the range.
         if (!deliveryFailed && terminalDeltaLink !== undefined) {
+          throwIfStopped(signal);
           await opts.accountStore.set(deltaLinkKey(cal.id), terminalDeltaLink);
           link = terminalDeltaLink;
         }
@@ -887,10 +927,11 @@ export const createGraphCalProvider = (
         // A failed seed keeps the old link, and the next tick tries again.
         if (!deliveryFailed && await deltaWindowDue(cal.id, now)) {
           try {
-            const seeded = await seedDeltaLink(cal, startDateTime, endDateTime, cb);
+            const seeded = await seedDeltaLink(cal, startDateTime, endDateTime, signal, cb);
             if (seeded === null) throw new Error('re-seeded delta sync returned no watermark');
             link = seeded;
           } catch (err) {
+            if (signal.aborted) throw err;
             markError(`graph delta window re-seed failed calendar=${cal.id}`, err);
             clean = false;
           }
@@ -904,11 +945,12 @@ export const createGraphCalProvider = (
 
   /** A poll tick that reports a thrown failure too: `auth` for a rejected
    *  credential, else `transient`. Rethrows, so it is logged as before. */
-  const runReportedTick = async (cb: CalendarSyncCallback): Promise<void> => {
+  const runReportedTick = async (cb: CalendarSyncCallback, signal: AbortSignal): Promise<void> => {
     try {
-      await runSyncTick(cb);
+      await runSyncTick(cb, signal);
     } catch (err) {
-      reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
+      // A stopped poll did not fail: there is no outcome to report.
+      if (!signal.aborted) reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
       throw err;
     }
   };
@@ -1046,6 +1088,9 @@ export const createGraphCalProvider = (
     get accountEmail() { return accountEmail; },
 
     async connect() {
+      // `sync.stop()` closes the provider and a later `sync.start()` reuses it
+      // (the vault lock edge): a new connection gets a new signal.
+      if (lifecycle.signal.aborted) lifecycle = new AbortController();
       try {
         await ensureToken(false);
       } catch (err) {
@@ -1061,7 +1106,8 @@ export const createGraphCalProvider = (
     },
 
     async initialScan(scanOpts) {
-      const calendars = await selectedCalendars();
+      const signal = lifecycle.signal;
+      const calendars = await selectedCalendars(signal);
       // Capture the delta boundary before walking the backfill. A message/event
       // created or deleted during a long initial list must remain visible to the
       // first live tick. Preserve that first boundary across failed retries.
@@ -1074,7 +1120,7 @@ export const createGraphCalProvider = (
       ).toISOString();
       for (const cal of calendars) {
         if ((await opts.accountStore.get(deltaLinkKey(cal.id))) === null) {
-          const seeded = await seedDeltaLink(cal, startDateTime, endDateTime);
+          const seeded = await seedDeltaLink(cal, startDateTime, endDateTime, signal);
           if (seeded === null) {
             throw new Error(
               `Graph calendar initial scan could not establish a delta watermark for '${cal.id}'`,
@@ -1082,16 +1128,20 @@ export const createGraphCalProvider = (
           }
         }
       }
-      await runInitialScan(scanOpts, calendars);
+      await runInitialScan(scanOpts, calendars, signal);
     },
 
     async startSync(cb) {
       const scheduler = opts.scheduler ?? defaultScheduler;
       const intervalMs = Math.max(1, opts.config.poll_seconds) * 1000;
+      const session = lifecycle.signal;
       // Fire an immediate tick so downstream consumers don't wait on
       // the first interval.
-      await runReportedTick(cb);
-      pollStop = scheduler(() => runReportedTick(cb), intervalMs);
+      await runReportedTick(cb, session);
+      // Closed during that first poll: start no loop that nothing would stop.
+      if (session.aborted) throw new CollectionStoppedError();
+      // A scheduled poll gets its loop's signal; a test scheduler calls it bare.
+      pollStop = scheduler((signal) => runReportedTick(cb, signal ?? session), intervalMs);
       return async () => {
         const stop = pollStop;
         pollStop = null;
@@ -1100,6 +1150,9 @@ export const createGraphCalProvider = (
     },
 
     async close() {
+      // Close admission and abort the scan, delta walk or poll in flight; the
+      // poll loop's stop then waits for its pass at most `STOP_GRACE_MS`.
+      lifecycle.abort(new CollectionStoppedError('the graph calendar provider was closed'));
       const stop = pollStop;
       pollStop = null;
       await stop?.();

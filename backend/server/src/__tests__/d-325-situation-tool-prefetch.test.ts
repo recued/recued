@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OWNER_CONTRACT_ID, parseSituationQueryInput, ownerOnlyAdjustedAuthorDefault, SITUATION_QUERY_SCHEMA, SITUATION_TOOL_MAX_ITEMS, TIER1_TOOL_DESCRIPTORS,
-  type ExecutionSource, type SituationFact } from '@recued/contracts';
+  type ExecutionSource, type SituationFact, type SituationResult } from '@recued/contracts';
 import { piiEgress } from '@recued/gateway';
 import type { EntityPromptPart, TurnContext } from '@recued/middleware';
 import { createContractStore, type ContractStore } from '../storage/contract-store.js';
@@ -26,6 +26,7 @@ import { createContactStore } from '../storage/contact-store.js';
 import { createSituationNamedPeople, createSituationPeopleFor } from '../situations/named-people.js';
 import { createContactKnownValueIndexBuilder } from '../chat-recall-index.js';
 import { writeFileSync } from 'node:fs';
+import { groundingCorpusFromPacket, ungroundedArgumentsInCall } from '../tool-argument-grounding.js';
 
 const at = Date.parse('2026-10-17T12:00:00Z');
 const owner: ExecutionSource = { channel: 'chat', actor: 'user_self', user_id: 'owner', chat_session_id: 's' };
@@ -73,6 +74,29 @@ const prefetch = async (access: SituationAccess, text: string) => {
 };
 
 describe('D-325 one situation tool and independent bounded prefetch', () => {
+  it('keeps native rule requests private, groundable and reversible through lookup and tool egress', async () => {
+    const root = { kind: 'rule' as const, asset_id: 'private-asset-identifier', rule_id: 'private-rule-identifier' };
+    const { access } = drive([fact(root.asset_id, { title: 'Inspect pump', ref: { collection: 'asset', id: root.asset_id, field: `rules.${root.rule_id}` }, context: { root } })]);
+    const resolver = createMetaFieldPrivacyResolver({ getEntitySchemas: () => [], getEntityPrivacyTags: () => CANONICAL_PII_ENTITY_PRIVACY_TAGS });
+    const plan = createPiiEgressPlanForSession({ ledgerStore: piiEgress.createSessionLedgerStore(), resolver }, 'graph-reference', 'chat');
+    const parts = await prefetch(access, 'Inspect pump');
+    const block = renderEntityPartsForEgress(parts, plan).join('\n');
+    const row = JSON.parse(block.split('\n').find(line => line.startsWith('{'))!) as { context: { root: typeof root } };
+    expect(row.context.root.asset_id).not.toBe(root.asset_id); expect(row.context.root.rule_id).not.toBe(root.rule_id);
+    const args = { context: row.context };
+    expect(ungroundedArgumentsInCall(args, groundingCorpusFromPacket(JSON.stringify({ prefetch: block })))).toEqual([]);
+    expect(ungroundedArgumentsInCall({ context: { root: { ...row.context.root, rule_id: 'fabricated-rule-id' } } }, block)).not.toEqual([]);
+    const native = await access.read(input, owner);
+    let toolRoot: typeof root | undefined;
+    const answer = await wrapExecuteAiCallForPii(async (_manifest, request) => {
+      const sent = JSON.parse(String(request['llm.prompt'])) as { prior_tool_calls: Array<{ result: SituationResult }> };
+      toolRoot = sent.prior_tool_calls[0]!.result.clusters[0]!.items[0]!.context!.root as typeof root;
+      expect(toolRoot).toEqual(row.context.root);
+      return { body: { response: '', events: [], tool_calls: [{ tool: 'situation.query', args: { context: { root: toolRoot } } }] } };
+    }, plan)({} as never, { 'llm.prompt': JSON.stringify({ prior_tool_calls: [{ tool_name: 'situation.query', result: situationModelProjection(native) }] }) });
+    expect(JSON.stringify(answer)).toContain(root.asset_id); expect(JSON.stringify(answer)).toContain(root.rule_id);
+    expect(native.clusters[0]!.items[0]!.context).toEqual({ root });
+  });
   it('qualifies bounded matching on versioned golden and held-out prompts, including known irrelevant name hits', async () => {
     const rows = [fact('passport-ana', { title: 'Passport · Ana' }), fact('passport-child', { title: 'Passport · Child' }),
       fact('boiler', { title: 'Boiler service' }), fact('insurance', { title: 'Travel insurance', place: { key: 'city:lisbon', name: 'Lisbon' } })];

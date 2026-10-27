@@ -11,6 +11,7 @@ import { createOccurrenceReminderStore } from '../storage/occurrence-reminder-st
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { createSituationDismissalStore } from '../storage/situation-dismissal-store.js';
+import { releasedAtStop, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { SituationAccess } from './access.js';
 import type { createSituationQuery, SituationReadContext } from './query.js';
 import { wholeSituationSnapshotAllowed } from './event-visibility.js';
@@ -24,10 +25,10 @@ const uiContext: SituationReadContext = { owner: true, grants: { isVerbOpGranted
  * not the situation: editing an attribute or a trip must not show a group again
  * as changed, and adding them to items must not make every saved group a new
  * revision. */
-const CONTEXT_FIELDS: ReadonlySet<string> = new Set(['details', 'trip']);
+const CONTEXT_FIELDS: ReadonlySet<string> = new Set(['details', 'trip', 'context']);
 const identity = (value: unknown): string => JSON.stringify(value, (key, field) => key === 'updated_at' || key === '__entity' || CONTEXT_FIELDS.has(key) ? undefined : field);
 const withoutContext = (cluster: SituationCluster): SituationCluster =>
-  ({ ...cluster, items: cluster.items.map(({ details: _details, trip: _trip, ...item }) => item) });
+  ({ ...cluster, items: cluster.items.map(({ details: _details, trip: _trip, context: _context, ...item }) => item) });
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 /** What a summary describes: the items and their values, not the verdicts a query
  * window gives them. Today and the brief read different windows, and a verdict
@@ -342,7 +343,8 @@ export const createScheduledSituations = (deps: {
           const currentContext = access.context(ownerSource, null);
           if (!wholeSituationSnapshotAllowed({ id: cluster.id, state: 'new', cluster, urgency: 'routine' }, currentContext.grants, currentContext)) continue;
           try { summary = await deps.summarize(cluster, () => {
-            if (!deps.isVaultUnlocked()) return false;
+            // A stop starts no model call: the brief goes without the summary.
+            if (stopped || !deps.isVaultUnlocked()) return false;
             const latest = access!.context(ownerSource, null);
             return wholeSituationSnapshotAllowed({ id: cluster.id, state: 'new', cluster, urgency: 'routine' }, latest.grants, latest)
               && (deps.memoryAllowed?.(cluster) ?? true);
@@ -432,7 +434,29 @@ export const createScheduledSituations = (deps: {
     const pending = tickOnce(manual); active = pending;
     void pending.finally(() => { if (active === pending) active = undefined; }).catch(() => {}); return pending;
   };
-  return { bindAccess(value: SituationAccess) { access = value; }, today, status, settings, setSettings, prune, tick: () => run(),
-    sendNow: () => run(true), async stop() { stopped = true; await active; } };
+  /** ⛔ A STOP DOES NOT WAIT FOR THE SEND. A run reads the window twice, may
+   *  ask a model for each group's summary and then sends through every channel
+   *  (30 s a messenger, 30 to 120 s an email), and a drain step has 5 s while
+   *  the process exits right after the drain anyway. Nothing is lost by it:
+   *  `stopped` sends nothing more and starts no model call, and a run is marked
+   *  `sending` with its attempt counted BEFORE its send, so a send cut short is
+   *  found as `sending` by the first tick after the restart and repeated once,
+   *  saying so ("Repeating once because the previous delivery could not be
+   *  confirmed."), or shown as uncertain in Settings after a second try. A run
+   *  stopped before its send marked nothing, and is built again then. */
+  const stops = new AbortController();
+  /** The tick, settled no later than `STOP_GRACE_MS` after `stop`: the
+   *  interval that runs it waits for what it returns, inside the same drain
+   *  step as `stop`. The run itself goes on. */
+  const tick = (): Promise<void> => {
+    // Stopped: no new run, and the one in progress is `stop`'s to wait for.
+    if (stopped) return Promise.resolve();
+    return releasedAtStop(run(), stops.signal, undefined);
+  };
+  return { bindAccess(value: SituationAccess) { access = value; }, today, status, settings, setSettings, prune, tick,
+    sendNow: () => run(true), async stop() {
+      stopped = true; stops.abort();
+      if (active) await settleWithin(active, STOP_GRACE_MS);
+    } };
 };
 export type ScheduledSituations = ReturnType<typeof createScheduledSituations>;

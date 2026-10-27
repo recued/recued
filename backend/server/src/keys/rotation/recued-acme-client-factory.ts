@@ -82,6 +82,32 @@ import type { AcmeCertIssuer } from './acme-domain-renewer.js';
 export const ACME_ISSUANCE_TIMEOUT_MS = 240_000;
 const ACME_RESPONSE_MAX_BYTES = 1024 * 1024;
 
+/** `RecuedAcmeClient` passes no signal of its own, so the caller's rides on
+ *  every request it makes — that is how a stopping server cancels an order
+ *  without waiting out `ACME_ISSUANCE_TIMEOUT_MS`. */
+const fetchWithSignal = (fetchImpl: typeof fetch, signal: AbortSignal): typeof fetch =>
+  ((input, init) => fetchImpl(input, {
+    ...init,
+    signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal,
+  })) as typeof fetch;
+
+/** Settle with `work`, or reject with the abort reason as soon as `signal`
+ *  aborts. For a step that takes no signal itself (the Pro-auth resolver can
+ *  mint an entitlement over the network); `work` keeps its own deadline and is
+ *  merely no longer waited for. */
+const untilAborted = <T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> => {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+};
+
 /** Snapshot of the Pro subscription state — the bearer token the
  *  cloud helper validates on each `/v1/acme/issue-cert` call. The
  *  future Pro auth slice populates this through the resolver setter
@@ -175,7 +201,9 @@ export const createRecuedAcmeClientFromRefs = (
   });
   return {
     async issueCert(args) {
-      const auth = await options.proAuth();
+      const { signal } = args;
+      signal?.throwIfAborted();
+      const auth = await untilAborted(Promise.resolve(options.proAuth()), signal);
       if (auth === null) {
         // Synthetic HTTP 401 — the renewer's `mapAcmeFailure` regex
         // matches `\bHTTP 401\b` and maps to `subscription_required`.
@@ -200,10 +228,10 @@ export const createRecuedAcmeClientFromRefs = (
         pro_subscription_token: auth.pro_subscription_token,
         publisher_id,
         sign: options.sign,
-        fetch: boundedFetch,
+        fetch: signal ? fetchWithSignal(boundedFetch, signal) : boundedFetch,
         ...(options.now ? { now: options.now } : {}),
       });
-      return client.issueCert(args);
+      return client.issueCert({ handle: args.handle, domain: args.domain, csr_pem: args.csr_pem });
     },
   };
 };

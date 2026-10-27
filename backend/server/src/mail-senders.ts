@@ -57,6 +57,7 @@ export interface SendCapableMailbox {
 
 /** The labels the compose dialog shows for a mailbox's provider. */
 const PROVIDER_LABELS: Readonly<Record<MailProviderKind, string>> = {
+  smtp: 'SMTP only',
   gmail: 'Gmail',
   graph: 'Outlook',
   imap: 'IMAP',

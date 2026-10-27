@@ -972,3 +972,93 @@ describe('PathListenerSet — applyResolution (exposure-flip robustness)', () =>
     for (const s of serverSockets) s.destroy();
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// stop() — a connection that never ends must not hold the stop open
+//
+// ⛔ An AI app connected over MCP keeps an event stream open: a GET whose
+// response never ends. `server.close()` waits for every open connection, so a
+// graceful stop() waited on that stream until the restart drain's close_ws
+// step ran out of time, and an update refuses to swap when a drain step did
+// not finish. On 2026-10-26 a Cline session's stream did that to two updates
+// in a row on the owner's server. stop() drops whatever is still open.
+// ────────────────────────────────────────────────────────────────
+
+/** Raw GET that resolves once the response headers arrive and keeps the
+ *  socket open: the shape of an MCP client's event stream. */
+const openEventStream = (port: number, path: string): Promise<import('node:net').Socket> =>
+  new Promise((resolve, reject) => {
+    const { Socket } = require('node:net') as typeof import('node:net');
+    const client = new Socket();
+    client.connect(port, '127.0.0.1', () => {
+      client.write(
+        `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAccept: text/event-stream\r\n\r\n`,
+      );
+    });
+    client.on('data', (chunk) => {
+      if (chunk.toString('utf8').startsWith('HTTP/1.1 200')) resolve(client);
+    });
+    client.on('error', reject);
+    setTimeout(() => reject(new Error('openEventStream timeout')), 2000).unref();
+  });
+
+const closedWithin = async (socket: import('node:net').Socket, ms: number): Promise<boolean> => {
+  const closed = new Promise<void>((r) => {
+    if (socket.destroyed) r();
+    else socket.once('close', () => r());
+  });
+  return (await withTimeout(closed, ms)) !== 'TIMED_OUT';
+};
+
+describe('PathListenerSet — stop() with connections still open', () => {
+  it('stops while an event stream is still open, and drops it', async () => {
+    const handlers = buildAllHandlers();
+    handlers.mcp = async (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(': stream open\n\n');
+      // Deliberately never end the response.
+    };
+    activeSet = createPathListenerSet({
+      resolution: allLan(),
+      handlers,
+      cert_chain: createCertChainHolder(null),
+      lan_port: 0,
+      lan_bind_address: '127.0.0.1',
+    });
+    const initial = await activeSet.start();
+    const port = initial.find((s) => s.listener === 'lan')!.port;
+    const stream = await openEventStream(port, '/mcp');
+    try {
+      expect(await withTimeout(activeSet.stop(), 2000)).not.toBe('TIMED_OUT');
+      expect(activeSet.status().every((s) => !s.listening)).toBe(true);
+      expect(await closedWithin(stream, 2000)).toBe(true);
+      activeSet = null;
+    } finally {
+      // Lets afterEach's stop() finish when an assertion above fails.
+      stream.destroy();
+    }
+  });
+
+  it('stops while a WebSocket is still held open, and drops it', async () => {
+    const { handler, serverSockets } = buildHoldingUpgrade();
+    activeSet = createPathListenerSet({
+      resolution: allLan(),
+      handlers: buildAllHandlers(),
+      upgradeHandlers: { ws: handler },
+      cert_chain: createCertChainHolder(null),
+      lan_port: 0,
+      lan_bind_address: '127.0.0.1',
+    });
+    const initial = await activeSet.start();
+    const port = initial.find((s) => s.listener === 'lan')!.port;
+    const heldClient = await openHeldWs(port);
+    try {
+      expect(await withTimeout(activeSet.stop(), 2000)).not.toBe('TIMED_OUT');
+      expect(await closedWithin(heldClient, 2000)).toBe(true);
+      activeSet = null;
+    } finally {
+      heldClient.destroy();
+      for (const s of serverSockets) s.destroy();
+    }
+  });
+});

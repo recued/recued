@@ -303,6 +303,7 @@ const performAutoRevert = (
       release_identity: staged.release_identity,
       migration: staged.migration ?? false,
       detail: `auto-revert: ${reason}${restoreSnapshot ? ' (snapshot restored)' : ''}`,
+      revert_reason: 'new_version_failed',
     });
     ports.bootFailureCounter.reset();
     try {
@@ -475,6 +476,7 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
           migration: staged.migration ?? false,
           recovery_source: 'outer-supervisor',
           detail: `${SUPERVISOR_REVERT_DETAIL_PREFIX}the previous binary was already live; repaired its missing recovery receipt`,
+          revert_reason: 'new_version_failed',
         });
       }
       try { ports.dropRevertJournal?.(); } catch { /* best-effort cleanup */ }

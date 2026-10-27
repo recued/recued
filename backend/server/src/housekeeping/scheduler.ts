@@ -30,6 +30,7 @@ import {
   type TokenUsageReport,
 } from '@recued/contracts';
 
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { HousekeepingConfigStore } from './config-store.js';
 import type { EngineBusySignal } from './engine-busy-signal.js';
 import type { HousekeepingContext, HousekeepingTaskInstance } from './registry.js';
@@ -45,9 +46,21 @@ import { isAiPaused, type TrustStore } from './trust-store.js';
 export interface HousekeepingScheduler {
   /** Arm the probe loop. No-op when current preset is `'off'`. */
   start(): void;
-  /** Clear the probe loop + await any in-flight cycle. Resolves
-   *  once the DB is safe to close. */
+  /** Clear the probe loop and abort the running cycle: the `AbortSignal`
+   *  every task step is handed fires, the cycle starts no further task, and a
+   *  Run-now cycle queued before the stop starts none at all (one asked for
+   *  after it runs as usual). Waits for the step in flight at most
+   *  `STOP_GRACE_MS`.
+   *
+   *  ⛔ IT USED TO WAIT FOR EVERY ADMITTED CYCLE, whose budget is only checked
+   *  between records and whose MCP drift probe spends up to 10 s per
+   *  connection — so a restart's 5 s `pause_scheduler` step ran out, and the
+   *  aborted step made an update refuse to swap versions. */
   stop(): Promise<void>;
+  /** Resolves once every cycle admitted so far has ended — the step that
+   *  ignores the stop's signal included, however long it takes: what a pause
+   *  or a maintenance window waits for after `stop()`. */
+  settled?(): Promise<void>;
   /** Force one synchronous cycle. Honours config budget but
    *  bypasses the idle gate — the Settings UI's *Run now* button
    *  + tests use this entry point. Defaults to one task only when
@@ -323,6 +336,12 @@ export const createHousekeepingScheduler = (
   let timerToken: unknown = null;
   let cycleTail: Promise<void> = Promise.resolve();
   let queuedCycles = 0;
+  /** Each cycle keeps the signal current when it was asked for. `stop()`
+   *  aborts it and puts a fresh one in its place, so a stop ends every cycle
+   *  admitted before it and none asked for after — the owner's Run-now still
+   *  works after a pause or a maintenance window, which never restart the
+   *  idle loop (D-123 P7). */
+  let stopController = new AbortController();
   // R13 T1-Q1 — seeded from the persisted clock so a restart honours
   // cycle_interval_minutes instead of reading as "never cycled" and
   // firing on the first idle probe.
@@ -331,6 +350,7 @@ export const createHousekeepingScheduler = (
   const runTaskStep = async (
     task: HousekeepingTaskInstance,
     budget_ms: number,
+    signal: AbortSignal,
   ): Promise<HousekeepingPerTaskResult> => {
     const id = task.meta.id;
     const start = opts.ctx.now();
@@ -352,7 +372,7 @@ export const createHousekeepingScheduler = (
     const takeTokens = (): TokenUsageReport | undefined => meter?.take(id);
 
     try {
-      const result = await task.step(opts.ctx, cursor, budget_ms);
+      const result = await task.step(opts.ctx, cursor, budget_ms, signal);
       const finish = opts.ctx.now();
       const duration_ms = finish - start;
       const status = result.status;
@@ -380,6 +400,21 @@ export const createHousekeepingScheduler = (
       const finish = opts.ctx.now();
       const duration_ms = finish - start;
       const message = e instanceof Error ? e.message : String(e);
+
+      // A step that threw because the server is stopping did not fail: the
+      // stop cut its budget short. Its persisted cursor is left exactly as it
+      // was, so the next cycle (in the next process) resumes from there, and
+      // no error counts toward disabling the task.
+      if (signal.aborted) {
+        const tokens = takeTokens();
+        return {
+          task_id: id,
+          status: 'yield',
+          duration_ms,
+          yield_reason: 'budget_exhausted',
+          ...(tokens !== undefined ? { tokens } : {}),
+        };
+      }
 
       // ⛔ AN UNSATISFIABLE POOL IS A YIELD, NOT A FAILURE — and this is the
       // chokepoint where that has to be decided, because it is where
@@ -442,9 +477,23 @@ export const createHousekeepingScheduler = (
 
   const runCycleInner = async (
     budget_ms: number,
+    signal: AbortSignal,
     only_task_id?: string,
   ): Promise<HousekeepingCycleResult> => {
     const config = opts.config.read();
+    // Stopped before it began (a Run-now queued behind the cycle a stop cut
+    // short): it steps nothing, and records no cycle that did not happen.
+    if (signal.aborted) {
+      return {
+        preset: config.preset,
+        duration_ms: 0,
+        tasks_stepped: 0,
+        tasks_complete: 0,
+        tasks_yielded: 0,
+        tasks_errored: 0,
+        per_task: [],
+      };
+    }
     const cycle_start = opts.ctx.now();
     if (opts.onCycleStart) {
       try { opts.onCycleStart(); } catch { /* best-effort */ }
@@ -489,6 +538,8 @@ export const createHousekeepingScheduler = (
 
     const per_task: HousekeepingPerTaskResult[] = [];
     for (const task of tasks) {
+      // A stop that landed while an earlier task ran ends the cycle here.
+      if (signal.aborted) break;
       const elapsed = opts.ctx.now() - cycle_start;
       const remaining = budget_ms - elapsed;
       if (remaining < HOUSEKEEPING_MIN_TASK_BUDGET_MS) break;
@@ -510,7 +561,7 @@ export const createHousekeepingScheduler = (
       // D-250 § D — the token window now opens INSIDE `runTaskStep`, so every
       // exit path (including the error and pool-unsatisfiable ones) records what
       // it spent. The result already carries `tokens` when there was any.
-      const result = await runTaskStep(task, remaining);
+      const result = await runTaskStep(task, remaining, signal);
       per_task.push(result);
     }
 
@@ -566,7 +617,10 @@ export const createHousekeepingScheduler = (
     onlyTaskId?: string,
   ): Promise<HousekeepingCycleResult> => {
     queuedCycles += 1;
-    const result = cycleTail.then(() => runCycleInner(budgetMs, onlyTaskId));
+    // The signal current when the cycle was asked for: a stop before it
+    // starts means it never does, whatever starts after.
+    const signal = stopController.signal;
+    const result = cycleTail.then(() => runCycleInner(budgetMs, signal, onlyTaskId));
     const tracked = result.finally(() => { queuedCycles -= 1; });
     // Keep the queue live after a failed cycle while preserving that rejection
     // for the caller that requested the individual pass.
@@ -628,8 +682,16 @@ export const createHousekeepingScheduler = (
         clearTimer(timerToken);
         timerToken = null;
       }
-      const admittedCycles = cycleTail;
-      await admittedCycles;
+      const admitted = stopController;
+      stopController = new AbortController();
+      admitted.abort();
+      // The step in flight has the grace to notice the signal and write its
+      // cursor; one that ignores it (an LLM call, a network probe) is not
+      // waited for — the process is about to lose it anyway.
+      await settleWithin(cycleTail, STOP_GRACE_MS);
+    },
+    async settled() {
+      await cycleTail;
     },
     async runOnce(callerOpts) {
       const config = opts.config.read();

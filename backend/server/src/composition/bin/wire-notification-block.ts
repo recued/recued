@@ -31,7 +31,7 @@ import {
 import { createQuietHoursStore } from '../../storage/quiet-hours-store.js';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
 import { authorizeReminderOrigin, resolveOwnerReminderDestinations } from '../../situations/reminder-destinations.js';
-import { createOwnerNotificationConnection } from './owner-email-connection.js';
+import { createOwnerNotificationConnection, emailConnectionHasMailbox } from './owner-email-connection.js';
 import { createHouseholdDeliveryStore } from '../../storage/household-delivery-store.js';
 import type Database from 'better-sqlite3';
 import type {
@@ -555,7 +555,8 @@ export const composeNotificationBlock = (
     if (!connectionStore || channel === 'ui' || channel === 'bridge') return [];
     const rows = typeof connectionStore.list === 'function' ? connectionStore.list({ kind: 'notification' })
       : [connectionStore.get('notification', channel)].filter((row): row is NonNullable<typeof row> => row !== null);
-    return rows.filter(row => row.subtype === channel || (!row.subtype && row.name === channel))
+    return rows.filter(row => (row.subtype === channel || (!row.subtype && row.name === channel))
+      && (channel !== 'email' || emailConnectionHasMailbox(db, row)))
       .map(row => ({ name: row.name, display_name: row.display_name, enrolled_at: row.enrolled_at }));
   };
   // D-158 amendments 2026-10-19/20 — what Settings says plain notifications and

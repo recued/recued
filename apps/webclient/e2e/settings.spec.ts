@@ -3606,7 +3606,8 @@ test.describe('Settings Exposure keyboard navigation', () => {
 test.describe('Settings Exposure connection example', () => {
   const examples = [
     ['claude', "Claude Desktop, on the server's computer"], ['claude-code', 'Claude Code'],
-    ['cursor', 'Cursor'], ['cline', 'Cline'], ['codex', 'Codex'], ['custom', 'Another AI app'],
+    ['cursor', 'Cursor'], ['cline', 'Cline'], ['codex', 'Codex'], ['openclaw', 'OpenClaw'],
+    ['custom', 'Another AI app'],
   ] as const;
 
   const openExample = async (page: Page, width: number, activation: 'keyboard' | 'pointer' = 'keyboard') => {

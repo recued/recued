@@ -61,7 +61,9 @@ import type { DomainRenewer } from './tls-renewal-hook.js';
  *  pulling in the full client. Production wiring composes the real
  *  `RecuedAcmeClient` and passes it directly. */
 export interface AcmeCertIssuer {
-  issueCert(args: { handle: string; domain: string; csr_pem: string }): Promise<{
+  /** `signal` aborts the order. The cloud call blocks for the whole ACME flow
+   *  (minutes), so a server that is stopping cancels it rather than wait. */
+  issueCert(args: { handle: string; domain: string; csr_pem: string; signal?: AbortSignal }): Promise<{
     cert_pem: string;
     issuer_chain_pem: string;
     expires_at: number;
@@ -98,7 +100,8 @@ export interface AcmeDomainRenewerOptions {
 }
 
 export interface InitialAcmeDomainIssuer {
-  issueInitialDomain(args: { domain: string }): Promise<
+  /** `signal` aborts the cloud order (see `AcmeCertIssuer.issueCert`). */
+  issueInitialDomain(args: { domain: string; signal?: AbortSignal }): Promise<
     | { ok: true; new_fingerprint: string; cert_expires_at: number }
     | {
         ok: false;
@@ -200,6 +203,7 @@ export const createAcmeDomainRenewer = (
   const issueAndUpload = async (
     domain: string,
     private_key_pem: string,
+    signal?: AbortSignal,
   ): Promise<
     | { ok: true; new_fingerprint: string; cert_expires_at: number }
     | {
@@ -244,8 +248,12 @@ export const createAcmeDomainRenewer = (
         handle,
         domain,
         csr_pem,
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
+      // A cancelled order is the server stopping, not the cloud failing; the
+      // diagnostic below would point an operator at the wrong thing.
+      if (signal?.aborted) return { ok: false, reason: 'helper_unavailable' };
       // The most opaque of the four: a cloud 5xx, a network drop and an
       // unknown HTTP shape are all indistinguishable from here without this.
       return decline(
@@ -303,7 +311,7 @@ export const createAcmeDomainRenewer = (
       // the CSR, runs the ACME request, uploads the cert, and re-looks
       // up the post-upload row so this renewer depends only on the
       // `lookup` + `upload` slice of the store.
-      const renewed = await issueAndUpload(current.domain, current.private_key_pem);
+      const renewed = await issueAndUpload(current.domain, current.private_key_pem, args.signal);
       if (!renewed.ok) return renewed;
       return {
         ok: true,
@@ -333,7 +341,7 @@ export const createAcmeDomainRenewer = (
       } catch {
         return { ok: false, reason: 'helper_unavailable' };
       }
-      return issueAndUpload(domain, private_key_pem);
+      return issueAndUpload(domain, private_key_pem, args.signal);
     },
   };
 };

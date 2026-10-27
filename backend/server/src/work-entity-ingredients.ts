@@ -3497,10 +3497,10 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
     return { asset };
   },
   assetDelete: assetDelete(deps),
-  assetObserve: async (input: Omit<Parameters<WorkEntityStore['writeAssetObservations']>[0], 'actor_ref' | 'recipe_hash'>, actorRef: string, recipeHash?: string) => {
+  assetObserve: async (input: Omit<Parameters<WorkEntityStore['writeAssetObservations']>[0], 'actor_ref' | 'recipe_hash'>, actorRef: string, recipeHash?: string, runId?: string) => {
     // Storage derives the asset and source from the binding. A caller cannot
     // select another asset or supply its own provenance/status fields.
-    const result = deps.store.writeAssetObservations({ ...input, actor_ref: actorRef, ...(recipeHash ? { recipe_hash: recipeHash } : {}) }, deps.now?.());
+    const result = deps.store.writeAssetObservations({ ...input, actor_ref: actorRef, ...(recipeHash ? { recipe_hash: recipeHash } : {}) }, deps.now?.(), runId);
     if (result.changed_fields.length) {
       emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', result.asset), result.prior ? tagWorkEntity('asset', result.prior) : undefined);
       cascadeOnWrite(deps, 'asset', result.asset.id, 'update');

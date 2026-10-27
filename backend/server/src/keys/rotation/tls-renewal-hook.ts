@@ -57,9 +57,12 @@ import type { TlsRenewalFailureReason, TlsRenewalHook } from './index.js';
  *
  *  Return shape mirrors `TlsRenewalHook.renew()` minus
  *  `previous_fingerprint` (the hook fills that from the resolved row's
- *  pre-renewal fingerprint — the renewer doesn't need to read it). */
+ *  pre-renewal fingerprint — the renewer doesn't need to read it).
+ *
+ *  `signal` aborts the cloud order, for a caller that has to stop waiting for
+ *  it (a background service the server is shutting down). */
 export interface DomainRenewer {
-  renewDomain(args: { domain: string }): Promise<
+  renewDomain(args: { domain: string; signal?: AbortSignal }): Promise<
     | {
         ok: true;
         new_fingerprint: string;

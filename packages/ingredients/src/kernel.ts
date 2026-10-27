@@ -2006,7 +2006,7 @@ export interface KernelDispatchers {
   assetCreate?: (input: AssetCreateInput & { origin_execution_source?: ExecutionSource }) => Promise<{ asset: { id: string } }>;
   assetUpdate?: (input: AssetUpdateInput & { origin_execution_source?: ExecutionSource }) => Promise<{ asset: { id: string } }>;
   assetDelete?: (input: { id: string; tombstone?: boolean }) => Promise<{ ok: true; id: string; tombstoned: boolean }>;
-  assetObserve?: (input: AssetObservationInput, actorRef: string, recipeHash?: string) => Promise<{ asset_id: string; changed_fields: string[] }>;
+  assetObserve?: (input: AssetObservationInput, actorRef: string, recipeHash?: string, runId?: string) => Promise<{ asset_id: string; changed_fields: string[] }>;
 }
 
 /** D-315 — `mail-fact-list`'s input, checked before dispatch. Every filter is
@@ -5994,7 +5994,7 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof input.binding_id !== 'string' || !input.binding_id.trim() || !call.stepMeta?.recipe_id) {
           throw new IngredientError('BAD_INPUT', `${slug}: an installed recipe and binding_id are required`, { slug });
         }
-        return dispatchers.assetObserve(input as unknown as AssetObservationInput, `recipe:${call.stepMeta.recipe_id}`, call.stepMeta.recipe_definition_sha256);
+        return dispatchers.assetObserve(input as unknown as AssetObservationInput, `recipe:${call.stepMeta.recipe_id}`, call.stepMeta.recipe_definition_sha256, call.stepMeta.run_id);
       }
 
       default:

@@ -267,6 +267,8 @@ const mkRegistryStub = () => {
     intervals,
     registry: {
       registerInterval: (spec: FakeInterval) => intervals.push(spec),
+      // The service's stop is its own entry; d-235-renewal-and-watch drives it.
+      register: () => {},
     } as never,
   };
 };

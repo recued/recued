@@ -380,12 +380,13 @@ export const composeExecutionContext = async (
   const factContext = storage.workEntityStoreRef && storage.db
     ? (await import('../situations/asset-fact-context.js')).createAssetFactContextReader({ work: storage.workEntityStoreRef,
         snapshot: read => storage.db!.transaction(read)(),
-        writers: (await import('../situations/asset-fact-context.js')).assetContextWriters(storage.db),
+        writers: (await import('../situations/asset-fact-context.js')).assetContextWriters(storage.db,
+          actor => storage.recipeStore.get(actor.replace(/^recipe:/u, ''))?.metadata.name ?? 'Observation writer'),
         ...(collection.spheres ? { referenceSphere: ref => collection.spheres!.resolve(ref).sphere } : {}) }) : undefined;
   const situationAccess = app.contractStoreRef && collection.querySituation
     ? (await import('../situations/access.js')).createSituationAccess({ contracts: app.contractStoreRef, query: collection.querySituation,
         ...(collection.spheres ? { spheres: collection.spheres } : {}),
-        ...(factContext ? { factContext } : {}),
+        ...(factContext ? { factContext, fieldVersion: factContext.fieldVersion } : {}),
         ...(collection.episodeRuntime ? { memoryAllowed: cluster => collection.episodeRuntime!.memoryAllowed(cluster) } : {}),
         ...(collection.situationStore ? { measure: (name, value, labels) => { collection.situationStore!.measure(name, value, labels, Date.now()); } } : {}), isVaultUnlocked: app.isVaultUnlocked ?? (() => false) }) : undefined;
   if (app.situationAccessRef) app.situationAccessRef.current = situationAccess;

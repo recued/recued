@@ -678,7 +678,10 @@ describe('D-315 slice 3, live — what the screens read', () => {
     // both are composed, and once.
     const opens = [...source.matchAll(/collection\.mailFactEvents\.open\(/g)];
     expect(opens).toHaveLength(1);
-    expect(source).toContain('void collection.mailFactEvents.open(eventTriggersBundle ? () => eventTriggersBundle.dispatcher.room() : undefined);');
+    expect(source).toContain('collection.mailFactEvents.open(eventTriggersBundle ? () => eventTriggersBundle.dispatcher.room() : undefined);');
+    // …after the events the last stop parked, which are older.
+    expect(source).toContain('void (eventTriggersBundle?.dispatcher.replayParked() ?? Promise.resolve())');
+    expect(source).toContain('.then(openMailFacts);');
     expect(opens[0]!.index!).toBeGreaterThan(source.indexOf('const eventTriggersBundle = composeEventTriggers('));
     expect(opens[0]!.index!).toBeGreaterThan(source.indexOf('await storage.preapprovalStorage!.recover()'));
     const preapproval = readFileSync(

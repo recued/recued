@@ -7,6 +7,7 @@ import { ARCHIVE_UNATTENDED_ISSUE_TEXT, RpcError, type ArchiveBackupSchedule, ty
   type ArchiveUnattendedStatus, type ArchiveUnattendedIssue } from '@recued/contracts';
 import { encrypt, decrypt, encodeCiphertext, decodeCiphertext } from '@recued/crypto';
 import { writeFileAtomicSync } from '../durable-fs.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { ArchiveRuntime } from './archive-handler.js';
 import type { RemoteBackups } from './remote-backups.js';
 
@@ -114,6 +115,13 @@ export const createUnattendedBackups = (options: {
   let active: Promise<void> | undefined, saving: Promise<ArchiveUnattendedStatus> | undefined;
   let alertActive: Promise<void> | undefined, stopped = false;
   let storageAlertAt = -Infinity;
+  // What `tick()` hands out for the run in flight, and that run's abort.
+  let activeTick: Promise<void> | undefined, activeRun: AbortController | undefined;
+  // Resolved once a stop has waited its grace. Every tick promise races it, so
+  // the interval that drives ticks (and waits for them at shutdown) never
+  // outwaits the stop over a run that ignored its abort.
+  let releaseTicks = (): void => {};
+  let ticksReleased = new Promise<void>(resolve => { releaseTicks = resolve; });
   const markVerified = (saved: Saved, operationId: string): void => {
     if (!saved.last_run || saved.last_run.operation_id !== operationId) throw new Error('Backup checkpoint changed.');
     saved.last_run.outcome = 'verified'; saved.last_run.finished_at = now(); delete saved.last_run.issue;
@@ -213,7 +221,8 @@ export const createUnattendedBackups = (options: {
     },
     tick(): Promise<void> {
       if (stopped || saving || options.canRun?.() === false) return Promise.resolve();
-      if (active) { startAlerts(); return active; }
+      if (activeTick) { startAlerts(); return activeTick; }
+      const run = new AbortController(), signal = run.signal;
       const work = async (): Promise<void> => {
         let saved: Saved | null;
         try { saved = readSaved(path); reconcile(saved); }
@@ -232,11 +241,13 @@ export const createUnattendedBackups = (options: {
           if (!key) throw new Error('locked');
           failure = 'setup_required';
           root = await decrypt(key, decodeCiphertext(saved.capability.ciphertext), aad(saved.capability));
+          signal.throwIfAborted();
           if (root.length !== 32 || !options.runtime.runUnattendedExport) throw new Error('invalid capability');
           const readiness = options.runtime.canExport(); if (!readiness.ok) throw new Error('unavailable');
           options.runtime.pruneExpiredExports();
           failure = 'insufficient_storage';
-          const space = await options.runtime.preflightExport({ includeBlobs: true }); if (!space.ok) throw new Error('storage');
+          const space = await options.runtime.preflightExport({ includeBlobs: true, signal }); if (!space.ok) throw new Error('storage');
+          signal.throwIfAborted();
           failure = 'destination_unavailable';
           if (!options.remoteBackups.destinations().some(row => row.connection_name === saved.settings.connection_name && row.destination_id === saved.settings.destination_id)) throw new Error('changed destination');
           failure = 'history_unavailable';
@@ -244,20 +255,25 @@ export const createUnattendedBackups = (options: {
           failure = 'export_failed';
           const capability: ArchiveBackupCapability = { key: Buffer.from(root), salt_hex: saved.capability.salt_hex, realm_fingerprint: saved.capability.realm_fingerprint };
           let artifact: Awaited<ReturnType<ArchiveRuntime['runExport']>>;
-          try { artifact = await options.runtime.runUnattendedExport(capability); }
+          try { artifact = await options.runtime.runUnattendedExport(capability, signal); }
           finally { capability.key.fill(0); }
+          signal.throwIfAborted();
           failure = 'transfer_unconfirmed';
-          await options.remoteBackups.publish(operation_id, artifact);
+          await options.remoteBackups.publish(operation_id, artifact, signal);
           failure = 'history_unavailable';
           const receipt = options.remoteBackups.status(job_id);
           if (receipt?.state !== 'done') throw new Error('unconfirmed');
           const latest = currentRun(operation_id); markVerified(latest, operation_id); write(latest);
         } catch (error) {
           if (error instanceof ArchiveBackupSetupError) failure = 'setup_required';
+          // A stop aborted this run: the same verdict boot gives a run the
+          // process did not live to finish. The next scheduled slot runs a fresh
+          // backup; nothing here resends this one.
+          if (signal.aborted) failure = 'interrupted';
           if (failure === 'transfer_unconfirmed') {
             try { failure = options.remoteBackups.list().find(row => row.operation_id === operation_id)?.issue ?? failure; } catch { /* preserve the last known failure */ }
           }
-          if (reserved) options.remoteBackups.failed(operation_id, failure === 'export_failed' ? 'export_failed' : 'transfer_unconfirmed');
+          if (reserved) options.remoteBackups.failed(operation_id, failure === 'export_failed' || failure === 'interrupted' ? failure : 'transfer_unconfirmed');
           const latest = currentRun(operation_id);
           let confirmed = false;
           if (reserved) { try { confirmed = options.remoteBackups.status(job_id)?.state === 'done'; } catch { /* retain uncertainty */ } }
@@ -269,10 +285,31 @@ export const createUnattendedBackups = (options: {
           write(latest);
         } finally { key?.fill(0); root?.fill(0); release(); }
       };
-      active = work().finally(() => { active = undefined; startAlerts(); }); return active;
+      activeRun = run;
+      active = work().finally(() => { active = undefined; activeTick = undefined; activeRun = undefined; startAlerts(); });
+      activeTick = Promise.race([active, ticksReleased]); return activeTick;
     },
-    async stop(): Promise<void> { stopped = true; await Promise.allSettled([active, saving, alertActive]); },
-    resume(): void { stopped = false; },
+    async stop(): Promise<void> {
+      stopped = true;
+      // Abort the backup in flight rather than drain it. An export plus an
+      // upload can run for many minutes, and a drain step that waits on it is
+      // reported aborted (an update then refuses to swap versions), while the
+      // process exits right after the drain regardless. Wait only for the
+      // aborted work to unwind, and never past the grace.
+      activeRun?.abort();
+      await settleWithin(Promise.allSettled([active, saving, alertActive]), STOP_GRACE_MS);
+      releaseTicks();
+    },
+    /** Resolves once the aborted run, a settings save and an alert have
+     *  ended, however long that takes: what a pause or a maintenance window
+     *  waits for after `stop()`, since an export reads the whole database. */
+    async settled(): Promise<void> {
+      await Promise.allSettled([active, saving, alertActive]);
+    },
+    resume(): void {
+      stopped = false;
+      ticksReleased = new Promise<void>(resolve => { releaseTicks = resolve; });
+    },
   };
   return service;
 };

@@ -258,8 +258,10 @@ describe('startPostListenerRuntime', () => {
       policy: { enabled: true, schedule: { cadence: 'daily', hour_utc: 4, minute_utc: 0, weekday_utc: 0 } },
       last_run: { operation_id: 'private-run', destination_id: destination.destination_id,
         started_at: Date.now() - 1000, outcome: 'failed', total: 1, checked: 1, failed: 1, skipped: 0 } };
-    const backupHealth = { status: vi.fn(() => health), save: vi.fn(() => health), tick: vi.fn(async () => {}), stop: vi.fn(async () => {}), resume: vi.fn() };
-    const backupIntegrity = { status: vi.fn(() => integrity), save: vi.fn(() => integrity), tick: vi.fn(async () => {}), stop: vi.fn(async () => {}), resume: vi.fn() };
+    const backupHealth = { status: vi.fn(() => health), save: vi.fn(() => health), tick: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+      settled: vi.fn(async () => {}), resume: vi.fn() };
+    const backupIntegrity = { status: vi.fn(() => integrity), save: vi.fn(() => integrity), tick: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+      settled: vi.fn(async () => {}), resume: vi.fn() };
     const lifecycle: LifecycleStatus = { state: 'booting', boot_at: Date.now(), uptime_s: 1, restart_count: 0, restart_pending: false, supervisor_mode: 'native' };
     const base = makeOptions(), broadcast = vi.fn();
     const options = makeOptions({ backupHealth, backupIntegrity, getLifecycleSnapshot: () => lifecycle,

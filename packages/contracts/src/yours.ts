@@ -106,6 +106,9 @@ export interface YoursLearningStatus {
 }
 export interface YoursSnapshot {
   assets: Asset[];
+  /** D-325 — host comparisons for the open asset only, using this read's saved
+   * inputs. Absent on lists, plain facts and older servers. No rule verdicts. */
+  reading_comparisons?: { asset_id: string; rules: Array<{ rule_id: string; comparison: import('./asset-fact-context.js').AssetReadingComparison }> };
   /** §15.3 — the open asset's holder by name; `name` is null for a contact no longer
    *  on file. Absent for a list, an asset with no holder, and from an older server. */
   holder?: { contact_id: string; name: string | null };

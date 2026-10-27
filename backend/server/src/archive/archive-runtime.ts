@@ -669,11 +669,13 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       throw new Error('archive export: this realm is encrypted but its vault bundle sidecar is missing — the backup would not be restorable');
     }
   };
-  const performExport = async ({ includeBlobs, includePassport, recoveryKey, capability }: {
+  const performExport = async ({ includeBlobs, includePassport, recoveryKey, capability, signal }: {
     includeBlobs: boolean; includePassport: boolean; recoveryKey?: string; capability?: ArchiveBackupCapability;
+    signal?: AbortSignal;
   }): ReturnType<ArchiveRuntime['runExport']> => {
     const key = capability ? Buffer.from(capability.key) : deriveArchiveKeyBuffer(recoveryKey!);
     try {
+      signal?.throwIfAborted();
       const exportBundle = serverBundleStore.load();
       if (capability) {
         if (!exportBundle || fingerprintBundle(exportBundle) !== capability.realm_fingerprint) {
@@ -715,6 +717,9 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       // archive WITHOUT the passport rather than failing the whole backup.
       let passportJson: string | undefined;
       if (includePassport) {
+        // Minting writes an audit row, so a cancelled export stops before it
+        // (outside the try below, which would downgrade the abort to "no passport").
+        signal?.throwIfAborted();
         try {
           const px = deps.getPassportExport?.();
           if (px) {
@@ -746,6 +751,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         // there is never a pre-existing target to guard against.
         force: true,
         producerVersion: serverVersion,
+        ...(signal ? { signal } : {}),
       });
       // Single-latest slot: the fresh archive evicts any prior export so the
       // GB-sized files never accumulate (the leak the in-memory-only prune
@@ -781,7 +787,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       return { ok: true };
     },
 
-    async preflightExport({ includeBlobs }) {
+    async preflightExport({ includeBlobs, signal }) {
       // Live OS free space — the truth the kernel knows. statfs unsupported
       // on this filesystem ⇒ gate-open (mirror the service quota tracker:
       // let the export run and surface a natural ENOSPC rather than wedge
@@ -825,6 +831,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         const getBlobKey = deps.getKeys?.()?.keyProvider('blob-store') ?? (() => null);
         for (const source of buildExportBlobSources(dataPath, db, getBlobKey)) {
           for (const hash of source.hashes) {
+            signal?.throwIfAborted();
             const s = source.store.plaintextSizeOf
               ? await source.store.plaintextSizeOf(hash)
               : await source.store.sizeOf(hash);
@@ -862,7 +869,8 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         return { key: deriveArchiveBackupRoot(entropy, salt), salt_hex: salt.toString('hex'), realm_fingerprint: fingerprintBundle(bundle) };
       } finally { entropy.fill(0); }
     },
-    runUnattendedExport: capability => performExport({ includeBlobs: true, includePassport: true, capability }),
+    runUnattendedExport: (capability, signal) => performExport({ includeBlobs: true, includePassport: true, capability,
+      ...(signal ? { signal } : {}) }),
 
     async readManifest(path, recoveryKey) {
       const key = deriveArchiveKeyBuffer(recoveryKey);

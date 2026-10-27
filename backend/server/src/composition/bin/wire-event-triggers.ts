@@ -200,6 +200,8 @@ export const composeEventTriggers = (
     bus: warehouseBus,
     store,
     getPreapprovalDriver: () => executeDeps.preapprovalDriver,
+    // Read per event: the restart drain sets it after this composes.
+    isDraining: () => executeDeps.isDraining?.() === true,
     ...(input.situations ? { situations: input.situations } : {}),
     ...(input.readContextForSubscriber ? { readContextForSubscriber: input.readContextForSubscriber } : {}),
     readGrantsForSubscriber: (trigger) => executeDeps.contractOverlay?.resolveReadGrantChecker?.({

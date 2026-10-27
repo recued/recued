@@ -99,9 +99,10 @@ const panel = mountMailChatDoorPanel({
   },
   runListMailboxes: () => read('mailboxes', () => ({
     instances: [
-      { slug: 'recued-chat', account_email: 'recued@chat.example', send_capable: true },
-      { slug: 'me', account_email: 'me@owner.example', send_capable: true },
-      { slug: 'archive', account_email: 'archive@owner.example', send_capable: false },
+      { slug: 'recued-chat', adapter_type: 'imap', account_email: 'recued@chat.example', send_capable: true },
+      { slug: 'me', adapter_type: 'imap', account_email: 'me@owner.example', send_capable: true },
+      { slug: 'smtp-only', adapter_type: 'smtp', account_email: 'hello@example.test', send_capable: true },
+      { slug: 'archive', adapter_type: 'imap', account_email: 'archive@owner.example', send_capable: false },
     ],
   })),
   // The round trip looks again quickly here; the spec waits on what it shows.

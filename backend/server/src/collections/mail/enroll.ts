@@ -44,7 +44,9 @@ import {
   GRAPH_MAIL_READWRITE_SCOPE,
   GRAPH_MAIL_SEND_SCOPE,
   RpcError,
+  mailAccountCapabilities,
 } from '@recued/contracts';
+import { verifySmtpCredentials, type SmtpConfig } from './smtp.js';
 import type {
   CollectionAuthState,
   CollectionInstanceRow,
@@ -102,7 +104,7 @@ const PLACEHOLDER_MAIL_CAPS: FileCollectionCaps = {
 /** Adapter-type discriminator for mail rows. `imap` covers IMAP+SMTP
  *  basic auth (caldav-style — vault-backed creds, no OAuth); `gmail`
  *  / `graph` are the two OAuth adapters. */
-export type MailAdapterType = 'imap' | 'gmail' | 'graph';
+export type MailAdapterType = 'imap' | 'gmail' | 'graph' | 'smtp';
 
 const OAUTH_ADAPTERS: readonly MailAdapterType[] = ['gmail', 'graph'];
 
@@ -112,8 +114,10 @@ const OAUTH_ADAPTERS: readonly MailAdapterType[] = ['gmail', 'graph'];
  *  scan. */
 const imapPasswordKey = (slug: string): string => `imap.${slug}.password`;
 const imapSmtpPasswordKey = (slug: string): string => `imap.${slug}.smtp_password`;
+const smtpPasswordKey = (slug: string): string => `smtp.${slug}.password`;
 
 export interface MailEnrollDeps {
+  verifySmtp?: (config: import('./smtp.js').SmtpConfig) => Promise<void>;
   /** Read/login-only credential verification seam. Production uses IMAP EXAMINE and SMTP VERIFY. */
   verifyPasswords?: (config: Record<string, unknown>, passwords: { password?: string; smtp_password?: string }) => Promise<void>;
   authenticationChange?: import('../../collection-authentication-service.js').CollectionAuthenticationLifecycle;
@@ -444,6 +448,47 @@ export const handleMailEnrollImap = async (
   return { slug, send_capable: smtp !== undefined };
 };
 
+export interface EnrollSmtpInput {
+  name?: unknown; host?: unknown; port?: unknown; secure?: unknown;
+  username?: unknown; password?: unknown; from?: unknown; reply_to?: unknown;
+}
+
+export const handleMailEnrollSmtp = async (
+  deps: MailEnrollDeps, args: EnrollSmtpInput,
+): Promise<{ slug: string; send_capable: true }> => {
+  const slug = requireSlug(args.name);
+  const headerAddress = (value: unknown, field: string) => {
+    const address = requireString(value, field).trim();
+    if (!/^[^\s<>@,;]+@[^\s<>@,;]+$/.test(address)) throw new RpcError('bad_request', `${field} must be one email address`, 400);
+    return address;
+  };
+  const host = requireString(args.host, 'host').trim();
+  if (!host || /[\s/\\]/.test(host)) throw new RpcError('bad_request', 'host must be a server hostname', 400);
+  const secure = requireBoolean(args.secure, 'secure');
+  const config: SmtpConfig = {
+    host, port: requireBoundedInt(args.port, 'port', 1, 65535), secure, requireTLS: !secure,
+    username: requireString(args.username, 'username'), password: requireString(args.password, 'password'),
+    from: headerAddress(args.from, 'from'),
+    ...(args.reply_to !== undefined ? { reply_to: headerAddress(args.reply_to, 'reply_to') } : {}),
+  };
+  if (!deps.accountStore.getAll) throw new RpcError('not_configured', 'SMTP outgoing history storage is unavailable.', 503);
+  return withCollectionAuthenticationLock(deps.instances.authenticationLocks, 'mail:' + slug, async () => {
+    if (deps.instances.get('mail', slug)) throw new RpcError('conflict', `Mail account '${slug}' already exists.`, 409);
+    try { await (deps.verifySmtp ?? verifySmtpCredentials)(config); }
+    catch { throw new RpcError('access_failed', 'SMTP login could not be verified. Check the server, TLS setting and SMTP credentials. No email was sent.', 403); }
+    if (deps.instances.get('mail', slug)) throw new RpcError('conflict', `Mail account '${slug}' already exists.`, 409);
+    const { password, ...savedConfig } = config;
+    await deps.accountStore.set(smtpPasswordKey(slug), password);
+    let stored;
+    try {
+      stored = deps.instances.upsert({ platform: 'mail', slug, adapter_type: 'smtp', config: savedConfig,
+        caps: PLACEHOLDER_MAIL_CAPS, auth_state: 'healthy', last_synced_at: null });
+    } catch (error) { await deps.accountStore.delete(smtpPasswordKey(slug)); throw error; }
+    await deps.onEnrolled?.(toRow('smtp', stored.auth_state, slug, null));
+    return { slug, send_capable: true };
+  });
+};
+
 // ────────────────────────────────────────────────────────────────
 // enrollOAuth (gmail / graph) — relocated from collection-handler.ts
 // so it sits alongside enrollImap + the rest of the mail enroll
@@ -770,6 +815,8 @@ export const handleMailEnrollOAuth = async (
  *  resolver needs `send_capable` + `account_email` surfaced
  *  side-by-side without a second rpc round trip. */
 export interface MailInstanceRow extends CollectionInstanceRow {
+  receive_capable: boolean;
+  sent_lookup_capable: boolean;
   sync_status: import('@recued/contracts').MailSyncStatus;
   managed_connection_name?: string;
   permission_state?: 'unknown';
@@ -803,6 +850,7 @@ const computeSendCapable = async (
   if (adapter === 'imap') {
     return Boolean(config.smtp);
   }
+  if (adapter === 'smtp') return true;
   if (adapter === 'gmail' || adapter === 'graph') {
     if (config.native_send_enabled === false) return false;
     // Outlook sends a draft and then `/send`: both scopes (see the provider).
@@ -824,6 +872,7 @@ const computeSendCapable = async (
 const accountEmailFromConfig = (config: Record<string, unknown>): string => {
   const v = config.account_email;
   if (typeof v === 'string') return v;
+  if (typeof config.from === 'string') return config.from;
   // IMAP fallback ladder: smtp.from → username.
   const smtp = config.smtp as Record<string, unknown> | undefined;
   if (smtp && typeof smtp === 'object') {
@@ -843,7 +892,9 @@ export const handleMailList = async (
   for (const r of rows) {
     const adapter = r.adapter_type as MailAdapterType;
     const send_capable = await computeSendCapable(deps, adapter, r.slug, r.config);
-    const accessVerified = deps.mailboxAccessVerified?.(r.slug) === true || r.last_synced_at !== null;
+    const capabilities = mailAccountCapabilities(adapter);
+    const accessVerified = capabilities.receive_capable
+      && (deps.mailboxAccessVerified?.(r.slug) === true || r.last_synced_at !== null);
     out.push({
       slug: r.slug,
       platform: 'mail',
@@ -856,6 +907,7 @@ export const handleMailList = async (
         initial_sync_complete: r.backfill_complete && accessVerified,
       },
       send_capable,
+      ...capabilities,
       draft_capable: deps.draftCapable?.(r.slug) ?? false,
       account_email: accountEmailFromConfig(r.config),
       ...(collectionOAuthBinding(r.config) !== undefined ? {
@@ -896,16 +948,16 @@ const deleteMail = async (deps: MailEnrollDeps, slug: string): Promise<{ ok: tru
   await deps.onDeleted?.(slug);
   // Also wipe credentials so a future enroll under the same slug
   // doesn't inherit stale secrets.
-  if (existing.adapter_type === 'imap') {
-    const prefix = `imap.${slug}.`;
+  if (existing.adapter_type === 'imap' || existing.adapter_type === 'smtp') {
+    const prefix = `${existing.adapter_type}.${slug}.`;
     if (deps.accountStore.getAll) {
       const all = await deps.accountStore.getAll();
       for (const key of Object.keys(all)) {
         if (key.startsWith(prefix)) await deps.accountStore.delete(key);
       }
     } else {
-      await deps.accountStore.delete(imapPasswordKey(slug));
-      await deps.accountStore.delete(imapSmtpPasswordKey(slug));
+      await deps.accountStore.delete(existing.adapter_type === 'smtp' ? smtpPasswordKey(slug) : imapPasswordKey(slug));
+      if (existing.adapter_type === 'imap') await deps.accountStore.delete(imapSmtpPasswordKey(slug));
     }
   } else if (collectionOAuthBinding(existing.config) !== undefined) {
     await purgeBorrowedOAuthCursors(existing, deps.accountStore);
@@ -954,8 +1006,12 @@ export const handleMailResync = async (
 ): Promise<{ ok: true }> => {
   const slug = requireSlug(args.slug);
   return withCollectionAuthenticationLock(deps.instances.authenticationLocks, 'mail:' + slug, async () => {
-    if (!deps.instances.get('mail', slug)) {
+    const row = deps.instances.get('mail', slug);
+    if (!row) {
       throw new RpcError('not_found', `collection.mail.resync: instance '${slug}' not found`, 404);
+    }
+    if (!mailAccountCapabilities(row.adapter_type).receive_capable) {
+      throw new RpcError('failed_precondition', 'This send-only account has no mailbox to sync.', 409);
     }
     const lifecycle = deps.authenticationChange;
     if (!lifecycle) {
@@ -994,3 +1050,6 @@ export const readImapSmtpPassword = async (
   accountStore: OAuthAccountStore,
   slug: string,
 ): Promise<string | null> => accountStore.get(imapSmtpPasswordKey(slug));
+
+export const readSmtpPassword = async (accountStore: OAuthAccountStore, slug: string): Promise<string | null> =>
+  accountStore.get(smtpPasswordKey(slug));

@@ -289,6 +289,7 @@ const fakeBackgroundServices = () => {
     },
     registerInterval: () => () => {},
     stopAll: async () => {},
+    settledAll: async () => {},
     list: () => [],
     services,
   };

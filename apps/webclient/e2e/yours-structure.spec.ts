@@ -8,6 +8,23 @@ declare global { interface Window {
 
 installFullAppHooks();
 
+test('Refresh restores its keyboard focus without taking focus from a control chosen while the read is pending', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  const route = page.locator('[data-recued-yours]');
+  await expect(route.getByRole('heading', { name: 'Ana’s passport', exact: true })).toBeVisible();
+  const refresh = route.getByRole('button', { name: 'Refresh', exact: true }); const edit = route.getByRole('button', { name: 'Edit asset', exact: true });
+  for (const moveFocus of [false, true]) {
+    await page.evaluate(() => window.__app.holdRpcResponses?.('yours.read'));
+    await refresh.focus(); await page.keyboard.press('Enter'); await expect(route).toHaveAttribute('aria-busy', 'true');
+    if (moveFocus) await edit.focus();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+    await expect(route).toHaveAttribute('aria-busy', 'false'); await expect(moveFocus ? edit : refresh).toBeFocused();
+  }
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/asset/passport/view/overview/reading/odometer`);
+  const reading = route.locator('[data-yours-reading="odometer"]'); await expect(reading).toBeFocused();
+  const release = await holdMenuRefresh(page); await release(); await expect(reading).toBeFocused();
+});
+
 const holdMenuRefresh = async (page: Page) => {
   const before = await page.evaluate(() => window.__app.rpcCallCount('yours.read'));
   await page.evaluate(() => {

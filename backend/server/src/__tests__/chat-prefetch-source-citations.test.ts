@@ -18,7 +18,7 @@ import { createSituationPrefetch, renderSituationPrefetch, SITUATION_PREFETCH_MA
 import { registerSituationPrefetchSourceCapture } from '../situations/prefetch-source-citations.js';
 import { situationSourceCitations } from '../chat-situation-source-citations.js';
 import { situationModelProjection } from '../situations/model-projection.js';
-import { answerSourceCitations, sourceReadVersion } from '../chat-source-citations.js';
+import { answerSourceCitations, sourceReadVersion, ASSET_COMPARISON_READ_GUIDANCE } from '../chat-source-citations.js';
 import { createMetaFieldPrivacyResolver } from '../meta-field-privacy-resolver.js';
 import { CANONICAL_PII_ENTITY_PRIVACY_TAGS } from '../canonical-pii-schemas.js';
 import { createPiiEgressPlanForSession, renderEntityPartsForEgress } from '../chat-pii-egress.js';
@@ -68,6 +68,9 @@ describe('native saved sources in ordinary Chat prefetch', () => {
     expect(capture!.sources()).toEqual([]);
     capture!.retain(parts);
     const blocks = renderEntityPartsForEgress(parts, f.plan()); const row = rows(blocks)[0]!;
+    // D-325 — this advice must reach the protected prefetch packet, before
+    // any tool read. Defining it only in a post-read hint does not route an ask.
+    expect(blocks.join('\n')).toContain(ASSET_COMPARISON_READ_GUIDANCE);
     expect(Buffer.byteLength(blocks.join('\n'))).toBeLessThanOrEqual(SITUATION_PREFETCH_MAX_BYTES);
     expect(row.citation_source).toMatchObject({ source_kind: 'asset_projection', projection: { kind: 'details' }, result_paths: ['/details'], read_at: NOW });
     expect(row.citation_source.citation).toBe(`[source](${row.citation_source.source_ref})`);

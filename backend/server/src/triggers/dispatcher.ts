@@ -6,10 +6,13 @@
  *    1. `rebuild()` — called on boot + after every `triggers.*`
  *       mutation. Tears down existing subscriptions, reads the
  *       current enabled trigger set, subscribes each pattern.
- *    2. `dispose()` — called on drain. Unsubscribes all without
- *       flushing in-flight dispatches (the drain orchestrator
- *       stops `executeRecipe` via its own `pause_collections`
- *       step so the caller-side drain flows through naturally).
+ *    2. `dispose()` — called on drain (and by a pause or a maintenance
+ *       window). Unsubscribes all and starts no queued event: what never
+ *       started is handed back by the queue, and a mail fact's event — its
+ *       fact announces once — is parked in the store so `replayParked()`
+ *       delivers it on the next start (or on the `rebuild()` that ends a
+ *       pause). `drained()` then waits for running dispatches at most
+ *       `STOP_GRACE_MS`; a run slower than that is the drain's to kill.
  *
  *  Failure semantics:
  *    - Missing recipe → auto-disable via the error-cap (the
@@ -19,10 +22,11 @@
  *      per-trigger 24h error counter. Counter cap is config-
  *      driven (`triggers.auto_disable_after_errors_24h`, default 10).
  *
- *  The dispatcher does not observe the drain state directly; callers
- *  are responsible for invoking `dispose()` from the drain pipeline
- *  (see `backend/server/src/lifecycle/drain-orchestrator.ts` step
- *  registration). */
+ *  Callers invoke `dispose()` from the drain pipeline (the `pause_scheduler`
+ *  step, through the background-services registry). Before that, from the
+ *  moment the drain begins, `isDraining` stops queued events from starting
+ *  runs, and a run the server refuses (`draining`) is booked as not run —
+ *  never as the trigger failing. */
 
 import type {
   WarehouseEvent,
@@ -31,12 +35,18 @@ import type {
 import { createWarehouseEventBus, matchesPattern, eventPath } from '@recued/warehouse-events';
 import type { AuditLogStore } from '@recued/storage';
 import type { EventTrigger } from '@recued/contracts';
-import { MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter } from '@recued/contracts';
+import { MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter, RpcError } from '@recued/contracts';
 import type { EventBus } from '../events/bus.js';
 import { emitAutomationRule } from '../events/emit-sites.js';
-import type { EventTriggersStore } from './store.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
+import type { EventTriggersStore, ParkTriggerEventInput } from './store.js';
 import type { BackfillStateLookup } from './backfill-state.js';
-import { createTriggerDispatchQueue, TRIGGER_QUEUE_PRODUCER_DEPTH, TRIGGER_QUEUE_PRODUCER_KEYS } from './queue.js';
+import {
+  createTriggerDispatchQueue,
+  TRIGGER_QUEUE_PRODUCER_DEPTH,
+  TRIGGER_QUEUE_PRODUCER_KEYS,
+  type TriggerQueueEntry,
+} from './queue.js';
 import type { NotificationMessage } from '@recued/notification';
 import { presentAutomationFailure } from '../automation-failure.js';
 import {
@@ -106,12 +116,24 @@ export interface TriggerFire {
 /** How often a wait for a sealed vault looks again. */
 export const DISPATCHER_VAULT_POLL_MS = 1_000;
 
+/** Every mail fact's event: what a stopped dispatcher keeps rather than drops. */
+const MAIL_FACT_EVENTS = `data.${MAIL_FACT_EVENT_PLATFORM}.**`;
+
+/** A fire the server refused to start because it is restarting. */
+const NOT_RUN: unique symbol = Symbol('not_run');
+
+/** How many parked events a replay reads from the store at a time. */
+const REPLAY_BATCH = 50;
+
 export interface EventTriggerDispatcher {
   /** Idempotent — safe to call repeatedly. Subscribes every enabled
-   *  trigger from the store. Unsubscribes prior subs first. */
+   *  trigger from the store. Unsubscribes prior subs first. After a
+   *  `dispose()`, it also replays what that stop parked. */
   rebuild(): void;
-  /** Tear down every subscription without rebuilding. Called on
-   *  drain. */
+  /** Tear down every subscription and start no queued event. Called on
+   *  drain, pause and maintenance. What never started is let go, except a
+   *  mail fact's event, which is parked for `replayParked()` — as is every
+   *  mail fact's event that arrives while disposed. */
   dispose(): void;
   /** Current subscription count (tests + observability). */
   activeSubscriptions(): number;
@@ -120,9 +142,22 @@ export interface EventTriggerDispatcher {
    *  Tests + observability surface. */
   activeQueueKeys(): number;
   /** D-124 Phase 2.3 — resolve once every in-flight dispatch settles.
-   *  Test affordance — production callers don't need it (the drain
-   *  orchestrator runs `pause_collections` upstream). */
+   *  After `dispose()` it waits at most `STOP_GRACE_MS` — the stop closure a
+   *  restart drain awaits — and resolves once what the stop set aside is
+   *  parked. */
   drained(): Promise<void>;
+  /** Resolves once every dispatch running at `dispose()` has finished,
+   *  however long its run takes, and what the stop set aside is parked: what
+   *  a pause or a maintenance window waits for after the stop, which kills
+   *  nothing (`StoppableService.settled`). */
+  settled?(): Promise<void>;
+  /** D-315 — hand every parked event back to its trigger, oldest first, each
+   *  as the queue has room and the vault is open; a trigger that is gone takes
+   *  nothing. Called once the dispatcher is subscribed and the pre-approval
+   *  driver it captures through exists — at boot, before the mail facts held
+   *  since the mailboxes started go out, so the older events go first. Stops
+   *  when the dispatcher is disposed; what it had not reached stays parked. */
+  replayParked(): Promise<void>;
   /** D-315 §6.3 — resolves once the queue has room for a producer that can
    *  wait: fewer than half the keys it can hold, no key as deep as
    *  `TRIGGER_QUEUE_PRODUCER_DEPTH`, and the vault open. A backfill that runs
@@ -202,6 +237,12 @@ export interface EventTriggerDispatcherDeps {
   isVaultUnlocked?: () => boolean;
   /** Late-bound because the realm review service composes after this bus. */
   getPreapprovalDriver?: () => PreapprovalDriver | undefined;
+  /** The server has begun its restart drain. A queued event then starts no
+   *  run — it would only be refused, and with the pre-approval driver its
+   *  claim would be spent on nothing — and is handed back for parking
+   *  instead. Wire it to `executeDeps.isDraining`. Absent ⇒ never draining
+   *  (the run's own `draining` refusal is still caught). */
+  isDraining?: () => boolean;
   /** D-318 step 1 — is this mailbox the email chat door's chat mailbox, used
    *  for chat alone? Its mail is the conversation with Recued, not the owner's
    *  mail, so a mail event from it starts no recipe. One that is the owner's
@@ -241,12 +282,28 @@ export const createEventTriggerDispatcher = (
   const errorsByTrigger = new Map<string, ErrorWindowEntry[]>();
   const feedPumps = new Map<string, Promise<void>>();
   let disposed = false;
+  const draining = (): boolean => deps.isDraining?.() === true;
+  /** Each subscription's receiver, by trigger: a replay hands a parked event
+   *  to the trigger it was owed to, through the checks a live one passes. */
+  const receivers = new Map<string, (event: WarehouseEvent, parked_seq?: number) => void>();
+  /** Wakes every wait for a sealed vault: a dispose must not sit out a poll. */
+  const vaultWaiters = new Set<() => void>();
+  /** The stop a `dispose()` began; `drained()` and the next `rebuild()` wait
+   *  on it. Null while subscribed. */
+  let stopping: Promise<void> | null = null;
+  /** While disposed: the bus subscription that keeps the mail facts' events
+   *  no trigger hears now. */
+  let keepingArrivals: (() => void) | null = null;
+  /** Those arrivals, held until the stop has parked everything older; after
+   *  that (`parkArrivalsDirectly`) they are parked as they come. */
+  const arrivals: ParkTriggerEventInput[] = [];
+  let parkArrivalsDirectly = false;
   const pumpSituation = (trigger_id: string): Promise<void> => {
     const pending = feedPumps.get(trigger_id); if (pending) return pending;
     const trigger = deps.store.get(trigger_id);
     if (!deps.situations || !trigger || disposed) return Promise.resolve();
     const promise = deps.situations.catchUp(situationSubscriberId(trigger_id), revision => dispatcher.deliverSituation!(trigger_id, situationRevisionEvent(revision)), {
-      isOpen: () => !disposed && deps.isVaultUnlocked?.() !== false,
+      isOpen: () => !disposed && !draining() && deps.isVaultUnlocked?.() !== false,
       cause_source: `recipe:${trigger.recipe_id}`,
     }).then(() => {});
     feedPumps.set(trigger_id, promise);
@@ -329,7 +386,10 @@ export const createEventTriggerDispatcher = (
       target: trigger.trigger_id,
       detail: why,
     }).catch(() => { /* best-effort */ });
-    rebuild();
+    // Disposed, there are no subscriptions to refresh, and rebuilding would
+    // bring a stopped dispatcher back mid-drain. The next rebuild reads the
+    // disabled row.
+    if (!disposed) rebuild();
     emitAutomationRule(deps.eventBus, 'event_trigger');
   };
 
@@ -361,17 +421,54 @@ export const createEventTriggerDispatcher = (
   };
 
   /** Resolves once the vault is open — at once when it is, or when nothing
-   *  seals it. */
+   *  seals it — or once the dispatcher is disposed: a stop never waits for an
+   *  unlock (a sealed vault at shutdown would otherwise hold the drain). */
   const vaultOpen = async (): Promise<void> => {
-    while (deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked()) {
+    while (!disposed && deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked()) {
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, deps.vaultPollMs ?? DISPATCHER_VAULT_POLL_MS);
+        const wake = (): void => {
+          clearTimeout(timer);
+          vaultWaiters.delete(wake);
+          resolve();
+        };
+        const timer = setTimeout(wake, deps.vaultPollMs ?? DISPATCHER_VAULT_POLL_MS);
         timer.unref?.();
+        vaultWaiters.add(wake);
       });
     }
   };
 
-  const onEvent = async (trigger: EventTrigger, event: WarehouseEvent, candidate?: object): Promise<void> => {
+  /** Keep what cannot be told again. A mail fact's event is its fact's one
+   *  announcement — read again, the fact never fires again — so one that never
+   *  started is parked for the next start; anything else is let go, as an
+   *  event a stopped dispatcher never heard always was (trigger delivery is
+   *  at-most-once). A store that cannot park drops them with a warning. */
+  const park = (entries: readonly ParkTriggerEventInput[]): void => {
+    const kept = entries.filter((entry) => entry.event.platform === MAIL_FACT_EVENT_PLATFORM);
+    if (kept.length === 0) return;
+    try {
+      if (!deps.store.parkTriggerEvents) throw new Error('this trigger store cannot park events');
+      deps.store.parkTriggerEvents(kept, now());
+    } catch (error) {
+      console.warn(
+        `[event-triggers] ${kept.length} mail fact event(s) could not be kept for the next start`,
+        error,
+      );
+    }
+  };
+  const parkEntries = (entries: readonly TriggerQueueEntry[]): void => {
+    park(entries.map((entry) => ({
+      trigger_id: entry.trigger.trigger_id,
+      event: entry.event,
+      ...(entry.parked_seq !== undefined ? { parked_seq: entry.parked_seq } : {}),
+    })));
+  };
+
+  const onEvent = async (
+    trigger: EventTrigger,
+    event: WarehouseEvent,
+    candidate?: object,
+  ): Promise<void | 'not_run'> => {
     // D-124 Phase 2.2 — suppress trigger fan-out for events emitted
     // while the source adapter is still in initial-backfill drain.
     // The check is fan-out only — `bus.emit` already fired, so FTS
@@ -405,7 +502,10 @@ export const createEventTriggerDispatcher = (
     // through its own outcome. Staged chains are unaffected — a DIFFERENT
     // recipe consuming the outcome fires normally.
     if (isTriggerRunOutcomeLoop(trigger, event, id => deps.store.get(id))) return;
-    await settle(trigger, event, () => deps.runtime.runRecipe({
+    // Stopped, or the server draining: start nothing. The queue hands the
+    // event back, and a mail fact's is parked for the next start.
+    if (disposed || draining()) return 'not_run';
+    const settled = await settle(trigger, event, () => deps.runtime.runRecipe({
       recipe_id: trigger.recipe_id,
       publisher_id: trigger.publisher_id,
       context: triggerEventContext(trigger.trigger_id, event),
@@ -415,15 +515,18 @@ export const createEventTriggerDispatcher = (
       ...(candidate ? { candidate } : {}),
       ...(event.origin === 'backfill' ? { origin: 'backfill' as const } : {}),
     }));
+    return settled === NOT_RUN ? 'not_run' : undefined;
   };
 
   /** One fire's books, whoever started it: what its run came to, on the row,
-   *  the error count, `trigger_fired` and `onFired`. */
+   *  the error count, `trigger_fired` and `onFired`. `NOT_RUN` when the server
+   *  refused to start the run because it is restarting: nothing ran, so there
+   *  are no books to keep, and the caller keeps the event. */
   const settle = async (
     trigger: EventTrigger,
     event: WarehouseEvent,
     run: () => Promise<void | TriggerRunOutcome>,
-  ): Promise<boolean> => {
+  ): Promise<boolean | typeof NOT_RUN> => {
     try {
       const outcome = await run();
       if (outcome !== undefined && 'skipped' in outcome) return true;
@@ -457,15 +560,27 @@ export const createEventTriggerDispatcher = (
       );
       return true;
     } catch (err) {
+      // ⛔ NOT RUN IS NOT FAILED. No `last_error`, no count toward the cap, no
+      // notice, no `trigger_fired` — the run was never started.
+      if (err instanceof RpcError && err.code === 'draining') return NOT_RUN;
+      const raw = (err as { code?: unknown } | null)?.code;
+      const code = typeof raw === 'string' ? raw : undefined;
+      const failedRunId = (err as { run_id?: unknown } | null)?.run_id;
+      // A run the restart killed: the drain stops what is still running once
+      // its grace is up. That is the server going away, not the trigger
+      // failing, so it counts toward no cap and sends no notice — but the run
+      // did start, so it is recorded, linked, and never replayed.
+      if (code === 'run_killed' && (disposed || draining())) {
+        deps.store.update(trigger.trigger_id, { last_fired_at: now() });
+        await logFired(trigger, event, typeof failedRunId === 'string' ? failedRunId : undefined, 'failed');
+        return false;
+      }
       const failure = presentAutomationFailure(err);
       if (failure.redacted) {
         console.error(
           `[event-triggers] trigger ${trigger.trigger_id} internal failure: ${failure.internalMessage}`,
         );
       }
-      const raw = (err as { code?: unknown } | null)?.code;
-      const code = typeof raw === 'string' ? raw : undefined;
-      const failedRunId = (err as { run_id?: unknown } | null)?.run_id;
       const verdict = handleFailure(trigger, code, false, failure.userMessage);
       await logFired(
         trigger,
@@ -495,6 +610,8 @@ export const createEventTriggerDispatcher = (
 
   const queue = createTriggerDispatchQueue({
     processEvent: onEvent,
+    // What will not start — a stop's, or a run the draining server refused.
+    onUnstarted: parkEntries,
     onOverflow: ({ dropped_events, retained_keys, max_keys }) => {
       // First drop is immediately actionable; thereafter rate-limit the warning
       // so an event storm cannot turn the safety fence into a log flood.
@@ -508,34 +625,117 @@ export const createEventTriggerDispatcher = (
 
   /** D-315 — mail facts' events a preapproval capture could not take while the
    *  vault was sealed, each with the subscription it came through, in the
-   *  order they came; `releasing` while they wait for it to open. */
-  const sealed: { readonly receive: (event: WarehouseEvent) => void; readonly event: WarehouseEvent }[] = [];
+   *  order they came; `releasing` while they wait for it to open. Disposed
+   *  meanwhile, they are parked rather than released — after what the queue
+   *  held, which came before them. */
+  interface HeldSealed {
+    readonly receive: (event: WarehouseEvent, parked_seq?: number) => void;
+    readonly event: WarehouseEvent;
+    readonly trigger_id: string;
+    readonly parked_seq?: number;
+  }
+  const sealed: HeldSealed[] = [];
   let releasing: Promise<void> | null = null;
-  const holdSealed = (receive: (event: WarehouseEvent) => void, event: WarehouseEvent): void => {
-    sealed.push({ receive, event });
+  const holdSealed = (held: HeldSealed): void => {
+    sealed.push(held);
     releasing ??= vaultOpen().then(() => {
       releasing = null;
+      // Disposed while it waited: the stop parks what is held.
+      if (disposed) return;
       // Each as it came, through the checks it came through: sealed again
       // meanwhile, it and those after it are held again, in order. One that
       // throws stops none of the rest, as on the bus.
-      for (const held of sealed.splice(0)) {
-        try { held.receive(held.event); } catch { /* a receiver never stops the rest */ }
+      for (const next of sealed.splice(0)) {
+        try { next.receive(next.event, next.parked_seq); } catch { /* a receiver never stops the rest */ }
       }
     });
   };
 
+  /** A mail fact's event that came while disposed: owed to every trigger
+   *  whose pattern it matches, as the bus would have delivered it. */
+  const keepArrival = (event: WarehouseEvent): void => {
+    if (event.platform !== MAIL_FACT_EVENT_PLATFORM) return;
+    let rows: EventTrigger[];
+    try {
+      rows = deps.getPreapprovalDriver ? deps.store.list() : deps.store.listEnabled();
+    } catch (error) {
+      console.warn('[event-triggers] a mail fact event that came while stopped could not be kept', error);
+      return;
+    }
+    const path = eventPath(event.platform, event.slug, event.entity_type, event.event_kind);
+    const owed = rows
+      .filter((row) => matchesPattern(row.pattern, path))
+      .map((row) => ({ trigger_id: row.trigger_id, event }));
+    if (parkArrivalsDirectly) park(owed);
+    else arrivals.push(...owed);
+  };
+
+  /** The rest of a stop, once `dispose()` has closed admission: wait for what
+   *  is running at most the grace, then park what never started, in the order
+   *  it came — the queue's (a running key's after its running event), then
+   *  the vault's held ones, then what arrived since. */
+  const finishStop = async (): Promise<void> => {
+    await settleWithin(
+      Promise.allSettled([queue.idle(), ...feedPumps.values()]),
+      STOP_GRACE_MS,
+    );
+    queue.flushUnstarted();
+    park(sealed.splice(0).map(({ trigger_id, event, parked_seq }) => ({
+      trigger_id, event, ...(parked_seq !== undefined ? { parked_seq } : {}),
+    })));
+    park(arrivals.splice(0));
+    if (disposed) parkArrivalsDirectly = true;
+  };
+
+  let replaying: Promise<void> | null = null;
+  const replayParked = (): Promise<void> => {
+    const list = deps.store.listParkedTriggerEvents?.bind(deps.store);
+    const unpark = deps.store.unparkTriggerEvent?.bind(deps.store);
+    if (!list || !unpark) return Promise.resolve();
+    replaying ??= (async () => {
+      let after = 0;
+      while (!disposed) {
+        const batch = list(after, REPLAY_BATCH);
+        if (batch.length === 0) return;
+        for (const parked of batch) {
+          after = parked.seq;
+          // The vault open and room in the queue, as a producer that can
+          // wait does — a backlog of parked events must not crowd live ones.
+          await dispatcher.room();
+          if (disposed) return;
+          unpark(parked.seq);
+          // A trigger deleted (or, without the driver, switched off) since
+          // takes nothing, as a live event would find.
+          const receive = receivers.get(parked.trigger_id);
+          if (receive === undefined) continue;
+          try {
+            receive(parked.event, parked.seq);
+          } catch (error) {
+            console.warn('[event-triggers] a parked event could not be handed back', error);
+          }
+        }
+      }
+    })().finally(() => { replaying = null; });
+    return replaying;
+  };
+
   const rebuild = (): void => {
     disposed = false;
+    keepingArrivals?.();
+    keepingArrivals = null;
+    parkArrivalsDirectly = false;
+    queue.resume();
     for (const sub of subscriptions) {
       try { sub.unsubscribe(); } catch { /* idempotent */ }
     }
     subscriptions.length = 0;
+    receivers.clear();
 
     // With the owned driver, include paused rows in subscriptions: accepting
     // their next execution can arm them without an asynchronous rebuild gap.
     // Every callback still checks the live row and captures only eligible work.
     for (const subscribed of deps.getPreapprovalDriver ? deps.store.list() : deps.store.listEnabled()) {
-      const receive = (incoming: WarehouseEvent): void => {
+      const receive = (incoming: WarehouseEvent, parked_seq?: number): void => {
         const driver = deps.getPreapprovalDriver?.();
         const trigger = deps.getPreapprovalDriver ? deps.store.get(subscribed.trigger_id) : subscribed;
         if (!trigger) return;
@@ -602,29 +802,55 @@ export const createEventTriggerDispatcher = (
           // captured once the vault opens. One that comes while others are
           // held waits behind them, the vault open or not.
           if (event.platform === MAIL_FACT_EVENT_PLATFORM && ((deps.isVaultUnlocked && !deps.isVaultUnlocked()) || sealed.length > 0)) {
-            holdSealed(receive, event);
+            holdSealed({
+              receive, event, trigger_id: trigger.trigger_id,
+              ...(parked_seq !== undefined ? { parked_seq } : {}),
+            });
             return;
           }
           if (deps.isVaultUnlocked && !deps.isVaultUnlocked()) return;
           const candidate = driver.captureTrigger(trigger, event);
           if (!candidate) return;
-          queue.enqueue(trigger, event, candidate);
-        } else queue.enqueue(trigger, event);
+          queue.enqueue(trigger, event, candidate, parked_seq);
+        } else queue.enqueue(trigger, event, undefined, parked_seq);
       };
       const fromBus = deps.bus.subscribe(subscribed.pattern, receive);
       const fromLate = late.subscribe(subscribed.pattern, receive);
       subscriptions.push({ trigger_id: subscribed.trigger_id, unsubscribe: () => { fromBus(); fromLate(); } });
+      receivers.set(subscribed.trigger_id, receive);
+    }
+
+    // A rebuild after a dispose — a pause released, a maintenance window over
+    // — hands back what that stop parked, once it has finished parking: the
+    // pre-approval driver exists by then. The first rebuild at boot has no stop
+    // behind it; boot calls `replayParked()` itself once the driver is composed.
+    if (stopping !== null) {
+      const stopped = stopping;
+      stopping = null;
+      void stopped.then(() => replayParked()).catch((error) => {
+        console.warn('[event-triggers] parked events not replayed', error);
+      });
     }
   };
 
   const dispose = (): void => {
+    if (disposed && stopping !== null) return;
     disposed = true;
     for (const sub of subscriptions) {
       try { sub.unsubscribe(); } catch { /* idempotent */ }
     }
     subscriptions.length = 0;
-    sealed.length = 0;
+    receivers.clear();
     errorsByTrigger.clear();
+    // A wait for the vault ends now: the event it held is parked instead.
+    for (const wake of [...vaultWaiters]) wake();
+    // Start nothing queued; the queue hands back what never started.
+    parkArrivalsDirectly = false;
+    queue.stop();
+    // A mail fact's event that comes from now on reaches no trigger, and its
+    // fact will not announce again: keep it for the next start.
+    keepingArrivals = deps.bus.subscribe(MAIL_FACT_EVENTS, keepArrival);
+    stopping = finishStop();
   };
 
   const dispatcher: EventTriggerDispatcher = {
@@ -633,30 +859,46 @@ export const createEventTriggerDispatcher = (
     activeSubscriptions: () => subscriptions.length,
     activeQueueKeys: () => queue.activeKeys(),
     drained: async () => {
+      // Disposed: the stop's own bounded wait, which ends once what it set
+      // aside is parked — what the restart drain's `pause_scheduler` awaits.
+      if (disposed && stopping !== null) return stopping;
       // What the vault holds is not yet queued: drained, it has run too.
       while (releasing !== null) await releasing;
       await queue.drained();
       await Promise.allSettled([...feedPumps.values()]);
     },
+    settled: async () => {
+      await Promise.allSettled([queue.idle(), ...feedPumps.values()]);
+      if (stopping !== null) await stopping;
+    },
+    replayParked,
     room: async () => {
       // A sealed vault drops a fire as it arrives, and holds a mail fact's
       // until it opens (above): its fact is marked announced, and nothing
       // emits it again. A producer that can wait — an AI answer or a backfill
       // that starts recipes — waits for it to open rather than pile its fires
       // up behind it. Sealed again while it waited for the queue, it waits again.
+      // Disposed, it waits for neither: what it then delivers is kept.
       do {
         await vaultOpen();
         await queue.room(TRIGGER_QUEUE_PRODUCER_KEYS, TRIGGER_QUEUE_PRODUCER_DEPTH);
-      } while (deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked());
+      } while (!disposed && deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked());
     },
-    deliver: (event) => late.emit(event),
+    deliver: (event) => {
+      // No trigger hears it while disposed; a mail fact's is kept.
+      if (disposed) keepArrival(event);
+      else late.emit(event);
+    },
     catchUpSituations: async () => {
-      if (disposed || deps.isVaultUnlocked?.() === false) return;
+      if (disposed || draining() || deps.isVaultUnlocked?.() === false) return;
       for (const trigger of deps.store.list()) await pumpSituation(trigger.trigger_id);
     },
     deliverSituation: async (trigger_id, incoming) => {
       if (incoming.platform !== 'situation') throw new Error('Only durable situation revisions use this delivery path');
       if (deps.isVaultUnlocked?.() === false) return false;
+      // Stopping: leave the checkpoint where it is, and the next catch-up —
+      // after the restart, or once a pause is released — delivers it.
+      if (disposed || draining()) return false;
       const trigger = deps.store.get(trigger_id);
       if (!trigger) return true;
       const revision = incoming.prev?.revision;
@@ -685,7 +927,7 @@ export const createEventTriggerDispatcher = (
       const candidate = driver?.captureTrigger(trigger, event);
       if (driver && !candidate) return true;
       let entered = false;
-      const handled = await settle(trigger, event, async () => {
+      const settled = await settle(trigger, event, async () => {
         const outcome = await deps.runtime.runRecipe({ recipe_id: trigger.recipe_id, publisher_id: trigger.publisher_id,
           context: triggerEventContext(trigger.trigger_id, event), dish_id: trigger.dish_id ?? null, trigger_id: trigger.trigger_id,
           subscriber_contract_id: trigger.read_contract_id ?? null,
@@ -702,6 +944,9 @@ export const createEventTriggerDispatcher = (
         if (entered) durable!.finishSubscriberRun(subscriber, revision as number, 'completed', now());
         return outcome;
       });
+      // Not run (the server refused it while restarting) is not handled: the
+      // checkpoint stays, and the revision is delivered again after the restart.
+      const handled = settled === true;
       if (!handled && entered) durable!.finishSubscriberRun(subscriber, revision as number, 'in_doubt', now());
       return handled;
     },

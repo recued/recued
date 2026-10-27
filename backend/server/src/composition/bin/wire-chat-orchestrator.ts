@@ -1429,6 +1429,7 @@ export const composeChatOrchestrator = (
     chatStore,
     revalidateProjectionRead: createProjectionVersionProbe({
       query: chatToolRegistryInputs.tier1Handlers['situation.query']!,
+      fieldVersion: async (request, ctx) => deps.getSituationAccess?.()?.fieldVersion(request, ctx.execution_source),
       admit: ctx => admitTier1('situation.query', ctx),
       now: Date.now,
     }),

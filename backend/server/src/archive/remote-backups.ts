@@ -188,11 +188,16 @@ export const createRemoteBackups = (options: {
         ? { ...common, state: 'error', error: 'Remote backup delivery is not confirmed. Check the saved backup before starting another.' }
         : { ...common, state: 'running' };
     },
-    async publish(id: string, artifact: { path: string; bytes_written: number; expires_at?: number }): Promise<void> {
+    /** `signal` aborts the delivery (a server stopping mid-backup). The row is
+     *  then left `unconfirmed` / `interrupted` — the verdict boot gives a
+     *  delivery the process did not live to finish — and a later check reads
+     *  the object back. */
+    async publish(id: string, artifact: { path: string; bytes_written: number; expires_at?: number }, signal?: AbortSignal): Promise<void> {
       const row = requireRow(id); id = row.operation_id;
       if (row.state !== 'preparing' || running.has(id)) throw new RpcError('conflict', 'This backup operation has already started.');
       running.add(id); const pinned = join(scratch, `${row.operation_id}.recued.archive`);
       try {
+        signal?.throwIfAborted();
         const context = await resolveRow(row);
         if (dirname(resolve(artifact.path)) !== join(dataPath, 'exports') || !isGeneratedExportName(basename(artifact.path))) throw new RemoteBackupTransferError('verification_failed');
         mkdirSync(scratch, { recursive: true, mode: 0o700 });
@@ -204,7 +209,7 @@ export const createRemoteBackups = (options: {
         }
         await chmod(pinned, 0o600);
         fsyncDir(scratch);
-        const bytes = await hashRemoteBackupFile(pinned);
+        const bytes = await hashRemoteBackupFile(pinned, signal);
         if (bytes.bytes !== artifact.bytes_written) throw new RemoteBackupTransferError('verification_failed');
         store.update(id, current => {
           current.state = 'uploading'; current.bytes = bytes.bytes; current.sha256 = bytes.sha256; current.export_name = basename(artifact.path);
@@ -217,11 +222,13 @@ export const createRemoteBackups = (options: {
             if (uploadId === null) delete current.multipart_id; else current.multipart_id = uploadId;
             delete current.multipart_cleanup_issue;
           });
-        }); } catch { /* the following read determines whether delivery happened */ }
+        }, signal); } catch { /* the following read determines whether delivery happened */ }
+        // A cancelled delivery cannot read its object back; leave it to a later check.
+        signal?.throwIfAborted();
         const current = store.update(id, entry => { entry.state = 'verifying'; });
-        try { await abortParts(current, context.transport); } catch { /* cleanup cannot overrule a successful object read */ }
-        await verified(requireRow(id), context.transport);
-      } catch (error) { service.failed(id, issueOf(error)); throw new RpcError('remote_backup_unconfirmed',
+        try { await abortParts(current, context.transport, signal); } catch { /* cleanup cannot overrule a successful object read */ }
+        await verified(requireRow(id), context.transport, signal);
+      } catch (error) { service.failed(id, signal?.aborted ? 'interrupted' : issueOf(error)); throw new RpcError('remote_backup_unconfirmed',
         'Remote backup delivery is not confirmed. Check the saved backup before starting another.', 502); }
       finally { running.delete(id); await unlink(pinned).catch(() => { /* exact owned ciphertext can be reclaimed at boot */ }); }
     },

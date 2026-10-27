@@ -27,6 +27,16 @@ export interface RecordsOutboxDrainResult {
   dead_lettered: number;
 }
 
+/** Thrown by a runtime's `admit` or `deliver` when the server is stopping: the
+ *  watcher run never started (the server refused it) or the restart stopped it.
+ *  The pass ends there, and that delivery and every one after it stay pending
+ *  for the next boot, as after a crash, with no retry counted. */
+export class RecordsOutboxStopping extends Error {
+  constructor() {
+    super('records outbox: the server is stopping');
+  }
+}
+
 export const drainRecordsOutboxOnce = async (
   store: RecordsStore,
   runtime: RecordsOutboxRuntime,
@@ -73,6 +83,9 @@ export const drainRecordsOutboxOnce = async (
         result.delivered += 1;
       }
     } catch (error) {
+      // ⛔ NOT RUN IS NOT FAILED. Counted as a retry, ten restarts at the wrong
+      // moment dead-lettered a watcher event.
+      if (error instanceof RecordsOutboxStopping) throw error;
       const reason = error instanceof Error ? error.message : String(error);
       const maxRetries = options.max_retries ?? 10;
       if (store.failDelivery(event.event_id, subscriber.binding_digest, reason, maxRetries)) {

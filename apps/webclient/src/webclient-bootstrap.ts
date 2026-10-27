@@ -873,6 +873,7 @@ import type {
   UpdateModeSetCaller,
   UpdateApplyCaller,
   UpdateRollbackCaller,
+  UpdateOperationStatusCaller,
 } from './settings/updates-page.js';
 import type {
   DdnsSetEnabledCaller,
@@ -8431,6 +8432,8 @@ export const bootstrapWebclient = async (
       ? undefined
       : {
           list: () => rpcConn.call('collection.mail.list', undefined),
+          enrollSmtp: args => switchWorkTracker.track((input: typeof args) =>
+            rpcConn.call('collection.mail.enrollSmtp', input as RpcRequest<ServerRpcRegistry, 'collection.mail.enrollSmtp'>, { timeout: 60_000 }))(args),
           updateCredentials: switchWorkTracker.track(args => rpcConn.call('collection.mail.updateCredentials', args, { timeout: 60_000 })),
           enrollImap: (args) =>
             switchWorkTracker.track((input: typeof args) =>
@@ -9675,6 +9678,14 @@ export const bootstrapWebclient = async (
     : undefined;
   const updateRollbackCaller: UpdateRollbackCaller | undefined = updatesEnabled
     ? (args) => rpcConn.call('update.rollback', args)
+    : undefined;
+  // Read once a run did not take effect, for its `revert_reason`. A server that
+  // predates the code answers without one and the page keeps its plain line.
+  const updateOperationStatusCaller: UpdateOperationStatusCaller | undefined = updatesEnabled
+    ? (operationId) => rpcConn.call('update.operation_status', {
+        operation_id: operationId,
+        include_closed: true,
+      })
     : undefined;
   // Updates reads the supervisor mode to say up front that a server nothing
   // restarts installs from the terminal; the server refuses the apply anyway.
@@ -11638,6 +11649,11 @@ export const bootstrapWebclient = async (
         container: appShell.contentRoot,
         continuityOwner: rpcConn,
         context: input => rpcConn.call('yours.context', input),
+        writerSetup: {
+          read: input => rpcConn.call('yours.writer.read', input),
+          preview: input => rpcConn.call('yours.writer.preview', input),
+          change: input => switchWorkTracker.track((args: typeof input) => rpcConn.call('yours.writer.change', args))(input),
+        },
         subscribeReady: listener => ws.onState(state => { if (state === 'connected') listener(); }),
         segments: hashSource ? parseShellRoute(hashSource.getHash()).segments : [],
         read: input => rpcConn.call('yours.read', input),
@@ -12636,6 +12652,7 @@ export const bootstrapWebclient = async (
               },
               ...(updateModeGetCaller !== undefined ? { updateModeGetCaller } : {}),
               ...(serverLifecycleGetCaller !== undefined ? { serverLifecycleGetCaller } : {}),
+              ...(updateOperationStatusCaller !== undefined ? { updateOperationStatusCaller } : {}),
               ...(updateModeSetCaller !== undefined
                 ? {
                     updateModeSetCaller: switchWorkTracker.track(

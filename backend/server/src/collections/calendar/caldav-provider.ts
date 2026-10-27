@@ -111,6 +111,7 @@ import {
   type ProviderPollScheduler,
   type ProviderPollStop,
 } from '../draining-interval.js';
+import { CollectionStoppedError, throwIfStopped } from '../stop-signal.js';
 
 /** CalDAV REPORT responses can include event bodies, so retain the provider
  * ceiling used by mail/calendar APIs while keeping it finite. */
@@ -1190,6 +1191,11 @@ export const createCalDavProvider = (
   let pendingQueueSize = 0;
   let pendingSeriesExpansions = 0;
   let pollStop: ProviderPollStop | null = null;
+  /** Aborted by `close()`, armed again by `connect()`: the first scan and the
+   *  poll `startSync` runs at once go by it, and each scheduled poll by its
+   *  loop's own signal. A scan or poll captures the signal when it begins, so
+   *  one begun before a close stays stopped across the next connect. */
+  let lifecycle = new AbortController();
 
   const authHeader = basicAuthHeader(
     opts.config.username,
@@ -1212,13 +1218,17 @@ export const createCalDavProvider = (
     });
   };
 
+  /** `signal`: a sync's stop, which aborts the request; none starts once it
+   *  fired. Absent on a write, which runs to its answer. */
   const davRequest = async (
     url: string,
     method: string,
     headers: Record<string, string>,
     body: string | undefined,
     operation: string,
+    signal?: AbortSignal,
   ): Promise<{ status: number; text: string; ok: boolean }> => {
+    throwIfStopped(signal);
     const fullHeaders: Record<string, string> = {
       ...headers,
       Authorization: authHeader,
@@ -1227,6 +1237,7 @@ export const createCalDavProvider = (
       method,
       headers: fullHeaders,
       body,
+      ...(signal ? { signal } : {}),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -1236,7 +1247,7 @@ export const createCalDavProvider = (
     return { status: res.status, text, ok: res.ok };
   };
 
-  const discoverCalendars = async (): Promise<
+  const discoverCalendars = async (signal?: AbortSignal): Promise<
     Array<{ id: string; href: string; displayname: string }>
   > => {
     const res = await davRequest(
@@ -1248,6 +1259,7 @@ export const createCalDavProvider = (
       },
       calendarHomePropfindBody(),
       'PROPFIND calendar-home',
+      signal,
     );
     const entries = parseCalendarHomePropfind(res.text).filter(
       (e) => e.isCalendar,
@@ -1290,10 +1302,13 @@ export const createCalDavProvider = (
   const fetchEventIcs = async (
     calendarHref: string,
     eventHref: string,
+    signal?: AbortSignal,
   ): Promise<{ body: string; etag: string | null }> => {
+    throwIfStopped(signal);
     const res = await fetcher(absolute(calendarHref, eventHref), {
       method: 'GET',
       headers: { Authorization: authHeader, Accept: 'text/calendar' },
+      ...(signal ? { signal } : {}),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -1340,10 +1355,11 @@ export const createCalDavProvider = (
     window: RRuleExpansionWindow,
     emit: (payload: ProviderEventPayload) => Promise<boolean>,
     reconcile: (series: CalendarSeriesSnapshot) => Promise<void>,
+    signal: AbortSignal,
   ): Promise<void> => {
     let icsBody = calendarData;
     if (!icsBody) {
-      icsBody = (await fetchEventIcs(calendar.href, eventHref)).body;
+      icsBody = (await fetchEventIcs(calendar.href, eventHref, signal)).body;
     }
     const object = readObject(icsBody);
     if (object === null) {
@@ -1362,24 +1378,35 @@ export const createCalDavProvider = (
     const correction = prior !== null && prior.legacy && prior.etag === etag;
     const keep: string[] = [];
     for (const occurrence of occurrences) {
+      throwIfStopped(signal);
       const payload = payloadOf(object, occurrence, etag, calendar, correction);
       keep.push(payload.event.source_id);
       if (!(await emit(payload))) return;
     }
+    // Stopped before every occurrence was handed on: `keep` is not the whole
+    // set, and the reconcile below would take the rest out.
+    throwIfStopped(signal);
     await reconcile({
       calendar_id: calendar.id,
       ical_uid: object.uid,
       window: { start: window.windowStart, end: window.windowEnd },
       keep,
     });
+    // The ETag is what tells the next tick this resource needs no reading.
+    throwIfStopped(signal);
     await opts.etagStore.set(etagKey(calendar.id, eventHref), encodeStored(etag, object.uid));
   };
 
   // ── initial scan ────────────────────────────────────────────
+  /** `signal` stops the scan between resources by THROWING: a normal return
+   *  tells the collection the backfill is complete, and a calendar the loop
+   *  finished is reconciled — every row it holds in the window that the scan
+   *  did not reach goes. */
   const runInitialScan = async (
     scanOpts: InitialScanOptions,
+    signal: AbortSignal,
   ): Promise<void> => {
-    const calendars = await discoverCalendars();
+    const calendars = await discoverCalendars(signal);
     const windowStart = nowOf() - scanOpts.backfill_days * 86_400_000;
     const windowEnd = nowOf() + scanOpts.expansion_future_days * 86_400_000;
     const window = expansionWindow();
@@ -1395,11 +1422,13 @@ export const createCalDavProvider = (
         },
         calendarQueryBody(windowStart, windowEnd, true),
         'REPORT calendar-query (initial scan)',
+        signal,
       );
       const entries = parseCalendarQuery(res.text);
       const kept: string[] = [];
       for (const entry of entries) {
         if (aborted) break;
+        throwIfStopped(signal);
         const prior = decodeStored(await opts.etagStore.get(etagKey(cal.id, entry.href)));
         await ingestEvent(
           cal,
@@ -1418,8 +1447,10 @@ export const createCalDavProvider = (
             kept.push(...series.keep);
             await scanOpts.onSeries?.(series);
           },
+          signal,
         );
       }
+      throwIfStopped(signal);
       // ⛔ Every resource of the calendar was read, so a stored row of it in
       // the window that none made is gone: deleted while Recued was not
       // watching, or filed by the reader before 2026-10-07 under another
@@ -1438,11 +1469,13 @@ export const createCalDavProvider = (
   };
 
   // ── incremental sync tick ───────────────────────────────────
-  const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
+  /** `signal` stops the poll between resources by throwing: a stopped poll
+   *  stamps no ETag and removes no resource, so the next one reads the same. */
+  const runSyncTick = async (cb: CalendarSyncCallback, signal: AbortSignal): Promise<void> => {
     // Clean until a failure is swallowed: only a tick that read every calendar
     // and delivered every change says the calendar is synced.
     let clean = true;
-    const calendars = await discoverCalendars();
+    const calendars = await discoverCalendars(signal);
     const window = expansionWindow();
     const reconcile = async (series: CalendarSeriesSnapshot): Promise<void> => {
       await cb({ kind: 'series', source_id: `${series.calendar_id}:${series.ical_uid}`, series });
@@ -1457,6 +1490,7 @@ export const createCalDavProvider = (
         },
         calendarQueryBody(window.windowStart, window.windowEnd, false),
         'REPORT calendar-query (sync tick)',
+        signal,
       );
       const current = parseCalendarQuery(res.text);
       const previous = await opts.etagStore.list(etagPrefix(cal.id));
@@ -1465,6 +1499,7 @@ export const createCalDavProvider = (
 
       const currentKeys = new Set<string>();
       for (const entry of current) {
+        throwIfStopped(signal);
         const k = etagKey(cal.id, entry.href);
         currentKeys.add(k);
         const prior = decodeStored(prevMap.get(k));
@@ -1490,8 +1525,10 @@ export const createCalDavProvider = (
               return true;
             },
             reconcile,
+            signal,
           );
         } catch (err) {
+          if (signal.aborted) throw new CollectionStoppedError();
           markError(`caldav ingest failed href=${entry.href}`, err);
           clean = false;
         } finally {
@@ -1504,6 +1541,7 @@ export const createCalDavProvider = (
       // go; rows before the window stay, as history.
       for (const [k, value] of prevMap) {
         if (currentKeys.has(k)) continue;
+        throwIfStopped(signal);
         const stored = decodeStored(value);
         try {
           // ⚠ A value written before 2026-10-07 names no UID, so nothing it
@@ -1520,8 +1558,10 @@ export const createCalDavProvider = (
           // The ETag row is the only durable evidence that this href used to
           // exist. Remove it only after the collection acknowledges the delete;
           // otherwise the next REPORT has no way to replay the tombstone.
+          throwIfStopped(signal);
           await opts.etagStore.delete(k);
         } catch (err) {
+          if (signal.aborted) throw new CollectionStoppedError();
           markError(`caldav delete-notify failed key=${k}`, err);
           clean = false;
         }
@@ -1533,11 +1573,12 @@ export const createCalDavProvider = (
 
   /** A poll tick that reports a thrown failure too: `auth` for a rejected
    *  credential, else `transient`. Rethrows, so it is logged as before. */
-  const runReportedTick = async (cb: CalendarSyncCallback): Promise<void> => {
+  const runReportedTick = async (cb: CalendarSyncCallback, signal: AbortSignal): Promise<void> => {
     try {
-      await runSyncTick(cb);
+      await runSyncTick(cb, signal);
     } catch (err) {
-      reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
+      // A stopped poll did not fail: there is no outcome to report.
+      if (!signal.aborted) reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
       throw err;
     }
   };
@@ -2090,6 +2131,9 @@ export const createCalDavProvider = (
     },
 
     async connect() {
+      // `sync.stop()` closes the provider and a later `sync.start()` reuses it
+      // (the vault lock edge): a new connection gets a new signal.
+      if (lifecycle.signal.aborted) lifecycle = new AbortController();
       // A narrow PROPFIND on the calendar-home confirms credentials.
       await davRequest(
         opts.config.calendar_home_url,
@@ -2100,18 +2144,23 @@ export const createCalDavProvider = (
         },
         calendarHomePropfindBody(),
         'PROPFIND connect',
+        lifecycle.signal,
       );
     },
 
     async initialScan(scanOpts) {
-      await runInitialScan(scanOpts);
+      await runInitialScan(scanOpts, lifecycle.signal);
     },
 
     async startSync(cb) {
       const scheduler = opts.scheduler ?? defaultScheduler;
       const intervalMs = Math.max(1, opts.config.poll_seconds) * 1000;
-      await runReportedTick(cb);
-      pollStop = scheduler(() => runReportedTick(cb), intervalMs);
+      const session = lifecycle.signal;
+      await runReportedTick(cb, session);
+      // Closed during that first poll: start no loop that nothing would stop.
+      if (session.aborted) throw new CollectionStoppedError();
+      // A scheduled poll gets its loop's signal; a test scheduler calls it bare.
+      pollStop = scheduler((signal) => runReportedTick(cb, signal ?? session), intervalMs);
       return async () => {
         const stop = pollStop;
         pollStop = null;
@@ -2120,6 +2169,9 @@ export const createCalDavProvider = (
     },
 
     async close() {
+      // Close admission and abort the scan or poll in flight; the poll loop's
+      // stop then waits for its pass at most `STOP_GRACE_MS`.
+      lifecycle.abort(new CollectionStoppedError('the caldav provider was closed'));
       const stop = pollStop;
       pollStop = null;
       await stop?.();

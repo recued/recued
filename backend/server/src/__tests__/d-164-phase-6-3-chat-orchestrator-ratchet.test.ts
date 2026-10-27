@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vites
 
 
 import Database from 'better-sqlite3';
+import { classifyProviderError, createQuotaTracker, executeLLM, type LLMAdapter, type LLMConfig, LLMError } from '@recued/llm';
 import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   KERNEL_AUTHOR,
@@ -1890,6 +1891,67 @@ describe('D-164 P6.3 decoder_unavailable emission', () => {
     expect(budgetIndex).toBeGreaterThanOrEqual(0);
     expect(decoderIndex).toBeGreaterThan(budgetIndex);
   };
+
+  // The qualification relay returns 502 when an upstream model times out.
+  // Exercise the real cascade: its appended no-match must not become setup
+  // advice in either the opening call or synthesis after a completed tool.
+  it.each(['initial', 'tool_loop'] as const)('keeps an exhausted provider failure out of model setup at %s', async (site) => {
+    const complete = vi.fn<LLMAdapter['complete']>(async () => {
+      if (site === 'tool_loop' && complete.mock.calls.length === 1) {
+        return { text: JSON.stringify(aiOutput('', [toolCall()])), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+      }
+      throw classifyProviderError(502, 'Qualification model request failed; see the private receipt.', null);
+    });
+    const quota = createQuotaTracker();
+    const config: LLMConfig = { slot_1: { provider: 'openai', model: 'fixture', api_key: 'fixture', speed: 'fast', supports_json: true } };
+    let failed: LLMError | undefined;
+    const executeAiCall: ExecuteChatAiCall = async (manifest, input) => {
+      try {
+        return { body: await executeLLM(manifest, input, {
+          config, adapters: () => ({ provider: 'openai', complete }), quota, tabProbe: async () => new Set(),
+        }) };
+      } catch (error) {
+        if (error instanceof LLMError) failed = error;
+        throw error;
+      }
+    };
+    const dispatch = vi.fn(async () => ({ ok: true as const, result: { hits: ['saved fact'] } }));
+    const { orchestrator, sessionId } = setup({
+      catalog: [mkTool('mail.search', 1)], dispatchImpl: dispatch, executeAiCall,
+    });
+
+    await orchestrator.runTurn({ session_id: sessionId, message: 'check a saved fact', picker_state: { current: 'self' } });
+
+    expect(failed).toMatchObject({ code: 'AI_LLM_UNAVAILABLE', details: { status: 502 } });
+    expect(failed?.details?.fallback_unavailable).toContain('No LLM source matches');
+    expect(decoderEvents()).toEqual([{ reason: 'provider_failure', site }]);
+    expectDecoderAfterBudget();
+    expect(complete).toHaveBeenCalledTimes(site === 'initial' ? 1 : 2);
+    expect(dispatch).toHaveBeenCalledTimes(site === 'initial' ? 0 : 1);
+    const assistant = await finalAssistant(sessionId);
+    expect(assistant?.content).not.toContain('No AI model is available');
+    expect(assistant?.content).not.toContain('Qualification model request failed');
+    if (site === 'tool_loop') {
+      expect(assistant?.content).toContain('provider failed partway');
+      expect(assistant?.tool_calls).toMatchObject([{ tool_name: 'mail.search', status: 'ok' }]);
+      expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([{ termination_reason: 'aborted' }]);
+    }
+  });
+
+  it('keeps setup advice for a real first-match configuration failure', async () => {
+    const complete = vi.fn<LLMAdapter['complete']>();
+    const { orchestrator, sessionId } = setup({ executeAiCall: async (manifest, input) => ({
+      body: await executeLLM(manifest, input, {
+        config: {}, adapters: () => ({ provider: 'openai', complete }), quota: createQuotaTracker(), tabProbe: async () => new Set(),
+      }),
+    }) });
+
+    await orchestrator.runTurn({ session_id: sessionId, message: 'need a configured model', picker_state: { current: 'self' } });
+
+    expect(complete).not.toHaveBeenCalled();
+    expect(decoderEvents()).toEqual([{ reason: 'no_source', site: 'initial' }]);
+    expect((await finalAssistant(sessionId))?.content).toContain('No AI model is available');
+  });
 
   it('emits initial provider_failure after budget accounting and leaves the assistant body empty', async () => {
     // Mutation caught: initial executor throw emits no decoder event, emits it before budget accounting, or leaks provider detail into chat.

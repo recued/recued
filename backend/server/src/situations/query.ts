@@ -180,6 +180,7 @@ const itemOf = (fact: SituationFact, reasons: Set<SituationReason>, query: Situa
   ...(fact.when_day ? { when_day: fact.when_day } : {}),
   ...(fact.sphere ? { sphere: fact.sphere } : {}), updated_at: fact.updated_at,
   ...(fact.details ? { details: fact.details } : {}),
+  ...(fact.context ? { context: fact.context } : {}),
   ...tripOf(fact.trip),
 });
 const uniqueRefs = (refs: SituationRef[]): SituationRef[] => [...new Map(refs.map(ref => [refKey(ref), ref])).values()]
@@ -354,6 +355,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
       evidence: [...canonical.evidence, ...clock.evidence], missing: canonical.missing || clock.missing,
       // The obligation is the asset's: its fields stay with the one item kept.
       ...(clock.details ?? canonical.details ? { details: clock.details ?? canonical.details } : {}),
+      ...(clock.context ?? canonical.context ? { context: clock.context ?? canonical.context } : {}),
       updated_at: Math.max(canonical.updated_at, clock.updated_at) });
     factsById.delete(refKey(clock.ref));
   }

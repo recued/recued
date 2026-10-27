@@ -169,13 +169,20 @@ describe('D-221 durable Records watcher delivery', () => {
     }], snapshot)).toThrow(/mutable dish\/install config/);
   });
 
-  it('does not start the drain grant-blind, because a refused admission destroys the event', () => {
+  it('does not start the drain grant-blind, because a refused admission destroys the event', async () => {
     // `admit` returns false without a grant store, and a refused admission
     // dead-letters on the FIRST attempt. Grant-blind, that empties the whole
     // queue on tick one — so the composition declines to run instead.
     const registered: string[] = [];
+    const stops: Array<() => Promise<void> | void> = [];
+    // The drain owns its interval (its stop waits a bounded grace, not the
+    // whole pass), so it registers through `register`; either path counts.
     const services = {
       registerInterval: (entry: { name: string }) => { registered.push(entry.name); },
+      register: (entry: { name: string; stop: () => Promise<void> | void }) => {
+        registered.push(entry.name);
+        stops.push(entry.stop);
+      },
     } as unknown as Parameters<typeof composeRecordsOutbox>[0]['backgroundServices'];
     const base = {
       recordsStore: store,
@@ -191,5 +198,7 @@ describe('D-221 durable Records watcher delivery', () => {
     // is about the missing store and not a disabled drain.
     composeRecordsOutbox({ ...base, contractStore: { scan: () => [] } as never });
     expect(registered).toEqual(['records-outbox']);
+    // Its interval is real: stop it rather than leave it ticking at the store.
+    await Promise.all(stops.map((stop) => stop()));
   });
 });

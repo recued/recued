@@ -219,7 +219,7 @@ const dispatch = async (): Promise<void> => {
         },
         { clearWebclientApplyJournal },
         { acquireUpdateLease, UpdateLeaseHeldError },
-        { installEarlyBootUpdateLease, releaseEarlyBootUpdateLease },
+        { installEarlyBootUpdateLease, releaseEarlyBootUpdateLease, BOOT_RECONCILE_LEASE_OPERATION },
         { runningAsPackagedBinary },
       ] =
         await Promise.all([
@@ -268,7 +268,7 @@ const dispatch = async (): Promise<void> => {
         try {
           earlyBootLease = acquireUpdateLease({
             leasePath,
-            operation: 'boot-reconcile',
+            operation: BOOT_RECONCILE_LEASE_OPERATION,
           });
         } catch (err) {
           if (!(err instanceof UpdateLeaseHeldError)) throw err;

@@ -22,6 +22,7 @@ import type { CollectionInstanceRow, FileCollectionCaps } from '@recued/contract
 import type { KernelDispatchers } from '@recued/ingredients';
 import type { AuditLogStore } from '@recued/storage';
 import { createBackfillAuditRecorder } from '../../triggers/backfill-audit.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import {
   createInstanceStore,
   type CollectionInstanceStore,
@@ -107,7 +108,8 @@ export interface FileStack {
    *  attempted. */
   startAll(): Promise<void>;
   /** Stop every live adapter and clear the map. Called from the
-   *  lifecycle drain's `pause_collections` step. Idempotent. */
+   *  lifecycle drain's `pause_collections` step; resolves within
+   *  `STOP_GRACE_MS`. Idempotent. */
   disposeAll(): Promise<void>;
   /** D-106 follow-up — give every `fs` folder a collection of its records
    *  (`watched-folders.ts`). Call once, before `startAll`, when the registry
@@ -141,6 +143,9 @@ export const composeFileStack = (
   adapters.register(createExtDownloadsAdapterFactory({ registry: extDownloads }));
 
   const liveAdapters = new Map<string, FileAdapterInstance>();
+  /** Adapters in their first walk: not live until it ends, but `disposeAll`
+   *  stops them here rather than wait for a walk that only a stop ends. */
+  const starting = new Map<string, FileAdapterInstance>();
   let watched: WatchedFolders | undefined;
   const lifecycleTails = new Map<string, Promise<void>>();
   let closed = false;
@@ -301,9 +306,13 @@ export const composeFileStack = (
     });
     backfillRecorder = recorder;
     folder?.beginWalk();
+    // Reachable by `disposeAll` until this start ends (`startTrackedUnlocked`).
+    starting.set(row.slug, instance);
     try {
       await instance.start();
     } catch (err) {
+      // A walk a stop cut short throws too: it is not complete, so nothing it
+      // did not reach is taken for removed.
       await folder?.endWalk({ complete: false });
       if (closed) {
         try { await instance.stop(); } catch { /* shutdown containment */ }
@@ -353,6 +362,11 @@ export const composeFileStack = (
       }
     }
     await recorder.finish();
+    // disposeAll may have closed admission while the audit row was written.
+    if (closed) {
+      try { await instance.stop(); } catch { /* shutdown containment */ }
+      return;
+    }
 
     liveAdapters.set(row.slug, instance);
   };
@@ -384,11 +398,24 @@ export const composeFileStack = (
     }
   };
 
+  /** A start, its adapter reachable by `disposeAll` (`starting`) until it ends.
+   *  Lifecycle steps run one at a time per slug, so the slug names this start's
+   *  adapter alone. */
+  const startTrackedUnlocked = async (
+    row: Parameters<typeof startLiveAdapterUnlocked>[0],
+  ): Promise<void> => {
+    try {
+      await startLiveAdapterUnlocked(row);
+    } finally {
+      starting.delete(row.slug);
+    }
+  };
+
   const startLiveAdapter = (
     row: Parameters<typeof startLiveAdapterUnlocked>[0],
   ): Promise<void> => serializeLifecycle(
     row.slug,
-    () => startLiveAdapterUnlocked(row),
+    () => startTrackedUnlocked(row),
   );
 
   /** The enrollment was deleted: stop the adapter, then its records go. */
@@ -409,7 +436,7 @@ export const composeFileStack = (
       if (closed) return;
       await stopLiveAdapterUnlocked(row.slug, true);
       if (closed) return;
-      await startLiveAdapterUnlocked({
+      await startTrackedUnlocked({
         slug: row.slug,
       });
     });
@@ -453,13 +480,36 @@ export const composeFileStack = (
     // Close admission before taking either snapshot. Already-queued resyncs
     // remain in lifecycleTails and observe `closed` before replacement starts.
     closed = true;
-    const slugs = new Set([...liveAdapters.keys(), ...lifecycleTails.keys()]);
-    const drains = [...slugs].map((slug) => serializeLifecycle(
-      slug,
-      () => stopLiveAdapterUnlocked(slug, true),
-    ));
-    disposePromise = Promise.allSettled(drains).then((results) => {
-      const errors = results
+    // Stop every adapter now — the live ones and those still in their first
+    // walk — rather than queue each stop behind the lifecycle step running on
+    // its folder: that step is often the walk itself (a start, a resync, a
+    // rescan, an S3 listing), which only a stop ends. A walk cut short says so
+    // (`walkErrors`, `rescan`'s `complete`), so its folder takes nothing it
+    // did not reach for removed, and the next start walks again.
+    const toStop = new Map<FileAdapterInstance, string>();
+    for (const [slug, instance] of liveAdapters) toStop.set(instance, slug);
+    for (const [slug, instance] of starting) toStop.set(instance, slug);
+    liveAdapters.clear();
+    const stops = [...toStop].map(async ([instance, slug]) => {
+      try {
+        await instance.stop();
+      } catch (err) {
+        log('warn', `file-stack: adapter.stop failed for '${slug}'`, {
+          err: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+    });
+    // The lifecycle steps those stops cut short then unwind (their tails never
+    // reject). Both waits are bounded: past `STOP_GRACE_MS`, what is still
+    // running was told to stop, and the drain's exit ends it.
+    const work = Promise.allSettled([...stops, ...lifecycleTails.values()]);
+    disposePromise = settleWithin(work, STOP_GRACE_MS).then(async (waited) => {
+      if (waited === 'timed_out') {
+        log('warn', `file-stack: stopped waiting for folders to stop after ${STOP_GRACE_MS} ms`);
+        return;
+      }
+      const errors = (await Promise.allSettled(stops))
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => result.reason);
       if (errors.length > 0) {

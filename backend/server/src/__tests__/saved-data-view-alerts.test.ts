@@ -10,6 +10,7 @@ import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createSavedDataViewStore } from '../saved-data-view-store.js';
 import { createSavedTaskViewReader, resolveAlertTaskFilter } from '../saved-data-view-task-reader.js';
 import { createSavedDataViewAlertRuntime } from '../saved-data-view-alert-runtime.js';
+import { PUSH_GRACE_MS, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createWorkEntityStore, ensureWorkEntitySchema, type WorkEntityStore } from '../storage/work-entity-store.js';
 
 const definition: SavedDataViewDefinition = { tab: 'task', query: '', source_id: 'recued.task', booking_lifecycle: 'all',
@@ -230,5 +231,65 @@ describe('an alert reads a date-only due by its day in the alert\'s zone', () =>
     expect(read(definition, 'America/Los_Angeles', mondayEvening)).toEqual([]);
     const tuesdayMorning = Date.parse('2026-09-29T08:00:00-07:00');
     expect(read(definition, 'America/Los_Angeles', tuesdayMorning).map((t) => t.id)).toEqual(['due-monday']);
+  });
+});
+
+/** ⛔ A drain step awaits the stop, with 5 s; a push goes to each channel in
+ *  turn (15 s a messenger call, an email longer). */
+describe('saved view alerts — stopping', () => {
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+
+  it('waits no longer than the grace for local work, and the notice it left is sent after the restart', async () => {
+    const h = open();
+    h.configure(h.views.create({ name: 'Overdue', definition }), true);
+    task(h.tasks, 'new');
+    const history = vi.spyOn(h.auditLog, 'logActivity').mockImplementationOnce(() => new Promise(() => {}));
+    void h.runtime.tick();
+    await vi.waitFor(() => expect(history).toHaveBeenCalledTimes(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let stopped = false;
+    const stopping = h.runtime.stop().then(() => { stopped = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settle();
+    vi.useRealTimers();
+    expect(stopped).toBe(true);
+    await stopping;
+    // Never claimed, so still in the store.
+    expect(h.notify).not.toHaveBeenCalled();
+    expect(h.views.alerts.pending()).toHaveLength(1);
+
+    const restarted = createSavedDataViewAlertRuntime({ store: h.views.alerts, auditLog: h.auditLog, notifier: { notify: h.notify } });
+    await restarted.tick();
+    await restarted.stop();
+    expect(h.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives a claimed push in flight the longer grace, then stops waiting: the claim means it is never tried again', async () => {
+    const h = open();
+    h.configure(h.views.create({ name: 'Overdue', definition }), true);
+    task(h.tasks, 'new');
+    let release: (() => void) | undefined;
+    h.notify.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    void h.runtime.tick();
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+    expect(h.views.alerts.pending()).toEqual([]);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let stopped = false;
+    const stopping = h.runtime.stop().then(() => { stopped = true; });
+    // Longer than other work gets…
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settle();
+    expect(stopped).toBe(false);
+    // …and no longer than its own grace: a drain step has 5 s.
+    await vi.advanceTimersByTimeAsync(PUSH_GRACE_MS - STOP_GRACE_MS);
+    await settle();
+    vi.useRealTimers();
+    expect(stopped).toBe(true);
+    await stopping;
+    release?.();
   });
 });

@@ -120,6 +120,7 @@ import {
   type ProviderPollScheduler,
   type ProviderPollStop,
 } from '../draining-interval.js';
+import { CollectionStoppedError, throwIfStopped } from '../stop-signal.js';
 
 // ────────────────────────────────────────────────────────────────
 // Graph-specific config + constants
@@ -466,14 +467,16 @@ interface GraphListResponse<T> {
   '@odata.deltaLink'?: unknown;
 }
 
+/** `signal`: a sync's stop (`stop-signal.ts`); absent on an rpc read. */
 const graphGet = async <T>(
   url: string,
-  opts: { accessToken: string | undefined; fetcher: HttpFetcher },
+  opts: { accessToken: string | undefined; fetcher: HttpFetcher; signal?: AbortSignal },
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; text: string }> => {
   const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph mail');
   const res = await opts.fetcher(safeUrl, {
     method: 'GET',
     headers: { ...oauthAuthorizationHeaders(opts.accessToken) },
+    ...(opts.signal ? { signal: opts.signal } : {}),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -540,6 +543,11 @@ export const createGraphProvider = (
   const fetcher = opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
+  /** Aborted by `close()`, armed again by `connect()`: the first scan and the
+   *  poll `startSync` runs at once go by it, and each scheduled poll by its
+   *  loop's own signal. A scan or poll captures the signal when it begins, so
+   *  one begun before a close stays stopped across the next connect. */
+  let lifecycle = new AbortController();
   let pollStop: ProviderPollStop | null = null;
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
@@ -601,17 +609,24 @@ export const createGraphProvider = (
     {
       treat404AsAbsent = true,
       onFailureStatus,
+      signal,
     }: {
       treat404AsAbsent?: boolean;
       onFailureStatus?: (status: number) => void;
+      /** A sync's stop: aborts the request, and no new one (nor a token
+       *  refresh) starts once it has fired. */
+      signal?: AbortSignal;
     } = {},
   ): Promise<T | null> => {
-    const first = await graphGet<T>(url, { accessToken: await ensureToken(false), fetcher });
+    throwIfStopped(signal);
+    const first = await graphGet<T>(url, { accessToken: await ensureToken(false), fetcher, signal });
     if (first.ok) return first.data;
     if (first.status === 401 && !opts.managedFetcher) {
+      throwIfStopped(signal);
       const second = await graphGet<T>(url, {
         accessToken: await ensureToken(true),
         fetcher,
+        signal,
       });
       if (second.ok) return second.data;
       if (second.status === 404 && treat404AsAbsent) return null;
@@ -683,6 +698,11 @@ export const createGraphProvider = (
       `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
     );
 
+  /** ⚠ A part's `fetchBytes` is not tied to the sync's stop, unlike the reads
+   *  that list a message's parts: its bytes are fetched lazily, by whoever
+   *  holds the message, and may be after the sync that read it has ended. The
+   *  collection checks its own generation before each part, so a stop leaves
+   *  at most the one download in flight. */
   const graphAttachmentPart = (
     messageId: string,
     attachment: GraphAttachmentPayload,
@@ -767,8 +787,9 @@ export const createGraphProvider = (
 
   const fetchGraphAttachmentParts = async (
     msg: GraphMessagePayload,
+    signal?: AbortSignal,
   ): Promise<InboundMailAttachmentPart[]> => {
-    const parts = msg.hasAttachments ? await listGraphAttachmentParts(msg) : [];
+    const parts = msg.hasAttachments ? await listGraphAttachmentParts(msg, signal) : [];
     const carriesInvite = parts.some((p) => p.mime_type === 'text/calendar' || /\.ics$/i.test(p.filename));
     if (isGraphMeetingMessage(msg) && !carriesInvite) parts.push(meetingInvitePart(msg.id));
     return parts;
@@ -776,6 +797,7 @@ export const createGraphProvider = (
 
   const listGraphAttachmentParts = async (
     msg: GraphMessagePayload,
+    signal?: AbortSignal,
   ): Promise<InboundMailAttachmentPart[]> => {
     const parts: InboundMailAttachmentPart[] = [];
     let url: string | undefined =
@@ -785,7 +807,7 @@ export const createGraphProvider = (
     });
     while (url) {
       const page: GraphListResponse<GraphAttachmentPayload> | null =
-        await getWithRetry(pagination.claim(url));
+        await getWithRetry(pagination.claim(url), { signal });
       if (!page) {
         throw new Error(`graph attachments fetch failed id=${msg.id}`);
       }
@@ -808,7 +830,9 @@ export const createGraphProvider = (
   };
 
   // ── initial scan ────────────────────────────────────────────
-  const runInitialScan = async (scanOpts: InitialScanOptions): Promise<void> => {
+  /** `signal` stops the scan between pages and messages by THROWING: a
+   *  normal return tells the collection the backfill is complete. */
+  const runInitialScan = async (scanOpts: InitialScanOptions, signal: AbortSignal): Promise<void> => {
     const since = new Date(nowOf() - scanOpts.backfill_days * 86400_000).toISOString();
     const failures: unknown[] = [];
     let aborted = false;
@@ -824,7 +848,7 @@ export const createGraphProvider = (
       });
       while (url && !aborted) {
         const page: GraphListResponse<GraphMessagePayload> | null =
-          await getWithRetry(pagination.claim(url));
+          await getWithRetry(pagination.claim(url), { signal });
         if (!page) {
           throw new Error(`graph initial scan could not fetch folder '${folder}'`);
         }
@@ -833,16 +857,20 @@ export const createGraphProvider = (
         scanOpts.onAccessVerified?.();
         for (const msg of messages) {
           if (msg['@removed']) continue;
+          // Outside the per-message catch, which would count a stop as one
+          // failed message and read on.
+          throwIfStopped(signal);
           try {
             const canonical = canonicalizeGraph(
               msg,
-              await fetchGraphAttachmentParts(msg),
+              await fetchGraphAttachmentParts(msg, signal),
               graphMessageDirectionForFolder(folder),
             );
             const cont = await scanOpts.onMessage(canonical);
             lastSuccessfulSyncAt = nowOf();
             if (!cont) { aborted = true; break; }
           } catch (err) {
+            if (signal.aborted) throw new CollectionStoppedError();
             markError(`graph canonicalize failed id=${msg.id}`, err);
             failures.push(err);
           }
@@ -863,6 +891,7 @@ export const createGraphProvider = (
     folder: string,
     msg: GraphMessagePayload,
     cb: ProviderSyncCallback,
+    signal: AbortSignal,
   ): Promise<boolean> => {
     pendingQueueSize++;
     try {
@@ -871,7 +900,7 @@ export const createGraphProvider = (
       } else {
         const canonical = canonicalizeGraph(
           msg,
-          await fetchGraphAttachmentParts(msg),
+          await fetchGraphAttachmentParts(msg, signal),
           graphMessageDirectionForFolder(folder),
         );
         await cb({
@@ -883,6 +912,8 @@ export const createGraphProvider = (
       lastSuccessfulSyncAt = nowOf();
       return true;
     } catch (err) {
+      // Not acknowledged, so the delta link stays; a stop is no failure.
+      if (signal.aborted) return false;
       outcomes.noteFailure('transient');
       markError(`graph delta apply failed id=${msg.id}`, err);
       return false;
@@ -891,8 +922,12 @@ export const createGraphProvider = (
     }
   };
 
+  /** ⛔ Walks the folder's WHOLE change feed, page after page: `signal` stops
+   *  it between pages and messages by throwing, so a stopped walk stores no
+   *  delta link and the next start walks again from the start. */
   const seedDeltaLink = async (
     folder: string,
+    signal: AbortSignal,
     recoveryCallback?: ProviderSyncCallback,
     onAccessVerified?: () => void,
   ): Promise<string> => {
@@ -911,7 +946,7 @@ export const createGraphProvider = (
     });
     while (url) {
       const page: GraphListResponse<GraphMessagePayload> | null =
-        await getWithRetry(pagination.claim(url));
+        await getWithRetry(pagination.claim(url), { signal });
       if (!page) {
         throw new Error(`graph delta seed could not fetch folder '${folder}'`);
       }
@@ -920,7 +955,8 @@ export const createGraphProvider = (
       onAccessVerified?.();
       if (recoveryCallback) {
         for (const msg of messages) {
-          if (!(await emitDeltaMessage(folder, msg, recoveryCallback))) {
+          throwIfStopped(signal);
+          if (!(await emitDeltaMessage(folder, msg, recoveryCallback, signal))) {
             deliveryFailed = true;
           }
         }
@@ -948,17 +984,21 @@ export const createGraphProvider = (
     if (terminalDeltaLink === undefined) {
       throw new Error(`graph delta seed for folder '${folder}' returned no watermark`);
     }
+    throwIfStopped(signal);
     await opts.accountStore.set(deltaLinkKey(folder), terminalDeltaLink);
     return terminalDeltaLink;
   };
 
+  /** A stopped poll throws before it stores the folder's new delta link, so
+   *  the next poll replays the range from the old one. */
   const runDeltaTick = async (
     folder: string,
     cb: ProviderSyncCallback,
+    signal: AbortSignal,
   ): Promise<void> => {
     let link = await opts.accountStore.get(deltaLinkKey(folder));
     if (!link) {
-      link = await seedDeltaLink(folder);
+      link = await seedDeltaLink(folder, signal);
       return; // First seed — no changes to emit yet.
     }
     let url: string | undefined = link;
@@ -977,6 +1017,7 @@ export const createGraphProvider = (
           onFailureStatus: (status) => {
             if (status === 404 || status === 410) cursorInvalid = true;
           },
+          signal,
         });
       if (!page) {
         if (cursorInvalid) {
@@ -989,8 +1030,10 @@ export const createGraphProvider = (
           });
           try {
             // Found by this walk, not as it arrived (D-318 §4.8, P22).
-            await seedDeltaLink(folder, (event) => cb({ ...event, recovered: true }));
+            await seedDeltaLink(folder, signal, (event) => cb({ ...event, recovered: true }));
           } catch (err) {
+            // A stop leaves the rejected cursor for the next poll to recover.
+            if (signal.aborted) throw err;
             outcomes.noteFailure('transient');
             markError(`graph delta recovery failed folder=${folder}`, err);
           }
@@ -998,7 +1041,8 @@ export const createGraphProvider = (
         return;
       }
       for (const msg of page.value ?? []) {
-        if (!(await emitDeltaMessage(folder, msg, cb))) deliveryFailed = true;
+        throwIfStopped(signal);
+        if (!(await emitDeltaMessage(folder, msg, cb, signal))) deliveryFailed = true;
       }
       const rawDeltaLink = readProviderStringContinuation(
         page['@odata.deltaLink'],
@@ -1021,6 +1065,7 @@ export const createGraphProvider = (
     // the prior deltaLink causes Graph to replay successful idempotent events
     // alongside the failed one on the next scheduled tick.
     if (!deliveryFailed && terminalDeltaLink !== undefined) {
+      throwIfStopped(signal);
       await opts.accountStore.set(deltaLinkKey(folder), terminalDeltaLink);
     }
   };
@@ -1883,6 +1928,9 @@ export const createGraphProvider = (
     fetchMessage,
 
     async connect() {
+      // `sync.stop()` closes the provider and a later `sync.start()` reuses it
+      // (the vault lock edge): a new connection gets a new signal.
+      if (lifecycle.signal.aborted) lifecycle = new AbortController();
       try {
         await ensureToken(false);
       } catch (err) {
@@ -1892,6 +1940,7 @@ export const createGraphProvider = (
     },
 
     async initialScan(scanOpts) {
+      const signal = lifecycle.signal;
       await outcomes.run('initial_scan', async () => {
         // Establish every folder's watermark BEFORE the list walk. Messages
         // arriving during a long backfill are then replayed by the first delta
@@ -1902,10 +1951,10 @@ export const createGraphProvider = (
           // retry. Re-seeding at "now" would discard changes that happened
           // after the first attempt began.
           if ((await opts.accountStore.get(deltaLinkKey(folder))) === null) {
-            await seedDeltaLink(folder, undefined, scanOpts.onAccessVerified);
+            await seedDeltaLink(folder, signal, undefined, scanOpts.onAccessVerified);
           }
         }
-        await runInitialScan(scanOpts);
+        await runInitialScan(scanOpts, signal);
       });
     },
 
@@ -1915,15 +1964,19 @@ export const createGraphProvider = (
       // ONE outcome per sweep, not per folder: a tick is the unit the user
       // experiences ("did my mail update"), and a per-folder outcome would let a
       // healthy inbox mask a broken archive folder in the same attempt.
-      const tick = (): Promise<void> =>
+      // A scheduled poll gets its loop's signal; a test scheduler calls it bare.
+      const session = lifecycle.signal;
+      const tick = (signal?: AbortSignal): Promise<void> =>
         outcomes.run('poll', async () => {
           for (const folder of folders()) {
-            await runDeltaTick(folder, cb);
+            await runDeltaTick(folder, cb, signal ?? session);
           }
         });
       // Fire an initial tick so tests + healthchecks don't wait on
       // the first interval.
-      await tick();
+      await tick(session);
+      // Closed during that first poll: start no loop that nothing would stop.
+      if (session.aborted) throw new CollectionStoppedError();
       pollStop = scheduler(tick, intervalMs);
       return async () => {
         const stop = pollStop;
@@ -1933,6 +1986,9 @@ export const createGraphProvider = (
     },
 
     async close() {
+      // Close admission and abort the scan, seed walk or poll in flight; the
+      // poll loop's stop then waits for its pass at most `STOP_GRACE_MS`.
+      lifecycle.abort(new CollectionStoppedError('the graph mail provider was closed'));
       const stop = pollStop;
       pollStop = null;
       await stop?.();

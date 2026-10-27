@@ -58,6 +58,11 @@ export interface ComposeServeLifecycleOptions {
    *  `await_inflight` step so a restart waits for engine work the
    *  scheduler is blind to, not just the cron tick. Absent → 0. */
   readonly getActiveRunCount?: () => number;
+  /** Late-bound: stop every run the in-flight registry holds and return how
+   *  many. The drain calls it once its grace is up (`DrainWiring.stopInFlight`),
+   *  so no step waits on a model, an API or a coding agent the exit would cut
+   *  off anyway. Absent → runs are only waited for. */
+  readonly stopActiveRuns?: () => number;
   readonly exit?: (code: number) => void;
 }
 
@@ -77,6 +82,7 @@ export const composeServeLifecycle = async (
     getHttpServer,
     getSchedulersBundle,
     getActiveRunCount,
+    stopActiveRuns,
     exit = (code: number): never => process.exit(code),
   } = options;
 
@@ -211,6 +217,7 @@ export const composeServeLifecycle = async (
         const active = getActiveRunCount?.() ?? 0;
         return cron + active;
       },
+      ...(stopActiveRuns !== undefined ? { stopInFlight: () => stopActiveRuns() } : {}),
       exit,
       // D-178 slice 5 — the legacy D-108 crash-loop → npm-rollback flag is
       // retired (the whole `upgrade/` subsystem is deleted). Crash-loop

@@ -698,7 +698,9 @@ export const mountWebclientServerPill = (
       actions = button('pause-cancel', 'Cancel')
         + button('pause-confirm', 'Confirm pause', ' server-control-btn--confirm');
     } else if (confirming === 'restart') {
-      detail = 'Finishes what it is doing, then restarts and reconnects.';
+      // A restart does not wait for work to finish: what is still running a
+      // few seconds in is stopped (the restart drain), so say so.
+      detail = 'Stops anything still running after a few seconds, then restarts and reconnects.';
       actions = button('restart-cancel', 'Cancel')
         + button('restart-confirm', 'Confirm restart', ' server-control-btn--restart-confirm');
     } else if (crashHalted()) {

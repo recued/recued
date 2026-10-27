@@ -17,6 +17,7 @@ import { assetOccurrenceClock } from './asset-interval-cycle.js';
 import { assetRenewal } from './asset-rule-timing.js';
 import { ruleStatement } from './rule-titles.js';
 import { reachesPhone } from './reminder-destinations.js';
+import { releasedAtStop, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 export const ASSET_REMINDER_HANDLER = 'asset-clock-reminder';
 const DAY = 86_400_000;
@@ -41,6 +42,8 @@ export interface AssetReminderServiceDeps {
   publicBaseUrl?(): string | null;
   householdDestinations?(): Promise<AskDeliveryDestination[]>;
   projectHousehold?(): Promise<void>;
+  /** Stops what `projectHousehold` reaches, with this service's own `stop`. */
+  stopHousehold?(): Promise<void>;
   additionalSubjects?: AdditionalClockSubjects;
   measure?(name: string, value: number, dimensions: Record<string, string>, at: number, receipt: string): void;
   ownerResponse?(refs: import('@recued/contracts').SituationRef[], at: number): void;
@@ -69,6 +72,7 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
   let running: Promise<void> | undefined;
   let requested = false;
   let stopped = false;
+  const stops = new AbortController();
   let publicBaseUrl = deps.publicBaseUrl;
   const log = deps.log ?? (error => console.warn('[asset-reminders] pending work will retry', error));
   const today = () => assetDateAt(now(), deps.timeZone());
@@ -300,6 +304,8 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
   const releasePending = async (): Promise<void> => {
     if (!notifier) return;
     for (const row of points.pending()) {
+      // A stop releases nothing more: the rest stay pending for the next start.
+      if (stopped) return;
       try {
         if (deps.isQuiet(now()) || deps.isVaultUnlocked?.() === false) return;
         await drainCancellations();
@@ -320,17 +326,25 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       } catch (error) { log(error); }
     }
   };
+  /** ⛔ A STOP ENDS A PASS AT ITS NEXT STEP (`stop`), never inside one. Every
+   *  step is one the next pass repeats or finishes: a plan reserved but not
+   *  released is released by the next pass's `releasePending`, and a clock not
+   *  yet planned is planned then. */
   const run = async (): Promise<void> => {
     if (deps.isVaultUnlocked?.() === false) return;
     await deps.occurrences.tick();
+    if (stopped) return;
     await deps.additionalSubjects?.tick();
+    if (stopped) return;
     await deps.projectHousehold?.();
     if (!notifier || stopped) return;
     await reconcileClosedAsks();
+    if (stopped) return;
     await notifier.recoverReminderAsks();
     await releasePending();
-    if (deps.isQuiet(now())) return;
+    if (stopped || deps.isQuiet(now())) return;
     const owner = await notifier.getReminderDestinations();
+    if (stopped) return;
     await offerPhoneChannel(owner.destinations);
     const candidates = new Map<string, { item: Context; key: string; skipped: string[] }[]>();
     for (const row of rows.all()) {
@@ -360,6 +374,7 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       const batch = candidates.get(audience) ?? []; batch.push({ item, key, skipped }); candidates.set(audience, batch);
     }
     for (const [audience, batch] of candidates) {
+      if (stopped) return;
       const household = audience === 'household' ? (await deps.householdDestinations?.() ?? []).filter(destination => notifier!.supportsReminderChannel(destination.channel)) : [];
       const destinations = [...new Map([...owner.destinations, ...household].map(destination => [destination.id, destination])).values()];
       // Bounded envelopes do not bound the clocks: every remaining item gets a
@@ -388,15 +403,17 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       }
     }
     await releasePending();
+    if (stopped) return;
     await syncNoticeReceipts();
   };
+  /** A pass, settled no later than `STOP_GRACE_MS` after `stop`: the minute
+   *  interval waits for what this returns, in the same drain step as `stop`. */
   const tick = (): Promise<void> => {
     if (stopped) return Promise.resolve();
-    if (running) return running;
-    running = (async () => {
+    running ??= (async () => {
       do { requested = false; await run(); } while (requested && !stopped);
     })().finally(() => { running = undefined; });
-    return running;
+    return releasedAtStop(running, stops.signal, undefined);
   };
   return {
     bind(block, options) {
@@ -408,7 +425,15 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       block.registerReminderReconciler({ beforeRecovery: reconcileClosedAsks, beforeAnswer, householdWithheld });
     },
     withdraw, reconcileClosedAsks, tick,
-    async stop() { stopped = true; await running; },
+    /** ⛔ BOUNDED: a drain step awaits this, with 5 s, and a pass sends through
+     *  every channel (a messenger 30 s, an email longer) while the process
+     *  exits right after the drain anyway. What a stop cuts short the next pass
+     *  repeats or finishes (`run`); Home Assistant stops with it. */
+    async stop() {
+      stopped = true; stops.abort();
+      const pass = running;
+      await Promise.all([pass ? settleWithin(pass, STOP_GRACE_MS) : undefined, deps.stopHousehold?.()]);
+    },
     async setLater(id, until) {
       if (!context(id) || !Number.isFinite(until) || until <= now() || until > now() + 366 * DAY) throw new Error('Choose a future reminder time within a year');
       points.later(id, until); withdraw(id); await drainCancellations();

@@ -482,3 +482,28 @@ describe('MCP cache account identity', () => {
     expect(f.operations).toHaveLength(2);
   });
 });
+
+// The server builds a session pool per run, and the idle reaper only runs on
+// that pool's next dispatch, which never comes: every run that used a stdio
+// connection left its child running until the server exited.
+describe('MCP sessions end with their run', () => {
+  it.each(['stdio', 'websocket'] as const)('closes the %s session a run opened, once the run ends', async transport => {
+    const f = fixture(transport); const recipes = createRecipeStore('/nonexistent');
+    recipes.register({ recipe_id: 'mcp-session-read', version: 1, ttl: 0, variables: { mcp_connection: 'workspace' },
+      metadata: { name: 'MCP read', description: 'Read a record over an MCP session.', author: 'fixture', supported_platforms: [] },
+      requires: [manifest.slug], prefetch_steps: [], steps: [{ id: 'read', ingredient: manifest.slug, input: {} }],
+      output: { render: [{ type: 'json', source: 'step.read.result' }] } });
+    // No cache store: each run dispatches, and opens a session of its own.
+    const deps: ExecuteHandlerDeps = { recipeStore: recipes, baseVault: {}, connectionStore: f.connections(),
+      executorConfig: { manifests: f.manifests, connectionStore: f.connections(), connectionMcp: f.mcp,
+        connectionGateDispatch: f.gate, instanceId: 'fixture' } };
+    const opened = transport === 'stdio' ? f.mcp.spawnStdioMcp! : f.mcp.wsConnect!;
+    for (const runs of [1, 2]) {
+      const result = await handleExecute(deps, { recipe_id: 'mcp-session-read',
+        execution_source: { channel: 'user', actor: 'user_self', user_id: 'owner', client_token_id: 'fixture' } });
+      expect(result.success, JSON.stringify(result.errors)).toBe(true);
+      expect(opened).toHaveBeenCalledTimes(runs);
+      expect(f.closed()).toBe(runs);
+    }
+  });
+});

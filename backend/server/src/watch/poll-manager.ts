@@ -174,11 +174,20 @@ export interface PollManagerHandle {
   /** Run one key's poll immediately (tests + a future Run-Now
    *  affordance). No-op when the key has no armed loop. */
   pollNow(watch_key: string): Promise<void>;
-  /** Disarm every loop and resolve once in-flight polls settle.
-   *  Re-armable — a later `recompute()` re-derives demand and re-arms
-   *  (the maintenance-exit rebuild posture, mirroring the dispatcher's
-   *  dispose() / rebuild() pair). */
+  /** Disarm every loop. Re-armable — a later `recompute()` re-derives
+   *  demand and re-arms (the maintenance-exit rebuild posture, mirroring the
+   *  dispatcher's dispose() / rebuild() pair).
+   *
+   *  ⛔ IT DOES NOT WAIT FOR A POLL IN FLIGHT. It used to, and a vendor poll
+   *  can take as long as the vendor does — while its result is thrown away the
+   *  moment it lands (a disarmed loop commits nothing, emits nothing and books
+   *  no error). Waiting bought nothing and could run a restart's 5 s
+   *  `pause_scheduler` step out. */
   stop(): Promise<void>;
+  /** Resolves once every poll in flight has landed (and discarded itself, if
+   *  its loop was disarmed): what a pause or a maintenance window waits for
+   *  after `stop()`, since a poll's gateway call writes its own audit. */
+  settled?(): Promise<void>;
   activeLoopCount(): number;
   inFlight(): boolean;
 }
@@ -470,6 +479,11 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
           }
         }
       } catch (err) {
+        // Disarmed while it ran (a stop, a pause, a re-claim): its failure is
+        // as stale as its result would have been — a request cut short by a
+        // restart is not the vendor failing, and must not count toward the
+        // error cap.
+        if (loops.get(watch_key)?.generation !== generation) return;
         // The poll fetch reports failures as outcomes; a throw here is
         // a manager-side bug or a store error. Count it the same way —
         // a watch must never crash the process.
@@ -660,7 +674,12 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
     },
     async stop() {
       stopped = true;
+      // Disarming is the whole stop: a poll still in flight finds its loop
+      // gone when it lands and discards itself (see `tick`), so there is
+      // nothing left to wait for.
       for (const watch_key of [...loops.keys()]) disarm(watch_key);
+    },
+    settled: async () => {
       await Promise.allSettled([...inFlightPolls]);
     },
     activeLoopCount: () => loops.size,

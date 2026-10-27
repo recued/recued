@@ -419,6 +419,8 @@ describe('makeCollectionHandlers', () => {
       'collection.mail.enrollImap',
       'collection.mail.enrollManagedOAuth',
       'collection.mail.enrollOAuth',
+      // SMTP-only accounts (7798c708f, internal design notes).
+      'collection.mail.enrollSmtp',
       'collection.mail.list',
       'collection.mail.resync',
       'collection.mail.updateCredentials',

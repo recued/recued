@@ -29,6 +29,8 @@ test('the panel is styled, and a mailbox that cannot send is offered but cannot 
   // ⚠ Playwright's toBeDisabled does not read an <option>: the property does.
   await expect(page.locator(at('chat-pick')).locator('option[value="archive"]')).toHaveJSProperty('disabled', true);
   await expect(page.locator(at('turn-on'))).toBeDisabled();
+  await expect(page.locator(at('chat-pick')).locator('option[value="smtp-only"]')).toHaveCount(0);
+  await expect(page.locator(at('owner-pick', 'smtp-only'))).toHaveCount(0);
 });
 
 test('switching on checks first, saves past the checks, and the round trip shows each step', async ({ page }) => {

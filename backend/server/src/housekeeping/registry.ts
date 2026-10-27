@@ -433,11 +433,18 @@ export interface HousekeepingTaskInstance {
    *  Return `'yield'` when budget exhausted (cursor preserves
    *  progress) or `'complete'` when no work remains (cursor
    *  becomes `{ kind: 'complete' }`). The engine resumes from the
-   *  cursor on the next idle cycle. */
+   *  cursor on the next idle cycle.
+   *
+   *  `signal` fires when the server stops (a restart, a pause, a maintenance
+   *  window). Treat it as the budget running out: yield at the next record
+   *  with the cursor where it is, and start no further outbound call. The
+   *  scheduler waits for a step only `STOP_GRACE_MS` after it fires, so a
+   *  step that ignores it is simply abandoned. */
   step(
     ctx: HousekeepingContext,
     cursor: HousekeepingCursor,
     budget_ms: number,
+    signal?: AbortSignal,
   ): Promise<HousekeepingStepResult>;
   /** Optional invalidation hook — when a source write would make
    *  the task's cursor potentially stale, the cascade engine calls

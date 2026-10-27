@@ -52,6 +52,7 @@ import {
   createAutonomousExecutionControl,
   type ComposeMaintenanceContextOptions,
 } from '../serve/compose-maintenance-context.js';
+import { createBackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import type { SchedulersBundle } from '../composition/bin/wire-schedulers.js';
 
@@ -106,6 +107,7 @@ const makeOptions = (
       register: vi.fn(),
       registerInterval: vi.fn(),
       stopAll: vi.fn(async () => undefined),
+      settledAll: vi.fn(async () => undefined),
       list: vi.fn(() => []),
     },
     getSchedulersBundle: vi.fn(() => undefined),
@@ -192,6 +194,9 @@ describe('composeMaintenanceContext', () => {
     expect(options.backgroundServices.stopAll).toHaveBeenCalledWith({
       kind: 'scheduler',
     });
+    expect(options.backgroundServices.settledAll).toHaveBeenCalledWith({
+      kind: 'scheduler',
+    });
 
     await context.migrateDeps?.onExitMaintenance?.();
     expect(first.rebuildAll).not.toHaveBeenCalled();
@@ -257,16 +262,45 @@ describe('composeMaintenanceContext', () => {
 describe('createAutonomousExecutionControl (D-188)', () => {
   type Refs = Parameters<typeof createAutonomousExecutionControl>[0];
 
-  it('stop() halts the scheduler-kind background services', async () => {
-    const stopAll = vi.fn(async () => undefined);
+  it('stop() halts the scheduler-kind background services, then waits for what they started', async () => {
+    const calls: string[] = [];
+    const stopAll = vi.fn(async () => { calls.push('stopAll'); });
+    const settledAll = vi.fn(async () => { calls.push('settledAll'); });
     const control = createAutonomousExecutionControl({
-      backgroundServices: { stopAll },
+      backgroundServices: { stopAll, settledAll },
       getSchedulersBundle: () => undefined,
       getEventTriggerDispatcher: () => undefined,
       getWatchManager: () => undefined,
     } as unknown as Refs);
     await control.stop();
     expect(stopAll).toHaveBeenCalledWith({ kind: 'scheduler' });
+    expect(settledAll).toHaveBeenCalledWith({ kind: 'scheduler' });
+    expect(calls).toEqual(['stopAll', 'settledAll']);
+  });
+
+  it('⛔ stop() is quiet only once a run a scheduler started has ended, though the scheduler\'s own stop no longer waits for it', async () => {
+    // A stop waits for its in-flight work at most a grace, for a restart's
+    // sake — the restart kills what is left. A pause and the migration window
+    // kill nothing, and the window rewrites the database next.
+    const registry = createBackgroundServiceRegistry();
+    let endRun: () => void = () => {};
+    const run = new Promise<void>((resolve) => { endRun = resolve; });
+    registry.register({ name: 'cron', kind: 'scheduler', stop: async () => {}, settled: () => run });
+    // Not a scheduler: a pause leaves it alone.
+    registry.register({ name: 'timer', kind: 'timer', stop: async () => {}, settled: () => new Promise(() => {}) });
+    const control = createAutonomousExecutionControl({
+      backgroundServices: registry,
+      getSchedulersBundle: () => undefined,
+      getEventTriggerDispatcher: () => undefined,
+      getWatchManager: () => undefined,
+    });
+    let stopped = false;
+    const stopping = control.stop().then(() => { stopped = true; });
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(stopped).toBe(false);
+    endRun();
+    await stopping;
+    expect(stopped).toBe(true);
   });
 
   it('rearm() rebuilds schedulers + re-subscribes triggers + recomputes watches', async () => {

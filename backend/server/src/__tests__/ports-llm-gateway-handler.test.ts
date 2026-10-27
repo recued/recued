@@ -412,6 +412,23 @@ describe('createLlmGatewayPortHandler', () => {
     expect(provider.complete).not.toHaveBeenCalled();
   });
 
+  // ⛔ A turn admitted during a restart would call the model and tools the drain
+  // is stopping (2026-10-26); the MCP door already answers 503 then.
+  it('refuses a completion with 503 and retry-after once the server is stopping, before any work', async () => {
+    const provider = makeProvider();
+    const deps = { ...makeDeps({ provider }), isStopping: () => true };
+    const handler = createLlmGatewayPortHandler(deps);
+    const res = new FakeRes();
+
+    await handler(buildReq({ body: makeBody() }), res as unknown as ServerResponse);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['retry-after']).toBe('1');
+    expect(JSON.stringify(json(res))).toContain('server_stopping');
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(deps.inboundTokenStore.verifyBearer).not.toHaveBeenCalled();
+  });
+
   it('keeps model discovery available while completion context metadata needs setup', async () => {
     const provider = makeProvider();
     const config = baseConfig({

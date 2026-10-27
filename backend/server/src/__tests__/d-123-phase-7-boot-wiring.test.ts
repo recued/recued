@@ -217,9 +217,12 @@ describe('D-123 P7 — graceful shutdown', () => {
     config.write({ preset: 'balanced' }, NOW);
 
     let releaseTask: (() => void) | undefined;
+    let started!: () => void;
+    const inFlight = new Promise<void>((resolve) => { started = resolve; });
     const slowTask: HousekeepingTaskInstance = {
       meta: { id: 'slow', description: 'slow', interruptible: true, kind: 'core' },
       async step(): Promise<HousekeepingStepResult> {
+        started();
         await new Promise<void>((resolve) => { releaseTask = resolve; });
         return { status: 'complete', cursor: { kind: 'complete' } };
       },
@@ -235,7 +238,13 @@ describe('D-123 P7 — graceful shutdown', () => {
     });
 
     const cyclePromise = sched.runOnce();
-    // stop() must wait for the in-flight slowTask to complete.
+    // ⚠ Wait until the task is really running: a cycle a stop reaches before
+    // it began starts nothing at all (the restart drain must not wait on work
+    // that has not started — 2026-10-26), so stopping in the same turn as
+    // `runOnce` would test that instead.
+    await inFlight;
+    // stop() must wait for the in-flight slowTask to complete (within the
+    // stop's grace — the step here finishes well inside it).
     let stopResolved = false;
     const stopPromise = sched.stop().then(() => { stopResolved = true; });
 

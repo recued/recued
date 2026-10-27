@@ -9,6 +9,7 @@ import {
   type PortMappingDesire,
 } from '../network/port-mapping-supervisor.js';
 import type { PortMappingRecord } from '../network/port-mapping-plan.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 const DESIRED = {
   enabled: true,
@@ -649,5 +650,123 @@ describe('D-273 audit P2-15 — teardown drains this supervisor', () => {
     fire?.();
     await flush();
     expect(actuator.calls).toHaveLength(before);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// stop() drains the reconcile in flight. ⛔ It used to clear timers and the
+// subscription only, so a reconcile talking to a router could still write its
+// record while the drain closed the database underneath it.
+// ──────────────────────────────────────────────────────────────────
+describe('D-273 — stop() drains the reconcile in flight', () => {
+  /** A router whose `map` answers only when the test says so. */
+  const parkedRouter = () => {
+    const calls: string[] = [];
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    let entered!: () => void;
+    const inFlight = new Promise<void>((resolve) => { entered = resolve; });
+    return {
+      calls,
+      answer: () => answer(),
+      inFlight,
+      actuator: {
+        async map() {
+          calls.push('map');
+          entered();
+          await answered;
+          return { externalPort: 443, lifetimeSeconds: 600 };
+        },
+        async unmap() { calls.push('unmap'); },
+      },
+    };
+  };
+
+  it('waits for a router that never answers only up to the grace, then refuses its record', async () => {
+    const router = parkedRouter();
+    const store = mkStore();
+    const timers = mkTimers();
+    const sup = createPortMappingSupervisor({
+      store,
+      readDesire: () => ({ kind: 'ready', desired: DESIRED }),
+      makeActuator: () => router.actuator,
+      ...timers,
+    });
+    sup.start();
+    await router.inFlight;
+
+    const started = performance.now();
+    await sup.stop();
+    const waited = performance.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(STOP_GRACE_MS - 50);
+    expect(waited).toBeLessThan(STOP_GRACE_MS * 3);
+
+    // The router answers after the drain, when the database may be closed.
+    router.answer();
+    await flush();
+    expect(store.peek()).toBeNull();
+    expect(router.calls).toEqual(['map']);
+    expect(timers.pending).toHaveLength(0);
+  });
+
+  it('a router that answers inside the grace still has its record written', async () => {
+    // The record is what tells OUR forward from the owner's at the next boot,
+    // so an answer that arrives in time is kept rather than dropped.
+    const router = parkedRouter();
+    const store = mkStore();
+    const sup = createPortMappingSupervisor({
+      store,
+      readDesire: () => ({ kind: 'ready', desired: DESIRED }),
+      makeActuator: () => router.actuator,
+      ...mkTimers(),
+    });
+    sup.start();
+    await router.inFlight;
+
+    const started = performance.now();
+    const stopping = sup.stop();
+    setTimeout(router.answer, 50);
+    await stopping;
+    expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS);
+    expect(store.peek()?.externalPort).toBe(443);
+  });
+
+  it('sends no further router request once stopped: not the next plan step, not a queued reconcile', async () => {
+    // IGD path. The lookup is in flight when the stop lands; the map the plan
+    // would send next is a NEW request, and the drain must not send it.
+    const calls: string[] = [];
+    let answerLookup!: (entry: null) => void;
+    let entered!: () => void;
+    const inFlight = new Promise<void>((resolve) => { entered = resolve; });
+    const actuator = {
+      async map() { calls.push('map'); return { externalPort: 443, lifetimeSeconds: 600 }; },
+      async unmap() { calls.push('unmap'); },
+      getMapping: () => {
+        calls.push('ask');
+        entered();
+        return new Promise<null>((resolve) => { answerLookup = resolve; });
+      },
+    };
+    const store = mkStore();
+    const sup = createPortMappingSupervisor({
+      store,
+      readDesire: () => ({ kind: 'ready', desired: DESIRED }),
+      makeActuator: () => actuator,
+      canEnumerate: async () => true,
+      ...mkTimers(),
+    });
+    sup.start();
+    await inFlight;
+    void sup.reconcile();          // a config change queues a follow-up
+    const stopping = sup.stop();
+    answerLookup(null);            // nothing on the port: the plan would map next
+    await stopping;
+    await flush();
+    expect(calls).toEqual(['ask']);
+    expect(store.peek()).toBeNull();
+
+    // A reconcile asked for after the stop starts nothing either.
+    await sup.reconcile();
+    expect(calls).toEqual(['ask']);
   });
 });

@@ -2,7 +2,7 @@ import type { Middleware, TurnContext } from '@recued/middleware';
 import { SITUATION_CONTEXT_MAX_BYTES, type SituationItem } from '@recued/contracts';
 import type { SituationAccess } from './access.js';
 import { situationItemForModel } from './model-projection.js';
-import { ASSET_PROJECTION_CITATION_GUIDANCE } from '../chat-source-citations.js';
+import { ASSET_PROJECTION_CITATION_GUIDANCE, ASSET_COMPARISON_READ_GUIDANCE } from '../chat-source-citations.js';
 import { situationPrefetchSourceCapture } from './prefetch-source-citations.js';
 import { situationText } from './query.js';
 
@@ -39,7 +39,7 @@ const PREFETCH_HEADER = 'Matching situations already on file, with values and so
   + 'A record’s holder does not identify the speaker. Apply personal travel-document constraints only when the traveller is established by the request or supplied context; otherwise ask who is travelling.\n';
 const headerFor = (rows: readonly Record<string, unknown>[]): string => PREFETCH_HEADER
   + (rows.some(row => row.citation_source) ? 'The citation_source in each JSON row covers only /details in that row. '
-    + ASSET_PROJECTION_CITATION_GUIDANCE + '\n' : '');
+    + ASSET_COMPARISON_READ_GUIDANCE + ' ' + ASSET_PROJECTION_CITATION_GUIDANCE + '\n' : '');
 const lineOf = (row: unknown): string => JSON.stringify(stripMarkers(row));
 /** The bytes of a block showing every one of `rows`, counted as the renderer counts them. */
 const blockBytes = (rows: readonly Record<string, unknown>[], matched: number, partial: boolean): number =>

@@ -36,6 +36,8 @@ import {
 import { composeEmailChannel } from '../composition/bin/wire-email-channel.js';
 import { composeNotificationBlock } from '../composition/bin/wire-notification-block.js';
 import { createOwnerEmailConnection, ownerEmailConnectionProblem } from '../composition/bin/owner-email-connection.js';
+import { createInstanceStore } from '../collections/instance-store.js';
+
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
@@ -44,6 +46,18 @@ import { ensureSourceDependencyEntitySchema } from '../storage/source-dependency
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { EventBus } from '../events/bus.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
+
+const seedSendingMailboxes = (db: Database.Database, rows: readonly ConnectionRow[]): void => {
+  const instances = createInstanceStore({ db });
+  for (const row of rows) {
+    if (row.subtype !== 'email' && row.name !== 'email') continue;
+    const slug = (JSON.parse(row.config_json) as { sender_mail_instance?: string }).sender_mail_instance;
+    if (!slug) continue;
+    instances.upsert({ platform: 'mail', slug, adapter_type: 'imap',
+      config: { username: `${slug}@example.test`, smtp: { host: 'smtp.example.test' } },
+      caps: {} as never, auth_state: 'healthy', last_synced_at: null });
+  }
+};
 
 // ────────────────────────────────────────────────────────────────
 // Stubs
@@ -246,13 +260,15 @@ describe('composeNotificationBlock email wiring', () => {
   });
 
   const harness = (opts: { withEmail: boolean; connectionRow: ConnectionRow | null }) => {
+    const stores = blockStores(cleanups);
+    seedSendingMailboxes(stores.db, opts.connectionRow ? [opts.connectionRow] : []);
     const connectionStore = stubConnectionStore(opts.connectionRow);
     const emailChannel = opts.withEmail
       ? composeEmailChannel({ connectionStore, mailRpc: { send: okSend() } })
       : undefined;
 
     const { block } = composeNotificationBlock({
-      ...blockStores(cleanups),
+      ...stores,
       connectionStore,
       ...(emailChannel ? { emailChannel } : {}),
     });
@@ -348,6 +364,7 @@ describe('a plain notify or ask goes through the connection Settings names for i
 
   const harness = (rows: ConnectionRow[]) => {
     const stores = blockStores(cleanups);
+    seedSendingMailboxes(stores.db, rows);
     // The production store's two reads, over rows a test enrolls and removes.
     const connectionStore = {
       list: ({ kind }: { kind?: string } = {}) => rows.filter(row => kind === undefined || row.kind === kind),

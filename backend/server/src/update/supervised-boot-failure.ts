@@ -677,6 +677,7 @@ export const recordLedgerRevert = (ledgerPath: string, reason: string, now: numb
       migration: inFlight.migration ?? false,
       recovery_source: 'outer-supervisor',
       detail: `supervisor revert: ${reason}`,
+      revert_reason: 'new_version_failed',
     });
     return true;
   } catch {

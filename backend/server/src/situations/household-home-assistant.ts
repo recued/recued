@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { ConnectionRow, HouseholdHomeAssistantList, HouseholdHomeAssistantSelection } from '@recued/contracts';
+import type { AssetWriterConnection, AssetWriterSource, ConnectionRow, HouseholdHomeAssistantList, HouseholdHomeAssistantSelection } from '@recued/contracts';
+import { connectionIdentity, connectionRevision } from '../connection-revision.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
 import { createHouseholdDeliveryStore } from '../storage/household-delivery-store.js';
 import { makeBoundedOriginHttpFetcher, type BoundedHttpFetcher } from '../bounded-origin-http-fetcher.js';
+import { releasedAtStop, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 type Selection = HouseholdHomeAssistantSelection;
 type Projection = { scope: string; occurrence_id: string; binding: Selection; marker: string; uid: string | null;
@@ -12,6 +14,19 @@ type Projection = { scope: string; occurrence_id: string; binding: Selection; ma
 type TodoItem = { uid: string; summary: string; status: 'needs_action' | 'completed'; description?: string };
 /** A Home Assistant to-do list's entity id, as `configure` accepts and `lists` offers. */
 const TODO_ENTITY_ID = /^todo\.[a-z0-9_]{1,200}$/u;
+/** These sources reveal device health, never motion, presence or occupancy. */
+const writerSource = (raw: unknown): AssetWriterSource | undefined => {
+  if (!raw || typeof raw !== 'object') return;
+  const value = raw as { entity_id?: unknown; state?: unknown; attributes?: Record<string, unknown> };
+  if (typeof value.entity_id !== 'string' || !/^[a-z_]+\.[a-z0-9_]{1,200}$/u.test(value.entity_id)) return;
+  const attributes = value.attributes ?? {};
+  const battery = attributes.device_class === 'battery' && attributes.unit_of_measurement === '%';
+  const problem = attributes.device_class === 'problem';
+  if (!battery && !problem && !/^(light|switch|fan|climate|cover)\./u.test(value.entity_id)) return;
+  return { id: value.entity_id, name: typeof attributes.friendly_name === 'string' ? attributes.friendly_name.slice(0, 200) : value.entity_id,
+    sample: `${typeof value.state === 'string' ? value.state.slice(0, 100) : 'Unknown'}${battery ? '%' : ''}`,
+    fields: ['observations.unavailable', 'observations.flickering', ...(battery ? ['readings.battery'] : []), ...(problem ? ['observations.problem'] : [])] };
+};
 /** What a list must do for Recued to keep tasks there without duplicates: add (1),
  *  remove (2) and keep a description (64), which holds each task's marker. */
 const REQUIRED_FEATURES: ReadonlyArray<[flag: number, missing: string]> = [
@@ -28,6 +43,8 @@ export interface HouseholdHomeAssistantDeps {
   db: Database.Database; work: WorkEntityStore;
   /** Only connections bound to the installed Home Assistant catalog. */
   connections(): readonly ConnectionRow[];
+  /** The same stable credential lineage used by execution's account guard. */
+  authSourceId?(name: string): string | undefined;
   credential(row: ConnectionRow): Promise<string | null>;
   isVaultUnlocked?(): boolean; now?(): number; fetch?: BoundedHttpFetcher;
 }
@@ -38,18 +55,38 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
   const now = deps.now ?? Date.now; const fetcher = deps.fetch ?? makeBoundedOriginHttpFetcher({ timeoutMs: 5000, maxResponseBytes: 2_000_000, redirectPolicy: 'error' });
   // Every entity's state, read to find the to-do lists, outgrows one list's items on a large home.
   const listFetcher = deps.fetch ?? makeBoundedOriginHttpFetcher({ timeoutMs: 10_000, maxResponseBytes: 16_000_000, redirectPolicy: 'error' });
+  /** ⛔ A STOP (`stop`) STARTS NO REQUEST AND ENDS THE READS IN FLIGHT — never a
+   *  write. A pass makes up to 16 writes behind its reads, each with 5 s, and a
+   *  drain step has 5 s while the process exits right after it anyway. Reads
+   *  change nothing, so cutting one loses nothing: the next pass reads again.
+   *  A write is left to finish, because an add cut short is the case this
+   *  projection cannot repeat: it is marked started before it is sent, and one
+   *  that never reached Home Assistant is then "uncertain" for good, by design
+   *  (no second copy). Left alone, a write to a Home Assistant on the home
+   *  network normally ends well inside the grace. What a stop leaves unwritten
+   *  was never started, so the first pass after the restart (`fireImmediate`)
+   *  writes it. */
+  const stops = new AbortController();
+  const reading: BoundedHttpFetcher = (url, init) => fetcher(url, { ...init, signal: stops.signal });
+  const listReading: BoundedHttpFetcher = (url, init) => listFetcher(url, { ...init, signal: stops.signal });
+  const stoppingError = (): Error => new Error('Recued is stopping; Home Assistant is updated after it starts again');
   deps.db.exec(`CREATE TABLE IF NOT EXISTS household_ha_projections(scope TEXT NOT NULL,occurrence_id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,occurrence_id));
     CREATE TABLE IF NOT EXISTS household_ha_status(id INTEGER PRIMARY KEY CHECK(id=1),issue TEXT);`);
   const save = (row: Projection) => deps.db.prepare('INSERT INTO household_ha_projections(scope,occurrence_id,value) VALUES(?,?,?) ON CONFLICT(scope,occurrence_id) DO UPDATE SET value=excluded.value')
     .run(row.scope, row.occurrence_id, JSON.stringify(row));
   const all = (): Projection[] => (deps.db.prepare('SELECT value FROM household_ha_projections ORDER BY scope,occurrence_id').all() as { value: string }[]).map(row => JSON.parse(row.value));
   const issue = (text: string | null) => { deps.db.prepare('INSERT INTO household_ha_status(id,issue) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET issue=excluded.issue').run(text); };
+  /** An issue is the owner's to read; a stop is not one, and the store may be closing. */
+  const note = (text: string | null): void => { if (!stops.signal.aborted) issue(text); };
   const current = (binding: Selection): ConnectionRow | undefined => deps.connections().find(row => row.name === binding.connection_name
     && row.enrolled_at === binding.connection_enrolled_at && homeAssistantBaseUrl(row) === binding.base_url);
   const request = async (binding: Selection, path: string, body?: Record<string, unknown>, guard?: () => boolean, beforeSend?: () => void, via = fetcher) => {
+    if (stops.signal.aborted) throw stoppingError();
     if (deps.isVaultUnlocked?.() === false) throw new Error('Unlock the vault to reach Home Assistant');
     const row = current(binding); if (!row) throw new Error('The selected Home Assistant connection is unavailable');
     const token = await deps.credential(row);
+    // Checked again after the credential, before `beforeSend` marks a write started.
+    if (stops.signal.aborted) throw stoppingError();
     if (!token || !current(binding) || deps.isVaultUnlocked?.() === false || guard?.() === false) throw new Error('The Home Assistant projection changed before delivery');
     beforeSend?.();
     const response = await via(`${binding.base_url}${path}`, { method: body ? 'POST' : 'GET',
@@ -59,13 +96,14 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
     return response.json();
   };
   const features = async (binding: Selection): Promise<number> => {
-    const state = await request(binding, `/api/states/${encodeURIComponent(binding.entity_id)}`) as { entity_id?: string; state?: string; attributes?: { supported_features?: unknown } };
+    const state = await request(binding, `/api/states/${encodeURIComponent(binding.entity_id)}`, undefined, undefined, undefined, reading) as { entity_id?: string; state?: string; attributes?: { supported_features?: unknown } };
     const flags = state?.attributes?.supported_features;
     if (state?.entity_id !== binding.entity_id || ['unavailable', 'unknown'].includes(state.state ?? '') || !Number.isSafeInteger(flags) || Number(flags) < 0) throw new Error('The selected to-do list is unavailable');
     return Number(flags);
   };
   const items = async (binding: Selection): Promise<TodoItem[]> => {
-    const response = await request(binding, '/api/services/todo/get_items?return_response', { entity_id: binding.entity_id, status: ['needs_action', 'completed'] }) as { service_response?: Record<string, { items?: unknown }> };
+    const response = await request(binding, '/api/services/todo/get_items?return_response', { entity_id: binding.entity_id, status: ['needs_action', 'completed'] },
+      undefined, undefined, reading) as { service_response?: Record<string, { items?: unknown }> };
     const values = response?.service_response?.[binding.entity_id]?.items;
     if (!Array.isArray(values) || values.length > 5000 || values.some(row => !row || typeof row.uid !== 'string' || !row.uid || row.uid.length > 2000
       || typeof row.summary !== 'string' || !['needs_action', 'completed'].includes(row.status))) throw new Error('Home Assistant returned an incomplete to-do list');
@@ -80,7 +118,7 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
   };
   let running: Promise<void> | undefined;
   const run = async () => {
-    if (deps.isVaultUnlocked?.() === false) return;
+    if (stops.signal.aborted || deps.isVaultUnlocked?.() === false) return;
     issue(null);
     const selected = settings.homeAssistant(); const selectedScope = selected ? scopeOf(selected) : null;
     const projections = all(); const groups = new Map<string, { binding: Selection; rows: Projection[] }>();
@@ -88,6 +126,7 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
     if (selected && !groups.has(selectedScope!)) groups.set(selectedScope!, { binding: selected, rows: [] });
     let writes = 0;
     for (const [scope, group] of groups) {
+      if (stops.signal.aborted) return;
       try {
       if (!current(group.binding)) { issue('A previous Home Assistant connection is unavailable; its old items cannot be withdrawn.'); continue; }
       const flags = await features(group.binding); const remote = await items(group.binding);
@@ -132,17 +171,49 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
             rename: live.commitment.statement, description, ...(due && flags & 16 ? { due_date: due } : {}) }, () => !!context(row.occurrence_id) && !!settings.homeAssistant() && scopeOf(settings.homeAssistant()!) === scope); row.content = content; save(row);
         }
       }
-      } catch (error) { issue(error instanceof Error ? error.message : 'Home Assistant is unavailable'); }
+      } catch (error) { note(error instanceof Error ? error.message : 'Home Assistant is unavailable'); }
     }
   };
-  const tick = () => running ??= run().catch(error => { issue(error instanceof Error ? error.message : 'Home Assistant is unavailable'); }).finally(() => { running = undefined; });
+  const project = () => running ??= run().catch(error => { note(error instanceof Error ? error.message : 'Home Assistant is unavailable'); }).finally(() => { running = undefined; });
+  /** A pass, settled no later than `STOP_GRACE_MS` after `stop`: the asset
+   *  reminders' tick waits for it, and a drain waits for that. The pass goes on. */
+  const tick = (): Promise<void> => {
+    // Stopped: no new pass, and the one in progress is `stop`'s to wait for.
+    if (stops.signal.aborted) return Promise.resolve();
+    return releasedAtStop(project(), stops.signal, undefined);
+  };
   let configuring = 0;
   return {
     tick,
+    /** Start no request, end the reads in flight, and wait for the pass in
+     *  progress at most `STOP_GRACE_MS`; a write in flight is left to finish
+     *  (`stops`). Idempotent. */
+    async stop(): Promise<void> {
+      stops.abort();
+      if (running) await settleWithin(running, STOP_GRACE_MS);
+    },
     read() { return { selection: settings.homeAssistant(), connections: deps.connections().filter(row => homeAssistantBaseUrl(row))
         .map(row => ({ name: row.name, enrolled_at: row.enrolled_at, ...(row.display_name ? { display_name: row.display_name } : {}) })),
       issue: (deps.db.prepare('SELECT issue FROM household_ha_status WHERE id=1').get() as { issue: string | null } | undefined)?.issue ?? null,
       uncertain: all().filter(row => !row.withdrawn && row.started && !row.uid).length }; },
+    writerConnections(): AssetWriterConnection[] {
+      return deps.connections().filter(row => homeAssistantBaseUrl(row)).map(row => ({ name: row.name,
+        label: row.display_name || row.name, enrolled_at: row.enrolled_at, revision: connectionRevision(connectionIdentity(row, deps.authSourceId?.(row.name)))! }));
+    },
+    async writerSources(connection: AssetWriterConnection): Promise<{ sources: AssetWriterSource[]; sources_truncated: boolean }> {
+      const row = deps.connections().find(row => row.name === connection?.name && row.enrolled_at === connection.enrolled_at);
+      const base = row && homeAssistantBaseUrl(row);
+      const valid = () => deps.connections().some(current => current.name === connection?.name
+        && connectionRevision(connectionIdentity(current, deps.authSourceId?.(current.name))) === connection.revision);
+      if (!row || !base || !valid()) throw new Error('This Home Assistant connection changed. Choose it again.');
+      const binding: Selection = { connection_name: row.name, connection_enrolled_at: row.enrolled_at, base_url: base, entity_id: '', selected_at: now() };
+      const states = await request(binding, '/api/states', undefined, valid, undefined, listReading);
+      if (!valid()) throw new Error('This Home Assistant connection changed while devices were being read. Choose it again.');
+      if (!Array.isArray(states)) throw new Error('Home Assistant returned no devices');
+      const sources = states.flatMap(value => { const source = writerSource(value); return source ? [source] : []; })
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      return { sources: sources.slice(0, 1000), sources_truncated: sources.length > 1000 };
+    },
     /** §15.7 amendment — the to-do lists this connection offers, so the owner picks one by
      *  name. Each says whether Recued can use it, by the features `configure` requires. */
     async lists(input: { connection_name: string; connection_enrolled_at: number }): Promise<{ lists: HouseholdHomeAssistantList[] }> {
@@ -151,7 +222,7 @@ export const createHouseholdHomeAssistant = (deps: HouseholdHomeAssistantDeps) =
       const base = row ? homeAssistantBaseUrl(row) : null;
       if (!row || !base) throw new Error('Choose an enrolled Home Assistant connection');
       const binding: Selection = { connection_name: row.name, connection_enrolled_at: row.enrolled_at, base_url: base, entity_id: '', selected_at: now() };
-      const states = await request(binding, '/api/states', undefined, undefined, undefined, listFetcher) as unknown;
+      const states = await request(binding, '/api/states', undefined, undefined, undefined, listReading) as unknown;
       if (!Array.isArray(states)) throw new Error('Home Assistant returned no entities');
       const lists = states.flatMap((state): HouseholdHomeAssistantList[] => {
         const entity_id = (state as { entity_id?: unknown } | null)?.entity_id;

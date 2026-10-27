@@ -57,6 +57,16 @@ export interface DrainWiring {
    *  step times out. Defaults to a stub returning 0 (nothing to
    *  wait for). */
   getInFlightCount?: () => number;
+  /** Stop every in-flight run now and return how many were stopped. Called by
+   *  `stop_accepting_rpc` once `inflightGraceMs` is up and work is still
+   *  running. ⛔ The process exits right after the drain whatever it finds, so
+   *  waiting on a long run only cost the update: a step that ran out of time
+   *  made it refuse to swap, and the run died at exit anyway. Absent ⇒ runs are
+   *  only waited for, as before. */
+  stopInFlight?: () => number;
+  /** How long `stop_accepting_rpc` lets in-flight work finish before
+   *  `stopInFlight`. Defaults to 3 s, inside the step's 5 s. */
+  inflightGraceMs?: number;
   /** Caller-wired step functions. An absent entry means the step is
    *  not applicable to this composition and is skipped silently. */
   steps?: Partial<Record<DrainStepName, DrainStepFn>>;
@@ -100,6 +110,7 @@ export interface DrainOrchestrator {
 const DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
 const DEFAULT_STEP_TIMEOUT_MS = 5_000;
 const DEFAULT_INFLIGHT_POLL_MS = 50;
+const DEFAULT_INFLIGHT_GRACE_MS = 3_000;
 
 const noopLog: DrainLogger = () => { /* silence */ };
 
@@ -114,7 +125,35 @@ export const createDrainOrchestrator = (
     wiring.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
   const inflightPollMs =
     wiring.inflightPollMs ?? DEFAULT_INFLIGHT_POLL_MS;
+  const inflightGraceMs =
+    wiring.inflightGraceMs ?? DEFAULT_INFLIGHT_GRACE_MS;
   const getInFlightCount = wiring.getInFlightCount ?? (() => 0);
+
+  /** Resolve once in-flight work reaches 0, the step's signal fires, or
+   *  `limitMs` (when given) has passed — whichever is first. */
+  const waitForNoInFlight = (signal: AbortSignal, limitMs?: number): Promise<void> => {
+    if (getInFlightCount() === 0 || signal.aborted) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const deadline = limitMs === undefined ? undefined : now() + limitMs;
+      const tick = () => {
+        if (
+          signal.aborted
+          || getInFlightCount() === 0
+          || (deadline !== undefined && now() >= deadline)
+        ) {
+          cleanup();
+          resolve();
+        }
+      };
+      const timer = setInterval(tick, inflightPollMs);
+      const cleanup = () => {
+        clearInterval(timer);
+        signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = () => { cleanup(); resolve(); };
+      signal.addEventListener('abort', onAbort);
+    });
+  };
 
   // Mutable state — the orchestrator exposes a stable reference to
   // this object so heartbeat reads see live progress.
@@ -139,39 +178,30 @@ export const createDrainOrchestrator = (
         };
 
       case 'stop_accepting_rpc':
-        // Pure signaling step. The ws-server dispatcher gate reads
-        // `machine.state` directly — no separate flag needed. This
-        // step also admits caller-wired shutdown sources (for example the
-        // config watcher) after the state flip has closed RPC admission.
+        // The ws-server dispatcher gate reads `machine.state` directly — no
+        // separate flag needed. This step also admits caller-wired shutdown
+        // sources (for example the config watcher) after the state flip has
+        // closed RPC admission.
+        //
+        // ⛔ AND IT STOPS WHAT IS STILL RUNNING. New runs are refused from here
+        // on, so in-flight work only shrinks: what finishes inside the grace
+        // finishes, and the rest is stopped (`stopInFlight`). It used to be waited
+        // for in `await_inflight`, after the schedulers' stops had already waited
+        // on it, and a run longer than the step lost the update while dying at
+        // exit anyway (2026-10-26). Here, every later step finds nothing running.
         return async (signal) => {
           await wiring.steps?.stop_accepting_rpc?.(signal);
+          if (wiring.stopInFlight === undefined || getInFlightCount() === 0) return;
+          await waitForNoInFlight(signal, inflightGraceMs);
+          if (getInFlightCount() === 0) return;
+          const stopped = wiring.stopInFlight();
+          log('info', 'drain stopped running work', { stopped, grace_ms: inflightGraceMs });
         };
 
       case 'await_inflight':
         return async (signal) => {
           // Poll until in-flight reaches 0 or the signal fires.
-          if (getInFlightCount() === 0) return;
-          await new Promise<void>((resolve) => {
-            const tick = () => {
-              if (signal.aborted) {
-                cleanup();
-                resolve();
-                return;
-              }
-              if (getInFlightCount() === 0) {
-                cleanup();
-                resolve();
-                return;
-              }
-            };
-            const timer = setInterval(tick, inflightPollMs);
-            const cleanup = () => {
-              clearInterval(timer);
-              signal.removeEventListener('abort', onAbort);
-            };
-            const onAbort = () => { cleanup(); resolve(); };
-            signal.addEventListener('abort', onAbort);
-          });
+          await waitForNoInFlight(signal);
         };
 
       case 'release_lock':

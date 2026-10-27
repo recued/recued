@@ -6572,6 +6572,13 @@ export type ServerRpcRegistry = {
     { slug: string; send_capable: boolean }
   >;
 
+  /** Send-only SMTP enrollment. Login is verified without sending an email. */
+  'collection.mail.enrollSmtp': RpcMethodSpec<
+    { name: string; host: string; port: number; secure: boolean; username: string;
+      password: string; from: string; reply_to?: string },
+    { slug: string; send_capable: true }
+  >;
+
   /** Verify replacement login credentials before updating the existing mailbox. */
   'collection.mail.updateCredentials': RpcMethodSpec<
     { slug: string; password?: string; smtp_password?: string },
@@ -6590,6 +6597,9 @@ export type ServerRpcRegistry = {
       instances: Array<
         CollectionInstanceRow & {
           send_capable: boolean;
+          /** Protocol capabilities; existing access and proof checks still apply. */
+          receive_capable?: boolean;
+          sent_lookup_capable?: boolean;
           /** D-264 — can this mailbox hold a DRAFT? Independent of
            *  `send_capable` in both directions (IMAP-without-SMTP can APPEND;
            *  a `gmail.send`-only grant can send and not draft), so never read
@@ -8373,6 +8383,9 @@ export type ServerRpcRegistry = {
   'yours.today': RpcMethodSpec<{ now: number; before: number }, import('../situation.js').ProactiveToday>;
   'yours.read': RpcMethodSpec<import('../yours.js').YoursReadRequest, import('../yours.js').YoursSnapshot>;
   'yours.context': RpcMethodSpec<import('../asset-fact-context.js').AssetFactContextRequest, import('../asset-fact-context.js').AssetFactContext>;
+  'yours.writer.read': RpcMethodSpec<{ asset_id: string; connection?: import('../asset-writer-setup.js').AssetWriterConnection }, import('../asset-writer-setup.js').AssetWriterSetupRead>;
+  'yours.writer.preview': RpcMethodSpec<import('../asset-writer-setup.js').AssetWriterSelection, import('../asset-writer-setup.js').AssetWriterReview>;
+  'yours.writer.change': RpcMethodSpec<import('../asset-writer-setup.js').AssetWriterSetupChange, import('../asset-writer-setup.js').AssetWriterSetupStatus>;
   'yours.sphere': RpcMethodSpec<{ ref: import('../situation.js').SituationRef }, import('../yours.js').YoursSpherePlacement>;
   'yours.spheres': RpcMethodSpec<{ refs: import('../situation.js').SituationRef[] }, { placements: Array<import('../yours.js').YoursSpherePlacement & { ref: import('../situation.js').SituationRef }> }>;
   'yours.change': RpcMethodSpec<import('../yours.js').YoursCommand, import('../yours.js').YoursCommandResult>;
@@ -9088,6 +9101,7 @@ export const SERVER_RPC_METHODS = [
   // it ever returns to the wire surface or the MCP catalog.
   // D-127 wire-up — IMAP enroll + listing for picker resolution
   'collection.mail.enrollImap',
+  'collection.mail.enrollSmtp',
   'collection.mail.updateCredentials',
   'collection.mail.list',
   'collection.mail.delete',
@@ -9439,6 +9453,9 @@ export const SERVER_RPC_METHODS = [
   'yours.today',
   'yours.read',
   'yours.context',
+  'yours.writer.read',
+  'yours.writer.preview',
+  'yours.writer.change',
   'yours.sphere',
   'yours.spheres',
   'yours.change',

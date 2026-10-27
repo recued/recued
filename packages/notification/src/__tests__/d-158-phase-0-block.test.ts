@@ -395,6 +395,56 @@ describe('D-158 P0 NotificationBlock submitAnswer', () => {
     });
   });
 
+  /** ⛔ During a restart an answer is recorded and the rest waits for the boot
+   *  sweep. Closing the prompt on each channel and running the handler (for an
+   *  approval, the whole resumed run) both wait on outside parties, and a drain
+   *  step waited on them (2026-10-26). */
+  it('while stopping, records the answer and leaves closing and the handler to the boot sweep', async () => {
+    const collection = createInMemoryCollection<PendingAsk>();
+    const store = createAskStore(collection);
+    const ui = createRecordedChannel('ui');
+    const email = createRecordedChannel('email');
+    const handler = vi.fn();
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [ui, email],
+      settingsStore: await settingsWith('email'),
+      now: nowSequence([1000, 2000]),
+      mintAskId: () => 'ask-stopping',
+    });
+    block.registerAskHandler(handlerRef.kind, handler);
+    await block.ask(message, options, handlerRef);
+
+    block.beginStopping();
+    expect(await block.submitAnswer({ ask_id: 'ask-stopping', option: 'approve', via: 'ui' }))
+      .toBe('answered');
+    expect(ui.closes).toEqual([]);
+    expect(email.closes).toEqual([]);
+    expect(handler).not.toHaveBeenCalled();
+    expect(await store.get('ask-stopping')).toMatchObject({
+      status: 'answered',
+      answer: { option: 'approve', answered_at: 2000 },
+    });
+
+    // The next boot's sweep finishes exactly what was left.
+    const uiB = createRecordedChannel('ui');
+    const emailB = createRecordedChannel('email');
+    const handlerB = vi.fn();
+    const blockB = createNotificationBlock({
+      askStore: createAskStore(collection),
+      channels: [uiB, emailB],
+      settingsStore: await settingsWith(),
+      now: () => 3000,
+      mintAskId: () => 'ask-should-not-mint',
+    });
+    blockB.registerAskHandler(handlerRef.kind, handlerB);
+    await blockB.recoverPendingAsks();
+    expect(uiB.closes).toEqual(['ask-stopping']);
+    expect(emailB.closes).toEqual(['ask-stopping']);
+    expect(handlerB).toHaveBeenCalledTimes(1);
+    expect(handlerB).toHaveBeenCalledWith(handlerRef.payload, { option: 'approve', answered_at: 2000 });
+  });
+
   it('strips answered_via and every channel detail from the handler answer argument', async () => {
     const store = createAskStore(createInMemoryCollection<PendingAsk>());
     const handler = vi.fn();

@@ -20,6 +20,7 @@ import { YOURS_STYLES } from './yours-styles.js';
 import { yoursActions, yoursDisclosure, yoursEmpty, yoursList, yoursMenu, yoursPageHeader, yoursToolbar } from './yours-view.js';
 import { focusListTarget, readListContinuity, readListScroll, restoreListScroll, updateListContinuity } from '../shell/list-preview-continuity.js';
 import { mountAssetContextInspector } from './asset-context-inspector.js';
+import { mountAssetWriterSetup, type AssetWriterSetupCallers } from './asset-writer-setup.js';
 import { mountAssetTextFactEditor } from './asset-text-fact-editor.js';
 import { mountAssetWriterEditor } from './asset-writer-editor.js';
 import { mountAssetEvidenceEditor } from './asset-evidence-editor.js';
@@ -29,6 +30,7 @@ import { mountClassFieldsEditor } from './class-fields-editor.js';
 import { proposalPreview, reminderTimingWords } from './proposal-preview.js';
 import { episodeDateWords, yoursCalendarDate } from './yours-dates.js';
 import { mountCountryChoice } from './country-choice.js';
+import { renderAssetComparisons } from './asset-comparisons.js';
 
 const TABS = ['assets', 'proposals', 'occurrences', 'occasions', 'episodes'] as const;
 type Tab = typeof TABS[number];
@@ -56,6 +58,7 @@ export interface YoursRouteOptions {
   /** Connection identity keeps private list state separate across server profiles. */
   continuityOwner?: object;
   context?(input: import('@recued/contracts').AssetFactContextRequest): Promise<import('@recued/contracts').AssetFactContext>;
+  writerSetup?: AssetWriterSetupCallers;
 }
 type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; correction?: ProactiveProposal; creation_key?: string }
   | { type: 'rule'; asset: Asset; rule?: AssetRule; proposal?: ProactiveProposal; classPreset?: AssetClassPreset; classCreating?: boolean; classDirty?: boolean; classFocus?: EditorReturnFocus; initialField?: { group: 'dates' | 'readings' | 'observations'; field: string } }
@@ -71,6 +74,7 @@ type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; corr
   | { type: 'attribute_reading'; asset: Asset; attribute: string; request_id: string }
   | { type: 'context'; request: import('@recued/contracts').AssetFactContextRequest }
   | { type: 'writer'; asset: Asset; field?: string; recipe_id?: string }
+  | { type: 'writer_setup'; asset: Asset; field?: string }
   | { type: 'evidence'; asset: Asset; group: 'readings' | 'observations'; field: string }
   | { type: 'document'; asset: Asset; file: Link; filename: string }
   | { type: 'parent'; asset: Asset }
@@ -110,6 +114,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   let openingTrigger: EditorReturnFocus | undefined;
   const openDisclosures = new Set<string>();
   let refreshContext: (() => Promise<void>) | undefined;
+  let writerSetup: ReturnType<typeof mountAssetWriterSetup> | undefined; let writerBusy = false;
+  let inputAddressFocused = false;
+  let refreshingFocus: EditorReturnFocus | undefined;
   const segments = options.segments ?? [];
   const tab: Tab = TABS.includes(segments[0] as Tab) ? segments[0] as Tab : 'assets';
   const selected = segments[0] === 'asset' ? segments[1] : undefined;
@@ -203,6 +210,10 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const status = root.querySelector('[data-yours-status]'); if (status) status.textContent = loading && snapshot ? 'Refreshing Yours…' : opening ? 'Opening editor…' : message;
     const alert = root.querySelector<HTMLElement>('[data-yours-error]'); if (alert) alert.textContent = error;
     const refreshButton = root.querySelector<HTMLButtonElement>('[data-yours-focus="refresh"]');
+    // D-325 — disabling the active Refresh button moves focus to the body.
+    // Keep its identity, but restore it only if the owner has not focused elsewhere.
+    if (loading && refreshButton === doc.activeElement) refreshingFocus = focusTarget(refreshButton);
+    if (!loading) refreshingFocus = undefined;
     if (refreshButton) { refreshButton.textContent = loading ? 'Refreshing…' : 'Refresh'; refreshButton.disabled = busy || loading; }
     root.setAttribute('aria-busy', String(busy || loading || opening));
   };
@@ -257,7 +268,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     editor = value; editorReturnFocus = origin; dirty = false; render();
     const control = value.type === 'fact' && value.field ? '[name=fact-value]' : value.type === 'reading' && value.field ? '[name=observation-value]'
       : value.type === 'condition' && value.field ? '[name=observation-state]' : 'form input:enabled,form select:enabled';
-    root.querySelector<HTMLElement>(value.type === 'context' ? '[data-yours-context-heading]' : control)?.focus();
+    root.querySelector<HTMLElement>(value.type === 'context' ? '[data-yours-context-heading]' : value.type === 'writer_setup' ? '[data-yours-writer-setup] h2' : control)?.focus();
   };
   const loadEditor = (read: () => Promise<Editor | undefined>) => async (origin: EditorReturnFocus) => {
     if (disposed) return;
@@ -347,6 +358,17 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   };
   const renderEditor = () => {
     const value = editor!;
+    if (value.type === 'writer_setup') {
+      if (!options.writerSetup) { el('p', 'Automatic source setup is unavailable.', content); return; }
+      const host = el('section', undefined, content); host.className = 'yours-editor';
+      writerSetup = mountAssetWriterSetup(host, value.asset, options.writerSetup, {
+        ...(value.field ? { field: value.field } : {}), isCurrent: () => !disposed && editor === value,
+        dirty: changed => { dirty = changed; }, busy: changed => { writerBusy = changed; },
+        close: () => { if (dirty && doc.defaultView?.confirm && !doc.defaultView.confirm('Discard these unsaved changes?')) return;
+          editorIntent++; const target = editorReturnFocus; editor = undefined; dirty = false; editorReturnFocus = undefined; render(); restoreEditorFocus(target); },
+      });
+      return;
+    }
     if (value.type === 'evidence') {
       let evidence: ReturnType<typeof mountAssetEvidenceEditor>;
       const node = form(`Add evidence · ${assetObservationFieldName(value.field)}`, async () => { await change(evidence.read()); });
@@ -920,7 +942,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     assetPickers.splice(0).forEach(picker => picker.destroy());
     const active = doc.activeElement as HTMLElement | null;
     const focusedElement = active && root.contains(active) ? active : undefined;
-    const focused = focusTarget(focusedElement);
+    const focused = focusTarget(focusedElement) ?? (active === doc.body ? refreshingFocus : undefined);
     const focusedMenu = focusedElement?.closest<HTMLDetailsElement>('[data-yours-menu]')?.dataset.yoursMenu;
     // Carry interaction state only into this repaint, by entity and full field
     // identity. An editor, removed field or closed menu must not leave a cache.
@@ -929,6 +951,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const key = disclosure.dataset.yoursDisclosure!;
       if (disclosure.open) openDisclosures.add(key); else openDisclosures.delete(key);
     }
+    writerSetup?.dispose(); writerSetup = undefined;
     root.replaceChildren(); const masthead = el('header', undefined, root); masthead.className = 'yours-masthead';
     const introduction = el('div', undefined, masthead); const heading = el('h1', 'Yours', introduction); heading.tabIndex = -1; heading.dataset.yoursHeading = '';
     const restoreInteraction = () => {
@@ -941,7 +964,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       } else if (focused) restoreEditorFocus(focused);
     };
     el('p', 'Your things, the facts, and what comes next.', introduction);
-    button(masthead, 'Refresh', () => editor?.type === 'context' ? refreshContext?.() : refresh(!editor), 'refresh').className = 'yours-quiet';
+    button(masthead, 'Refresh', () => editor?.type === 'context' ? refreshContext?.() : editor?.type === 'writer_setup' ? writerSetup?.refresh() : refresh(!editor), 'refresh').className = 'yours-quiet';
     const nav = el('nav', undefined, root); nav.className = 'yours-nav'; nav.setAttribute('aria-label', 'Yours'); nav.setAttribute('data-recued-scroll-rail', '');
     for (const id of TABS) { const node = link(nav, TAB_LABELS[id], `#yours/${id}`); node.dataset.yoursFocus = `tab-${id}`; if (id === tab) node.setAttribute('aria-current', 'page'); }
     doc.defaultView?.requestAnimationFrame(() => {
@@ -1007,6 +1030,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       if (!asset.rules.length) yoursEmpty(rules, 'No rules yet. Add one when a fact needs a reminder or an action.');
       for (const rule of asset.rules) {
         const item = card(rules, rule.title, undefined, ['rule', asset.id, rule.id]); el('p', `${assetRuleWhenWords(rule.when)} · ${ruleScheduleSummary(rule)} · ${rule.consequence}${!rule.enabled ? ' · disabled' : ''}${rule.muted ? ' · muted' : ''}`, item);
+        item.dataset.yoursRule = rule.id;
+        item.tabIndex = -1; item.dataset.yoursFocus = JSON.stringify(['source', 'rule', rule.id]);
         if (rule.when.kind === 'condition' || rule.when.kind === 'objective') {
           const path = `${rule.when.kind === 'condition' ? 'observations' : 'readings'}.${rule.when.field}`;
           if (!(snapshot.observation_bindings ?? []).some(binding => binding.enabled && binding.available !== false && binding.asset_id === asset.id && binding.fields.includes(path))) el('p', 'Nothing writes this yet. Enroll an observation writer below, or record it yourself.', item);
@@ -1018,9 +1043,11 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         button(yoursMenu(actions, rule.title, ['rule', asset.id, rule.id]), 'Delete rule', () => { if (rule.consequence === 'floor' && doc.defaultView?.confirm && !doc.defaultView.confirm('Remove this safety, legal or travel clock and cancel its open occurrence?')) return;
           return change({ action: 'rule.delete', asset_id: asset.id, rule_id: rule.id, confirm_floor_delete: true }); }).className = 'yours-danger';
       }
+      const comparisons = renderAssetComparisons(panels.overview, asset, snapshot.reading_comparisons, (field, origin) => open({ type: 'reading', asset, field }, focusTarget(origin)));
       const readings = section(panels.overview, 'Conditions and readings'); const readingActions = yoursActions(readings);
       readings.hidden = !Object.keys(asset.readings).length && !Object.keys(asset.observations).length;
       button(readingActions, 'Record reading', () => open({ type: 'reading', asset })); button(readingActions, 'Record condition', () => open({ type: 'condition', asset }));
+      if (options.writerSetup) button(readingActions, 'Automatic updates', () => open({ type: 'writer_setup', asset }), 'automatic-updates');
       const writers = yoursDisclosure(panels.rules, 'Observation writers');
       el('p', 'Choose an installed recipe and the fields it can report. A changed recipe needs your review again.', writers);
       for (const binding of snapshot.observation_bindings ?? []) if (binding.asset_id === asset.id) {
@@ -1057,12 +1084,13 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       };
       for (const [name, reading] of Object.entries(asset.readings)) {
         const item = card(readings, assetObservationFieldName(name), undefined, ['field', asset.id, 'readings', name]); item.dataset.yoursReading = name;
+        item.tabIndex = -1; item.dataset.yoursFocus = JSON.stringify(['source', 'reading', name]);
         el('p', reading ? `${reading.value} ${reading.unit} · ${new Date(reading.as_of).toLocaleString()}` : 'Unknown', item);
         if (reading) renderEvidence(item, reading.evidence);
         const actions = yoursActions(item); button(actions, 'Update reading', () => open({ type: 'reading', asset, field: name }), `reading-${name}`);
         const more = yoursMenu(actions, `${assetObservationFieldName(name)} reading`, ['field', asset.id, 'readings', name]);
         button(more, 'Use in a rule', () => open({ type: 'rule', asset, initialField: { group: 'readings', field: name } }), `use-reading-${name}`);
-        button(more, 'Keep updated from a source', () => open({ type: 'writer', asset, field: `readings.${name}` }), `writer-reading-${name}`);
+        button(more, 'Keep updated from a source', () => open({ type: options.writerSetup ? 'writer_setup' : 'writer', asset, field: `readings.${name}` }), `writer-reading-${name}`);
         if (reading) button(more, 'Add evidence', () => open({ type: 'evidence', asset, group: 'readings', field: name }), `evidence-reading-${name}`);
         if (options.context) button(more, 'Used by', () => open({ type: 'context', request: { root: { kind: 'field', asset_id: asset.id, group: 'readings', field: name } } }), `used-by-reading-${name}`);
         observationControls(item, `readings.${name}`, reading);
@@ -1075,7 +1103,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         const actions = yoursActions(item); button(actions, 'Update condition', () => open({ type: 'condition', asset, field: name }), `condition-${name}`);
         const more = yoursMenu(actions, `${assetObservationFieldName(name)} condition`, ['field', asset.id, 'observations', name]);
         button(more, 'Use in a rule', () => open({ type: 'rule', asset, initialField: { group: 'observations', field: name } }), `use-condition-${name}`);
-        button(more, 'Keep updated from a source', () => open({ type: 'writer', asset, field: `observations.${name}` }), `writer-condition-${name}`);
+        button(more, 'Keep updated from a source', () => open({ type: options.writerSetup ? 'writer_setup' : 'writer', asset, field: `observations.${name}` }), `writer-condition-${name}`);
         if (observation) button(more, 'Add evidence', () => open({ type: 'evidence', asset, group: 'observations', field: name }), `evidence-condition-${name}`);
         if (options.context) button(more, 'Used by', () => open({ type: 'context', request: { root: { kind: 'field', asset_id: asset.id, group: 'observations', field: name } } }), `used-by-condition-${name}`);
         observationControls(item, `observations.${name}`, observation);
@@ -1090,7 +1118,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         } else if (observation?.active) button(item, 'That’s expected', () => change({ action: 'asset.update', id: asset.id, patch: { settings: {
           [ASSET_EXPECTED_PATTERNS]: { ...expected, [name]: { active: true, at: observation.as_of } } } } }), `expected-${name}`); }
       // §15.3 — each value with where it came from and what can replace it (its rank).
-      const facts = section(panels.overview, 'Facts and settings'); panels.overview.insertBefore(facts, openItems);
+      const facts = section(panels.overview, 'Facts and settings'); panels.overview.insertBefore(facts, comparisons ? readings : openItems);
       const factActions = yoursActions(facts); button(factActions, 'Add fact', () => open({ type: 'fact', asset, group: 'attributes' })).className = 'yours-primary';
       if (readings.hidden) { const more = yoursMenu(factActions, 'facts', ['facts', asset.id]);
         button(more, 'Record reading', () => open({ type: 'reading', asset })); button(more, 'Record condition', () => open({ type: 'condition', asset })); }
@@ -1394,6 +1422,16 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (snapshot.unmatched_replies.length) { const replies = section(content, 'Unmatched replies'); for (const reply of snapshot.unmatched_replies) { const item = card(replies, reply.reason.replaceAll('_', ' ')); el('p', reply.text, item); button(item, 'Dismiss reply', () => change({ action: 'unmatched.dismiss', id: reply.id })); } }
     for (const disclosure of root.querySelectorAll<HTMLDetailsElement>('[data-yours-disclosure]')) if (openDisclosures.has(disclosure.dataset.yoursDisclosure!)) disclosure.open = true;
     paintStatus(); restoreInteraction();
+    // D-325 — source links focus their exact saved input once. Later broadcasts
+    // preserve what the owner is doing instead of pulling focus back to it.
+    if (selected && !editor && !inputAddressFocused && ['reading', 'rule'].includes(segments[4] ?? '') && segments[5]) {
+      inputAddressFocused = true;
+      const kind = segments[4] === 'reading' ? 'yoursReading' : 'yoursRule';
+      const target = [...root.querySelectorAll<HTMLElement>(segments[4] === 'reading' ? '[data-yours-reading]' : '[data-yours-rule]')]
+        .find(node => node.dataset[kind] === segments[5] && !node.closest('[hidden]'));
+      if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); }
+      else { message = 'That saved input is no longer on file. Review the current item below.'; paintStatus(); }
+    }
     if (assetList && restoreListPosition) {
       restoreListPosition = false; const remembered = readListContinuity<string>(doc, continuityKey);
       if (remembered?.filter === assetListHash(page)) doc.defaultView?.requestAnimationFrame(() => {
@@ -1470,8 +1508,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       focusKind: openedAsset?.kind,
       scroll: readListScroll(scrollHost) });
     assetPickers.splice(0).forEach(picker => picker.destroy());
-    unsubscribe.forEach(unsubscribe => unsubscribe()); root.remove(); }, refresh,
-    whenLoaded: () => pending, hasUnsavedChanges: () => dirty, hasInFlightWork: () => busy,
+    writerSetup?.dispose(); unsubscribe.forEach(unsubscribe => unsubscribe()); root.remove(); }, refresh,
+    whenLoaded: () => pending, hasUnsavedChanges: () => dirty, hasInFlightWork: () => busy || writerBusy,
     getRunPageContext: (): RunPageContext | null => {
       if (disposed || loading || error || !snapshot || editor) return null;
       const asset = selected ? snapshot.assets.find(row => row.id === selected) : undefined;
@@ -1484,6 +1522,6 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         : episode?.id ? runPageObject('episode', episode.id, { ...episode }) : null;
       return object ? { label: object.label, objects: [object] } : null;
     },
-    unsavedChangesPrompt: () => 'Discard these unsaved Yours changes?', inFlightWorkPrompt: () => busy ? 'A Yours change is still waiting for its result. Stay until it finishes?' : null,
+    unsavedChangesPrompt: () => 'Discard these unsaved Yours changes?', inFlightWorkPrompt: () => busy || writerBusy ? 'A Yours change is still waiting for its result. Stay until it finishes?' : null,
     getRecoveryContextFreshness: (): 'current' | 'unavailable' => snapshot && !loading && !error ? 'current' : 'unavailable' };
 };

@@ -10,8 +10,15 @@
  *  ⛔ AND NOTHING RUNS ON SHUTDOWN, DELIBERATELY (D-273). The server has no signal
  *  handler and never calls its own `close()`, so a teardown hook would fire on
  *  approximately no real stop. The lease is what bounds the hole; reconcile-on-
- *  start is what cleans up after it. */
+ *  start is what cleans up after it.
+ *
+ *  ⚠ `stop()` releases nothing, but it does DRAIN: it closes admission, sends no
+ *  further router request, waits for the one in flight up to `STOP_GRACE_MS`,
+ *  and after that refuses the record write that request would have made. A
+ *  stop that only cleared timers left a reconcile free to write its record
+ *  while the database closed underneath it. */
 
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import {
   detectPortMappingSupport,
   type PortMappingSupport,
@@ -72,7 +79,9 @@ export interface PortMappingStatus {
 
 export interface PortMappingSupervisor {
   start(): void;
-  stop(): void;
+  /** Resolves once the reconcile in flight has finished, or the grace ran out
+   *  and its record write is refused — never later than `STOP_GRACE_MS`. */
+  stop(): Promise<void>;
   status(): PortMappingStatus;
   /** Run a reconcile now. Safe to call concurrently — see the queue below. */
   reconcile(): Promise<void>;
@@ -151,13 +160,52 @@ export const createPortMappingSupervisor = (
   let inflight: Promise<void> | null = null;
   let queued = false;
 
+  // ⛔ WHAT A STOP CLOSES. `closing` (set the moment `stop()` is called): no new
+  // router request leaves. `closed` (set once the stop has waited its grace):
+  // no record write lands, because the drain closes the database next. Each
+  // start opens a fresh admission and a reconcile keeps the one it began
+  // under, so a stop → start pair cannot hand the OLD run's late answer a
+  // write it was refused.
+  interface Admission { closing: boolean; closed: boolean }
+  let admission: Admission = { closing: false, closed: false };
+  const STOPPED = 'port mapping stopped';
+
+  /** The store a reconcile writes through. The refusal THROWS rather than
+   *  skipping, so a plan ends at that step instead of going on to the next. */
+  const storeFor = (own: Admission): PortMappingStoreLike => ({
+    get: () => opts.store.get(),
+    set: (record) => {
+      if (own.closed) throw new Error(STOPPED);
+      opts.store.set(record);
+    },
+    clear: () => {
+      if (own.closed) throw new Error(STOPPED);
+      opts.store.clear();
+    },
+  });
+
+  /** The actuator a reconcile talks through: once a stop begins it sends
+   *  nothing new. ⚠ `getMapping` keeps its presence or absence — the plans read
+   *  that as what the router can be asked. */
+  const actuatorFor = (own: Admission, actuator: PortMappingActuator): PortMappingActuator => {
+    const open = (): void => { if (own.closing) throw new Error(STOPPED); };
+    const { getMapping } = actuator;
+    return {
+      map: async (args) => { open(); return actuator.map(args); },
+      unmap: async (args) => { open(); return actuator.unmap(args); },
+      ...(getMapping !== undefined
+        ? { getMapping: async (args) => { open(); return getMapping.call(actuator, args); } }
+        : {}),
+    };
+  };
+
   const schedule = (ms: number): void => {
     if (timer !== null) clearTimer(timer);
     if (stopped) return;
     timer = setTimer(() => { timer = null; void reconcile(); }, ms);
   };
 
-  const runOnce = async (): Promise<void> => {
+  const runOnce = async (own: Admission): Promise<void> => {
     const desire = opts.readDesire();
     if (desire.kind === 'unavailable') {
       // ⚠ Nothing is attempted and nothing is cleared. A record we cannot act on
@@ -175,13 +223,15 @@ export const createPortMappingSupervisor = (
       return;
     }
     const { desired } = desire;
-    const actuator = opts.makeActuator(desired.gateway);
+    const actuator = actuatorFor(own, opts.makeActuator(desired.gateway));
+    const store = storeFor(own);
     // ⚠ DETECTION RUNS FIRST AND SEPARATELY, on every reconcile, because it is
     // the only part that answers while the toggle is OFF — the router step needs
     // "your router supports this" before anyone decides to switch it on.
     const support = opts.detect !== undefined
       ? await opts.detect(desired.gateway)
       : null;
+    if (own.closing) return;
     // ⛔⛔ ASK THE ROUTER WHEN THE ROUTER CAN BE ASKED. This used to run the blind
     // plan for EVERY protocol, which is correct for NAT-PMP — it cannot
     // enumerate — and unsafe for IGD, where `AddPortMapping` overwrites whatever
@@ -200,10 +250,11 @@ export const createPortMappingSupervisor = (
     const canEnumerate = opts.canEnumerate !== undefined
       ? await opts.canEnumerate().catch(() => false)
       : false;
+    if (own.closing) return;
     const result = canEnumerate
       ? await applyIgdReconcile({
           desired,
-          store: opts.store,
+          store,
           actuator: actuator as PortMappingActuator & {
             getMapping: NonNullable<PortMappingActuator['getMapping']>;
           },
@@ -211,14 +262,17 @@ export const createPortMappingSupervisor = (
           now,
         })
       : await applyPortMappingPlan({
-          plan: planPortMapping(opts.store.get(), desired),
+          plan: planPortMapping(store.get(), desired),
           desired,
-          store: opts.store,
+          store,
           actuator,
           lifetimeSeconds,
           now,
         });
     status = { last: result, unavailable: null, checkedAt: now(), support };
+    // Stopped meanwhile: there is nothing to schedule, and a step the stop
+    // refused is not a router failure to report.
+    if (own.closing) return;
 
     if (result.outcome === 'mapped' && result.record !== null) {
       opts.log?.('info',
@@ -252,14 +306,20 @@ export const createPortMappingSupervisor = (
   };
 
   const reconcile = async (): Promise<void> => {
+    // After a stop nothing new reaches the router; a caller still gets the run
+    // in flight, if any, to wait on.
+    if (admission.closing) return inflight ?? undefined;
     if (inflight !== null) {
       queued = true;
       return inflight;
     }
+    const own = admission;
     inflight = (async () => {
       try {
-        await runOnce();
+        await runOnce(own);
       } catch (err) {
+        // A step the stop refused is the drain working, not a fault.
+        if (own.closing) return;
         // ⛔ A SUPERVISOR MUST NOT DIE OF A RECONCILE. Everything below it is
         // best-effort network work; an unexpected throw here would stop renewal
         // for the life of the process and the mapping would lapse silently.
@@ -281,6 +341,7 @@ export const createPortMappingSupervisor = (
     start() {
       if (!stopped) return;
       stopped = false;
+      if (admission.closing) admission = { closing: false, closed: false };
       unsubscribe = opts.onConfigChange?.(() => { void reconcile(); }) ?? null;
       void reconcile();
     },
@@ -291,6 +352,20 @@ export const createPortMappingSupervisor = (
       unsubscribe = null;
       // ⚠ NO RELEASE HERE. D-273: the mapping expires rather than being taken
       // down, because the process is not reliably alive at this point anyway.
+      const own = admission;
+      own.closing = true;
+      queued = false;
+      // Let the request already out finish and record what the router granted
+      // — the record is what tells our forward from the owner's at the next
+      // boot — but only inside the grace. Past it the write is refused, and an
+      // answer the process does not live to record is the crash case boot
+      // already handles.
+      const closeWrites = (): void => { own.closed = true; };
+      if (inflight === null) {
+        closeWrites();
+        return Promise.resolve();
+      }
+      return settleWithin(inflight, STOP_GRACE_MS).then(closeWrites);
     },
     status: () => status,
     reconcile,

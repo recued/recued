@@ -9,6 +9,7 @@ import { createRestoreDrillStore, restoreDrillActive, restoreDrillScratchPath } 
 import { assertRestoreDrillWorkerStopped, RestoreDrillWorkerError, runRestoreDrillWorker } from './restore-drill-worker.js';
 import type { RemoteBackups } from './remote-backups.js';
 import type { ArchiveOperationGate } from './unattended-backups.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 export const createRestoreDrills = (options: {
   dbPath: string; remoteBackups: RemoteBackups; gate: ArchiveOperationGate; serverVersion: string;
@@ -152,7 +153,10 @@ export const createRestoreDrills = (options: {
       active = run().catch(() => { /* leave durable uncertainty when settlement I/O fails */ }).finally(() => { active = undefined; controller = undefined; activeId = undefined; release(); });
       return structuredClone(row);
     },
-    async stop(): Promise<void> { stopped = true; controller?.abort(); await Promise.allSettled([active, cleanupActive?.promise]); },
+    /** ⛔ BOUNDED, for a restart's 5 s drain step: what a stop cuts short is
+     *  an aborted drill or its cleanup, which the next boot finishes (it removes the drill's folder and records it interrupted). A pause or a maintenance window waits for all of it (`settled`). */
+    async stop(): Promise<void> { stopped = true; controller?.abort(); await settleWithin(Promise.allSettled([active, cleanupActive?.promise]), STOP_GRACE_MS); },
+    async settled(): Promise<void> { await Promise.allSettled([active, cleanupActive?.promise]); },
     resume(): void { stopped = false; },
   };
 };

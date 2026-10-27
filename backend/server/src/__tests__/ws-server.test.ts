@@ -6,6 +6,7 @@ import { startServer, type RunningServer } from '../server.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { createServerStateStore } from '../server-state.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import {
   createClientTokenStore,
   type ClientTokenRecord,
@@ -746,6 +747,47 @@ describe('WebSocket server shutdown', () => {
     }
 
     expect(completedBeforeRelease).toBe(false);
+  });
+
+  // An update, a restart or a stop comes first: waited on in full, one slow
+  // call ran the drain's close_ws step out and the update was refused.
+  it('stops waiting for an admitted rpc handler once the grace is up', async () => {
+    const db = new Database(':memory:');
+    let releaseSideEffect!: () => void;
+    const sideEffectGate = new Promise<void>((resolve) => { releaseSideEffect = resolve; });
+    let markStarted!: () => void;
+    const sideEffectStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const server = await startServer(0, {
+      bootstrapDeps: {
+        bootstrap: { bind_port: 0, webhooks_enabled: false },
+        state: createServerStateStore(db),
+        version: 'test',
+        onPauseChanged: async () => {
+          markStarted();
+          await sideEffectGate;
+        },
+      },
+    });
+    const ws = await connectWs(server.port, 'test-realm');
+    ws.send(JSON.stringify({
+      type: 'rpc',
+      request_id: 'never-finishes',
+      method: 'server.setPaused',
+      args: { active: true },
+    }));
+    await sideEffectStarted;
+
+    const started = Date.now();
+    try {
+      await server.close();
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(STOP_GRACE_MS - 50);
+      expect(elapsed).toBeLessThan(STOP_GRACE_MS + 1_000);
+    } finally {
+      releaseSideEffect();
+      ws.terminate();
+      db.close();
+    }
   });
 });
 

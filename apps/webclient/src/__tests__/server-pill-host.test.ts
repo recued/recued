@@ -819,6 +819,10 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
     parts().pillHost?.fire('click', pillClick);
     parts().popoverHost?.fire('click', popoverClick('restart-request'));
     expect(parts().popoverHost?.innerHTML).toContain('Confirm restart');
+    // A restart stops what is still running a few seconds in; it said it
+    // finished it.
+    expect(parts().popoverHost?.innerHTML)
+      .toContain('Stops anything still running after a few seconds, then restarts and reconnects.');
     expect(runRequestRestart).not.toHaveBeenCalled(); // confirm-gated
     parts().popoverHost?.fire('click', popoverClick('restart-confirm'));
     expect(runRequestRestart).toHaveBeenCalledTimes(1);

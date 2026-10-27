@@ -2823,3 +2823,64 @@ describe('D-232 § 21 — the exchange envelope rides through the MCP argument g
     expect(said(res)).toContain('arguments.body.outcome is not a declared argument');
   });
 });
+
+/** ⛔ OpenClaw's prompting postures asked before EVERY Recued call, reads
+ *  included, because no tool carried MCP annotations ("tools have no safety
+ *  annotations", seen 2026-10-26 against the owner's door). A read now says
+ *  `readOnlyHint: true`, taken from the classification the gates act on; a write
+ *  or an unknown says nothing, so a client keeps the spec's cautious defaults. */
+describe('tools/list marks reads read-only, from the classification the gates use', () => {
+  type Listed = { tools: Array<{ name: string; annotations?: unknown }> };
+  const listed = async (deps: McpDeps) => {
+    const result = await _testing.handleToolsList(deps) as Listed;
+    return new Map(result.tools.map((tool) => [tool.name, tool]));
+  };
+
+  it('annotates a registry read, and leaves a registry write and an unknown bare', async () => {
+    const tools = await listed({
+      ...makeDeps(),
+      internalRegistry: registryStub([
+        { ...registryTool('work.search', 1), classification: 'read' },
+        { ...registryTool('work.create', 1), classification: 'write' },
+        { ...registryTool('recued-core/digest', 2), classification: 'unknown' },
+      ]),
+    } as unknown as McpDeps);
+    expect(tools.get('work.search')?.annotations).toEqual({ readOnlyHint: true });
+    // Present, so a missing annotation means "not a read" and not "not listed".
+    expect(tools.has('work.create')).toBe(true);
+    expect(tools.get('work.create')).not.toHaveProperty('annotations');
+    expect(tools.has('recued-core/digest')).toBe(true);
+    expect(tools.get('recued-core/digest')).not.toHaveProperty('annotations');
+  });
+
+  it('annotates the native reads and the action status; saveRecipe and stopRecipe stay bare', async () => {
+    const tools = await listed({
+      ...makeDeps(),
+      ownerAdmitAll: true,
+      mcpActionStore: {},
+      inFlightRegistry: {},
+    } as unknown as McpDeps);
+    for (const read of ['recued_listRecipes', 'recued_getRecipe', 'recued_actionStatus']) {
+      expect(tools.get(read)?.annotations, read).toEqual({ readOnlyHint: true });
+    }
+    for (const write of ['recued_saveRecipe', 'recued_stopRecipe', 'recued_runRecipe']) {
+      expect(tools.has(write), write).toBe(true);
+      expect(tools.get(write), write).not.toHaveProperty('annotations');
+    }
+  });
+
+  it("follows an ingredient's risk_tier: read is annotated, write is not", async () => {
+    const manifests = createManifestRegistry('/nonexistent');
+    const reads = registryHttpManifest('lookup-http');
+    const writes = { ...registryHttpManifest('post-http'), risk_tier: 'write' } as IngredientManifest;
+    manifests.register(reads);
+    manifests.register(writes);
+    const tools = await listed({
+      ...makeDeps(),
+      executorConfig: { manifests },
+    } as unknown as McpDeps);
+    expect(tools.get(buildIngredientTool(reads).name)?.annotations).toEqual({ readOnlyHint: true });
+    expect(tools.has(buildIngredientTool(writes).name)).toBe(true);
+    expect(tools.get(buildIngredientTool(writes).name)).not.toHaveProperty('annotations');
+  });
+});

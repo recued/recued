@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OWNER_CONTRACT_ID, TIER1_TOOL_DESCRIPTORS, type ChatDispatchContext, type ChatSourceCitation, type InternalToolRegistry, type ToolEntry } from '@recued/contracts';
+import { D165_CONTRACT_SCHEMA, OWNER_CONTRACT_ID, TIER1_TOOL_DESCRIPTORS, type ChatDispatchContext, type ChatSourceCitation, type ExecutionSource, type InternalToolRegistry, type ToolEntry } from '@recued/contracts';
 import { piiEgress } from '@recued/gateway';
 import { projectionRefreshRequests, MAX_PROJECTION_REFRESH_READS, createProjectionDemand, createProjectionVersionProbe } from '../chat-projection-refresh.js';
 import { sourceCitation } from '../chat-source-citations.js';
@@ -12,10 +12,12 @@ import { autoRegisterRecuedBuiltinSources } from '../work-entity-source-boot.js'
 import { createReminderStore } from '../storage/reminder-store.js';
 import { createContractStore } from '../storage/contract-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
+import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
+import { createSphereStore } from '../storage/sphere-store.js';
 import { buildSituationSources, situationSourceAccess } from '../situations/sources.js';
 import { createSituationQuery } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
-import { createAssetFactContextReader } from '../situations/asset-fact-context.js';
+import { assetContextWriters, createAssetFactContextReader } from '../situations/asset-fact-context.js';
 import { buildChatTier1Handlers, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { createMetaFieldPrivacyResolverFromLocalManifestStore } from '../meta-field-privacy-resolver.js';
 import { createLocalManifestStore } from '../ingredient-authoring/local-manifest-store.js';
@@ -63,7 +65,7 @@ describe('kept projection refresh selection', () => {
 });
 
 describe('projection demand version checks', () => {
-  const result = (source = projection()) => ({ ok: true as const, source_citations: [source], result: {} });
+  const result = (source: ChatSourceCitation = projection()) => ({ ok: true as const, source_citations: [source], result: {} });
   it('does not read because a kept source exists without actual draft use', async () => {
     const read = vi.fn(async () => result());
     expect(await createProjectionDemand([projection()]).check('We can keep talking.', [], read, NOW)).toEqual({ revise: false, limited: false });
@@ -132,6 +134,31 @@ describe('projection demand version checks', () => {
     expect(probe).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
   });
 
+  it('reads native graph facts once and recomposes unchanged graph reuse while preserving scalar probes', async () => {
+    const source = sourceCitation({ kind: 'asset_projection', asset_id: ID, projection: { kind: 'context', root: { kind: 'field', group: 'readings', field: 'length' } } }, 'Graph', 'a'.repeat(64), NOW);
+    const read = vi.fn(async () => result(source)); const probe = vi.fn(async () => true);
+    const demand = createProjectionDemand([source], { nativeFacts: true });
+    expect(await demand.check(link(source), [], read, NOW, probe)).toEqual({ revise: true, limited: false });
+    await demand.check(link(source), [], read, NOW, probe);
+    expect(read).toHaveBeenCalledTimes(1); expect(probe).not.toHaveBeenCalled();
+    const scalarRead = vi.fn(async () => result());
+    await createProjectionDemand([projection()], { nativeFacts: true }).check(link(projection()), [], scalarRead, NOW, probe);
+    expect(scalarRead).not.toHaveBeenCalled(); expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates a cited reading and graph from the same native refresh without an extra scalar probe', async () => {
+    const field = projection();
+    const graph = sourceCitation({ kind: 'asset_projection', asset_id: ID, projection: { kind: 'context', root: { kind: 'field', group: 'readings', field: 'length' } } }, 'Graph', 'a'.repeat(64), NOW);
+    const read = vi.fn(async () => ({ ok: true as const, result: {}, source_citations: [field, graph] }));
+    const probe = vi.fn(async () => true);
+    expect(await createProjectionDemand([field, graph], { nativeFacts: true }).check(link(field) + link(graph), [], read, NOW, probe))
+      .toEqual({ revise: true, limited: false });
+    expect(read).toHaveBeenCalledTimes(1); expect(probe).not.toHaveBeenCalled();
+    const other = projection(ID, 'readings.other');
+    await createProjectionDemand([other, graph], { nativeFacts: true }).check(link(other) + link(graph), [], read, NOW, probe);
+    expect(probe).toHaveBeenCalledExactlyOnceWith(other);
+  });
+
   it('falls back to ordinary dispatch on a changed probe', async () => {
     const source = projection(); const read = vi.fn(async () => result({ ...source, read_version: 'b'.repeat(64) }));
     const probe = vi.fn(async () => false);
@@ -152,6 +179,16 @@ describe('projection demand version checks', () => {
 
 describe('governed native projection version probe', () => {
   const ctx: ChatDispatchContext = { channel: 'internal_function_call', session_id: 'probe', turn_id: 'probe' };
+  it('uses only the field-version capability and does not substitute a full query for missing or revoked proof', async () => {
+    const source = projection(); const query = vi.fn(async () => ({ ok: true as const, result: {}, source_citations: [source] }));
+    let admitted = true; let version: string | undefined = source.read_version;
+    const fieldVersion = vi.fn(async () => version);
+    const probe = createProjectionVersionProbe({ query, fieldVersion, admit: () => admitted, now: () => NOW });
+    expect(await probe(source, ctx)).toBe(true); expect(fieldVersion).toHaveBeenCalledWith(fieldRequest.context, ctx);
+    version = undefined; expect(await probe(source, ctx)).toBe(false);
+    fieldVersion.mockImplementationOnce(async () => { admitted = false; return source.read_version; });
+    expect(await probe(source, ctx)).toBe(false); expect(query).not.toHaveBeenCalled();
+  });
   it('uses the exact native field query and rechecks admission after it returns', async () => {
     let admitted = true;
     const query = vi.fn(async () => { admitted = false; return { ok: true as const, result: {}, source_citations: [projection()] }; });
@@ -174,7 +211,7 @@ describe('governed native projection version probe', () => {
 const dispose: Array<() => void> = [];
 afterEach(() => { dispose.splice(0).forEach(close => close()); });
 let sequence = 0;
-const fixture = (details = false, probeEnabled = false) => {
+const fixture = (details = false, probeEnabled = false, nativeFacts = false) => {
   const clock = { time: NOW };
   const db = new Database(':memory:'); dispose.push(() => db.close()); ensureChatSchema(db); ensureWorkEntitySchema(db);
   const store = createChatStore(db, () => new Uint8Array(32).fill(29), () => undefined);
@@ -184,17 +221,22 @@ const fixture = (details = false, probeEnabled = false) => {
     name: 'Refresh hose', attributes: { length: 'about 25 meters', contact: 'mara@private.example' },
     readings: { length: { value, unit: 'm', as_of, evidence: [] } } }, NOW);
   write();
+  if (nativeFacts) work.bindAssetObservations({ id: 'private_binding', asset_id: ID, actor_ref: 'recipe:meter', source_ref: 'private_source', fields: ['readings.length'], enabled: true });
   const contracts = createContractStore(db); const grants = createContractGrantEntryStore(contracts);
+  const spheres = createSphereStore(db, work);
   const sources = buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [], now: () => clock.time, timeZone: () => 'UTC' }).filter(source => source.collection === 'asset');
   const query = createSituationQuery({ sources, now: () => clock.time, sourceForCollection: situationSourceAccess });
-  const control = { unlocked: true, followup: false, firstRetry: false, retryAfterRead: false, neutral: false, intermediate: false, explicitRead: false, beforeRead: undefined as (() => Promise<void>) | undefined, beforeProbe: undefined as (() => Promise<void>) | undefined };
-  const access = createSituationAccess({ contracts, query, factContext: createAssetFactContextReader({ work, now: () => clock.time,
-    snapshot: read => db.transaction(read)() }), now: () => clock.time, isVaultUnlocked: () => control.unlocked });
+  const control = { factFailures: 0, unlocked: true, followup: false, firstRetry: false, retryAfterRead: false, neutral: false, intermediate: false, explicitRead: false, beforeRead: undefined as (() => Promise<void>) | undefined, beforeProbe: undefined as (() => Promise<void>) | undefined, afterFieldVersion: undefined as (() => void) | undefined };
+  const factContext = createAssetFactContextReader({ work, ...(nativeFacts ? { writers: assetContextWriters(db, () => 'Gauge') } : {}), now: () => clock.time, snapshot: read => db.transaction(read)() });
+  const access = createSituationAccess({ contracts, query, factContext, spheres,
+    fieldVersion: (request, context) => { const version = factContext.fieldVersion(request, context); control.afterFieldVersion?.(); return version; },
+    now: () => clock.time, isVaultUnlocked: () => control.unlocked });
   const deps: ChatToolHandlerDeps = { getCollectionRegistry: () => undefined, getContactStore: () => undefined, getAuditLog: () => undefined,
     getEnrichmentStore: () => undefined, getRecipeStore: () => { throw new Error('Unexpected recipe'); },
     getExecutorConfig: () => { throw new Error('Unexpected execution'); }, getExecuteRecipe: () => undefined, getSituationAccess: () => access, now: () => NOW };
   const handler = buildChatTier1Handlers(deps)['situation.query']!;
-  const probe = createProjectionVersionProbe({ query: handler, admit: () => true, now: () => clock.time });
+  const probe = createProjectionVersionProbe({ query: handler, fieldVersion: (request, ctx) => access.fieldVersion(request, ctx.execution_source),
+    admit: () => true, now: () => clock.time });
   const probes: ChatDispatchContext[] = [];
   const catalog: ToolEntry[] = (['situation.query', 'work.search'] as const).map(name => ({ ...TIER1_TOOL_DESCRIPTORS[name], tier: 1 }));
   const dispatches: Array<{ args: unknown; ctx: ChatDispatchContext }> = []; const packets: any[] = []; const briefPackets: any[] = []; const order: string[] = [];
@@ -216,6 +258,10 @@ const fixture = (details = false, probeEnabled = false) => {
       if (control.firstRetry) { control.firstRetry = false; return { body: { response: 42 } }; }
       if (control.neutral) return { body: { reasoning: `Earlier [source](${packet.prior_source_reads?.sources?.[0]?.source_ref}) is unrelated here.`, response: 'We can keep talking.', events: [], tool_calls: [] } };
       const call = [...packet.prior_tool_calls ?? []].reverse().find((call: any) => call.tool_name === 'situation.query');
+      if (nativeFacts && call?.result?.source_facts) {
+        if (control.factFailures-- > 0) return { body: { reasoning: 'Rejected owner:invented must never become evidence', response: 'The updater owns this manual entry [source].', events: [], tool_calls: [] } };
+        return { body: { response: '', events: [], tool_calls: [], source_answer: { facts: call.result.source_facts.slice(0, 4).map((row: any) => row.id) } } };
+      }
       if (call && control.retryAfterRead) { control.retryAfterRead = false; return { body: { response: 42 } }; }
       if (!call && !control.followup) return { body: { response: '', events: [], tool_calls: [{ tool: 'situation.query', args: details
         ? { time: NOW, subjects: [{ collection: 'asset', id: ID }], limit_clusters: 1, limit_items: 8 } : fieldRequest }] } };
@@ -234,10 +280,27 @@ const fixture = (details = false, probeEnabled = false) => {
     const ack = await engine.runTurn({ session_id: sid, message: control.followup ? 'What is saved now? Repeat our reference phrase.' : `Read ${ID} using situation.query. Our phrase is amber falcon.`, picker_state: { current: 'self' }, ...extra });
     return (await store.listMessages(sid)).find(row => row.role === 'assistant' && row.turn_id === ack.turn_id)!;
   };
-  return { db, store, work, write, grants, control, clock, probes, send, packets, briefPackets, dispatches, order, sid, get engine() { return engine; }, reopen() { engine = create(); control.followup = true; } };
+  return { db, store, work, write, grants, contracts, spheres, access, control, clock, probes, send, packets, briefPackets, dispatches, order, sid, get engine() { return engine; }, reopen() { engine = create(); control.followup = true; } };
 };
 
 describe('projection refresh through actual owner Chat and native readers', () => {
+  it.each([1, 2])('repairs an unbound native answer once without rereading or persisting rejected prose (%s invalid outputs)', async failures => {
+    const f = fixture(false, false, true); f.control.factFailures = failures;
+    const message = await f.send();
+    expect(f.dispatches).toHaveLength(1); expect(f.packets).toHaveLength(3);
+    expect(message.content).not.toContain('The updater owns');
+    expect(message.content).not.toContain('owner:invented');
+    expect(f.packets.at(-1).output_feedback).toContain('not bound');
+    expect(JSON.stringify(f.packets.at(-1))).not.toContain('owner:invented');
+    if (failures === 1) {
+      expect(message.content).toContain('saved manually by you');
+      expect(message.content).toContain('[relationships](#source/');
+      expect(message.source_citations?.some(row => row.kind === 'asset_projection' && row.projection.kind === 'context')).toBe(true);
+    } else expect(message.content).toContain('could not bind');
+    const saved = await f.store.listMessages(f.sid);
+    expect(saved.some(row => row.content.includes('The updater owns'))).toBe(false);
+  });
+
   it.each([false, true])('refreshes %s details mode after encrypted carry reload and a clock-only edit without changing the asset timestamp', async details => {
     const f = fixture(details); const first = await f.send(); const timestamp = f.work.readAsset(ID)!.updated_at;
     expect(first.source_citations?.[0]?.kind).toBe('asset_projection');
@@ -301,6 +364,45 @@ describe('projection refresh through actual owner Chat and native readers', () =
     expect(f.probes).toHaveLength(1); expect(f.dispatches).toHaveLength(2);
     expect(result.content).toContain('No current saved view'); expect(result.content).not.toContain('1609459200000');
     expect(result.source_citations ?? []).toEqual([]);
+  });
+
+  it.each(['collection', 'asset_operation', 'situation_operation', 'vault'] as const)('rejects a field version when %s access changes after the native read', async kind => {
+    const f = fixture(false, true); await f.send(); f.reopen();
+    const after = vi.fn(() => {
+      if (kind === 'vault') f.control.unlocked = false;
+      else f.grants.set(OWNER_CONTRACT_ID, kind === 'collection' ? 'data.asset' : kind === 'asset_operation' ? 'core.work-entity.read' : 'core.situation.read', false, NOW);
+    }); f.control.afterFieldVersion = after;
+    const result = await f.send();
+    expect(after).toHaveBeenCalledTimes(1); expect(f.probes).toHaveLength(1); expect(f.dispatches).toHaveLength(2);
+    expect(result.content).toContain('No current saved view'); expect(result.source_citations ?? []).toEqual([]);
+  });
+
+  it('keeps an unchanged field valid when only an unrelated collection grant changes', async () => {
+    const f = fixture(false, true); const first = await f.send(); f.reopen(); const briefs = f.briefPackets.length;
+    const after = vi.fn(() => f.grants.set(OWNER_CONTRACT_ID, 'data.mail', false, NOW)); f.control.afterFieldVersion = after;
+    const result = await f.send();
+    expect(after).toHaveBeenCalledTimes(1); expect(f.probes).toHaveLength(1); expect(f.dispatches).toHaveLength(1);
+    expect(result.source_citations).toEqual(first.source_citations); expect(f.briefPackets).toHaveLength(briefs);
+  });
+
+  it.each(['expiry', 'revocation', 'read_spheres'] as const)('withholds a prepared field version when its governing contract changes: %s', async kind => {
+    const f = fixture(); f.contracts.seedSchema(D165_CONTRACT_SCHEMA);
+    const definitions = createContractDefinitionStore(f.contracts, { now: () => f.clock.time });
+    const contract = definitions.mint({ minted_by: 'owner', display_name: 'Field access', scope: {}, key_authority: 'contract',
+      read_spheres: ['professional'], expiry_at: NOW + 10 });
+    for (const entry of ['core.situation.read', 'core.work-entity.read', 'data.asset']) f.grants.set(contract.contract_id, entry, true, NOW);
+    f.spheres.setItem({ collection: 'asset', id: ID }, 'professional');
+    const source: ExecutionSource = { channel: 'mcp', actor: 'contracted_user', contract_id: contract.contract_id,
+      mcp_token_id: 'field-probe', agent_id: 'fixture', tool_call_id: 'field-probe' };
+    // Positive native control: this exact field is in scope before the change.
+    expect(await f.access.fieldVersion(fieldRequest.context, source)).toMatch(/^[a-f0-9]{64}$/u);
+    const after = vi.fn(() => {
+      if (kind === 'expiry') f.clock.time += 11;
+      else if (kind === 'revocation') definitions.revoke(contract.contract_id, 'Fixture revoke');
+      else definitions.setReadSpheres(contract.contract_id, ['personal']);
+    }); f.control.afterFieldVersion = after;
+    await expect(f.access.fieldVersion(fieldRequest.context, source)).rejects.toThrow();
+    expect(after).toHaveBeenCalledTimes(1);
   });
 
   it.each(['changed', 'denied'] as const)('retains the dispatched evidence through a format repair after a failed probe: %s', async mode => {

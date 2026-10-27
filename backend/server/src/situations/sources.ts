@@ -349,6 +349,7 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       for (const { rule, clock, ...timing } of timings) {
         if (timing.settled || (clock.question && ['today', 'digest', 'push'].includes(query.surface ?? 'tool'))) continue;
         const item = { ...base, ref: { ...subject, field: `rules.${rule.id}` }, kind: 'asset_rule', title: `${rule.title} · ${asset.name}`,
+          context: { root: { kind: 'rule' as const, asset_id: asset.id, rule_id: rule.id } },
           consequence: rule.consequence, evidence: [{ ...subject, field: `rules.${rule.id}` }, ...clock.evidence] };
         if (timing.represents) item.represents = { collection: 'commitment', id: timing.represents };
         if (timing.when) { item.when = timing.when; item.when_day = clock.due_on!; }

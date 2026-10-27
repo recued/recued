@@ -64,6 +64,7 @@ export {
 } from './subscribers.js';
 export {
   drainRecordsOutboxOnce,
+  RecordsOutboxStopping,
   type RecordsOutboxDrainResult,
   type RecordsOutboxRuntime,
   type RecordsWatcherDispatch,

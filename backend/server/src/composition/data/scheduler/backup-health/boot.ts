@@ -4,6 +4,7 @@ export const BACKUP_HEALTH_SCHEDULER_NAME = 'backup-health';
 export const bootBackupHealth = (ctx: Pick<SchedulerBootContext, 'registry' | 'backupHealth'>): SchedulerSlot<unknown> | undefined => {
   const service = ctx.backupHealth; if (!service) return undefined;
   ctx.registry.registerInterval({ name: 'backup-health-ticks', intervalMs: 60_000, tick: () => { void service.tick(); } });
-  ctx.registry.register({ name: BACKUP_HEALTH_SCHEDULER_NAME, kind: 'scheduler', stop: () => service.stop() });
+  ctx.registry.register({ name: BACKUP_HEALTH_SCHEDULER_NAME, kind: 'scheduler', stop: () => service.stop(),
+    settled: () => service.settled() });
   return { name: BACKUP_HEALTH_SCHEDULER_NAME, getHandle: () => service, rebuild: () => service.resume() };
 };

@@ -4,6 +4,7 @@ import { quietHoursEndFor, shouldSuppressForQuietHours, type AssetRule, type Ing
 import { createSituationQuery, SituationScanBoundError } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
 import { createScheduledSituations } from '../situations/scheduled-situations.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createClusterSummary } from '../situations/cluster-summary.js';
 import { createSituationDismissalStore, situationItemKey, situationKindKey } from '../storage/situation-dismissal-store.js';
 import { createSituationStore } from '../storage/situation-store.js';
@@ -112,11 +113,12 @@ describe('D-325 scheduled overview through the shared query', () => {
   });
   it('neither shows a group again nor saves a revision when only an asset’s fields or a trip’s details changed', async () => {
     const car = (colour: string, title = 'Renew · Car insurance') => fact('car', { ref: { collection: 'asset', id: 'car', field: 'rules.renew' }, kind: 'asset_rule', title,
-      evidence: [{ collection: 'asset', id: 'car' }], details: { status: 'active', attributes: { colour } } });
+      evidence: [{ collection: 'asset', id: 'car' }], details: { status: 'active', attributes: { colour } },
+      context: { root: { kind: 'rule', asset_id: 'car', rule_id: 'renew' } } });
     const trip = (country: string) => fact('trip', { trip: { subject: { collection: 'booking', id: 'trip' }, travellers: [], destination_country: country } });
     const f = fixture([car('Red'), trip('PT')]); await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
     const revisions = () => f.store.revisionsAfter(0, 1000).length; const saved = revisions();
-    expect(saved).toBeGreaterThan(0); expect(JSON.stringify(f.store.list())).not.toMatch(/colour|destination_country/);
+    expect(saved).toBeGreaterThan(0); expect(JSON.stringify(f.store.list())).not.toMatch(/colour|destination_country|"context"/);
     f.facts([car('Blue'), trip('ES')]); await f.service().sendNow();
     expect(f.send).toHaveBeenCalledTimes(1); expect(revisions()).toBe(saved);
     // A change to the item itself is shown and saved: the two above are the context's doing.
@@ -125,6 +127,7 @@ describe('D-325 scheduled overview through the shared query', () => {
     // Today reads the values live, context and all.
     const today = (await f.service().today({ now: monday, before: monday + 7 * 86_400_000 })).situations.clusters.flatMap(cluster => cluster.items);
     expect(today.find(item => item.ref.id === 'car')?.details?.attributes).toEqual({ colour: 'Blue' });
+    expect(today.find(item => item.ref.id === 'car')?.context).toEqual({ root: { kind: 'rule', asset_id: 'car', rule_id: 'renew' } });
     expect(today.find(item => item.ref.id === 'trip')?.trip).toEqual({ destination_country: 'ES' });
   });
   it('still sends when one source is over its bound, and says which was not fully checked', async () => {
@@ -680,5 +683,48 @@ describe('D-325 overview retention', () => {
     expect(f.service().prune(monday + day).overview_clusters).toBe(1);
     // Another producer's situation is not the overview's to drop.
     expect(f.store.get('occurrence-legacy')?.snapshot.state).toBe('new');
+  });
+});
+
+/** ⛔ A drain step awaits the stop (and the minute timer awaits its tick) with
+ *  5 s, while a run sends through every channel — 30 s a messenger, longer an
+ *  email. The stop must not wait for the send, and the send must not be lost. */
+describe('D-325 scheduled overview — stopping', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('a stop waits no longer than the grace for a send, and the send cut short is repeated once after the restart', async () => {
+    const f = fixture();
+    // A channel that never answers.
+    f.send.mockImplementationOnce(() => new Promise(() => {}));
+    const ticking = f.service().tick();
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+    // The run was marked `sending`, its attempt counted, before the send.
+    expect(f.service().status()).toMatchObject({ pending: 1, last_run: { mode: 'overview', state: 'sending' } });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let stopped = false;
+    let ticked = false;
+    const stopping = f.service().stop().then(() => { stopped = true; });
+    void ticking.then(() => { ticked = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(stopped).toBe(true);
+    // The minute timer's tick is released too: the registry waits for it in
+    // the same drain step.
+    expect(ticked).toBe(true);
+    await stopping;
+    // A stopped service sends nothing more.
+    await f.service().tick();
+    expect(f.send).toHaveBeenCalledTimes(1);
+
+    // The restart stops the old service again (the send is still held), then starts anew.
+    const restarting = f.restart();
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await restarting;
+    vi.useRealTimers();
+    await f.service().tick();
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(f.send.mock.calls[1]?.[0].text).toContain('Repeating once because the previous delivery could not be confirmed.');
+    expect(f.service().status().last_sent).toMatchObject({ mode: 'overview' });
   });
 });

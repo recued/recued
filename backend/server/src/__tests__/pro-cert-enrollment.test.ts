@@ -35,7 +35,9 @@ import type { InitialAcmeDomainIssuer } from '../keys/rotation/acme-domain-renew
 import type {
   BackgroundServiceRegistry,
   IntervalServiceSpec,
+  StoppableService,
 } from '../composition/bin/wire-background-services.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 const ACTIVE: HandleState = {
   publisher_id: 'pub_1',
@@ -74,15 +76,19 @@ const fakeRegistry = () => {
 const build = (opts: {
   handleState?: HandleState | null;
   issuer?: InitialAcmeDomainIssuer | undefined;
+  /** Read per tick, for an issuer that arrives late (`composeLate`). */
+  getIssuer?: () => InitialAcmeDomainIssuer | undefined;
   identity?: string | undefined;
   vaultUnlocked?: () => boolean;
   lateHandle?: boolean;
 }) => {
   let spec: IntervalServiceSpec | null = null;
+  const services: StoppableService[] = [];
   const registry: BackgroundServiceRegistry = {
-    register: vi.fn(),
+    register: vi.fn((s: StoppableService) => { services.push(s); }),
     registerInterval: vi.fn((s: IntervalServiceSpec) => { spec = s; return vi.fn(); }),
     stopAll: vi.fn(async () => {}),
+    settledAll: vi.fn(async () => {}),
     list: vi.fn(() => []),
   };
   const hostnameRegistry = fakeRegistry();
@@ -100,7 +106,7 @@ const build = (opts: {
     handleStateStore: store,
     ...(opts.vaultUnlocked ? { isVaultUnlocked: opts.vaultUnlocked } : {}),
     hostnameRegistry,
-    getInitialAcmeIssuer: () => opts.issuer,
+    getInitialAcmeIssuer: opts.getIssuer ?? (() => opts.issuer),
     serverIdentityId: () => (opts.identity === undefined ? 'srv_1' : opts.identity),
     now: () => clock,
   });
@@ -110,6 +116,8 @@ const build = (opts: {
     hostnameRegistry,
     advance: (ms: number) => { clock += ms; },
     landHandle: () => { lateState = { ...ACTIVE }; },
+    /** What a drain does: begin every registered stop, then await them all. */
+    stop: async () => { await Promise.all(services.map((s) => s.stop())); },
   };
 };
 
@@ -149,7 +157,8 @@ describe('Pro cert enrollment', () => {
 
     await spec.tick();
 
-    expect(issuer.issueInitialDomain).toHaveBeenCalledWith({ domain: HOST });
+    // The signal is what a stop aborts the order with.
+    expect(issuer.issueInitialDomain).toHaveBeenCalledWith({ domain: HOST, signal: expect.any(AbortSignal) });
     expect(hostnameRegistry.rows.get(HOST)?.cert_fingerprint).toBe('sha256:abc');
   });
 
@@ -329,6 +338,7 @@ describe('Pro cert enrollment', () => {
         register: vi.fn(),
         registerInterval: vi.fn((sp: IntervalServiceSpec) => { spec2 = sp; return vi.fn(); }),
         stopAll: vi.fn(async () => {}),
+        settledAll: vi.fn(async () => {}),
         list: vi.fn(() => []),
       };
       const rows = fakeRegistry();
@@ -362,5 +372,116 @@ describe('Pro cert enrollment', () => {
 
     expect(hostnameRegistry.rows.size).toBe(0);
     expect(issuer.issueInitialDomain).not.toHaveBeenCalled();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Shutdown — a drain step has 5 s, and the order it used to wait on took up
+// to ACME_ISSUANCE_TIMEOUT_MS (240 s). A step that runs out makes an update
+// refuse to swap versions, while the process exits after the drain anyway.
+// ──────────────────────────────────────────────────────────────────
+type Issued = Awaited<ReturnType<InitialAcmeDomainIssuer['issueInitialDomain']>>;
+
+/** An order the cloud never answers. Like the real renewer, it settles only
+ *  when aborted, and then as a quiet decline. */
+const unansweredOrder = () => {
+  const signals: AbortSignal[] = [];
+  const issueInitialDomain = vi.fn(({ signal }: { domain: string; signal?: AbortSignal }) => {
+    if (signal) signals.push(signal);
+    return new Promise<Issued>((resolve) => {
+      signal?.addEventListener('abort', () => {
+        resolve({ ok: false, reason: 'helper_unavailable' });
+      }, { once: true });
+    });
+  });
+  return { issuer: { issueInitialDomain }, signals };
+};
+
+describe('Pro cert enrollment — shutdown', () => {
+  it('a stop aborts the order in flight, returns inside the grace, and records nothing', async () => {
+    const order = unansweredOrder();
+    const { spec, hostnameRegistry, stop } = build({ issuer: order.issuer });
+    const tick = spec.tick();
+    await vi.waitFor(() => expect(order.issuer.issueInitialDomain).toHaveBeenCalledTimes(1));
+    const writes = hostnameRegistry.upsert.mock.calls.length; // the pending row
+
+    const started = performance.now();
+    await stop();
+    expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS);
+    expect(order.signals[0]?.aborted).toBe(true);
+    await tick;
+
+    // The decline the abort produced is not a failure to record: the row stays
+    // pending, nothing backs off, and the next boot orders again.
+    expect(hostnameRegistry.upsert).toHaveBeenCalledTimes(writes);
+    expect(hostnameRegistry.rows.get(HOST)?.cert_provisioning).toBe('pending');
+  });
+
+  it('bounds the stop when the issuer ignores the abort, and drops the late answer', async () => {
+    let answer!: (issued: Issued) => void;
+    const issueInitialDomain = vi.fn(() => new Promise<Issued>((resolve) => { answer = resolve; }));
+    const { spec, hostnameRegistry, stop } = build({ issuer: { issueInitialDomain } });
+    const tick = spec.tick();
+    await vi.waitFor(() => expect(issueInitialDomain).toHaveBeenCalledTimes(1));
+    const writes = hostnameRegistry.upsert.mock.calls.length;
+
+    const started = performance.now();
+    await stop();
+    const waited = performance.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(STOP_GRACE_MS - 50);
+    expect(waited).toBeLessThan(STOP_GRACE_MS * 3);
+    // The tick the interval holds is released with the stop, so the interval's
+    // own stop (which waits for its ticks) is bounded by it too.
+    await tick;
+
+    // The cloud answers after the drain, when the database may be closed.
+    answer({ ok: true, new_fingerprint: 'sha256:late', cert_expires_at: 1 });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(hostnameRegistry.upsert).toHaveBeenCalledTimes(writes);
+    expect(hostnameRegistry.rows.get(HOST)?.cert_fingerprint).toBeUndefined();
+  });
+
+  /** ⛔ A warm-up tick used to run detached (`void tick()`): the registry never
+   *  saw it, so a stop finished at once and the order's answer was written
+   *  after it — into a database the drain was closing. */
+  it('tracks a warm-up tick: the stop aborts its order and waits for it', async () => {
+    vi.useFakeTimers();
+    try {
+      let issuer: InitialAcmeDomainIssuer | undefined;
+      let answer!: (issued: Issued) => void;
+      const signals: AbortSignal[] = [];
+      const late: InitialAcmeDomainIssuer = {
+        issueInitialDomain: vi.fn(({ signal }: { domain: string; signal?: AbortSignal }) => {
+          if (signal) signals.push(signal);
+          return new Promise<Issued>((resolve) => { answer = resolve; });
+        }),
+      };
+      const { spec, hostnameRegistry, stop } = build({ getIssuer: () => issuer });
+      await spec.tick();                         // boot: no issuer yet, warm-up armed
+      issuer = late;                             // composeLate lands
+      await vi.advanceTimersByTimeAsync(2_500);  // the WARM-UP tick places the order
+      expect(late.issueInitialDomain).toHaveBeenCalledTimes(1);
+      const writes = hostnameRegistry.upsert.mock.calls.length;
+
+      let stopped = false;
+      const stopping = stop().then(() => { stopped = true; });
+      expect(signals[0]?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS / 2);
+      expect(stopped).toBe(false);               // it waits for the warm-up tick
+      answer({ ok: true, new_fingerprint: 'sha256:late', cert_expires_at: 1 });
+      await stopping;
+      expect(hostnameRegistry.upsert).toHaveBeenCalledTimes(writes);
+      expect(hostnameRegistry.rows.get(HOST)?.cert_fingerprint).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts nothing once stopped — neither the interval nor a warm-up', async () => {
+    const order = unansweredOrder();
+    const { spec, stop } = build({ issuer: order.issuer });
+    await stop();
+    await spec.tick();
+    expect(order.issuer.issueInitialDomain).not.toHaveBeenCalled();
   });
 });

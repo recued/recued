@@ -101,6 +101,7 @@ export interface MailLaneCallers {
   updateCredentials?: AccountPasswordRepair;
   list: () => Promise<{ instances: ReadonlyArray<MailAccountListRow> }>;
   enrollImap: (args: Record<string, unknown>) => Promise<{ slug: string; send_capable: boolean }>;
+  enrollSmtp?: (args: Record<string, unknown>) => Promise<{ slug: string; send_capable: boolean }>;
   /** OAuth enrollment — the popup-captured code + the byte-matched
    *  redirect_uri. Optional so older mounts without it still type. */
   enrollOAuth?: (args: {
@@ -444,7 +445,9 @@ export const mountAccountsLanePanel = (
   let firstSyncPollAttempts = 0;
   let mailboxHandedOff = false;
   const openFirstMailboxProposals = (slug: string) => {
-    if (disposed || mailboxHandedOff || state.lane !== 'mail' || !opts.onFirstMailboxConnected || state.rows.some(row => row.slug !== slug)) return;
+    if (disposed || mailboxHandedOff || state.lane !== 'mail' || !opts.onFirstMailboxConnected
+      || state.rows.some(row => row.slug === slug && row.adapterType === 'smtp')
+      || state.rows.some(row => row.slug !== slug && row.adapterType !== 'smtp')) return;
     mailboxHandedOff = true; opts.onFirstMailboxConnected();
   };
   let firstSyncPollCancel: (() => void) | null = null;
@@ -724,9 +727,9 @@ export const mountAccountsLanePanel = (
           ...(m.source_authentication ? { sourceAuthentication: m.source_authentication } : {}),
           authenticationSwitchAvailable: authenticationPanel !== undefined,
           oauthAppSwitchAvailable: oauthAppSwitchPanel !== undefined,
-          passwordRepairAvailable: m.adapter_type === 'imap' && opts.mail?.updateCredentials !== undefined,
+          passwordRepairAvailable: ['imap', 'smtp'].includes(m.adapter_type) && opts.mail?.updateCredentials !== undefined,
           lastSyncedAt: m.last_synced_at,
-          ...(m.sync_status !== undefined ? { mailSync: m.sync_status } : {}),
+          ...(m.adapter_type !== 'smtp' && m.sync_status !== undefined ? { mailSync: m.sync_status } : {}),
         };
       }
       const c = r as CollectionInstanceRow;
@@ -837,6 +840,7 @@ export const mountAccountsLanePanel = (
     // likewise refuses to call that stale timestamp "ready" while error is set.
     if (state.error !== null) return true;
     const row = state.rows.find((candidate) => candidate.slug === success.slug);
+    if (row?.adapterType === 'smtp') return false;
     if (row?.mailSync !== undefined) {
       return row.authState !== 'expired' && row.authState !== 'unauthorized'
         && !row.mailSync.initial_sync_complete;
@@ -1057,6 +1061,9 @@ export const mountAccountsLanePanel = (
         if (opts.mail === undefined) throw new Error('You cannot set up Mail here.');
         const enrolled = await opts.mail.enrollImap(payload);
         enrolledSlug = enrolled.slug;
+      } else if (provider.transport === 'mail-smtp') {
+        if (!opts.mail?.enrollSmtp) throw new Error('SMTP-only accounts are unavailable on this server.');
+        enrolledSlug = (await opts.mail.enrollSmtp(payload)).slug;
       } else if (provider.transport === 'calendar-caldav') {
         if (opts.calendar?.enrollBasic === undefined) {
           throw new Error('You cannot set up CalDAV here.');
@@ -1082,7 +1089,7 @@ export const mountAccountsLanePanel = (
       const refresh = doRefresh(false, true);
       focusConnectionSuccess();
       await refresh;
-      openFirstMailboxProposals(enrolledSlug);
+      if (provider.transport !== 'mail-smtp') openFirstMailboxProposals(enrolledSlug);
     } catch (err) {
       if (disposed) return;
       state.saving = false;
@@ -1999,7 +2006,7 @@ export const mountAccountsLanePanel = (
       if (state.saving || passwordPanel.busy() || passwordPanel.hasDraft() || !dataset.slug) return;
       const row = state.rows.find(row => row.slug === dataset.slug);
       const call = state.lane === 'mail' ? opts.mail?.updateCredentials : opts.calendar?.updateCredentials;
-      if (row?.passwordRepairAvailable && call) passwordPanel.open(state.lane, row.slug, row.sendCapable === true, call);
+      if (row?.passwordRepairAvailable && call) passwordPanel.open(state.lane, row.slug, row.sendCapable === true && row.adapterType !== 'smtp', call, row.adapterType === 'smtp');
     },
     'accounts-clear-filters': () => { state.filters = undefined; render(); host.querySelector<HTMLElement>('[data-acct-filter="query"]')?.focus(); },
     'accounts-copy-oauth-redirect': (dataset, _event, element) => {
@@ -2222,7 +2229,7 @@ export const mountAccountsLanePanel = (
       const row = state.rows.find(r => r.slug === slug);
       const updateCredentials = lane === 'mail' ? opts.mail?.updateCredentials : lane === 'calendar' ? opts.calendar?.updateCredentials : undefined;
       if (row?.passwordRepairAvailable && updateCredentials) {
-        passwordPanel.open(lane, row.slug, row.sendCapable === true, updateCredentials);
+        passwordPanel.open(lane, row.slug, row.sendCapable === true && row.adapterType !== 'smtp', updateCredentials, row.adapterType === 'smtp');
         return;
       }
       if (!row || !['mail', 'calendar'].includes(lane) || !['gmail', 'gcal', 'graph'].includes(row.adapterType) || !opts.runCollectionAuthentication) {

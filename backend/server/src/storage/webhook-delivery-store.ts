@@ -255,6 +255,11 @@ export interface WebhookDeliveryStore {
     retry_delay_ms: number;
     max_attempts: number;
   }): 'pending' | 'dead_letter';
+  /** Hand a claim back unrun: pending again at once, and the attempt its claim
+   * counted given back. Only for a dispatch the server never started (it is
+   * stopping) — a crashed claim keeps its attempt, so an event that takes the
+   * server down still reaches its ceiling. */
+  releaseOutboxClaim(outboxId: string, claimToken: string): void;
   prune(at?: number): WebhookRetentionResult;
   /** Owner-control-plane prune. It deliberately has no timestamp parameter. */
   pruneIngress(input: { ingress_id: string }): WebhookRetentionResult;
@@ -1507,6 +1512,23 @@ export const createWebhookDeliveryStore = (
     return persist();
   };
 
+  const releaseOutboxClaim = (outboxId: string, claimToken: string): void => {
+    const stamp = now();
+    const persist = db.transaction(() => {
+      requireClaim(outboxId, claimToken);
+      // The claim counted an attempt (`claimOutbox`), so this one is at least 1.
+      // The event's own `dispatch_state` was never changed by the claim.
+      db.prepare(`
+        UPDATE webhook_event_outbox SET
+          state = 'pending', attempt_count = attempt_count - 1,
+          available_at = ?, claim_token = NULL, lease_expires_at = NULL,
+          updated_at = ?
+        WHERE outbox_id = ? AND state = 'leased' AND claim_token = ?
+      `).run(stamp, stamp, outboxId, claimToken);
+    });
+    persist();
+  };
+
   const pruneScope = (
     at: number,
     ingressId: string | null,
@@ -1786,6 +1808,7 @@ export const createWebhookDeliveryStore = (
     deadLetterExhaustedOutbox,
     markOutboxDispatched,
     markOutboxFailed,
+    releaseOutboxClaim,
     prune,
     pruneIngress,
   };

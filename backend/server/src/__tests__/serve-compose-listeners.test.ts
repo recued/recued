@@ -756,6 +756,11 @@ describe('composeListeners', () => {
     for (const [name, enrolled_at, slug] of [['email', 1, 'alerts'], ['home-mail', 2, 'home']] as const) {
       connections.upsert({ kind: 'notification', name, subtype: 'email', display_name: name, auth_ciphertext: '',
         config_json: JSON.stringify({ sender_mail_instance: slug, default_recipient: 'owner@example.com' }), enrolled_at, updated_at: enrolled_at });
+      // An email connection carries plain notifications only from a receiving
+      // mailbox (`emailConnectionHasMailbox`, SMTP-only accounts 7798c708f).
+      createInstanceStore({ db: storageDb }).upsert({ platform: 'mail', slug, adapter_type: 'imap',
+        config: { username: mailboxes[slug], smtp: { host: 'smtp.example.test' } },
+        caps: {} as never, auth_state: 'healthy', last_synced_at: null });
     }
     await createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(storageDb, 'notification_settings'))
       .setChannelMode('email', { connection: { name: 'home-mail', enrolled_at: 2 } });

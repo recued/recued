@@ -211,6 +211,10 @@ export interface LlmGatewayCompletionProvider {
 }
 
 export interface LlmGatewayHandlerDeps {
+  /** True once the server has begun stopping. A completion is then refused with
+   *  503 and `retry-after`, like the MCP door: a turn admitted during a restart
+   *  would call the model and tools the drain is stopping. Absent ⇒ never. */
+  readonly isStopping?: () => boolean;
   /** Presented-bearer verification is the sole token authority seam. Dispatch
    * must never refresh by token id and let an invalidated bearer inherit a
    * replacement row. */
@@ -2010,6 +2014,21 @@ export const createLlmGatewayPortHandler = (
         isModelsPath ? 'GET only on /v1/models.' : 'POST only on /v1/chat/completions.',
         'invalid_request_error',
         { allow: isModelsPath ? 'GET' : 'POST' },
+      );
+      return;
+    }
+
+    // The same refusal the MCP door gives while the server stops: a turn admitted
+    // now would call the model and tools the drain is stopping, and the client
+    // is told to retry once the server is back.
+    if (isCompletionsPath && deps.isStopping?.() === true) {
+      writeOpenAiError(
+        res,
+        503,
+        'server_stopping',
+        'The server is restarting; retry shortly.',
+        'server_error',
+        { 'retry-after': '1' },
       );
       return;
     }

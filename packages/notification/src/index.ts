@@ -382,6 +382,15 @@ export interface NotificationBlock {
    *  had already closed is `closed`, so the surface can say so. */
   submitAnswer(reply: InboundReply): Promise<SubmitAnswerOutcome>;
 
+  /** The server has begun stopping. From now on `submitAnswer` records the
+   *  answer and leaves the rest — closing the prompt on every channel, running
+   *  its handler — to the boot sweep, which already finishes any ask it finds
+   *  `answered`. ⛔ Both wait on outside parties (a channel edit is up to 15 s
+   *  each; an approval's handler is the whole resumed run), so applying an
+   *  answer during a restart was one more thing a drain step waited on, and the
+   *  exit right after would have cut it off anyway (2026-10-26). */
+  beginStopping(): void;
+
   /** D-177 P5a — retire a still-`open` ask WITHOUT an answer and close
    *  its prompt on every delivered channel. The batch-approval JOIN uses
    *  it to supersede the prior payload version's ask with the
@@ -552,6 +561,8 @@ export const createNotificationBlock = (
     );
   }
   const serializer = createAskSerializer();
+  /** Set by `beginStopping()`: answers are recorded, the boot sweep applies them. */
+  let stopping = false;
   const deliveries = deps.deliveryStore ? createAskDeliveryController({ store: deps.deliveryStore,
     asks: store, channels: allChannels, now, mint, canDeliver: deps.isVaultUnlocked,
     ...(deps.authorizeReminderOrigin ? { authorizeOrigin: deps.authorizeReminderOrigin } : {}),
@@ -935,6 +946,7 @@ export const createNotificationBlock = (
       await deliveries.release(group_id);
     },
     async restoreAskDeliveries() { await deliveries?.restore(); },
+    beginStopping() { stopping = true; },
     async parseAskBundleReply(group_id, text, via) {
       return await deliveries?.parseTextReply(group_id, text, via) ?? null;
     },
@@ -1308,6 +1320,11 @@ export const createNotificationBlock = (
             /* audit is not the decision — never lose the answer over it. */
           }
         }
+        // ⛔ DURING A RESTART THE ANSWER IS RECORDED AND THE REST WAITS. It is
+        // durably `answered` above, and the boot sweep (`recoverAnswered`)
+        // closes the prompt on every channel and runs the handler for exactly
+        // such an ask, so stopping here loses nothing (`beginStopping`).
+        if (stopping) return 'answered';
         // Resolve the prompt on every delivered channel (A.2 step 7).
         await closeOnAllChannels(answered);
         // Dispatch `on_answer` (A.2 step 8). A missing or throwing

@@ -108,7 +108,10 @@ export interface OAuthAccountStore {
 
 export type HttpFetcher = (
   url: string,
-  init?: { method?: string; headers?: Record<string, string>; body?: string },
+  /** `signal`: a sync loop's stop, which aborts the request in flight
+   *  (`stop-signal.ts`). The bounded default fetcher honours it; a fetcher that
+   *  ignores it only makes the stop wait out its own grace. */
+  init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
 ) => Promise<{
   status: number;
   ok: boolean;

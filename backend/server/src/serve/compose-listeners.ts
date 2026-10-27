@@ -1,3 +1,5 @@
+import { mailAccountCapabilities } from '@recued/contracts';
+import { handleExecute } from '../execute-handler.js';
 import { createAutomationRehearsalHost } from '../automation-rehearsal-host.js';
 import { createAutomationRehearsalStore } from '../storage/automation-rehearsal-store.js';
 import { connectionViewFromRow } from '@recued/contracts';
@@ -2218,7 +2220,13 @@ export const composeListeners = async (
   // the dispatcher is subscribed and the pre-approval driver it captures
   // through is there. Sooner, they reached no trigger, or were queued with no
   // driver and skipped — and a fact announces once.
-  void collection.mailFactEvents.open(eventTriggersBundle ? () => eventTriggersBundle.dispatcher.room() : undefined);
+  // ⛔ After the events the last stop PARKED (`replayParked`): they are older,
+  // and nothing else delivers them either.
+  const openMailFacts = (): Promise<void> =>
+    collection.mailFactEvents.open(eventTriggersBundle ? () => eventTriggersBundle.dispatcher.room() : undefined);
+  void (eventTriggersBundle?.dispatcher.replayParked() ?? Promise.resolve())
+    .catch((err) => { console.warn('[event-triggers] the events the last stop parked were not replayed', err); })
+    .then(openMailFacts);
   // D-124 — and what the collections' boot scans found before the dispatcher
   // subscribed reaches the triggers now, one at a time as the queue has room.
   void collection.bootEvents.replay(
@@ -2423,6 +2431,10 @@ export const composeListeners = async (
     if (eventTriggersBundle) eventTriggersBundle.triggersDeps.unattendedSettings = unattendedSettings;
     if (scheduleDeps) scheduleDeps.unattendedSettings = unattendedSettings;
     if (rpc.autoRunDeps) rpc.autoRunDeps.unattendedSettings = unattendedSettings;
+  }
+  if (dishDeps && scheduleDeps) {
+    collection.yours?.bindWriters({ dishes: dishDeps, schedules: scheduleDeps, execute: input => handleExecute(execution.executeDeps, input) });
+    execution.executeDeps.prepareAssetWriterRun = input => collection.yours?.prepareWriterRun(input) ?? input;
   }
   if (watchBundle && execution.executeDeps.connectionStore) {
     execution.executeDeps.connectionStore.addOnUpsert(() => watchBundle.manager.recompute());
@@ -2899,6 +2911,7 @@ export const composeListeners = async (
           },
           canDispatch: () => app.isVaultUnlocked()
             && !(app.serverState?.isPaused() ?? false),
+          isStopping: () => execution.executeDeps.isDraining?.() === true,
           log: (level, message, metadata) => {
             const sink = level === 'error' ? console.error : console.warn;
             sink(`[webhook-outbox] ${message}`, metadata);
@@ -2960,6 +2973,10 @@ export const composeListeners = async (
       resolveCanonicalEndpoint: (ingress) => webhookEndpointUrl(ingress.public_id),
     });
   }
+  // A fresh run is refused once the server begins stopping (`handleExecute`).
+  // Bound here because this is where the lifecycle exists; every caller shares
+  // this deps object, so a cron tick, a trigger and an RPC all see it.
+  execution.executeDeps.isDraining = () => lifecycle?.machine.isAtLeast('draining') === true;
   const webhookPublicExposureEnabled = async (): Promise<boolean> => {
     try {
       const machine = exposureDeps?.getMachine();
@@ -3532,6 +3549,10 @@ export const composeListeners = async (
       ? {
           connectionDeps: {
             store: app.connectionStoreRef,
+            mailAccountCapabilities: (slug: string) => {
+              const mailbox = storage.db ? createInstanceStore({ db: storage.db }).get('mail', slug) : undefined;
+              return mailAccountCapabilities(mailbox?.adapter_type ?? '');
+            },
             authenticationRepairTargets: (name: string) => [
               ...(storage.workEntityStoreRef?.listSources('file') ?? [])
                 .filter(source => source.source_kind === 'connection' && sourceIdConnectionName(source.id) === name)
@@ -4672,7 +4693,14 @@ export const composeListeners = async (
       : {}),
     ...(app.chatDeps ? { chatDeps: app.chatDeps } : {}),
     ...(mcpHttpDeps ? { mcpHttpDeps } : {}),
-    ...(llmGatewayDeps ? { llmGatewayDeps } : {}),
+    ...(llmGatewayDeps
+      ? {
+          llmGatewayDeps: {
+            ...llmGatewayDeps,
+            isStopping: () => lifecycle?.machine.isAtLeast('draining') === true,
+          },
+        }
+      : {}),
   });
 
   // D-169 P0 follow-on (Codex 2026-05-28 Angle 2 fold) — publish the
@@ -5109,6 +5137,25 @@ export const composeListeners = async (
   savedDataViewAlerts?.start();
   authenticationAlerts?.start();
 
+  // ⛔ What would otherwise START work during a restart is told to stop the
+  // moment the server begins stopping, before any drain step waits on anything:
+  //  - the chat's turn queue claimed a waiting turn every second and nothing
+  //    closed it, so it kept starting turns that call the model and their tools
+  //    while the drain stopped both. Closed, it claims none, and a running turn
+  //    settles `interrupted` at its next check (`chat-turn-queue.ts`);
+  //  - an answer (Approve in the web app, a messenger button, an email reply) is
+  //    recorded and its handler — for an approval, the whole resumed run — is
+  //    left to the boot sweep (`NotificationBlock.beginStopping`).
+  const turnQueue = app.chatOrchestratorRef?.turnQueue;
+  const answers = execution.notificationBlock;
+  if (lifecycle && (turnQueue || answers)) {
+    lifecycle.machine.onStateChange((_prev, next) => {
+      if (next !== 'draining') return;
+      turnQueue?.close();
+      answers?.beginStopping();
+    });
+  }
+
   let closePromise: Promise<void> | undefined;
   const closeServer = (): Promise<void> => {
     if (closePromise) return closePromise;
@@ -5144,9 +5191,10 @@ export const composeListeners = async (
       //
       // ⚠ `stop()` DELIBERATELY DOES NOT RELEASE THE MAPPING. D-273 lets the
       // lease expire instead, because the process is not reliably alive at this
-      // point anyway. This drains OUR side: admission, timers, subscription.
+      // point anyway. This drains OUR side: admission, timers, subscription,
+      // and (its promise, returned) the router request in flight, bounded.
       ...(portMappingSupervisorRef !== null
-        ? [begin(() => { portMappingSupervisorRef?.stop(); })]
+        ? [begin(() => portMappingSupervisorRef?.stop())]
         : []),
     ];
     closePromise = Promise.allSettled(drains).then((results) => {

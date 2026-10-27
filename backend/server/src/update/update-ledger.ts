@@ -18,6 +18,8 @@
  *  drift, the way `durable-fs.ts`'s pattern did before it was made singular.
  */
 
+import type { UpdateRevertReason } from '@recued/contracts';
+
 import { createJsonlLedger, type JsonlLedger } from '../jsonl-ledger.js';
 
 export const UPDATE_LEDGER_FILE = 'updates.log';
@@ -69,6 +71,12 @@ export interface UpdateLedgerEntry {
    * that legacy arm during the additive rollout, while new writers must not
    * make owner-facing recovery semantics depend on mutable prose. */
   recovery_source?: 'outer-supervisor';
+  /** Typed cause of a terminal that reverts an update, which
+   * `update.operation_status` sends as its `revert_reason`. Same rule as
+   * `recovery_source`: older binaries wrote the cause only into `detail`, so
+   * `updateRevertReason` keeps a legacy arm for those rows, and a new writer
+   * sets this instead of leaving the meaning in prose it may reword. */
+  revert_reason?: UpdateRevertReason;
   /** A pre-swap webclient promotion could not be compensated before this
    * `apply_reverted` terminal was written. The terminal still releases the
    * update operation; this durable bit tells pre-open recovery that the

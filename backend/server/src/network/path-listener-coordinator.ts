@@ -9,8 +9,8 @@
  *
  *  Rebind semantics (§ A.7.4):
  *
- *  1. Stop the current listener set (graceful close; pending requests
- *     drain). The state machine has already emitted the high-assurance
+ *  1. Stop the current listener set (forced close; every open connection
+ *     is dropped). The state machine has already emitted the high-assurance
  *     audit row by the time this is called (Codex P1 #1 fold carried
  *     forward from W2.x).
  *  2. Build a fresh `createPathListenerSet` with the new `resolution` +
@@ -94,7 +94,8 @@ export interface ProductionPathListenerCoordinatorOptions {
 export interface ProductionPathListenerCoordinator extends PathListenerCoordinator {
   /** Per-listener status snapshot (LAN + public). Reads in-memory state. */
   status(): PathListenerStatus[];
-  /** Graceful close. Idempotent. */
+  /** Closes every listener and drops its open connections (see
+   *  `PathListenerSet.stop` for why it is not graceful). Idempotent. */
   stop(): Promise<void>;
 }
 

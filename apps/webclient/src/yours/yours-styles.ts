@@ -91,6 +91,8 @@ export const YOURS_STYLES = `
 [data-recued-yours] dd {margin:0;white-space:pre-wrap}
 [data-recued-yours] .yours-editor {width:100%;max-width:720px;margin:4px auto 24px;display:grid;gap:20px;padding:28px;background:var(--surface);border:1px solid var(--border);border-radius:var(--wc-radius-lg,14px)}
 [data-recued-yours] .yours-editor>h2 {padding-bottom:4px}
+[data-recued-yours] [data-yours-writer-setup] form {display:grid;gap:20px;min-width:0}
+[data-recued-yours] [data-yours-writer-setup] :is(dt,dd) {overflow-wrap:anywhere;margin:0}
 [data-recued-yours] .yours-source-note {margin:0;padding:16px;border-left:3px solid var(--accent);background:var(--surface-sunk);border-radius:0 var(--wc-radius,9px) var(--wc-radius,9px) 0;white-space:pre-wrap;overflow-wrap:anywhere}
 [data-recued-yours] .yours-rule-preview {padding:16px;background:var(--surface-sunk);border-left:3px solid var(--accent);border-radius:0 var(--wc-radius,9px) var(--wc-radius,9px) 0;font-size:14px;line-height:1.6}
 [data-recued-yours] .yours-change-preview {display:grid;gap:6px;padding:14px 16px;border-left:3px solid var(--accent);background:var(--surface-sunk);border-radius:0 var(--wc-radius,9px) var(--wc-radius,9px) 0}
@@ -128,6 +130,20 @@ export const YOURS_STYLES = `
 [data-recued-yours] :is([data-yours-more-facts],[data-yours-asset-more],[data-yours-rule-more])>summary {min-height:44px;padding:10px 0;cursor:pointer;font-size:13px;color:var(--fg-muted)}
 [data-recued-yours] .yours-pages {display:flex;gap:16px;align-items:center;min-height:40px}
 [data-recued-yours] .yours-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}
+/* D-325 — neutral comparison: below/above is a number relationship, not a verdict. */
+[data-recued-yours] .yours-comparison {border-inline-start:3px solid var(--accent)}
+[data-recued-yours] .yours-comparison-heading {display:flex;align-items:start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+[data-recued-yours] .yours-comparison-heading h3 {flex:1;min-width:0;margin:0}
+[data-recued-yours] .yours-comparison-state {font-size:12px;color:var(--fg-muted);padding:3px 8px;background:var(--surface-sunk);border-radius:6px}
+[data-recued-yours] .yours-comparison-gap {font-size:clamp(22px,3vw,28px);line-height:1.25;letter-spacing:-.02em;font-weight:600;font-variant-numeric:tabular-nums;margin:14px 0}
+[data-recued-yours] dl.yours-comparison-inputs {grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;padding:14px;background:var(--surface-sunk);border-radius:9px}
+[data-recued-yours] .yours-comparison-inputs>div {min-width:0}
+[data-recued-yours] .yours-comparison-inputs dt {font-size:12px;margin-bottom:8px}
+[data-recued-yours] .yours-comparison-inputs a {display:inline-flex;align-items:center;min-height:44px}
+[data-recued-yours] .yours-comparison-inputs dd {margin:0;font-size:18px;font-weight:550;font-variant-numeric:tabular-nums}
+[data-recued-yours] .yours-comparison-inputs small {display:block;font-size:12px;line-height:1.5;margin-top:6px}
+[data-recued-yours] .yours-comparison-note {color:var(--fg-muted);font-size:12px;line-height:1.6;max-width:78ch}
+[data-recued-yours] :is([data-yours-reading],[data-yours-rule]):focus {outline:2px solid var(--accent);outline-offset:4px;scroll-margin:24px}
 @media(pointer:coarse) {
  [data-recued-yours] :is(button,input,select,summary) {min-height:44px}
  [data-recued-yours] .yours-fact .yours-menu>summary,[data-recued-yours] [data-yours-sphere]>summary {min-height:44px;display:flex;align-items:center}

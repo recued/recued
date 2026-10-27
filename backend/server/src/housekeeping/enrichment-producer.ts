@@ -503,6 +503,7 @@ export const buildEnrichmentProducerTask = <TData>(
       ctx: HousekeepingContext,
       cursor: HousekeepingCursor,
       budget_ms: number,
+      signal?: AbortSignal,
     ): Promise<HousekeepingStepResult> {
       const start = ctx.now();
       // Cursor mismatch (first run, or persistence drift) →
@@ -513,7 +514,11 @@ export const buildEnrichmentProducerTask = <TData>(
           : initialCursor();
       let max_target_id_seen = topicCursor.max_target_id_seen;
 
-      const checkBudget = (): boolean => ctx.now() - start >= budget_ms;
+      // A server that is stopping has spent the budget too: the walk yields
+      // at the next record with its cursor, instead of starting another
+      // record's model call the restart would only abandon.
+      const checkBudget = (): boolean =>
+        ctx.now() - start >= budget_ms || signal?.aborted === true;
 
       // ── D-132 P2 — pool-policy → effective ForceLayer ──────────
       // Resolved once per step (trust state + global config don't

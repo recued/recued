@@ -6,6 +6,19 @@ export type AssetFactGroup = 'attributes' | 'settings' | 'dates' | 'readings' | 
 export type AssetFieldRef = { kind: 'field'; asset_id: string; group: AssetFactGroup; field: string };
 export type AssetRuleRef = { kind: 'rule'; asset_id: string; rule_id: string };
 export type AssetFactContextRoot = AssetFieldRef | AssetRuleRef;
+/** D-325 — a calculation over saved numbers, never a rule verdict or forecast. */
+export type AssetReadingComparison =
+  | { kind: 'compared'; value: number; target: number; unit: string; observed_at: number; relation: 'below' | 'equal' | 'above'; difference?: string }
+  | { kind: 'unavailable'; reason: 'unreturned_input' | 'unknown' | 'omitted' | 'invalid_reading' | 'unit_mismatch' | 'future' };
+export type AssetWriterDeliveryOutcome = 'accepted' | 'confirmed' | 'unchanged' | 'manual_priority' | 'protected_source' | 'before_handoff' | 'older_observation';
+/** Only settled, admitted native submissions for this binding and field.
+ * No receipt does not prove no execution; rejected/undispatched calls and
+ * pre-receipt history are outside this ledger. No recipe lifecycle claim. */
+export type AssetWriterDelivery = { status: 'no_receipt' } | {
+  status: 'recorded';
+  last_submission: { at: number; observation_at: number; outcome: AssetWriterDeliveryOutcome };
+  last_accepted?: { at: number; observation_at: number };
+};
 export interface AssetFactContextRequest { root: AssetFactContextRoot }
 export const ASSET_FACT_CONTEXT_REQUEST_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['root'], properties: {
@@ -37,7 +50,7 @@ export type AssetFactContextNode =
   | { ref: AssetFieldRef; kind: 'field'; label: string; value: unknown; known: boolean; source: AssetFactSource | null; value_omitted?: true; source_restricted?: true; future?: true }
   | { ref: AssetRuleRef; kind: 'rule'; title: string; rule: AssetRule }
   | { ref: { kind: 'evidence'; asset_id: string; evidence: AssetEvidence }; kind: 'evidence'; evidence: AssetEvidence }
-  | { ref: { kind: 'writer'; asset_id: string; binding_id: string }; kind: 'writer'; name: string; enabled: boolean };
+  | { ref: { kind: 'writer'; asset_id: string; binding_id: string }; kind: 'writer'; name: string; enabled: boolean; delivery?: AssetWriterDelivery };
 export type AssetFactContextRef = AssetFactContextNode['ref'];
 export interface AssetFactContextEdge {
   from: AssetFactContextRef;
@@ -52,6 +65,22 @@ export interface AssetFactContext {
   read_at: number;
   /** No cached values: every returned value belongs to this synchronous read. */
   freshness: 'current';
+  /** Registered bindings for the input field only. Disabled counts are included
+   * when the native registry was checked; their omission cannot prove absence.
+   * Writer nodes describe enabled bindings only. This does not prove
+   * recipe validity, scheduling or execution. Restricted/unavailable/partial
+   * checks cannot establish absence. Manual priority is independent of events. */
+  writer_check?: {
+    scope: 'enabled_bindings' | 'registered_bindings';
+    field: string;
+    status: 'complete' | 'partial' | 'restricted' | 'unavailable' | 'not_applicable';
+    enabled_count?: number;
+    disabled_count?: number;
+    /** No current lifecycle, schedule or whole-recipe history is read.
+     * Writer nodes can separately carry settled field-submission receipts. */
+    execution_status?: 'not_checked';
+    manual_priority?: boolean;
+  };
   completeness: 'complete' | 'partial';
   omitted: Array<'node_budget' | 'edge_budget' | 'byte_budget' | 'restricted_context' | 'unsupported_value' | 'source_unavailable'>;
   missing: AssetFieldRef[];

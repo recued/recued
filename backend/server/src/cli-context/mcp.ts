@@ -129,6 +129,15 @@ import { createDishStore } from '../dish-store.js';
 import { createDishGroupStore } from '../dish-group-store.js';
 import { createAutoRunSettingsStore, createCircuitBreakerStore } from '../auto-run-scheduler.js';
 import { createEventTriggersStore } from '../triggers/store.js';
+import { updateLeasePathForInstall } from '../update/install-paths.js';
+import { runningAsPackagedBinary } from '../packaged-binary.js';
+import { EXIT_LOCK_HELD } from '../launcher/managed-launcher.js';
+import {
+  mcpLeaseHolder,
+  mcpStartRefusal,
+  mcpStepAsideNotice,
+  watchUpdateLease,
+} from '../update/mcp-step-aside.js';
 
 export interface McpProfileOptions {
   args: string[];
@@ -159,10 +168,28 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     note: (message) => { console.error(message); },
   });
 
+  // ⛔⛔ AN UPDATE, A ROLLBACK OR THE SERVER'S BOOT NEEDS THE DATABASE ALONE, and
+  // this process used to open it regardless (`update/mcp-step-aside.ts`). While
+  // another process holds the update lease, do not open it; once running, close
+  // it and exit as soon as one claims it. Same path and reader the server's own
+  // boot uses (`compose-lifecycle.ts`), so both meet at one file.
+  const updateLeasePath = updateLeasePathForInstall(env, runningAsPackagedBinary);
+  const busy = mcpLeaseHolder(updateLeasePath);
+  if (busy !== null) {
+    console.error(mcpStartRefusal(busy));
+    process.exitCode = EXIT_LOCK_HELD;
+    return;
+  }
+
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
   const db = await openApplicationDatabase({ dbPath, env });
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  // Close on every exit, so this connection's write-ahead log is checkpointed
+  // and an update's snapshot does not find it still open.
+  process.once('exit', () => {
+    try { db.close(); } catch { /* already closed */ }
+  });
   options.bootTrace?.mark('db-opened');
 
   const manifests = createManifestRegistry(undefined, db);
@@ -658,7 +685,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
           ) ?? true,
       })
     : undefined;
-  startMCPServer({
+  const mcpServer = startMCPServer({
     ...executeDepsBundle.executeDeps,
     vaultStore,
     ...(housekeepingStores.stateStore
@@ -699,5 +726,15 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
             chatBundle.inboundTokenStore.drainAuthorityChanges(),
         }
       : {}),
+  });
+  // Step aside the moment an update, a rollback or the server's boot claims the
+  // lease: `close()` drains, the stdio loop exits, and the exit hook above
+  // closes the database.
+  watchUpdateLease({
+    leasePath: updateLeasePath,
+    onStepAside: (holder) => {
+      console.error(mcpStepAsideNotice(holder));
+      mcpServer.close();
+    },
   });
 }

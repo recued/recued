@@ -593,13 +593,9 @@ describe('executeLLM — rate-limit cooldown persists to the quota tracker', () 
     expect(thrown!.details?.fallback_unavailable).toContain('No LLM source matches');
     // The cascade is terminal — not retryable.
     expect(thrown!.retryable).toBe(false);
-    // Cross-package coupling: backend chat-turn-executor classifies this
-    // failure into the `engine.decoder_unavailable` transparency event via
-    // NO_LLM_SOURCE_DETAIL_RE. Leading with the provider error must NOT drop
-    // the substring that classifier matches — the appended no-match context
-    // preserves it, so a chat user still gets the "switch models" copy
-    // (semantically right: a provider-exhausted cascade IS "no source now").
-    expect(thrown!.message).toMatch(/no llm source matches|no llm config|AI_LLM_UNAVAILABLE/i);
+    // The no-match is diagnostic context. Chat classifies the preserved
+    // provider code/status and fallback provenance, so this exhausted call
+    // must not be presented as a missing model configuration.
   });
 });
 

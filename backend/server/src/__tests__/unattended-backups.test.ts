@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServerBundle, generateRecoveryKey, generateServerKey, recoveryKeyToEntropy } from '@recued/crypto';
@@ -19,10 +19,11 @@ import { createBackgroundServiceRegistry } from '../composition/bin/wire-backgro
 import { bootUnattendedBackups } from '../composition/data/scheduler/unattended-backups/boot.js';
 import { createRemoteBackupS3Fixture, REMOTE_FIXTURE_ACCESS, REMOTE_FIXTURE_SECRET } from './helpers/remote-backup-s3-fixture.js';
 import * as durableFs from '../durable-fs.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-const setup = async () => {
+const setup = async (opts: { fetchImpl?: typeof fetch } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'unattended-')), dbPath = join(dir, 'server.db');
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const db = await openDatabase(dbPath, { databaseKey: null }); cleanup.push(() => { if (db.open) db.close(); });
@@ -42,7 +43,8 @@ const setup = async () => {
   const fingerprint = createHash('sha256').update(s3.endpoint).digest('hex');
   let destination: ArchiveRemoteDestination = { connection_name: 'safe', destination_id: fingerprint, bucket: 'backup-bucket', region: 'us-east-1', endpoint: s3.endpoint, prefix: '' };
   const transport = createS3RemoteBackupTransport({ config: { access_key: REMOTE_FIXTURE_ACCESS, secret_key: REMOTE_FIXTURE_SECRET,
-    bucket: destination.bucket, region: destination.region, endpoint: s3.endpoint }, assertCurrent: () => {} });
+    bucket: destination.bucket, region: destination.region, endpoint: s3.endpoint }, assertCurrent: () => {},
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) });
   const remoteOptions = { dbPath, now: () => at, destinations: () => [destination], describe: () => ({ destination, fingerprint: destination.destination_id }),
     resolve: async () => ({ destination, fingerprint: destination.destination_id, transport }) };
   const remote = createRemoteBackups(remoteOptions), gate = createArchiveOperationGate();
@@ -251,5 +253,91 @@ describe('unattended encrypted backups', () => {
     const requests = h.s3.calls.length, reboot = createUnattendedBackups(h.options); cleanup.push(() => reboot.stop());
     expect(reboot.status().last_run?.outcome).toBe('verified'); await reboot.tick();
     expect(h.s3.calls).toHaveLength(requests); expect(h.notify).not.toHaveBeenCalled();
+  });
+});
+
+// A drain step has 5 s. The stop used to wait for the whole export and upload
+// (each S3 request may run 30 minutes); a step that runs out makes an update
+// refuse to swap versions, while the process exits after the drain anyway.
+describe('unattended backups — stop', () => {
+  /** S3 that answers everything except the archive PUT. */
+  const unansweredPut = (opts: { honoursAbort: boolean; once?: boolean }) => {
+    const signals: AbortSignal[] = [];
+    let puts = 0, entered = () => {}, release = () => {};
+    const putStarted = new Promise<void>(resolve => { entered = resolve; });
+    const gone = new Promise<void>(resolve => { release = resolve; });
+    const fetchImpl: typeof fetch = (input, init) => {
+      if (init?.method !== 'PUT' || (opts.once && puts > 0)) return fetch(input, init);
+      puts += 1; const signal = init.signal;
+      if (signal) signals.push(signal);
+      entered();
+      return new Promise<Response>((_resolve, reject) => {
+        if (opts.honoursAbort) signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        else void gone.then(() => reject(new Error('fixture: the provider gave up')));
+      });
+    };
+    return { fetchImpl, signals, putStarted, release };
+  };
+
+  it('aborts the upload in flight, records the run interrupted, and writes nothing once it returns', async () => {
+    const s3 = unansweredPut({ honoursAbort: true, once: true });
+    const h = await setup({ fetchImpl: s3.fetchImpl }); await h.service.save(h.settings, h.mnemonic); h.due();
+    const tick = h.service.tick(); await s3.putStarted;
+    const writes = vi.spyOn(durableFs, 'writeFileAtomicSync');
+    try {
+      const started = performance.now();
+      await h.service.stop();
+      expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS);
+      expect(s3.signals[0]?.aborted).toBe(true);
+      // Recorded while the stop waited, not after it: the same verdict boot
+      // gives a claim the process did not live to finish.
+      expect(h.service.status().last_run).toMatchObject({ outcome: 'failed', issue: 'interrupted' });
+      expect(h.remote.list()[0]).toMatchObject({ state: 'unconfirmed', issue: 'interrupted' });
+      const atStop = writes.mock.calls.length;
+      await tick; await new Promise(resolve => setTimeout(resolve, 50));
+      expect(writes.mock.calls.length).toBe(atStop);
+    } finally { writes.mockRestore(); }
+    expect(h.s3.objects.size).toBe(0);
+    // The normal schedule runs a fresh backup at the next slot; nothing resends the interrupted one.
+    h.service.resume(); h.due(); await h.service.tick();
+    expect(h.service.status().last_run?.outcome).toBe('verified');
+    expect(h.remote.list().map(row => row.state)).toEqual(['verified', 'unconfirmed']);
+    expect(h.s3.objects.size).toBe(1);
+  });
+
+  it('returns at the grace when the provider ignores the abort, and releases the tick the interval waits on', async () => {
+    const s3 = unansweredPut({ honoursAbort: false });
+    const h = await setup({ fetchImpl: s3.fetchImpl }); await h.service.save(h.settings, h.mnemonic); h.due();
+    const tick = h.service.tick(); await s3.putStarted;
+    const started = performance.now();
+    await h.service.stop();
+    const waited = performance.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(STOP_GRACE_MS - 50);
+    expect(waited).toBeLessThan(STOP_GRACE_MS * 3);
+    expect(s3.signals[0]?.aborted).toBe(true);
+    // `unattended-backup-ticks` (stop_timers) waits for exactly this promise.
+    await tick;
+    // The provider gives up after the drain: the run still ends interrupted.
+    s3.release();
+    await vi.waitFor(() => expect(h.service.status().last_run).toMatchObject({ outcome: 'failed', issue: 'interrupted' }));
+  });
+
+  it('passes the stop to the export, which commits nothing', async () => {
+    const h = await setup(); await h.service.save(h.settings, h.mnemonic); h.due();
+    let enter = () => {}, release = () => {}, seen: AbortSignal | undefined;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+    const run = h.runtime.runUnattendedExport!;
+    vi.spyOn(h.runtime, 'runUnattendedExport').mockImplementation(async (capability, signal) => {
+      seen = signal; enter(); await held; return run(capability, signal);
+    });
+    const tick = h.service.tick(); await entered;
+    const stopping = h.service.stop();
+    expect(seen?.aborted).toBe(true);
+    release(); await stopping; await tick;
+    expect(h.service.status().last_run).toMatchObject({ outcome: 'failed', issue: 'interrupted' });
+    expect(h.remote.list()[0]).toMatchObject({ state: 'unconfirmed', issue: 'interrupted' });
+    const exportsDir = join(h.dir, 'exports');
+    expect(existsSync(exportsDir) ? readdirSync(exportsDir) : []).toEqual([]);
+    expect(h.s3.calls).toHaveLength(0);
   });
 });

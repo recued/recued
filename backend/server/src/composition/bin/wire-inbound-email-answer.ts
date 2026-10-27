@@ -72,6 +72,7 @@ import {
 import { dmarcPassFor } from '../../collections/mail/authentication-results.js';
 import type { MailUpsertContext } from '../../collections/mail/mail-collection.js';
 import type { CanonicalMessage } from '../../collections/mail/provider.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import { mailMayTrigger } from '../../mail-facts/mail-ingest.js';
 
 /** Who sends asks and who answers them, read from the
@@ -184,8 +185,8 @@ export interface InboundEmailAnswerFunnel {
   /** The mail upsert hook: a proven reply answers its open ask. Never throws;
    *  the answer is submitted in the background. */
   onMessageUpserted(msg: CanonicalMessage, ctx: MailUpsertContext): void;
-  /** Close admission and await every answer already being submitted.
-   *  Idempotent and coalesced. */
+  /** Close admission and await the answers already being submitted, at most
+   *  `STOP_GRACE_MS`. Idempotent and coalesced. */
   dispose(): Promise<void>;
 }
 
@@ -274,10 +275,18 @@ export const composeInboundEmailAnswer = (
       });
       inFlight.add(tracked);
     },
+    /** ⛔ BOUNDED: a drain step awaits this, with 5 s, and the process exits
+     *  right after the drain anyway. An answer is the notification block's
+     *  local work (read the ask, record the answer), which normally ends well
+     *  inside the grace. One that does not, and is cut by the exit, is not
+     *  taken from this email again — a restart's re-read is not news
+     *  (`mailMayTrigger` needs `first_seen`) — so its ask stays open,
+     *  answerable in the app or by a new reply. Each tracked answer already
+     *  ends in a catch, so none can reject. */
     dispose(): Promise<void> {
       if (disposePromise !== undefined) return disposePromise;
       disposed = true;
-      disposePromise = Promise.all([...inFlight]).then(() => undefined);
+      disposePromise = settleWithin(Promise.all([...inFlight]), STOP_GRACE_MS).then(() => undefined);
       return disposePromise;
     },
   };

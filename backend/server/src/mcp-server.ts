@@ -1215,6 +1215,32 @@ const LEGACY_MCP_META_TOOL_CLASSIFICATION: Readonly<
 const mcpNativeToolRiskTier = (toolName: string): RiskTier =>
   LEGACY_MCP_META_TOOL_CLASSIFICATION[toolName] === 'read' ? 'read' : 'write';
 
+/** MCP tool annotations (in the spec since 2025-03-26), from the classification
+ *  the gates already act on, so the hint and the gate cannot disagree.
+ *
+ *  ⛔ ONLY A READ SAYS ANYTHING. `readOnlyHint: true` lets a client run the tool
+ *  without asking first; without it OpenClaw's prompting postures asked before
+ *  every Recued call, reads included ("tools have no safety annotations", seen
+ *  2026-10-26). A write or an unknown carries no annotation, which leaves a
+ *  client on the spec's cautious defaults; Recued holds the write for the owner
+ *  either way. The `_meta.classification` the registry tools already carry is
+ *  Recued's own key, which no client reads. */
+const readOnlyToolAnnotations = (
+  classification: 'read' | 'write' | 'unknown' | undefined,
+): { annotations?: { readOnlyHint: true } } =>
+  classification === 'read' ? { annotations: { readOnlyHint: true } } : {};
+
+/** The classification behind a native `recued_*` tool's annotation. The action
+ *  status utility is not in the grant table (no checklist governs it), and it is
+ *  a read: it reports an action, and its reconcile only brings that action's own
+ *  record up to date; it never runs one. */
+const nativeToolAnnotations = (toolName: string): { annotations?: { readOnlyHint: true } } =>
+  readOnlyToolAnnotations(
+    toolName === MCP_ACTION_STATUS_TOOL_NAME
+      ? 'read'
+      : LEGACY_MCP_META_TOOL_CLASSIFICATION[toolName],
+  );
+
 const isCustomerStatusGranted = (deps: McpDeps): boolean => {
   if (deps.boundContractId === undefined || deps.boundContractActive !== true) {
     return false;
@@ -1738,7 +1764,8 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
     // is token-row-scoped and cannot dispatch or grant a capability.
     const protocolUtilities = TOOLS.filter((tool) =>
       tool.name === MCP_ACTION_STATUS_TOOL_NAME
-      || tool.name === MCP_STOP_RECIPE_TOOL_NAME);
+      || tool.name === MCP_STOP_RECIPE_TOOL_NAME)
+      .map((tool) => ({ ...tool, ...nativeToolAnnotations(tool.name) }));
     return {
       tools: deps.mcpPrincipalActive?.() === true
         ? protocolUtilities.filter((tool) =>
@@ -1751,6 +1778,7 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   const { routes, extManifests } = await buildRouteMap(deps);
   const ingredientTools: Array<ReturnType<typeof buildIngredientTool> & {
     description: string;
+    annotations?: { readOnlyHint: true };
   }> = [];
 
   for (const [slug, target] of routes) {
@@ -1767,7 +1795,11 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
     const prefix = target === 'extension'
       ? '[extension] '
       : '[server] ';
-    ingredientTools.push({ ...tool, description: prefix + tool.description });
+    ingredientTools.push({
+      ...tool,
+      description: prefix + tool.description,
+      ...readOnlyToolAnnotations(ingredientRiskToGrantClassification(manifest.risk_tier)),
+    });
   }
 
   // D-137 Trio #D — append Tier 1 + Tier 2 entries from the
@@ -1793,6 +1825,7 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
+          ...readOnlyToolAnnotations(t._meta.classification),
           _meta: t._meta,
         }))
     : [];
@@ -1805,7 +1838,12 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   // D-196 customer instead resolves them from its bound customer contract, and
   // the owner (no gate) sees them all. The recipe op-coverage set suppresses a
   // raw WRITE a recipe covers.
-  let rawOpTools: { name: string; description: string; inputSchema: unknown }[] = [];
+  let rawOpTools: {
+    name: string;
+    description: string;
+    inputSchema: unknown;
+    annotations?: { readOnlyHint: true };
+  }[] = [];
   if (deps.contractScan) {
     const scanPacks: InstalledPackScan = () => deps.contractScan!('installed_pack', []);
     const getManifest = (slug: string) => deps.executorConfig.manifests.get(slug);
@@ -1819,6 +1857,7 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
       name: d.wireName,
       description: d.description,
       inputSchema: d.inputSchema,
+      ...readOnlyToolAnnotations(d.classification),
     }));
   }
 
@@ -1858,10 +1897,12 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
     name: d.wireName,
     description: d.description,
     inputSchema: d.inputSchema,
+    ...readOnlyToolAnnotations(d.classification),
   }));
 
   const allTools = [
-    ...TOOLS, ...ingredientTools, ...registryTools, ...rawOpTools, ...canonicalOpTools,
+    ...TOOLS.map((tool) => ({ ...tool, ...nativeToolAnnotations(tool.name) })),
+    ...ingredientTools, ...registryTools, ...rawOpTools, ...canonicalOpTools,
   ];
   return {
     tools: allTools.filter((t) => {

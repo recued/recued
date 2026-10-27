@@ -36,7 +36,7 @@ describe('D-325 warehouse-backed situation sources', () => {
     const rule: AssetRule = { id: 'service', title: 'Service', enabled: true, muted: false, pinned: false, consequence: 'routine',
       expiry_policy: 'strict_expire', when: { kind: 'interval', field: 'serviced_on', every: { amount: 12, unit: 'months' } },
       reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [], on_day: true } };
-    work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, name: 'Boiler', dates: { serviced_on: null }, rules: [rule] }, now);
+    const asset = work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, name: 'Boiler', dates: { serviced_on: null }, rules: [rule] }, now);
     const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => now });
     await createAssetOccurrenceService({ db, work, dispatchers, now: () => now, timeZone: () => 'UTC' }).tick();
     const question = work.listCommitments().find(row => row.lifecycle_state === 'pending')!;
@@ -46,6 +46,8 @@ describe('D-325 warehouse-backed situation sources', () => {
     const fixture = build(); const ids = async (surface: SituationQuery['surface']) => (await fixture.query({ time: { from: now, to: now + 7 * DAY }, surface }, { owner: true,
       grants: { isVerbOpGranted: () => true, isCollectionReadGranted: collection => collection !== 'asset', isTopicReadGranted: () => true } })).clusters.flatMap(cluster => cluster.items);
     expect((await ids('tool')).find(item => item.ref.id === question.id)?.reasons).toEqual(expect.arrayContaining(['due', 'missing']));
+    expect((await build().run({ surface: 'tool' })).clusters.flatMap(cluster => cluster.items).find(item => item.ref.id === question.id)?.context)
+      .toEqual({ root: { kind: 'rule', asset_id: asset.id, rule_id: rule.id } });
     for (const surface of ['today', 'digest'] as const) expect((await ids(surface)).map(item => item.ref.id)).not.toContain(question.id);
   });
   it.each(['expired', 'cancelled'] as const)('shows the next interval lead after a cycle was %s', async outcome => {

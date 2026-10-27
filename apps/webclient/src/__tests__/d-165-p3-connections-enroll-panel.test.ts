@@ -2556,9 +2556,10 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
       connections: [],
       runMailList: async () => ({
         instances: [
-          { slug: 'work-imap', send_capable: true },
-          { slug: 'read-only-imap', send_capable: false },
-          { slug: 'gmail-send', send_capable: true },
+          { slug: 'work-imap', adapter_type: 'imap', send_capable: true },
+          { slug: 'read-only-imap', adapter_type: 'imap', send_capable: false },
+          { slug: 'gmail-send', adapter_type: 'gmail', send_capable: true },
+          { slug: 'smtp-only', adapter_type: 'smtp', send_capable: true },
         ],
       }),
     });
@@ -2583,12 +2584,13 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
       runMailList: async () => {
         call += 1;
         return call === 1
-          ? { instances: [{ slug: 'prewarm-only', send_capable: true }] }
+          ? { instances: [{ slug: 'prewarm-only', adapter_type: 'imap', send_capable: true }] }
           : {
               instances: [
-                { slug: 'work-imap', send_capable: true },
-                { slug: 'read-only-imap', send_capable: false },
-                { slug: 'gmail-send', send_capable: true },
+                { slug: 'work-imap', adapter_type: 'imap', send_capable: true },
+                { slug: 'read-only-imap', adapter_type: 'imap', send_capable: false },
+                { slug: 'gmail-send', adapter_type: 'gmail', send_capable: true },
+          { slug: 'smtp-only', adapter_type: 'smtp', send_capable: true },
               ],
             };
       },
@@ -2656,7 +2658,7 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
       runMailList: async () => {
         call += 1;
         if (call === 1) {
-          return { instances: [{ slug: 'work-imap', send_capable: true }] };
+          return { instances: [{ slug: 'work-imap', adapter_type: 'imap', send_capable: true }] };
         }
         throw new Error('mail list down');
       },
@@ -2733,7 +2735,7 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
     expect(calls.runMailList).toHaveBeenCalledTimes(2);
 
     fastPick.resolve({
-      instances: [{ slug: 'fast-newer', send_capable: true }],
+      instances: [{ slug: 'fast-newer', adapter_type: 'imap', send_capable: true }],
     });
     await tick();
     expect(mount.getState().dynamicOptions[MAIL_SEND_CAPABLE_INSTANCES_SOURCE]).toEqual([
@@ -2742,7 +2744,7 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
     expect(getHtml()).toContain('value="fast-newer"');
 
     slowMount.resolve({
-      instances: [{ slug: 'slow-stale', send_capable: true }],
+      instances: [{ slug: 'slow-stale', adapter_type: 'imap', send_capable: true }],
     });
     await tick();
 
@@ -2763,11 +2765,11 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
         return call < 3
           ? {
               instances: [
-                { slug: 'keep-imap', send_capable: true },
-                { slug: 'drop-imap', send_capable: true },
+                { slug: 'keep-imap', adapter_type: 'imap', send_capable: true },
+                { slug: 'drop-imap', adapter_type: 'imap', send_capable: true },
               ],
             }
-          : { instances: [{ slug: 'keep-imap', send_capable: true }] };
+          : { instances: [{ slug: 'keep-imap', adapter_type: 'imap', send_capable: true }] };
       },
     });
     await mount.whenLoaded();
@@ -2809,7 +2811,7 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
         call += 1;
         return call === 1
           ? { instances: [] }
-          : { instances: [{ slug: 'edit-imap', send_capable: true }] };
+          : { instances: [{ slug: 'edit-imap', adapter_type: 'imap', send_capable: true }] };
       },
     });
     await mount.whenLoaded();
@@ -2837,8 +2839,8 @@ describe('D-165 P3 connections enrollment panel — email send hydration', () =>
       runMailList: async () => {
         call += 1;
         return call === 1
-          ? { instances: [{ slug: 'prewarm-imap', send_capable: true }] }
-          : { instances: [{ slug: 'refresh-imap', send_capable: true }] };
+          ? { instances: [{ slug: 'prewarm-imap', adapter_type: 'imap', send_capable: true }] }
+          : { instances: [{ slug: 'refresh-imap', adapter_type: 'imap', send_capable: true }] };
       },
     });
     await mount.whenLoaded();

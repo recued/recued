@@ -94,6 +94,7 @@ export interface AccountField {
  *  (`accounts-oauth-connect`); `*-caldav` is a field-form (basic auth). */
 export type AccountEnrollTransport =
   | 'mail-imap'
+  | 'mail-smtp'
   | 'file-enroll'
   | 'mail-oauth'
   | 'calendar-oauth'
@@ -204,6 +205,32 @@ export const validateAccountForm = (
 const MAIL_HISTORY_FIELD: AccountField = {
   key: 'backfill_days', label: 'Mail history (days)', type: 'number', default: '400', optional: true,
   help: 'Starts at 400 days for last year’s events; choose less if you prefer. Raw mail is normally kept for 365 days. Selected memory evidence is kept separately in Yours.',
+};
+
+const SMTP_PROVIDER: AccountProvider = {
+  id: 'smtp', label: 'SMTP only', transport: 'mail-smtp',
+  description: 'Send mail through Mailgun, Amazon SES or another SMTP service. Sent copies stay in Recued. This account cannot receive mail or serve approval email or email chat.',
+  fields: [
+    { key: 'name', label: 'Name', type: 'identifier', placeholder: 'transactional' },
+    { key: 'host', label: 'SMTP Host', type: 'text', placeholder: 'smtp.mailgun.org' },
+    { key: 'port', label: 'SMTP Port', type: 'number', default: '587' },
+    { key: 'secure', label: 'TLS from connection start', type: 'boolean', default: 'false',
+      help: 'No for port 587 (STARTTLS is required). Yes for port 465 (TLS immediately).' },
+    { key: 'username', label: 'SMTP Username', type: 'text', help: 'Use the SMTP login supplied by your provider. It may differ from your From address.' },
+    { key: 'password', label: 'SMTP Password', type: 'secret', help: 'Use your SMTP password. For Amazon SES, use credentials for the endpoint’s region.' },
+    { key: 'from', label: 'From Address', type: 'text', placeholder: 'hello@example.com', help: 'An address your provider permits you to send from.' },
+    { key: 'reply_to', label: 'Reply-To Address', type: 'text', optional: true, help: 'An inbox for replies. Connecting SMTP does not let Recued read it.' },
+  ],
+  crossFieldValidate: values => {
+    for (const key of ['from', 'reply_to']) {
+      const value = values[key]?.trim();
+      if (value && !/^[^\s<>@,;]+@[^\s<>@,;]+$/.test(value)) return `${key === 'from' ? 'From' : 'Reply-To'} must be one email address.`;
+    }
+    return null;
+  },
+  project: values => ({ name: values.name?.trim(), host: values.host?.trim(), port: Number(values.port),
+    secure: values.secure === 'true', username: values.username?.trim(), password: values.password,
+    from: values.from?.trim(), ...(values.reply_to?.trim() ? { reply_to: values.reply_to.trim() } : {}) }),
 };
 
 const IMAP_PROVIDER: AccountProvider = {
@@ -517,7 +544,7 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
     emptyDescription:
       'Find messages in Chat, and let Recued help with your inbox. You decide whether it can send.',
     addLabel: 'Connect mailbox',
-    providers: [IMAP_PROVIDER, GMAIL_PROVIDER, MICROSOFT_MAIL_PROVIDER],
+    providers: [IMAP_PROVIDER, SMTP_PROVIDER, GMAIL_PROVIDER, MICROSOFT_MAIL_PROVIDER],
   },
   {
     id: 'calendar',
@@ -1232,6 +1259,8 @@ type AccountDisplayState = CollectionAuthState | 'syncing';
 const displayStatusFor = (
   row: AccountRow,
 ): { state: AccountDisplayState; label: string } => {
+  if (row.adapterType === 'smtp') return { state: row.authState,
+    label: row.authState === 'healthy' ? 'Send only' : AUTH_STATE_LABEL[row.authState] };
   if (row.mailSync !== undefined) {
     if (row.authState !== 'healthy') return { state: row.authState, label: row.authState === 'degraded' ? 'Sync interrupted' : AUTH_STATE_LABEL[row.authState] };
     if (!row.mailSync.access_verified) return { state: 'syncing', label: 'Checking mailbox access' };
@@ -1299,6 +1328,12 @@ const renderConnectionSuccess = (
     badge = AUTH_STATE_LABEL[row.authState];
     description = 'The account is saved, but the server reports a connection problem that needs attention.';
     detail = 'Open the account details to review it. You do not need to repeat setup unless the issue persists.';
+  } else if (row.adapterType === 'smtp') {
+    syncState = 'ready';
+    title = 'SMTP account connected';
+    badge = 'Send only';
+    description = 'SMTP login was verified. You can use this account for compose and recipe mail.';
+    detail = 'Sent copies stay in Recued. This account does not receive mail and cannot be used for approval email or email chat.';
   } else if (row.mailSync !== undefined) {
     if (!row.mailSync.access_verified) {
       syncState = 'pending';
@@ -1342,7 +1377,7 @@ const renderConnectionSuccess = (
         size: 'sm',
         action: 'accounts-success-refresh',
       })
-    : syncState === 'attention'
+    : syncState === 'attention' || row?.adapterType === 'smtp'
       ? button({
           label: 'View account',
           variant: 'primary',
@@ -1620,7 +1655,7 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
       : new Date(lastSyncedAt).toLocaleString();
   // Re-sync is independent of authorization. A mailbox offers it once its first
   // import is done: before that, a restart would only start the import over.
-  const lifecycle = lane.id !== 'mail' || row.mailSync?.initial_sync_complete === true;
+  const lifecycle = row.adapterType !== 'smtp' && (lane.id !== 'mail' || row.mailSync?.initial_sync_complete === true);
   return `
     <div class="accounts-detail">
       <h2 class="accounts-detail-title" data-accounts-detail-heading tabindex="-1">${e(row.slug)}</h2>
@@ -1629,7 +1664,7 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
         <dt>Status</dt><dd><span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span></dd>
         ${row.sublabel ? `<dt>Account</dt><dd>${e(row.sublabel)}</dd>` : ''}
         ${row.managedConnectionName ? `<dt>API connection</dt><dd>${e(row.managedConnectionName)}</dd>` : ''}
-        <dt>${hasSynced ? row.mailSync ? 'Last mailbox read' : 'Last synced' : 'Sync'}</dt><dd>${e(synced)}</dd>
+        ${row.adapterType === 'smtp' ? '<dt>Mail history</dt><dd>Local Sent copies only. This account does not receive mail.</dd>' : `<dt>${hasSynced ? row.mailSync ? 'Last mailbox read' : 'Last synced' : 'Sync'}</dt><dd>${e(synced)}</dd>`}
         ${row.mailSync ? `<dt>Initial sync</dt><dd>${row.mailSync.initial_sync_complete ? 'Complete' : row.mailSync.access_verified ? 'Importing mail in the background' : 'Waiting for mailbox access'}</dd>` : ''}
       </dl>
       ${rowErr ? inlineError(rowErr) : ''}

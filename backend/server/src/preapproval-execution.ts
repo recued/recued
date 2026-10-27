@@ -59,6 +59,10 @@ const transportKey = (slug: string, input: Record<string, unknown>, meta: StepMe
 
 export const createPreapprovalExecutionRuntime = (deps: {
   storage: PreapprovalStorage; service: ReturnType<typeof createPreapprovalService>;
+  /** The server is stopping (its restart drain). A reviewed run the drain
+   *  stops is handed back unused when it sent nothing (`handBackUnsentRun`);
+   *  an owner's kill outside a stop still finishes it. */
+  isStopping?: () => boolean;
 }) => {
   const runs = new WeakMap<object, Run>();
   const candidates = new WeakMap<object, AutoRunCandidate>();
@@ -96,6 +100,12 @@ export const createPreapprovalExecutionRuntime = (deps: {
     nestedWaits.set(signal.preapproval_nested_wait, { run, path: invocationPath });
     throw signal;
   };
+  /** The restart's drain killed this run (`killAll`, `run_terminated: 'killed'`). */
+  const stoppedByRestart = (terminated: ExecuteResponse['run_terminated']): boolean =>
+    terminated === 'killed' && deps.isStopping?.() === true;
+  /** Hand the approval back unused when the run sent nothing; false otherwise
+   *  (or on any refusal), and the caller finishes the run as before. */
+  const handBack = (run: Run): Promise<boolean> => repository.handBackUnsentRun(run.binding).catch(() => false);
   const finishResponse = async (handle: object, result: ExecuteResponse): Promise<void> => {
     const run = get(handle);
     if (run.binding.run_id !== run.binding.root_run_id) {
@@ -105,6 +115,9 @@ export const createPreapprovalExecutionRuntime = (deps: {
       return;
     }
     if (!result.awaiting_approval && !result.awaiting_peer) {
+      // Stopped by the restart before it sent anything: the approval stays
+      // armed for the same occurrence, and the next boot runs it.
+      if (stoppedByRestart(result.run_terminated) && await handBack(run)) return;
       await repository.finishRun(get(handle).binding, result.errors.some(error => error && typeof error === 'object'
         && 'code' in error && error.code === 'ACTION_DELIVERY_UNCERTAIN')
         ? 'in_doubt' : result.success ? 'succeeded' : 'failed');
@@ -296,7 +309,11 @@ export const createPreapprovalExecutionRuntime = (deps: {
       let result: ExecuteResponse;
       try { result = await dispatch(); }
       catch (error) {
-        if (run.binding.run_id === run.binding.root_run_id) await repository.finishRun(run.binding, 'failed');
+        if (run.binding.run_id === run.binding.root_run_id) {
+          const restart = error instanceof RpcError && (error.code === 'run_killed' || error.code === 'draining')
+            && deps.isStopping?.() === true;
+          if (!(restart && await handBack(run))) await repository.finishRun(run.binding, 'failed');
+        }
         throw error;
       }
       await finishResponse(handle, result);
@@ -690,6 +707,13 @@ export const createPreapprovalExecutionRuntime = (deps: {
       if (poll.claimed) return repository.finishRun(get(poll.claimed).binding, result);
       repository.finishPoll(poll.binding);
       return Promise.resolve();
+    },
+    /** The restart refused this claimed run at entry, so nothing ran: hand its
+     *  approval back for the same occurrence. False when it cannot be handed
+     *  back (something was sent, or the window passed); then `finish` it. */
+    handBack(handle: object): Promise<boolean> {
+      const run = runs.get(handle);
+      return run ? handBack(run) : Promise.resolve(false);
     },
   };
 };

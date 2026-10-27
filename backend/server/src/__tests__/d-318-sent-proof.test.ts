@@ -29,6 +29,7 @@ import {
   type MailChatSentProof,
 } from '../mail-chat-door/sent-proof.js';
 import { createMailChatDoorStore } from '../storage/mail-chat-door-store.js';
+import { PUSH_GRACE_MS, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createMailChatConversations, type MailChatConversations } from '../mail-chat-door/conversations.js';
 
 const CHAT = 'recued-chat';
@@ -1671,5 +1672,70 @@ describe('§8.18 one mailbox — the owner writes to the chat mailbox from itsel
       await expect(settle(h.proof)).resolves.toMatchObject({ state: 'not_proven', reason: 'duplicate' });
       expect(h.notify).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+/** ⛔ A drain step awaits `dispose`, with 5 s. A Sent-folder lookup over IMAP
+ *  can take far longer (the library's own limits), and the process exits right
+ *  after the drain anyway. */
+describe('D-318 sent proof — disposing within the grace', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  const settleAll = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  /** Not disposed again by the file's `afterEach`: its round never ends. */
+  const forget = (proof: MailChatSentProof): void => { open.splice(open.indexOf(proof), 1); };
+
+  it('waits no longer than the grace for a lookup that never answers, and the request is checked again after the restart', async () => {
+    const db = new Database(':memory:');
+    dbs.push(db);
+    const h = harness({ db, lookup: () => new Promise<MailSentByMessageIdResult>(() => {}) });
+    forget(h.proof);
+    land(h, request(), stored());
+    void h.proof.tick();
+    await vi.waitFor(() => expect(h.lookup).toHaveBeenCalledTimes(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let disposed = false;
+    const disposing = h.proof.dispose().then(() => { disposed = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settleAll();
+    vi.useRealTimers();
+    expect(disposed).toBe(true);
+    await disposing;
+    // Not settled, and its attempt not counted: still the request it was.
+    expect(h.proof.get(CHAT, ID)).toMatchObject({ state: 'pending', attempts: 0 });
+    expect(h.admit).not.toHaveBeenCalled();
+
+    // The restart: a proof over the same database asks again, and proves it.
+    const next = harness({ db, lookup: async () => sent() });
+    await next.proof.tick();
+    expect(next.lookup).toHaveBeenCalledTimes(1);
+    expect(next.proof.get(CHAT, ID)).toMatchObject({ state: 'proven' });
+  });
+
+  it('gives a notice push in flight the longer grace, then stops waiting: marked given, it is never given again', async () => {
+    const h = harness({ lookup: async () => ({ status: 'unavailable', reason: 'unsupported' }) });
+    let releasePush: (() => void) | undefined;
+    h.notify.mockImplementation(() => new Promise<undefined>((resolve) => { releasePush = () => resolve(undefined); }));
+    land(h, request(), stored());
+    void h.proof.tick();
+    await vi.waitFor(() => expect(h.notify).toHaveBeenCalledTimes(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let disposed = false;
+    const disposing = h.proof.dispose().then(() => { disposed = true; });
+    // Longer than a lookup gets…
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settleAll();
+    expect(disposed).toBe(false);
+    // …and no longer than its own grace: a drain step has 5 s.
+    await vi.advanceTimersByTimeAsync(PUSH_GRACE_MS - STOP_GRACE_MS);
+    await settleAll();
+    vi.useRealTimers();
+    expect(disposed).toBe(true);
+    await disposing;
+    releasePush?.();
   });
 });

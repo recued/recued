@@ -77,6 +77,7 @@ import type {
 import type { CalendarAdapterFactory } from './adapter-registry.js';
 import type { CalendarEnrollDeps } from './enroll.js';
 import type { OAuthAccountStore } from '../mail/oauth.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 
 export type CalendarKernelDispatchers = Required<
   Pick<
@@ -460,10 +461,26 @@ export const composeCalendarStack = (
   const disposeAll = (): Promise<void> => {
     if (disposePromise) return disposePromise;
     closed = true;
-    disposePromise = Promise.allSettled([syncController.dispose(), ...starts.values()]).then(async (preStopResults) => {
-      const stops = [...live.keys()].map((slug) => stopLive(slug, true));
-      const results = await Promise.allSettled(stops);
-      const failures = [...preStopResults, ...results]
+    // Every stop begins at once — the vault-edge controller's dispose, the
+    // starts in flight, and each live collection's close — rather than the
+    // closes waiting on whatever a start or a controller pass was waiting on.
+    // Safe because `close()` sets the collection's own `closed` before it
+    // awaits anything: a controller pass that reaches it afterwards finds
+    // `sync.start()` a no-op and `sync.stop()` an idempotent second stop (see
+    // the mail stack's `disposeAll`, which has the same shape).
+    const work = Promise.allSettled([
+      syncController.dispose(),
+      ...starts.values(),
+      ...[...live.keys()].map((slug) => stopLive(slug, true)),
+    ]);
+    // Each close aborts its outbound work and bounds its own wait; this bounds
+    // the stack's. What runs past it was told to stop and can write nothing.
+    disposePromise = settleWithin(work, STOP_GRACE_MS).then(async (waited) => {
+      if (waited === 'timed_out') {
+        log('warn', `calendar-stack: stopped waiting for calendars to stop after ${STOP_GRACE_MS} ms`);
+        return;
+      }
+      const failures = (await work)
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => result.reason);
       if (failures.length > 0) {

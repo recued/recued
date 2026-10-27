@@ -10,6 +10,7 @@ import {
   type MessengerIngressMode,
 } from '@recued/contracts';
 
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { MessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
 import type { VaultState } from '../vault-state-bus.js';
@@ -360,12 +361,16 @@ export const createMessengerIngressSupervisor = (
         // and then 401s forever. The same row's refreshed token lands without
         // restarting the runner. A new enrollment or conversation waits for
         // the supervisor to rebuild its binding.
-        getAccessToken: async () => {
+        getAccessToken: async (signal) => {
+          if (signal?.aborted) return null;
           const current = options.connectionStore.get('notification', row.name);
           if (current === null || current.enrolled_at !== row.enrolled_at || current.config_json !== row.config_json) return null;
           const source = options.connectionStore.getAuthSourceId?.('notification', row.name);
           try {
             const decoded = await options.decodeAuth(current);
+            // A runner that stopped while the credential was read starts no
+            // token exchange: one begun now could outlive the database.
+            if (signal?.aborted) return null;
             const usable = options.refreshAuth === undefined
               ? decoded
               : await options.refreshAuth.refreshIfNeeded(current.name, decoded, { enrolled_at: current.enrolled_at,
@@ -469,8 +474,17 @@ export const createMessengerIngressSupervisor = (
     for (const key of active.keys()) {
       pending.add(enqueue(key, () => stopKey(key)));
     }
-    stopPromise = Promise.allSettled([...pending]).then((results) => {
-      const errors = results
+    // ⛔ BOUNDED, like each runner's own stop. A drain step awaits this, and
+    // a reconcile admitted before the stop (a credential being decrypted) can
+    // hold a runner's stop behind it. Past the grace the drain goes on; the
+    // `stopped` fence above keeps a late reconcile from starting a runner.
+    const drained = Promise.allSettled([...pending]);
+    stopPromise = settleWithin(drained, STOP_GRACE_MS).then(async (outcome) => {
+      if (outcome === 'timed_out') {
+        options.log?.('warn', 'messenger ingress stop: runners still unwinding after the grace; not waiting for them');
+        return;
+      }
+      const errors = (await drained)
         .filter((result): result is PromiseRejectedResult =>
           result.status === 'rejected')
         .map((result) => result.reason);

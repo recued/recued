@@ -14,10 +14,14 @@
  *  with no later terminal entry for the same release is still in flight.
  */
 
+import type { UpdateRevertReason } from '@recued/contracts';
+
 import {
   decideRollback,
   shouldAutoRevert,
 } from './apply-state-machine.js';
+import { updateRevertReason } from './revert-reason.js';
+import { isDatabaseStillOpenError } from '../database-still-open-error.js';
 import type { UpdateLedger, UpdateLedgerEntry, UpdateLedgerKind } from './update-ledger.js';
 import type { BootFailureCounter } from './boot-failure-counter.js';
 import type { VerifyArtifactInput, VerifyArtifactResult } from './binary-apply-executor.js';
@@ -370,6 +374,8 @@ export type UpdateOperationOutcome =
         | 'reverted'
         | 'closed_unresolved';
       operation: 'update' | 'rollback';
+      /** On `reverted` only — the closed code, never the row's prose. */
+      revert_reason?: UpdateRevertReason;
     };
 
 export type UpdateOperationClosureOutcome =
@@ -507,7 +513,12 @@ export const reconcileAbandonedUpdateReservations = (
  * versions, timestamps, or diagnostic detail. Apply receipts are the
  * `apply_started` row and settle at their first terminal row. Rollback receipts
  * are written before the restart, so the running version must independently
- * prove that the restored binary actually booted. */
+ * prove that the restored binary actually booted.
+ *
+ * A revert carries `revert_reason`, a closed code read from its terminal row
+ * (`updateRevertReason`), so the owner can be told why without the row's prose:
+ * before it, Settings → Updates could say only that an update "did not take
+ * effect" (2026-10-26). */
 export const resolveUpdateOperationOutcome = (
   ledger: UpdateLedger,
   operationId: string,
@@ -537,7 +548,11 @@ export const resolveUpdateOperationOutcome = (
         candidate.kind === 'apply_reverted'
         || candidate.kind === 'rolled_back'
       ) {
-        return { status: 'reverted', operation: 'update' };
+        return {
+          status: 'reverted',
+          operation: 'update',
+          revert_reason: updateRevertReason(candidate),
+        };
       }
     }
     // A healthy target boot can be serving during the narrow interval before
@@ -554,17 +569,19 @@ export const resolveUpdateOperationOutcome = (
     return {
       status: 'reverted',
       operation: operation.reserved_operation === 'rollback' ? 'rollback' : 'update',
+      revert_reason: updateRevertReason(operation),
     };
   }
 
   const reservation = reservationFor(entries, operationId);
   if (reservation) {
-    const refused = entries.some((entry) =>
+    const refusal = entries.find((entry) =>
       entry.kind === 'operation_refused'
       && entry.reserved_operation_id === operationId);
     return {
-      status: refused ? 'reverted' : 'waiting_for_restart',
+      status: refusal !== undefined ? 'reverted' : 'waiting_for_restart',
       operation: reservation.reserved_operation === 'rollback' ? 'rollback' : 'update',
+      ...(refusal !== undefined ? { revert_reason: updateRevertReason(refusal) } : {}),
     };
   }
 
@@ -877,7 +894,9 @@ const runApplyLeased = async (
   } catch (err) {
     ports.discardStaged();
     const detail = err instanceof Error ? err.message : 'download error';
-    appendEntry(ports, 'apply_reverted', ctx, { trigger: ctx.trigger, detail: `download: ${detail}` });
+    appendEntry(ports, 'apply_reverted', ctx, {
+      trigger: ctx.trigger, detail: `download: ${detail}`, revert_reason: 'download_failed',
+    });
     return { status: 'download-failed', detail };
   }
 
@@ -889,7 +908,9 @@ const runApplyLeased = async (
   });
   if (!v.ok) {
     ports.discardStaged();
-    appendEntry(ports, 'apply_reverted', ctx, { trigger: ctx.trigger, detail: `verify: ${v.reason}` });
+    appendEntry(ports, 'apply_reverted', ctx, {
+      trigger: ctx.trigger, detail: `verify: ${v.reason}`, revert_reason: 'verify_failed',
+    });
     return { status: 'verify-failed', detail: v.reason };
   }
 
@@ -918,7 +939,9 @@ const runApplyLeased = async (
     } catch (err) {
       ports.discardStaged();
       const detail = err instanceof Error ? err.message : 'download error';
-      appendEntry(ports, 'apply_reverted', ctx, { trigger: ctx.trigger, detail: `download (native addon): ${detail}` });
+      appendEntry(ports, 'apply_reverted', ctx, {
+        trigger: ctx.trigger, detail: `download (native addon): ${detail}`, revert_reason: 'download_failed',
+      });
       return { status: 'download-failed', detail: `native addon: ${detail}` };
     }
     const lv = ports.verifyArtifact({
@@ -929,7 +952,9 @@ const runApplyLeased = async (
     });
     if (!lv.ok) {
       ports.discardStaged();
-      appendEntry(ports, 'apply_reverted', ctx, { trigger: ctx.trigger, detail: `verify (native addon): ${lv.reason}` });
+      appendEntry(ports, 'apply_reverted', ctx, {
+        trigger: ctx.trigger, detail: `verify (native addon): ${lv.reason}`, revert_reason: 'verify_failed',
+      });
       return { status: 'verify-failed', detail: `native addon: ${lv.reason}` };
     }
     // Persist the addon's verified signature beside it so `preserveAndSwap`
@@ -1030,6 +1055,7 @@ const runApplyLeased = async (
         detail: 'stage: the realm was not quiesced at commit time, so the database may still be '
           + 'open — nothing was swapped'
           + (webclientRecovered ? '' : '; webclient recovery remains pending before the next serve'),
+        revert_reason: 'drain_incomplete',
         ...(!webclientRecovered ? { webclient_recovery_pending: true } : {}),
       });
       return;
@@ -1057,6 +1083,9 @@ const runApplyLeased = async (
         trigger: ctx.trigger,
         detail: `stage: ${detail}`
           + (webclientRecovered ? '' : '; webclient recovery remains pending before the next serve'),
+        // Another process still had the database open (the snapshot's own
+        // check): the owner can quit it, which "installing failed" never says.
+        revert_reason: isDatabaseStillOpenError(err) ? 'database_in_use' : 'install_failed',
         ...(!webclientRecovered ? { webclient_recovery_pending: true } : {}),
       });
       return;
@@ -1388,7 +1417,7 @@ export const evaluatePendingApplyOnBoot = (
         channel: inFlight.entry.channel,
         migration: inFlight.entry.migration ?? false,
       },
-      { trigger: 'revert', detail: 'staging aborted (crash before swap)' },
+      { trigger: 'revert', detail: 'staging aborted (crash before swap)', revert_reason: 'interrupted' },
     );
     ports.bootFailureCounter.reset();
     return { action: 'staging-aborted', releaseIdentity: release };

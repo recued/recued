@@ -15,9 +15,11 @@
 import {
   CIRCUIT_BREAKER_THRESHOLD,
   deriveRunYield,
+  RpcError,
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
 import { cronZoneFor } from '@recued/contracts';
+import { settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 import type { Schedule } from '@recued/scheduler';
 import {
   nextCronMatch,
@@ -106,16 +108,25 @@ export interface SchedulerConfig {
 
 export interface SchedulerHandle {
   start(): void;
-  /** Stop the tick interval. Awaits every in-flight tick so callers can
-   *  safely close the database afterward without racing a pending
-   *  write. */
+  /** Stop the tick interval and close admission: a tick in flight finishes
+   *  the schedule it is firing and fires no other, and no new tick fires
+   *  anything until `start()`. Waits for in-flight ticks at most
+   *  `STOP_GRACE_MS`.
+   *
+   *  ⛔ IT USED TO WAIT FOR EVERY IN-FLIGHT TICK, and a tick fires each due
+   *  schedule one after another — so a restart's `pause_scheduler` step waited
+   *  for every remaining due recipe run, ran out of its 5 s, and the aborted
+   *  step made an update refuse to swap versions. The drain now kills the runs
+   *  themselves; `inFlight()` still reports a tick that outlives the grace, so
+   *  `await_inflight` keeps covering it before the database closes. */
   stop(): Promise<void>;
-  /** Stop the tick interval WITHOUT awaiting in-flight. Used by the
-   *  Phase C drain orchestrator: the `pause_scheduler` step calls
-   *  `pause()` synchronously, and the subsequent `await_inflight` step
-   *  polls `inFlight()` until it returns false. Allows the drain
-   *  pipeline's step timeouts to bound the total pause window. */
+  /** `stop()` without waiting at all: the interval stops and admission closes
+   *  the same way. Kept for callers that poll `inFlight()` themselves. */
   pause(): void;
+  /** Resolves once every tick in flight has finished, the runs it fired
+   *  included, however long they take: what a pause or a maintenance window
+   *  waits for after `stop()` (`StoppableService.settled`). */
+  settled?(): Promise<void>;
   /** True when a tick is currently in-flight. Phase C drain
    *  orchestrator reads this via `getInFlightCount`. */
   inFlight(): boolean;
@@ -146,6 +157,18 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
    *  2 minutes on a 1-minute tick would start firing again before the
    *  first execution finished. */
   const firingNow = new Set<string>();
+  /** True from `stop()` / `pause()` until the next `start()`: a tick asked for
+   *  meanwhile — the vault-unlock catch-up, a test — fires nothing. */
+  let stopped = false;
+  /** Bumped by every `stop()` / `pause()`. A tick keeps the value it started
+   *  under and fires no further schedule once it moves, so a stop ends the
+   *  tick after the one schedule it is firing instead of after every due one. */
+  let stopEpoch = 0;
+  /** The server has begun its restart drain (`executeDeps.isDraining`, bound
+   *  late where the lifecycle exists). A run started now would only be refused
+   *  or killed, and a pre-approved occurrence claimed for it would be spent on
+   *  nothing, so no schedule is even attempted. */
+  const draining = (): boolean => config.executeDeps.isDraining?.() === true;
   /** Per-tick memo of the installed-pack resolution (the fire-time pack gate).
    *  Rebuilt on every tick — an install or uninstall between ticks must be seen,
    *  and a memo that outlived the tick would gate on a stale inventory. */
@@ -200,13 +223,26 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     return typeof runAt === 'number' && Number.isFinite(runAt) ? runAt : null;
   };
 
+  /** A run the restart stopped: the drain kills what is still running once
+   *  its grace is up. That is the server going away, not the recipe failing,
+   *  so it moves no failure counter and sends the owner no failure notice — an
+   *  update would otherwise page them about every schedule it interrupted. An
+   *  owner's own kill outside a stop is still booked as before. */
+  const stoppedByRestart = (code: unknown, terminated?: string): boolean =>
+    (terminated === 'killed' || code === 'run_killed') && (stopped || draining());
+
   /** Fire a schedule (regular tick or Smart Backfill catch-up).
    *
    *  `backfill` carries the diagnostic metadata when this fire is a
    *  catch-up — `trigger_source: 'backfill'` + missed_cycles. The
    *  handleExecute call path threads it through to the audit row so
    *  the consolidated audit UI can render the count + the prior
-   *  last_run_at inline. */
+   *  last_run_at inline.
+   *
+   *  Resolves `false` when nothing ran: the server refused the run because it
+   *  is restarting (`draining`). The row is then left exactly as it was, as if
+   *  the server had been down at this minute — the next boot's tick sees the
+   *  miss and the owner's `missed_policy` decides, and a one-shot is still due. */
   const fireSchedule = async (
     schedule: Schedule,
     fireAt: number,
@@ -437,7 +473,10 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       const totalRefusal = result.success
         && runYieldIsTotalRefusal(deriveRunYield(result.steps));
       const failed = !result.success && !heldForAnswer;
-      const failurePart = failed || totalRefusal
+      const firstCode = (result.errors[0] as { code?: string } | undefined)?.code;
+      const failurePart = failed && stoppedByRestart(firstCode, result.run_terminated)
+        ? { consecutive_failures: schedule.consecutive_failures ?? 0 }
+        : failed || totalRefusal
         ? failurePatch(
           lastError ?? 'This run attempted items and every one was refused.',
           failed
@@ -461,6 +500,10 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       });
       return true;
     } catch (e) {
+      // ⛔ NOT RUN IS NOT FAILED. The server refused to start the run because it
+      // is restarting: nothing ran, so nothing is written — no `last_run_at`
+      // that would claim a run, no error, no counter. See the doc above.
+      if (e instanceof RpcError && e.code === 'draining') return false;
       const reason = visibleFailure(e);
       // A throw here is a shape failure (`bad_request` / `recipe_not_found`) or
       // an RpcError — it carries a `code` when it is one of ours and nothing
@@ -472,7 +515,9 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         next_run_at: nextRun,
         last_status: 'error',
         last_error: reason,
-        ...failurePatch(reason, typeof code === 'string' ? code : undefined, false),
+        ...(stoppedByRestart(code)
+          ? {}
+          : failurePatch(reason, typeof code === 'string' ? code : undefined, false)),
         ...terminalPatch,
       });
       return true;
@@ -480,10 +525,18 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
   };
 
   const tick = async (): Promise<string[]> => {
+    // A stopped scheduler fires nothing, and neither does a draining server:
+    // the row stays due and the next boot's tick takes it.
+    if (stopped || draining()) return [];
     // Vault-locked gate: skip the whole tick (no fire, no clock advance)
     // while the vault is sealed. The interval keeps ticking and re-checks;
     // the coordinator kicks a catch-up tick on unlock.
     if (config.isVaultUnlocked && !config.isVaultUnlocked()) return [];
+    const epoch = stopEpoch;
+    /** Asked before each schedule: a stop (or the drain) that landed while an
+     *  earlier one ran ends the tick there, so stopping waits for at most the
+     *  schedule already firing. What is left stays due for the next boot. */
+    const closed = (): boolean => stopEpoch !== epoch || draining();
 
     // Drop the previous tick's inventory memo — an install or uninstall since
     // then must be visible to this tick's pack gate.
@@ -498,6 +551,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
 
     const schedules = config.store.list();
     for (const listed of schedules) {
+      if (closed()) break;
       // An overlapping tick may have completed this schedule since `list()`
       // produced its snapshot. Re-read immediately before the no-await
       // admission section so a stale snapshot cannot fire the same cron minute
@@ -529,8 +583,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         if (firingNow.has(schedule.schedule_id)) continue;
         firingNow.add(schedule.schedule_id);
         try {
-          await fireSchedule(schedule, runAt);
-          fired.push(schedule.schedule_id);
+          if (await fireSchedule(schedule, runAt)) fired.push(schedule.schedule_id);
         } finally {
           firingNow.delete(schedule.schedule_id);
         }
@@ -558,8 +611,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         if (schedule.last_run_at !== null && startOfMinute(schedule.last_run_at) === tickMinute) continue;
         firingNow.add(schedule.schedule_id);
         try {
-          await fireSchedule(schedule, tickMinute);
-          fired.push(schedule.schedule_id);
+          if (await fireSchedule(schedule, tickMinute)) fired.push(schedule.schedule_id);
         } finally {
           firingNow.delete(schedule.schedule_id);
         }
@@ -615,12 +667,17 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       firingNow.add(schedule.schedule_id);
       try {
         const backfill = buildBackfillMetadata(schedule, nowMs);
-        await fireSchedule(schedule, tickMinute, backfill);
-        fired.push(schedule.schedule_id);
+        if (await fireSchedule(schedule, tickMinute, backfill)) fired.push(schedule.schedule_id);
       } finally {
         firingNow.delete(schedule.schedule_id);
       }
     }
+
+    // A tick cut short by a stop hands over no report: the report is
+    // re-derived from the rows on every tick, so the next boot's first tick
+    // raises or cancels whatever this one would have — and an ask raised now
+    // would go out on a channel that is shutting down.
+    if (closed()) return fired;
 
     // D-266 — hand over what is still waiting on the owner, re-derived
     // from the store AFTER the loop so the report reflects everything
@@ -657,31 +714,41 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     });
   };
 
+  /** Disarm the interval and close admission. Shared by `stop()` and
+   *  `pause()`, which differ only in whether they wait. */
+  const closeAdmission = (): void => {
+    stopped = true;
+    stopEpoch += 1;
+    if (handle !== null) {
+      clearInterval(handle);
+      handle = null;
+    }
+  };
+
   return {
     start() {
       if (handle !== null) return;
+      stopped = false;
       // Fire an immediate tick on start so any schedules due at boot
       // time don't wait a full minute.
       launchTrackedTick();
       handle = setInterval(launchTrackedTick, intervalMs);
     },
     async stop() {
-      if (handle !== null) {
-        clearInterval(handle);
-        handle = null;
-      }
-      // Snapshot after disarming the interval: no new scheduler-owned tick can
-      // start, and every older generation must settle before the DB is closed.
-      await Promise.allSettled([...inFlightTicks]);
+      closeAdmission();
+      // Snapshot after closing admission: no new scheduler-owned tick can start
+      // and an older one fires nothing past its current schedule. Its local
+      // writes land within the grace; a recipe run that is slower than that is
+      // the drain's to kill, and `inFlight()` keeps reporting it meanwhile.
+      await settleWithin(Promise.allSettled([...inFlightTicks]), STOP_GRACE_MS);
     },
     pause() {
-      if (handle !== null) {
-        clearInterval(handle);
-        handle = null;
-      }
-      // Intentionally do NOT await in-flight ticks — the drain
-      // pipeline's await_inflight step handles the wait under its
-      // own timeout.
+      // Intentionally do NOT await in-flight ticks — the caller polls
+      // `inFlight()` under its own timeout.
+      closeAdmission();
+    },
+    async settled() {
+      await Promise.allSettled([...inFlightTicks]);
     },
     inFlight() {
       return inFlightTicks.size > 0;

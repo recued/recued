@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { createServer } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AssetRule, ConnectionRow } from '@recued/contracts';
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
@@ -13,6 +13,7 @@ import { createSituationStore } from '../storage/situation-store.js';
 import { createYoursService } from '../situations/yours-service.js';
 import { createHouseholdDeliveryStore } from '../storage/household-delivery-store.js';
 import type { BoundedHttpFetcher } from '../bounded-origin-http-fetcher.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
@@ -154,5 +155,82 @@ describe('D-325 Home Assistant canonical household projection', () => {
     const before = f.calls.length;
     await expect(ha.lists({ ...house, connection_enrolled_at: 99 })).rejects.toThrow('Choose an enrolled Home Assistant connection');
     f.seal(); await expect(ha.lists(house)).rejects.toThrow('Unlock the vault'); expect(f.calls.length).toBe(before);
+  });
+});
+
+/** ⛔ The asset reminders' tick waits for a projection pass, and a drain waits
+ *  for that, with 5 s; a pass can make 16 writes behind its reads, 5 s each. */
+describe('D-325 Home Assistant projection — stopping', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  /** The fixture's Home Assistant twin, with one kind of call held open. */
+  const holding = (f: ReturnType<typeof fixture>, held: (path: string) => boolean, abortable: boolean) => {
+    const seen: Array<{ path: string; signal?: AbortSignal }> = [];
+    let hold = false;
+    const fetch: BoundedHttpFetcher = (url, init) => {
+      const path = new URL(url).pathname;
+      if (!hold || !held(path)) return f.fetcher(url, init);
+      seen.push({ path, ...(init?.signal ? { signal: init.signal } : {}) });
+      return new Promise((_resolve, reject) => {
+        if (abortable) init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    };
+    const ha = createHouseholdHomeAssistant({ db: f.db, work: f.work, connections: () => f.connections,
+      credential: async () => 'test-token', fetch, now: () => Date.parse('2026-10-17T12:00Z'), isVaultUnlocked: () => true });
+    return { ha, seen, hold: () => { hold = true; } };
+  };
+  const stopWithinGrace = async (ha: { stop(): Promise<void> }, pass: Promise<void>) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let stopped = false; let passed = false;
+    const stopping = ha.stop().then(() => { stopped = true; });
+    void pass.then(() => { passed = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settle();
+    vi.useRealTimers();
+    if (stopped) await stopping;
+    return { stopped, passed };
+  };
+
+  it('ends the reads in flight and starts no write; the pass after the restart writes what was left', async () => {
+    const f = fixture(); f.put('Boiler'); await f.occurrences.tick();
+    const { ha, seen, hold } = holding(f, path => path.endsWith('/get_items'), true);
+    await f.configure(ha);
+    expect(f.remote).toHaveLength(1);
+    f.put('Car'); await f.occurrences.tick();
+    hold();
+    const pass = ha.tick();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+
+    expect(await stopWithinGrace(ha, pass)).toEqual({ stopped: true, passed: true });
+    expect(seen[0]!.signal?.aborted).toBe(true);
+    // No write started, and a stop is not an issue to show the owner.
+    expect(f.calls.filter(row => row.path.endsWith('/add_item'))).toHaveLength(1);
+    expect(ha.read().issue).toBeNull();
+    // A stopped projection makes no further pass.
+    await ha.tick();
+    expect(seen).toHaveLength(1);
+
+    const restarted = f.boot(); await restarted.tick();
+    expect(f.remote.map(item => item.summary).sort()).toEqual(['Service · Boiler', 'Service · Car']);
+    // One add each: the stopped pass marked nothing started.
+    expect(f.calls.filter(row => row.path.endsWith('/add_item'))).toHaveLength(2);
+  });
+
+  it('leaves a write in flight to finish, and still stops within the grace', async () => {
+    const f = fixture();
+    const { ha, seen, hold } = holding(f, path => path.endsWith('/add_item'), false);
+    await f.configure(ha);
+    f.put('Boiler'); await f.occurrences.tick();
+    hold();
+    const pass = ha.tick();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+
+    expect(await stopWithinGrace(ha, pass)).toEqual({ stopped: true, passed: true });
+    // An add cut short could never be repeated (it is marked started first),
+    // so the stop does not cut it: the write was given no stop signal.
+    expect(seen[0]!.signal).toBeUndefined();
   });
 });

@@ -122,6 +122,8 @@ export interface CreateLifecycleOptions {
   drainSteps?: Partial<Record<DrainStepName, DrainStepFn>>;
   /** Live in-flight count for `await_inflight` step. */
   getInFlightCount?: () => number;
+  /** Stop every in-flight run, returning how many (`DrainWiring.stopInFlight`). */
+  stopInFlight?: () => number;
 
   // ── Supervisor / crash-loop config ──────────────────────────
   /** Override the supervisor-mode auto-detect. `undefined` → use
@@ -377,6 +379,7 @@ export const createLifecycle = (
     machine,
     lock,
     getInFlightCount: opts.getInFlightCount,
+    ...(opts.stopInFlight !== undefined ? { stopInFlight: opts.stopInFlight } : {}),
     steps: {
       ...opts.drainSteps,
       stop_accepting_rpc: async (signal) => {

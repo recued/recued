@@ -278,6 +278,7 @@ import {
   type UpdateModeSetCaller,
   type UpdateApplyCaller,
   type UpdateRollbackCaller,
+  type UpdateOperationStatusCaller,
 } from './updates-page.js';
 import {
   HOUSEKEEPING_PANEL_STYLES,
@@ -809,6 +810,8 @@ export interface BootstrapSettingsRouteOptions {
   updateModeSetCaller?: UpdateModeSetCaller;
   updateApplyCaller?: UpdateApplyCaller;
   updateRollbackCaller?: UpdateRollbackCaller;
+  /** `update.operation_status`, so Updates can say why a run did not take effect. */
+  updateOperationStatusCaller?: UpdateOperationStatusCaller;
   /** `server.getLifecycleState`, so Updates can say before Apply that nothing
    *  would restart this server. */
   serverLifecycleGetCaller?: MountUpdatesPageOptions['runGetLifecycle'];
@@ -2153,6 +2156,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.updateRollbackCaller !== undefined
         ? { runRollback: opts.updateRollbackCaller }
+        : {}),
+      ...(opts.updateOperationStatusCaller !== undefined
+        ? { runOperationStatus: opts.updateOperationStatusCaller }
         : {}),
       ...(opts.serverLifecycleGetCaller !== undefined
         ? { runGetLifecycle: opts.serverLifecycleGetCaller }

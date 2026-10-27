@@ -6,6 +6,10 @@
  * addon absent. */
 import type { UpdateLease } from './update-lease.js';
 
+/** The `operation` a boot's claim carries. `recued --mcp` does not step aside
+ *  for it (`mcp-step-aside.ts`). */
+export const BOOT_RECONCILE_LEASE_OPERATION = 'boot-reconcile';
+
 let earlyBootLease: UpdateLease | null = null;
 
 export const installEarlyBootUpdateLease = (lease: UpdateLease): void => {

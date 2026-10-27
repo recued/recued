@@ -60,6 +60,7 @@ import {
 } from '@recued/contracts';
 import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { killProcessGroup as defaultKillProcessGroup } from './process-group-kill.js';
 import type { SupervisedDaemonConfig } from './supervised-daemon-store.js';
 
@@ -1019,7 +1020,12 @@ export const createCliDaemonSupervisor = (
       r.launchPromise ? [r.launchPromise] : []
     );
     const activeAudits = [...pendingAudits];
-    disposePromise = Promise.allSettled([...activeLaunches, ...activeAudits]).then(() => {
+    // ⛔ BOUNDED: a restart's drain step awaits this, with 5 s, and a launch can
+    // take longer (the tool's version check, a slow spawn). One still going
+    // after the grace finds `closed` at its next step and arms nothing
+    // (`launch`); the daemon it started is detached, and the next boot adopts it.
+    const settled = Promise.allSettled([...activeLaunches, ...activeAudits]);
+    disposePromise = settleWithin(settled, STOP_GRACE_MS).then(() => {
       // A launch may have reached its completion edge while disposal waited.
       // Clean again before dropping the only references to its timers.
       for (const r of current) {

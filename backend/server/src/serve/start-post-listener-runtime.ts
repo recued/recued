@@ -449,12 +449,12 @@ export const startPostListenerRuntime = async (
   // Reactive-substrate slice 1 — event-trigger dispatcher shutdown.
   // Registered `kind: 'scheduler'` so migration maintenance's
   // `stopAll({ kind: 'scheduler' })` also disarms trigger fan-out
-  // during the quiet period. Stop awaits `drained()` so a dispatch
-  // already inside `runtime.runRecipe` settles before the auth
-  // re-encryption quiet period begins — mirrors auto-run's stop()
-  // waiting on its in-flight executions (codex HIGH fold). Rebuild on
-  // maintenance exit happens via the maintenance context's
-  // `onExitMaintenance` hook (second codex HIGH fold), NOT here.
+  // during the quiet period. `settled` waits for a dispatch already inside
+  // `runtime.runRecipe` so it settles before the auth re-encryption quiet
+  // period begins — mirrors auto-run's (codex HIGH fold). The stop itself
+  // waits for it at most `STOP_GRACE_MS`, for a restart's sake (the restart
+  // kills the run). Rebuild on maintenance exit happens via the maintenance
+  // context's `onExitMaintenance` hook (second codex HIGH fold), NOT here.
   if (options.eventTriggerDispatcher) {
     const dispatcher = options.eventTriggerDispatcher;
     options.backgroundServices.registerInterval({ name: 'situation-subscriber-catch-up', intervalMs: 60_000,
@@ -466,13 +466,14 @@ export const startPostListenerRuntime = async (
         dispatcher.dispose();
         await dispatcher.drained();
       },
+      settled: async () => { await dispatcher.settled?.(); },
     });
   }
 
   // Poll-manager / G6 — watch-loop shutdown. Same `kind: 'scheduler'`
   // class: migration maintenance disarms polling during the quiet
-  // period; stop() awaits in-flight polls so a gateway call mid-flight
-  // settles first. Re-arm on maintenance exit goes through the
+  // period; `settled` awaits in-flight polls so a gateway call mid-flight
+  // settles first (the stop itself no longer waits for them). Re-arm on maintenance exit goes through the
   // maintenance context's recompute hook (the dispatcher-rebuild
   // posture), NOT here.
   if (options.watchManager) {
@@ -483,6 +484,7 @@ export const startPostListenerRuntime = async (
       stop: async () => {
         await watchManager.stop();
       },
+      settled: async () => { await watchManager.settled?.(); },
     });
   }
 
@@ -719,7 +721,9 @@ export const startPostListenerRuntime = async (
         // The scan is over the installed set and runs on the idle cadence.
         return manifests.listManifests().some((m) => m.slug === slug) ? slug : null;
       },
-      probe: (args) => handleConnectionProbe(probeDeps, args),
+      // The cycle's stop signal reaches the probe's own requests and channels:
+      // a stopping server leaves no probe connection or child running.
+      probe: (args, opts) => handleConnectionProbe(probeDeps, args, opts),
     };
   })();
 

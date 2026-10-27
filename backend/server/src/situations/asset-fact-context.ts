@@ -1,37 +1,52 @@
 import { assetFactRefKey, assetFieldValue, assetRuleInput, parseAssetFactContextRequest, parseQualifiedWorkEntityId, SITUATION_CONTEXT_MAX_BYTES,
   type AssetEvidence, type AssetFactContext, type AssetFactContextNode, type AssetFactContextRef,
-  type AssetFactContextRequest, type AssetFieldRef, type SituationRef } from '@recued/contracts';
+  type AssetFactContextRequest, type AssetFieldRef, type SituationRef, type AssetWriterDelivery, type AssetWriterDeliveryOutcome } from '@recued/contracts';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import type Database from 'better-sqlite3';
 import type { SituationReadContext } from './query.js';
 import { situationSourceAccess } from './sources.js';
-import { rememberAssetContextRead } from './asset-projection-provenance.js';
+import { assetFieldProjectionValue, assetProjectionReadOf, rememberAssetContextRead, rememberAssetGraphRead } from './asset-projection-provenance.js';
 export { parseAssetFactContextRequest } from '@recued/contracts';
 
 export const ASSET_CONTEXT_LIMITS = { nodes: 40, edges: 60, bytes: SITUATION_CONTEXT_MAX_BYTES } as const;
-export interface AssetContextWriter { id: string; name: string; fields: string[]; enabled: boolean }
+export interface AssetContextWriter { id: string; name: string; fields: string[]; enabled: boolean; delivery?: AssetWriterDelivery }
+export type AssetContextWriterReader = ((asset_id: string, fields: readonly string[], limit: number) => AssetContextWriter[]) & {
+  disabledCount?(asset_id: string, fields: readonly string[]): number;
+};
 /** Adapter over existing writer relationships, bounded in SQL before decoding. */
-export const assetContextWriters = (db: Database.Database, name: (actor: string) => string = actor => actor) =>
-  (asset_id: string, fields: readonly string[], limit: number): AssetContextWriter[] => {
+export const assetContextWriters = (db: Database.Database, name: (actor: string) => string = actor => actor): AssetContextWriterReader =>
+  Object.assign((asset_id: string, fields: readonly string[], limit: number): AssetContextWriter[] => {
     if (!fields.length) return [];
-    const rows = db.prepare(`SELECT id,actor_ref,fields,enabled FROM asset_observation_binding WHERE asset_id=? AND enabled=1
-      AND EXISTS(SELECT 1 FROM json_each(asset_observation_binding.fields) WHERE value IN (${fields.map(() => '?').join(',')}))
-      ORDER BY id LIMIT ?`).all(asset_id, ...fields, Math.min(ASSET_CONTEXT_LIMITS.nodes + 1, Math.max(1, limit))) as Array<{ id: string; actor_ref: string; fields: string; enabled: number }>;
-    return rows.map(row => ({ id: row.id, name: name(row.actor_ref), fields: JSON.parse(row.fields) as string[], enabled: row.enabled === 1 }));
-  };
+    const rows = db.prepare(`SELECT b.id,b.actor_ref,b.fields,b.enabled,d.at,d.observation_at,d.outcome,d.accepted_at,d.accepted_observation_at
+      FROM (SELECT id,actor_ref,fields,enabled FROM asset_observation_binding WHERE asset_id=? AND enabled=1
+        AND EXISTS(SELECT 1 FROM json_each(asset_observation_binding.fields) WHERE value IN (${fields.map(() => '?').join(',')}))
+        ORDER BY id LIMIT ?) b
+      LEFT JOIN asset_observation_delivery d ON d.binding_id=b.id AND d.path=? ORDER BY b.id`)
+      .all(asset_id, ...fields, Math.min(ASSET_CONTEXT_LIMITS.nodes + 1, Math.max(1, limit)), fields.length === 1 ? fields[0] : null) as Array<{ id: string; actor_ref: string; fields: string; enabled: number;
+        at: number | null; observation_at: number; outcome: AssetWriterDeliveryOutcome; accepted_at: number | null; accepted_observation_at: number }>;
+    return rows.map(row => ({ id: row.id, name: name(row.actor_ref), fields: JSON.parse(row.fields) as string[], enabled: row.enabled === 1,
+      ...(fields.length === 1 ? { delivery: row.at === null ? { status: 'no_receipt' as const } : { status: 'recorded' as const,
+        last_submission: { at: row.at, observation_at: row.observation_at, outcome: row.outcome },
+        ...(row.accepted_at !== null ? { last_accepted: { at: row.accepted_at, observation_at: row.accepted_observation_at } } : {}) } } : {}) }));
+  }, { disabledCount(asset_id: string, fields: readonly string[]): number {
+    if (!fields.length) return 0;
+    return (db.prepare(`SELECT COUNT(*) AS count FROM asset_observation_binding WHERE asset_id=? AND enabled=0
+      AND EXISTS(SELECT 1 FROM json_each(asset_observation_binding.fields) WHERE value IN (${fields.map(() => '?').join(',')}))`)
+      .get(asset_id, ...fields) as { count: number }).count;
+  } });
 export interface AssetFactContextDeps {
   work: Pick<WorkEntityStore, 'readAsset' | 'getSource' | 'localIdBySourceIdentity'>;
   now?: () => number;
   referenceSphere?: SituationReadContext['referenceSphere'];
   /** The adapter must enforce the requested row limit before materializing. */
-  writers?(asset_id: string, fields: readonly string[], limit: number): AssetContextWriter[];
+  writers?: AssetContextWriterReader;
   snapshot?<T>(read: () => T): T;
 }
 const fieldName = (value: string) => value.replaceAll('_', ' ');
 
 /** One root, at most two relationship hops. No snapshot refresh, cache, or writes.
  * Read grants and sphere fences are applied before returning values or links. */
-const readAssetFactContext = (deps: AssetFactContextDeps, raw: AssetFactContextRequest, context: SituationReadContext): AssetFactContext => {
+const readAssetFactContext = (deps: AssetFactContextDeps, raw: AssetFactContextRequest, context: SituationReadContext, fieldOnly = false): AssetFactContext => {
   const { root: requested } = parseAssetFactContextRequest(raw);
   if (context.signal?.aborted) throw new Error('Context read cancelled');
   const collectionAllowed = (ref: SituationRef): boolean => {
@@ -109,6 +124,21 @@ const readAssetFactContext = (deps: AssetFactContextDeps, raw: AssetFactContextR
   const input = root.kind === 'field' ? root : assetRuleInput(asset.id, rootRule!);
   const first: AssetFactContextNode = root.kind === 'rule' && rootRule ? { kind: 'rule', ref: root, title: rootRule.title, rule: structuredClone(rootRule) } : fieldNode(input);
   if (!addNode(first)) throw new Error('This context is too large. Open the asset to review it.');
+  const finish = (): AssetFactContext => {
+    if (context.signal?.aborted) throw new Error('Context read cancelled');
+    if (!allowed({ collection: 'asset', id: root.asset_id })) throw new Error('Context permissions changed. Refresh before relying on this result.');
+    if (size() > ASSET_CONTEXT_LIMITS.bytes) throw new Error('This context is too large. Open the asset to review it.');
+    rememberAssetContextRead(asset, packet);
+    if (!fieldOnly) rememberAssetGraphRead(asset, packet);
+    return packet;
+  };
+  // A version covers this retained field value and known flag, not its graph.
+  // Keep the same root normalization, omission budget and authority fence.
+  if (fieldOnly) return finish();
+  const path = `${input.group}.${input.field}`;
+  const writable = input.group === 'readings' || input.group === 'observations';
+  packet.writer_check = { scope: 'enabled_bindings', field: path, execution_status: 'not_checked', status: !writable ? 'not_applicable' : !context.owner ? 'restricted' : 'unavailable',
+    ...(writable && context.owner ? { manual_priority: asset.field_sources[path]?.kind === 'owner' && asset.automatic_updates?.[path] === undefined } : {}) };
   addNode(fieldNode(input));
   for (const rule of asset.rules) {
     const field = assetRuleInput(asset.id, rule);
@@ -129,15 +159,28 @@ const readAssetFactContext = (deps: AssetFactContextDeps, raw: AssetFactContextR
     if (writers.length > limit) omit('node_budget');
     for (const writer of writers.slice(0, limit)) {
       const ref = { kind: 'writer' as const, asset_id: asset.id, binding_id: writer.id };
-      if (addNode({ kind: 'writer', ref, name: writer.name, enabled: writer.enabled })) addEdge(input, ref, 'updated_by');
+      if (addNode({ kind: 'writer', ref, name: writer.name, enabled: writer.enabled, ...(writer.delivery ? { delivery: writer.delivery } : {}) })) addEdge(input, ref, 'updated_by');
     }
+    const complete = writers.length <= limit && writers.every(writer => packet.edges.some(edge => edge.kind === 'updated_by' && edge.to.kind === 'writer' && edge.to.binding_id === writer.id));
+    packet.writer_check.status = complete ? 'complete' : 'partial';
+    if (complete) packet.writer_check.enabled_count = writers.length;
+    const disabled = deps.writers.disabledCount?.(asset.id, [path]);
+    if (disabled !== undefined) { packet.writer_check.scope = 'registered_bindings'; packet.writer_check.disabled_count = disabled; }
   }
-  if (context.signal?.aborted) throw new Error('Context read cancelled');
-  if (!allowed({ collection: 'asset', id: root.asset_id })) throw new Error('Context permissions changed. Refresh before relying on this result.');
-  if (size() > ASSET_CONTEXT_LIMITS.bytes) throw new Error('This context is too large. Open the asset to review it.');
-  rememberAssetContextRead(asset, packet);
-  return packet;
+  return finish();
 };
 
-export const createAssetFactContextReader = (deps: AssetFactContextDeps) => (request: AssetFactContextRequest, context: SituationReadContext): AssetFactContext =>
-  deps.snapshot ? deps.snapshot(() => readAssetFactContext(deps, request, context)) : readAssetFactContext(deps, request, context);
+export const createAssetFactContextReader = (deps: AssetFactContextDeps) => {
+  const read = (request: AssetFactContextRequest, context: SituationReadContext, fieldOnly = false): AssetFactContext =>
+    deps.snapshot ? deps.snapshot(() => readAssetFactContext(deps, request, context, fieldOnly)) : readAssetFactContext(deps, request, context, fieldOnly);
+  return Object.assign((request: AssetFactContextRequest, context: SituationReadContext) => read(request, context), {
+    /** Native field version only; no relationships, writer page or values leave
+     * this seam. Unsupported and byte-omitted fields cannot mint a version. */
+    fieldVersion(request: AssetFactContextRequest, context: SituationReadContext): string | undefined {
+      if (request.root.kind !== 'field') return undefined;
+      const node = read(request, context, true).nodes[0];
+      return node?.kind === 'field' && !node.value_omitted
+        ? assetProjectionReadOf(node, assetFieldProjectionValue(node))?.read_version : undefined;
+    },
+  });
+};

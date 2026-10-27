@@ -330,12 +330,13 @@ describe('makeUpdateHandlers', () => {
 
       finishResolve(upToDateResolution());
       expect(await request).toEqual({ status: 'not-available' });
+      // Refused before it started, and the wire says so as a code.
       expect(await call(
         slice,
         'update.operation_status',
         { operation_id: CALLER_ID },
         REG,
-      )).toEqual({ status: 'reverted', operation: 'update' });
+      )).toEqual({ status: 'reverted', operation: 'update', revert_reason: 'not_started' });
     });
 
     it('still mints one when the caller names none — an older client is unchanged', async () => {

@@ -24,6 +24,7 @@
 
 import { makeBoundedOriginApiFetch } from '../bounded-origin-http-fetcher.js';
 import type { MessengerWebhookDispatch } from '../composition/bin/wire-inbound-answer-dispatcher.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { MessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
 import type {
   MessengerIngressRunnerState,
@@ -123,8 +124,11 @@ export interface TeamsPollRunnerOptions {
   /** ⛔ A PROVIDER, not a token — see the module header. Resolves through the
    *  D-238 § 2a refresher, so each tick uses a credential that is still valid.
    *  Returning null (no row, locked keystore) is a transient skip, not a fatal
-   *  error: the connection may simply not be unlocked yet. */
-  getAccessToken: () => Promise<string | null>;
+   *  error: the connection may simply not be unlocked yet.
+   *
+   *  `signal` is the runner's stop: once it has fired, the provider starts no
+   *  token exchange (the runner no longer waits for one in progress). */
+  getAccessToken: (signal?: AbortSignal) => Promise<string | null>;
   dispatch: MessengerWebhookDispatch;
   stateStore: MessengerIngressStateStore;
   pollIntervalMs?: number;
@@ -152,6 +156,26 @@ const waitFor = (ms: number, signal: AbortSignal): Promise<boolean> =>
       resolve(false);
     };
     signal.addEventListener('abort', onAbort, { once: true });
+  });
+
+const stopped = Symbol('stopped');
+
+/** `work`'s value, or `stopped` as soon as `signal` fires, whichever comes
+ *  first. The work itself goes on; only the wait for it ends. */
+const unlessStopped = <T>(work: Promise<T>, signal: AbortSignal): Promise<T | typeof stopped> =>
+  new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      // Still observed: a rejection after the stop must not go unhandled.
+      work.catch(() => undefined);
+      resolve(stopped);
+      return;
+    }
+    const onAbort = (): void => resolve(stopped);
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
   });
 
 /** Build the Teams ingress runner. */
@@ -195,7 +219,14 @@ export const createTeamsPollRunner = (
           options.onState?.('connecting');
         }
 
-        const token = await options.getAccessToken();
+        // ⛔ A token exchange can take 30 s, and a stop no longer waits for
+        // one. It is deliberately not ABORTED: the refresher is shared with the
+        // send path, and the provider ROTATES refresh tokens, so cutting an
+        // exchange the provider has already performed would strand the stored
+        // credential (`messenger-notification-refresh.ts`). Left to finish, it
+        // still stores the new token if the database is open by then.
+        const token = await unlessStopped(options.getAccessToken(controller.signal), controller.signal);
+        if (token === stopped) break;
         if (token === null) {
           // Not an error: the keystore may not be unlocked yet, or the row may
           // have been removed while we were mid-flight. Back off and re-ask.
@@ -266,6 +297,9 @@ export const createTeamsPollRunner = (
               payload: raw,
               message_id: teamsInboundId(chatId, id),
             } as Parameters<MessengerWebhookDispatch>[0]);
+            // A stop that came during the dispatch records nothing more (see
+            // `stop`): the message is read again after the restart.
+            if (controller.signal.aborted) return;
           }
 
           // Advance past this message either way — a skipped system row must not
@@ -312,9 +346,21 @@ export const createTeamsPollRunner = (
       if (task !== null) return;
       task = run();
     },
+    /** Stop within `STOP_GRACE_MS`. The abort ends the Graph request and any
+     *  wait, and the loop starts no message it has not begun and no token
+     *  exchange. A token exchange in progress is not waited for at all, and a
+     *  dispatch in progress not past the grace.
+     *
+     *  Nothing is lost by it. The cursor is stored only after a dispatch, and
+     *  a stopped runner stores nothing more — a late write could also bring
+     *  back a cursor the supervisor deleted with its connection. So after the
+     *  restart the poll asks again from the stored cursor
+     *  (`lastModifiedDateTime gt`), and the message in flight and every one
+     *  after it come back; the dispatcher's durable admission recognises any
+     *  it had already taken. */
     async stop() {
       controller.abort();
-      await task;
+      if (task !== null) await settleWithin(task, STOP_GRACE_MS);
       options.onState?.('stopped');
     },
   };

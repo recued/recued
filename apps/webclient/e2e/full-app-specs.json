@@ -44,6 +44,7 @@
   "notification-kind-policy.spec.ts",
   "attention.spec.ts",
   "yours.spec.ts",
+  "yours-writer-setup.spec.ts",
   "yours-design.spec.ts",
   "yours-polish.spec.ts",
   "yours-structure.spec.ts",

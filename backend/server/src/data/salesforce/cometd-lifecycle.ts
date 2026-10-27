@@ -53,6 +53,7 @@ import {
 } from './pushtopic-soap.js';
 import type { SalesforceCometDEvent, SalesforceReplayIdTracker } from './webhook-processor.js';
 import type { ConnectionLookup } from '../../housekeeping/reconciliation/vendor-reconciler.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 
 const SALESFORCE_VENDOR = 'salesforce';
@@ -332,8 +333,11 @@ export const wireSalesforceCometDLifecycle = (
     // below will then start a fresh replacement.
     const activeAtRequest = subscribers.get(connection_name);
     const work = (async () => {
+      // Provisioning makes PushTopic calls that take no signal, so wait for it
+      // only up to the grace. One that finishes later finds `shouldRun` false
+      // and stops the subscriber it started instead of publishing it.
       const pending = inflight.get(connection_name);
-      if (pending) await pending;
+      if (pending) await settleWithin(pending, STOP_GRACE_MS);
 
       const subscriber = activeAtRequest
         ?? (!shouldRun(connection_name)

@@ -369,6 +369,7 @@ describe('D-127 P1.5 — send() happy path', () => {
       host: 'smtp.example.com',
       port: 587, // DEFAULT_SMTP_PORT
       secure: false,
+      connectionTimeout: 15_000, greetingTimeout: 15_000, socketTimeout: 30_000,
       auth: { user: 'alice@example.com', pass: 'pass' },
     });
   });

@@ -1857,7 +1857,10 @@ const buildFakeTransport = (
         account_email: 'home@example.com',
       }]
     : [];
+  let smtpAccount: Record<string, unknown> | undefined;
+  const smtpOnlyDemo = new URLSearchParams(location.search).get('connection') === 'smtp-only';
   const mailInstances = (): ReadonlyArray<Record<string, unknown>> => {
+    if (smtpAccount) return [smtpAccount];
     if (
       !firstSyncDemo
       && !connectedSourceReadyDemo
@@ -6772,6 +6775,13 @@ const buildFakeTransport = (
         if (calendarLifecycleDemo && rpc.method === 'collection.connection.managedOAuth'
           && (rpc.args as { action?: string })?.action === 'collection_authentication_app_context') {
           error = { code: 'UNAVAILABLE', message: 'Calendar sign-in is temporarily unavailable.' };
+        }
+        if (rpc.method === 'collection.mail.enrollSmtp' && smtpOnlyDemo) {
+          const args = rpc.args as { name: string; from: string };
+          smtpAccount = { slug: args.name, adapter_type: 'smtp', auth_state: 'healthy', last_synced_at: null,
+            sync_status: { access_verified: false, initial_sync_complete: false },
+            account_email: args.from, send_capable: true, receive_capable: false, sent_lookup_capable: false, draft_capable: false };
+          result = { slug: args.name, send_capable: true };
         }
         if (rpc.method === 'collection.mail.enrollImap' && imapEnrollFails) {
           error = {

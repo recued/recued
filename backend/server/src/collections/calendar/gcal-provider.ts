@@ -78,6 +78,7 @@ import {
   type ProviderPollScheduler,
   type ProviderPollStop,
 } from '../draining-interval.js';
+import { CollectionStoppedError, throwIfStopped } from '../stop-signal.js';
 
 // ────────────────────────────────────────────────────────────────
 // Config
@@ -429,6 +430,11 @@ export const createGcalProvider = (
   let pendingQueueSize = 0;
   let accessToken = '';
   let pollStop: ProviderPollStop | null = null;
+  /** Aborted by `close()`, armed again by `connect()`: the first scan and the
+   *  poll `startSync` runs at once go by it, and each scheduled poll by its
+   *  loop's own signal. A scan or poll captures the signal when it begins, so
+   *  one begun before a close stays stopped across the next connect. */
+  let lifecycle = new AbortController();
   /** `onSyncOutcome` listeners: told of each poll's outcome. */
   const outcomeListeners = new Set<(outcome: CalendarSyncOutcome) => void>();
   const reportOutcome = (outcome: CalendarSyncOutcome): void => {
@@ -466,21 +472,27 @@ export const createGcalProvider = (
     });
   };
 
-  /** GET with one automatic 401-retry that forces a token refresh. */
+  /** GET with one automatic 401-retry that forces a token refresh. `signal`:
+   *  a sync's stop, which aborts the request; none starts once it fired. */
   const gcalGet = async <T>(
     url: string,
     operation: string,
+    signal?: AbortSignal,
   ): Promise<T> => {
+    throwIfStopped(signal);
     let token = await ensureToken(false);
     let res = await fetcher(url, {
       method: 'GET',
       headers: { ...oauthAuthorizationHeaders(token) },
+      ...(signal ? { signal } : {}),
     });
     if (res.status === 401 && !opts.managedFetcher) {
+      throwIfStopped(signal);
       token = await ensureToken(true);
       res = await fetcher(url, {
         method: 'GET',
         headers: { ...oauthAuthorizationHeaders(token) },
+        ...(signal ? { signal } : {}),
       });
     }
     if (!res.ok) {
@@ -528,7 +540,7 @@ export const createGcalProvider = (
   // The account's address: Google names the primary calendar by it, and the
   // list is read at every sync (`CalendarProvider.accountEmail`).
   let accountEmail = '';
-  const listCalendars = async (): Promise<GcalCalendarListEntry[]> => {
+  const listCalendars = async (signal?: AbortSignal): Promise<GcalCalendarListEntry[]> => {
     const out: GcalCalendarListEntry[] = [];
     let pageToken: string | undefined;
     const pagination = new ProviderPaginationGuard('Google calendar list');
@@ -540,6 +552,7 @@ export const createGcalProvider = (
       const page = await gcalGet<GcalCalendarListResponse>(
         url.toString(),
         'calendarList.list',
+        signal,
       );
       for (const entry of page.items ?? []) {
         out.push(entry);
@@ -554,8 +567,8 @@ export const createGcalProvider = (
     return out;
   };
 
-  const selectedCalendars = async (): Promise<GcalCalendarListEntry[]> => {
-    const all = await listCalendars();
+  const selectedCalendars = async (signal?: AbortSignal): Promise<GcalCalendarListEntry[]> => {
+    const all = await listCalendars(signal);
     const filter = opts.config.calendar_filter ?? [];
     if (filter.length === 0) return all;
     const allow = new Set(filter);
@@ -565,6 +578,7 @@ export const createGcalProvider = (
   const fetchEventsPage = async (
     calendarId: string,
     params: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<GcalEventsResponse> => {
     const url = new URL(
       `${GCAL_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
@@ -572,7 +586,7 @@ export const createGcalProvider = (
     for (const [k, v] of Object.entries(params)) {
       url.searchParams.set(k, v);
     }
-    return gcalGet<GcalEventsResponse>(url.toString(), 'events.list');
+    return gcalGet<GcalEventsResponse>(url.toString(), 'events.list', signal);
   };
 
   // `singleEvents=true` instances carry no recurrence; only the series master
@@ -580,7 +594,7 @@ export const createGcalProvider = (
   // a yearly event can become an occasion (D-325 P16). A failed read leaves the
   // instance as listed.
   let seriesRules = new Map<string, Promise<string | undefined>>();
-  const seriesRule = (calendarId: string, event: GcalEvent): Promise<string | undefined> => {
+  const seriesRule = (calendarId: string, event: GcalEvent, signal?: AbortSignal): Promise<string | undefined> => {
     const master = event.recurringEventId;
     if (!master || event.recurrence?.length) return Promise.resolve(undefined);
     const key = JSON.stringify([calendarId, master]);
@@ -588,21 +602,27 @@ export const createGcalProvider = (
     if (!rule) {
       const url = new URL(`${GCAL_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(master)}`);
       url.searchParams.set('fields', 'recurrence');
-      rule = gcalGet<Pick<GcalEvent, 'recurrence'>>(url.toString(), 'events.get')
+      rule = gcalGet<Pick<GcalEvent, 'recurrence'>>(url.toString(), 'events.get', signal)
         .then(found => found.recurrence?.find(line => /^RRULE:/iu.test(line)), () => undefined);
       seriesRules.set(key, rule);
     }
     return rule;
   };
-  const payloadOf = async (event: GcalEvent, calendarId: string, calendarName?: string): Promise<ProviderEventPayload> =>
-    buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event));
+  const payloadOf = async (
+    event: GcalEvent, calendarId: string, calendarName?: string, signal?: AbortSignal,
+  ): Promise<ProviderEventPayload> =>
+    buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event, signal));
 
   // ── initial scan ────────────────────────────────────────────
+  /** `signal` stops the scan between pages and events by THROWING: a normal
+   *  return tells the collection the backfill is complete, and a calendar
+   *  whose page chain ended normally gets its sync token stored. */
   const runInitialScan = async (
     scanOpts: InitialScanOptions,
+    signal: AbortSignal,
   ): Promise<void> => {
     seriesRules = new Map();
-    const calendars = await selectedCalendars();
+    const calendars = await selectedCalendars(signal);
     const now = nowOf();
     const timeMin = new Date(now - scanOpts.backfill_days * 86_400_000)
       .toISOString();
@@ -626,11 +646,14 @@ export const createGcalProvider = (
           showDeleted: 'false',
         };
         if (pageToken) params.pageToken = pageToken;
-        const page = await fetchEventsPage(cal.id, params);
+        const page = await fetchEventsPage(cal.id, params, signal);
         for (const event of page.items ?? []) {
           if (event.status === 'cancelled') continue;
+          // Outside the per-event catch, which would count a stop as one
+          // failed event and read on.
+          throwIfStopped(signal);
           try {
-            const payload = await payloadOf(event, cal.id, cal.summary);
+            const payload = await payloadOf(event, cal.id, cal.summary, signal);
             const cont = await scanOpts.onEvent(payload);
             lastSuccessfulSyncAt = nowOf();
             if (!cont) {
@@ -638,6 +661,7 @@ export const createGcalProvider = (
               break;
             }
           } catch (err) {
+            if (signal.aborted) throw new CollectionStoppedError();
             markError(`gcal canonicalize failed id=${event.id}`, err);
             failures.push(err);
             calendarFailed = true;
@@ -667,6 +691,7 @@ export const createGcalProvider = (
       // listed again.
       if (!aborted && !calendarFailed && lastSyncToken
         && !(await opts.accountStore.get(syncTokenKey(cal.id)))) {
+        throwIfStopped(signal);
         await opts.accountStore.set(syncTokenKey(cal.id), lastSyncToken);
       }
     }
@@ -676,12 +701,16 @@ export const createGcalProvider = (
   };
 
   // ── incremental sync tick ───────────────────────────────────
-  const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
+  /** `signal` stops the poll between pages and events by throwing — never by
+   *  breaking out: a token-less pass that ended early would reconcile the
+   *  window against a partial listing and remove the rows it never reached,
+   *  and a pass that ended normally stores its sync token. */
+  const runSyncTick = async (cb: CalendarSyncCallback, signal: AbortSignal): Promise<void> => {
     // Clean until a failure is swallowed: only a tick that read every calendar
     // and delivered every change says the calendar is synced.
     let clean = true;
     seriesRules = new Map();
-    const calendars = await selectedCalendars();
+    const calendars = await selectedCalendars(signal);
     const now = nowOf();
     const windowFrom = now - opts.config.expansion_past_days * 86_400_000;
     const windowUntil = now + opts.config.expansion_future_days * 86_400_000;
@@ -720,7 +749,7 @@ export const createGcalProvider = (
 
           let page: GcalEventsResponse;
           try {
-            page = await fetchEventsPage(cal.id, params);
+            page = await fetchEventsPage(cal.id, params, signal);
           } catch (err) {
             if (
               err instanceof CalendarAdapterError &&
@@ -738,6 +767,7 @@ export const createGcalProvider = (
           }
 
           for (const event of page.items ?? []) {
+            throwIfStopped(signal);
             if (listed && event.status !== 'cancelled') listed.push(event.id);
             pendingQueueSize++;
             try {
@@ -748,7 +778,7 @@ export const createGcalProvider = (
                 };
                 await cb(sync);
               } else {
-                const payload = await payloadOf(event, cal.id, cal.summary);
+                const payload = await payloadOf(event, cal.id, cal.summary, signal);
                 const sync: CalendarSyncEvent = {
                   kind: 'updated',
                   source_id: event.id,
@@ -758,6 +788,7 @@ export const createGcalProvider = (
               }
               lastSuccessfulSyncAt = nowOf();
             } catch (err) {
+              if (signal.aborted) throw new CollectionStoppedError();
               markError(`gcal dispatch failed id=${event.id}`, err);
               deliveryFailed = true;
               clean = false;
@@ -779,6 +810,7 @@ export const createGcalProvider = (
         } while (pageToken);
 
         if (retry) continue;
+        throwIfStopped(signal);
         // That listing reports no deletion, and after a 410 it replaces a token
         // that would have: an event it did not list is gone, so its row is
         // removed (`CalendarSnapshot`). Not acknowledged, the token is not
@@ -800,6 +832,7 @@ export const createGcalProvider = (
         // event. Retain the prior syncToken so Google replays this complete
         // range on the next tick; collection upserts/deletes are idempotent.
         if (!deliveryFailed && lastSyncToken) {
+          throwIfStopped(signal);
           await opts.accountStore.set(syncTokenKey(cal.id), lastSyncToken);
         }
         break;
@@ -811,11 +844,12 @@ export const createGcalProvider = (
 
   /** A poll tick that reports a thrown failure too: `auth` for a rejected
    *  credential, else `transient`. Rethrows, so it is logged as before. */
-  const runReportedTick = async (cb: CalendarSyncCallback): Promise<void> => {
+  const runReportedTick = async (cb: CalendarSyncCallback, signal: AbortSignal): Promise<void> => {
     try {
-      await runSyncTick(cb);
+      await runSyncTick(cb, signal);
     } catch (err) {
-      reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
+      // A stopped poll did not fail: there is no outcome to report.
+      if (!signal.aborted) reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
       throw err;
     }
   };
@@ -958,6 +992,9 @@ export const createGcalProvider = (
     get accountEmail() { return accountEmail; },
 
     async connect() {
+      // `sync.stop()` closes the provider and a later `sync.start()` reuses it
+      // (the vault lock edge): a new connection gets a new signal.
+      if (lifecycle.signal.aborted) lifecycle = new AbortController();
       try {
         await ensureToken(false);
       } catch (err) {
@@ -973,16 +1010,20 @@ export const createGcalProvider = (
     },
 
     async initialScan(scanOpts) {
-      await runInitialScan(scanOpts);
+      await runInitialScan(scanOpts, lifecycle.signal);
     },
 
     async startSync(cb) {
       const scheduler = opts.scheduler ?? defaultScheduler;
       const intervalMs = Math.max(1, opts.config.poll_seconds) * 1000;
+      const session = lifecycle.signal;
       // Run an immediate tick so downstream consumers don't have to
       // wait for the first interval.
-      await runReportedTick(cb);
-      pollStop = scheduler(() => runReportedTick(cb), intervalMs);
+      await runReportedTick(cb, session);
+      // Closed during that first poll: start no loop that nothing would stop.
+      if (session.aborted) throw new CollectionStoppedError();
+      // A scheduled poll gets its loop's signal; a test scheduler calls it bare.
+      pollStop = scheduler((signal) => runReportedTick(cb, signal ?? session), intervalMs);
       return async () => {
         const stop = pollStop;
         pollStop = null;
@@ -991,6 +1032,9 @@ export const createGcalProvider = (
     },
 
     async close() {
+      // Close admission and abort the scan or poll in flight; the poll loop's
+      // stop then waits for its pass at most `STOP_GRACE_MS`.
+      lifecycle.abort(new CollectionStoppedError('the gcal provider was closed'));
       const stop = pollStop;
       pollStop = null;
       await stop?.();

@@ -89,6 +89,8 @@ export interface AIOutput {
   /** Follow this work only. Untrusted model-selected source excerpts; the host
    * validates their shape and exact source match before rendering any of them. */
   readonly mail_work_recap?: unknown;
+  /** Native relationship fact selectors, independently validated by the host. */
+  readonly source_answer?: unknown;
   /** Follow this work source plan. Host-owned rendering validates source
    * references, quotes, bounds and permission declarations after restoration. */
   readonly mail_work_plan?: unknown;

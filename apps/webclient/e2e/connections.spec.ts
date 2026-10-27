@@ -1028,6 +1028,37 @@ test('a rejected mailbox enrollment keeps the busy and retry actions focused', a
   expect(await password.evaluate((element: HTMLInputElement) => element.selectionStart)).toBe(4);
 });
 
+test('SMTP-only enrollment stays on the send-only account without inbox sync controls', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=smtp-only`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections'));
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  await route.getByRole('button', { name: 'Connect mailbox' }).click();
+  await route.getByRole('button', { name: /SMTP only/ }).click();
+  await route.getByRole('textbox', { name: 'Name', exact: true }).fill('transactional');
+  await route.getByRole('textbox', { name: 'SMTP Host', exact: true }).fill('smtp.mailgun.org');
+  await route.getByRole('textbox', { name: 'SMTP Username', exact: true }).fill('provider-login');
+  await route.getByLabel('SMTP Password', { exact: true }).fill('smtp-fixture-secret');
+  await route.getByRole('textbox', { name: 'From Address', exact: true }).fill('hello@example.test');
+  await route.getByRole('textbox', { name: /^Reply-To Address/ }).fill('inbox@example.test');
+  await route.getByRole('button', { name: 'Connect account' }).click();
+  const success = route.locator(`[${ACCOUNT_CONNECTION_SUCCESS}]`);
+  await expect(success).toHaveAttribute('data-sync-state', 'ready');
+  await expect(success).toContainText('SMTP account connected');
+  await expect(success).toContainText('Send only');
+  const listReads = await page.evaluate(() => window.__app.rpcCallCount('collection.mail.list'));
+  await page.waitForTimeout(2_800);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('collection.mail.list'))).toBe(listReads);
+  await success.getByRole('button', { name: 'View account' }).click();
+  await expect(route.locator('.accounts-detail')).toContainText('hello@example.test');
+  await expect(route.locator('.accounts-detail')).toContainText('Local Sent copies only');
+  await expect(route.getByRole('button', { name: 'Re-sync', exact: true })).toHaveCount(0);
+  await expect(route.getByRole('button', { name: 'Check sync status', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('collection.mail.enrollSmtp'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('collection.mail.enrollImap'))).toBe(0);
+});
+
 test('the first mailbox enrolment ends by opening Proposals', async ({ page }) => {
   // D-325 §15.5: the first session ends on Yours → Proposals, where what was
   // read from that mailbox is proposed. A later mailbox stays on Connections

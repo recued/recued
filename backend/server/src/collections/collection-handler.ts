@@ -75,6 +75,7 @@ import {
 } from './calendar/enroll.js';
 import {
   handleMailEnrollImap,
+  handleMailEnrollSmtp,
   handleMailEnrollManagedOAuth,
   handleMailList,
   handleMailDelete,
@@ -847,7 +848,11 @@ export const handleOwnerNotificationMailSend = async (
   args: Omit<Parameters<typeof handleCollectionMailSend>[1], 'to'> & { to?: readonly string[] },
 ): ReturnType<typeof handleCollectionMailSend> => {
   const instance = requireString(args.instance, 'instance');
-  const own = requireMailCollection(deps, instance).accountEmail.trim().toLowerCase();
+  const mailbox = requireMailCollection(deps, instance);
+  if (mailbox.provider?.kind === 'smtp' || mailbox.receiveCapable === false || mailbox.sentLookupCapable === false) {
+    throw new RpcError('failed_precondition', 'Approval and notification email requires a receiving mailbox with provider Sent access. Choose another account.', 409);
+  }
+  const own = mailbox.accountEmail.trim().toLowerCase();
   const to = args.to !== undefined && args.to.length > 0 ? [...args.to] : own ? [own] : null;
   if (to === null) {
     throw new RpcError('failed_precondition', `Mail account ${instance} does not know its own address, so `
@@ -1056,6 +1061,7 @@ export type CollectionMethods =
   // method). `handleCollectionMailSend` stays exported as the gateway's
   // internal executor (kernel `mailSend` dispatcher calls it post-gate).
   | 'collection.mail.enrollImap'
+  | 'collection.mail.enrollSmtp'
   | 'collection.mail.updateCredentials'
   | 'collection.mail.list'
   | 'collection.mail.delete'
@@ -1160,6 +1166,7 @@ export const makeCollectionHandlers = (
       // D-177 N.12 — `collection.mail.send` deliberately omitted (gateway
       // internal executor only; see the type union + handlers below).
       'collection.mail.enrollImap',
+      'collection.mail.enrollSmtp',
       'collection.mail.updateCredentials',
       'collection.mail.list',
       'collection.mail.delete',
@@ -1213,6 +1220,8 @@ export const makeCollectionHandlers = (
       // Wiring it here would re-open a client/MCP-reachable trust-bypass.
       'collection.mail.enrollImap': async (args) =>
         handleMailEnrollImap(requireMailEnroll(deps), args as Parameters<typeof handleMailEnrollImap>[1]),
+      'collection.mail.enrollSmtp': async (args) =>
+        handleMailEnrollSmtp(requireMailEnroll(deps), args as Parameters<typeof handleMailEnrollSmtp>[1]),
       'collection.mail.updateCredentials': async (args) => repairCollectionPasswords('mail', requireMailEnroll(deps), args),
       'collection.mail.list': async () => {
         const listed = await handleMailList(requireMailEnroll(deps));

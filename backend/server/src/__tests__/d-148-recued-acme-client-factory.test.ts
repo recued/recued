@@ -31,6 +31,7 @@ import {
   type RecuedAcmeClientFactoryOptions,
 } from '../keys/rotation/recued-acme-client-factory.js';
 import { createAcmeDomainRenewer } from '../keys/rotation/acme-domain-renewer.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { SqliteTlsDomainStore } from '../tls/domain-store.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -550,5 +551,84 @@ describe('selectProAuth — D-175 P8b binding-authoritative-when-present', () =>
     expect(
       selectProAuth({ bindingAuth: null, hasStoredBinding: false, manualAuth: null }),
     ).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Cancellation — a stopping server aborts the order instead of waiting out
+// ACME_ISSUANCE_TIMEOUT_MS, far past a drain step's 5 s.
+// ────────────────────────────────────────────────────────────────
+
+/** A cloud that never answers: the request settles only when aborted. */
+const unansweredFetch = () => {
+  const signals: AbortSignal[] = [];
+  const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return; // never settles: the test would time out, which is the bug
+      signals.push(signal);
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+  return { fetchImpl, signals };
+};
+
+describe('createRecuedAcmeClientFromRefs — cancellation', () => {
+  it("aborts the cloud request when the caller's signal aborts", async () => {
+    const cloud = unansweredFetch();
+    const { options } = build({ fetch: cloud.fetchImpl as unknown as typeof fetch });
+    const issuer = createRecuedAcmeClientFromRefs(options);
+    const controller = new AbortController();
+    const pending = issuer.issueCert({
+      handle: 'alice', domain: 'alice.recued.net', csr_pem: 'CSR', signal: controller.signal,
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(cloud.fetchImpl).toHaveBeenCalledTimes(1));
+
+    const started = performance.now();
+    controller.abort();
+    await rejected;
+    expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS);
+    expect(cloud.signals[0]?.aborted).toBe(true);
+  });
+
+  it('stops waiting on a Pro-auth mint that never answers, and sends nothing', async () => {
+    const fetchSpy = okFetch();
+    const { options } = build({
+      proAuth: () => new Promise<ProAuthSnapshot | null>(() => {}),
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+    const issuer = createRecuedAcmeClientFromRefs(options);
+    const controller = new AbortController();
+    const pending = issuer.issueCert({
+      handle: 'alice', domain: 'alice.recued.net', csr_pem: 'CSR', signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('the renewer turns a cancelled first order into a quiet decline and stores nothing', async () => {
+    const cloud = unansweredFetch();
+    const { options } = build({ fetch: cloud.fetchImpl as unknown as typeof fetch });
+    const upload = vi.fn<Pick<SqliteTlsDomainStore, 'upload'>['upload']>();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const renewer = createAcmeDomainRenewer({
+        acme: createRecuedAcmeClientFromRefs(options),
+        store: { lookup: () => null, upload },
+        generateCsr: () => 'CSR',
+        generatePrivateKeyPem: () => 'KEY',
+      });
+      const controller = new AbortController();
+      const pending = renewer.issueInitialDomain({ domain: 'bob.recued.net', signal: controller.signal });
+      await vi.waitFor(() => expect(cloud.fetchImpl).toHaveBeenCalledTimes(1));
+      controller.abort();
+      await expect(pending).resolves.toEqual({ ok: false, reason: 'helper_unavailable' });
+      expect(upload).not.toHaveBeenCalled();
+      // A stop is not a cloud failure: no diagnostic sends an operator hunting.
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

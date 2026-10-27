@@ -67,6 +67,8 @@ import type { MailChatDoorStore } from '../../storage/mail-chat-door-store.js';
 import { handleMailList, type MailEnrollDeps } from './enroll.js';
 import type { MailCollection } from './mail-collection.js';
 
+import { mailAccountCanBeInteractiveSender, mailAccountCanReceive, mailAccountHasSentSource } from '@recued/contracts';
+
 export interface MailChatDoorHandlerDeps {
   store: MailChatDoorStore;
   /** The mailbox listing, which answers whether a mailbox exists and can send.
@@ -187,11 +189,10 @@ export const handleMailChatDoorSet = async (
     if (row === undefined) {
       throw new RpcError('not_found', `No connected mailbox is named "${chat_mailbox}".`, 404);
     }
-    if (!row.send_capable) {
+    if (!mailAccountCanBeInteractiveSender(row)) {
       throw new RpcError(
         'failed_precondition',
-        `"${chat_mailbox}" cannot send mail, and chat answers are sent from the chat mailbox. `
-          + 'Connect it with sending allowed, or pick another mailbox.',
+        `"${chat_mailbox}" must receive and send mail and support provider Sent lookup to be the chat mailbox. Pick a receiving mailbox with sending allowed.`,
         409,
       );
     }
@@ -201,6 +202,20 @@ export const handleMailChatDoorSet = async (
   // then its `ask:` filter stays on — every email they write to themselves
   // would otherwise start a conversation.
   const chatAfter = setsMailbox ? (chat_mailbox as string | null) : deps.store.get().chat_mailbox;
+  if (naming || resumes) {
+    const accounts = mailboxes.length ? mailboxes : deps.mail ? (await handleMailList(deps.mail)).instances : [];
+    const chat = accounts.find(row => row.slug === chatAfter);
+    if (chatAfter !== null && (!chat || !mailAccountCanBeInteractiveSender(chat))) {
+      throw new RpcError('failed_precondition', 'Email chat requires a receiving mailbox with sending and provider Sent access.', 409);
+    }
+    for (const slug of (setsOwners ? owner_mailboxes as string[] : deps.store.get().owner_mailboxes)) {
+      const owner = accounts.find(row => row.slug === slug);
+      if (!owner) throw new RpcError('not_found', `No connected mailbox is named "${slug}".`, 404);
+      if (!mailAccountCanReceive(owner) || !mailAccountHasSentSource(owner)) {
+        throw new RpcError('failed_precondition', 'Owner mailboxes must support receiving and provider Sent lookup.', 409);
+      }
+    }
+  }
   const ownersAfter = setsOwners ? (owner_mailboxes as string[]) : deps.store.get().owner_mailboxes;
   if (setsPrefix && ask_prefix === null
     && isMailChatOneMailbox({ chat_mailbox: chatAfter, owner_mailboxes: ownersAfter })) {
@@ -324,6 +339,9 @@ export const handleMailChatDoorCheck = async (
   const reachable = (kind: MailChatDoorCheck['kind'], slug: string): MailChatDoorCheck | null => {
     const row = connected(slug);
     if (row === undefined) return { kind, slug, status: 'fail', text: `No connected mailbox is named "${slug}".` };
+    if (!mailAccountCanReceive(row) || !mailAccountHasSentSource(row)) {
+      return { kind, slug, status: 'fail', text: 'A send-only account cannot receive chat mail or provide provider Sent proof. Choose a receiving mailbox.' };
+    }
     if (row.auth_state !== 'healthy') {
       return { kind, slug, status: 'unknown', text: 'Recued needs you to sign in to it again: reconnect it, then check again.' };
     }

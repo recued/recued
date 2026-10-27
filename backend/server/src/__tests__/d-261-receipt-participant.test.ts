@@ -212,6 +212,73 @@ describe('D-261 real gated-action receipt transaction participant', () => {
     } finally { h.db.close(); }
   });
 
+  // D-261 amendment 2026-10-26 (owner: "auto re-arm if nothing was sent"): a
+  // restart that stopped a claimed run before it sent anything used up the
+  // owner's approval, though nothing they approved had happened.
+  describe('a claimed run that sent nothing', () => {
+    it('is handed back: active for the same occurrence, the stopped run fenced off', async () => {
+      const h = harness();
+      try {
+        const { plan, proposal, run } = await h.prepare();
+        expect(await h.repository.handBackUnsentRun(run)).toBe(true);
+        expect(h.db.prepare('SELECT state, root_run_id, worker_id, occurrence_key FROM preapproval_executions').get())
+          .toEqual({ state: 'active', root_run_id: null, worker_id: null, occurrence_key: null });
+        expect(h.db.prepare("SELECT payload_json FROM preapproval_outbox WHERE kind='execution_rearmed'").get())
+          .toEqual({ payload_json: JSON.stringify({ reason: 'stopped_by_restart' }) });
+        // A late call from the stopped run can claim nothing.
+        await expect(h.repository.claimMember(run, plan.members[0]!)).rejects.toBeDefined();
+        expect(await h.repository.handBackUnsentRun(run)).toBe(false);
+        // The next boot claims the same occurrence, and the approval is whole.
+        const again = await h.repository.claimRun({ future_execution_ref: proposal.future_execution_ref,
+          run_id: 'after-restart', worker_id: 'worker', occurrence_key: 'due:10000', occurrence_sequence: 0 });
+        const claim = await h.repository.claimMember(again, plan.members[0]!);
+        expect(claim.run_id).toBe('after-restart');
+        expect(h.db.prepare('SELECT state FROM preapproval_members').get()).toEqual({ state: 'dispatching' });
+      } finally { h.db.close(); }
+    });
+
+    it('is not handed back once a member was claimed for dispatch', async () => {
+      const h = harness();
+      try {
+        const { plan, run } = await h.prepare();
+        await h.repository.claimMember(run, plan.members[0]!);
+        expect(await h.repository.handBackUnsentRun(run)).toBe(false);
+        expect(h.db.prepare('SELECT state FROM preapproval_executions').get()).toEqual({ state: 'running' });
+      } finally { h.db.close(); }
+    });
+
+    it('is not handed back once its dispatch window has passed', async () => {
+      const h = harness();
+      try {
+        const { run } = await h.prepare();
+        h.state.now = 15_000;
+        expect(await h.repository.handBackUnsentRun(run)).toBe(false);
+        expect(h.db.prepare('SELECT state FROM preapproval_executions').get()).toEqual({ state: 'running' });
+      } finally { h.db.close(); }
+    });
+
+    it('is re-armed at boot once its process is proven gone, not stopped for review', async () => {
+      let ownerStatus: 'live' | 'gone' = 'live';
+      const h = harness(false, false, {
+        assertCurrent(id) { if (!['worker', 'replacement'].includes(id)) throw new Error('Not a test worker'); },
+        status: () => ownerStatus,
+      });
+      try {
+        const { proposal } = await h.prepare();
+        expect(await h.repository.recoverInterruptedExecution(proposal.future_execution_ref, 'replacement'))
+          .toMatchObject({ status: 'worker_live', execution_status: 'running' });
+        ownerStatus = 'gone';
+        expect(await h.repository.recoverInterruptedExecution(proposal.future_execution_ref, 'replacement'))
+          .toMatchObject({ status: 'rearmed', execution_status: 'active' });
+        expect(h.db.prepare("SELECT payload_json FROM preapproval_outbox WHERE kind='execution_rearmed'").get())
+          .toEqual({ payload_json: JSON.stringify({ reason: 'process_ended' }) });
+        await h.repository.claimRun({ future_execution_ref: proposal.future_execution_ref, run_id: 'after-boot',
+          worker_id: 'replacement', occurrence_key: 'due:10000', occurrence_sequence: 0 });
+        expect(h.db.prepare('SELECT state FROM preapproval_executions').get()).toEqual({ state: 'running' });
+      } finally { h.db.close(); }
+    });
+  });
+
   it('stops a claimed run without a durable checkpoint and retains prior successful effects', async () => {
     const h = harness(false, false, { assertCurrent() {}, status: () => 'gone' });
     try {

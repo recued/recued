@@ -2073,6 +2073,46 @@ describe('connection.mcp handler — stdio transport', () => {
     expect(result).toEqual({ status: 'ok', result: { items: [1, 2, 3] }, headers: undefined });
   });
 
+  // The server builds a handler per run. The idle reaper runs on the handler's
+  // next dispatch, which never came, so each run's child outlived it.
+  it('closes its pooled child when its lifetime ends, and takes no call after', async () => {
+    const lifetime = new AbortController();
+    const { deps, stdio } = stdioDeps(() => ({ result: {} }), {}, { lifetime: lifetime.signal });
+    const handler = createConnectionMcpHandler(deps);
+    await handler(stdioRow(), { tool: 'list' }, mkCall());
+    await handler(stdioRow(), { tool: 'list' }, mkCall());
+    expect(stdio.spawns).toHaveLength(1);
+    expect(stdio.handleCloses()).toBe(0);
+
+    lifetime.abort();
+    expect(stdio.handleCloses()).toBe(1);
+    await expect(handler(stdioRow(), { tool: 'list' }, mkCall())).rejects.toMatchObject({ code: 'run_killed' });
+    expect(stdio.spawns).toHaveLength(1);
+  });
+
+  it('closes a child still starting when its lifetime ends, as it lands', async () => {
+    const lifetime = new AbortController();
+    const { deps, stdio } = stdioDeps(() => ({ result: {} }));
+    let spawnCalled!: () => void;
+    const spawning = new Promise<void>((resolve) => { spawnCalled = resolve; });
+    let land!: () => void;
+    const landed = new Promise<void>((resolve) => { land = resolve; });
+    const slow: StdioSpawn = async (spec, opts) => {
+      spawnCalled();
+      await landed;
+      return stdio.spawnStdio(spec, opts);
+    };
+    const handler = createConnectionMcpHandler({ ...deps, spawnStdioMcp: slow, lifetime: lifetime.signal });
+    const call = handler(stdioRow(), { tool: 'list' }, mkCall());
+    await spawning;
+    lifetime.abort();
+    land();
+    await expect(call).rejects.toMatchObject({ code: 'run_killed' });
+    expect(stdio.spawns).toHaveLength(1);
+    expect(stdio.handleCloses()).toBe(1);
+    expect(methodsOf(stdio.sent)).not.toContain('tools/call');
+  });
+
   it('passes config.env + config.args through to the spawn spec', async () => {
     const { deps, stdio } = stdioDeps(() => ({ result: {} }));
     const handler = createConnectionMcpHandler(deps);

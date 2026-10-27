@@ -1,11 +1,14 @@
 import Database from 'better-sqlite3';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ConnectionAuth } from '@recued/contracts';
 
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createMessengerIngressSupervisor } from '../messenger-ingress/supervisor.js';
 import type {
   MessengerLocalIngressRunner,
   TelegramPollRunnerOptions,
 } from '../messenger-ingress/local-runners.js';
+import type { TeamsPollRunnerOptions } from '../messenger-ingress/teams-poll.js';
 import { createConnectionStore } from '../storage/connection-store.js';
 import { createMessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
 import type { VaultState, VaultStateListener } from '../vault-state-bus.js';
@@ -345,6 +348,115 @@ describe('messenger ingress supervisor', () => {
     expect((stopError as Error).message).toContain(
       'one or more messenger ingress runners failed to stop',
     );
+    db.close();
+  });
+});
+
+describe('messenger ingress supervisor — stopping', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  const unexpected = (): never => { throw new Error('unexpected runner'); };
+
+  it('starts no Teams token exchange for a runner that has stopped, even mid-read', async () => {
+    const db = new Database(':memory:');
+    const connectionStore = createConnectionStore(db);
+    const stateStore = createMessengerIngressStateStore(db);
+    connectionStore.upsert({
+      kind: 'notification',
+      name: 'teams',
+      subtype: 'teams',
+      display_name: 'Teams',
+      config_json: JSON.stringify({ chat_id: 'chat-1', principal_id: 'owner', ingress_mode: 'poll' }),
+      auth_ciphertext: 'cipher-a',
+      enrolled_at: 1,
+      updated_at: 1,
+    });
+    let teamsOptions: TeamsPollRunnerOptions | null = null;
+    let onDecode: () => void = () => undefined;
+    const refreshIfNeeded = vi.fn(async (_name: string, auth: ConnectionAuth) => auth);
+    const supervisor = createMessengerIngressSupervisor({
+      connectionStore,
+      stateStore,
+      dispatchers: { teams: vi.fn(async () => undefined) },
+      decodeAuth: async () => {
+        onDecode();
+        return {
+          type: 'oauth2_refresh',
+          refresh_token: 'refresh',
+          client_id: 'client',
+          token_endpoint: 'https://login.invalid/token',
+          current_access_token: 'token-1',
+        };
+      },
+      refreshAuth: { refreshIfNeeded },
+      runnerFactory: {
+        teams(options) { teamsOptions = options; return { start: vi.fn(), stop: vi.fn(async () => undefined) }; },
+        telegram: unexpected,
+        slack: unexpected,
+        discord: unexpected,
+      },
+    });
+    await supervisor.start();
+    expect(teamsOptions).not.toBeNull();
+    expect(await teamsOptions!.getAccessToken()).toBe('token-1');
+    expect(refreshIfNeeded).toHaveBeenCalledTimes(1);
+
+    // Stopped before the read: nothing is read or exchanged.
+    const before = new AbortController();
+    before.abort();
+    expect(await teamsOptions!.getAccessToken(before.signal)).toBeNull();
+    // Stopped while the credential was being read: still no exchange.
+    const during = new AbortController();
+    onDecode = () => during.abort();
+    expect(await teamsOptions!.getAccessToken(during.signal)).toBeNull();
+    expect(refreshIfNeeded).toHaveBeenCalledTimes(1);
+
+    onDecode = () => undefined;
+    await supervisor.stop();
+    db.close();
+  });
+
+  it('stops within the grace when a runner stop does not finish', async () => {
+    const db = new Database(':memory:');
+    const connectionStore = createConnectionStore(db);
+    const stateStore = createMessengerIngressStateStore(db);
+    connectionStore.upsert({
+      kind: 'notification',
+      name: 'telegram',
+      subtype: 'telegram',
+      display_name: 'Telegram',
+      config_json: JSON.stringify({ chat_id: '1', ingress_mode: 'poll' }),
+      auth_ciphertext: 'cipher-a',
+      enrolled_at: 1,
+      updated_at: 1,
+    });
+    const hungStop = vi.fn(() => new Promise<void>(() => {}));
+    const warnings: string[] = [];
+    const supervisor = createMessengerIngressSupervisor({
+      connectionStore,
+      stateStore,
+      dispatchers: { telegram: vi.fn(async () => undefined) },
+      decodeAuth: async () => ({ type: 'bearer', token: 'bot-token' }),
+      runnerFactory: {
+        telegram() { return { start: vi.fn(), stop: hungStop }; },
+        slack: unexpected,
+        discord: unexpected,
+        teams: unexpected,
+      },
+      log: (level, message) => { if (level === 'warn') warnings.push(message); },
+    });
+    await supervisor.start();
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let settled = false;
+    const stopping = supervisor.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    vi.useRealTimers();
+    expect(settled).toBe(true);
+    await stopping;
+    expect(hungStop).toHaveBeenCalledTimes(1);
+    expect(warnings.some((message) => message.includes('not waiting'))).toBe(true);
     db.close();
   });
 });

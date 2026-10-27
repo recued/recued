@@ -240,6 +240,12 @@ export interface ExportOptions {
   /** Producer version, baked into the manifest. Caller supplies
    *  (the server already has it via `SERVER_VERSION`). */
   producerVersion: string;
+  /** Cancels the export. A server stopping mid-backup aborts this rather than
+   *  wait out a multi-GB write, because the process exits right after anyway.
+   *  It is checked between records and chunks — a stream's own signal cannot
+   *  interrupt a generator parked inside an `await` — and a cancelled export
+   *  commits nothing, so the previous archive stays the latest. */
+  signal?: AbortSignal;
 }
 
 /** One root-tagged blob source for the export. `store.encrypted` decides how
@@ -289,6 +295,8 @@ export const exportArchive = async (
   opts: ExportOptions,
 ): Promise<ExportResult> => {
   if (opts.delegationSaltHex !== undefined && !/^[0-9a-f]{64}$/u.test(opts.delegationSaltHex)) throw new Error('archive: invalid backup setup salt');
+  const signal = opts.signal;
+  signal?.throwIfAborted();
   const now = opts.now?.() ?? Date.now();
 
   // Pre-flight: destination writable?
@@ -336,6 +344,8 @@ export const exportArchive = async (
     if (readDatabaseSchema(opts.db).stored_version !== snapshotSchema.stored_version) {
       throw new Error('ARCHIVE_SOURCE_SCHEMA_CHANGED: the database upgraded while its backup was taken; retry the export');
     }
+    // The snapshot is synchronous, so a stop that arrived during it is seen here.
+    signal?.throwIfAborted();
     const dbByteLen = statSync(dbTemp).size;
 
     // 2. Gather the small plaintext inputs (config / vault / passport — all
@@ -377,6 +387,7 @@ export const exportArchive = async (
     let blobTotalBytes = 0;
     for (const source of blobSources) {
       for (const hash of source.hashes) {
+        signal?.throwIfAborted();
         const size = source.store.plaintextSizeOf
           ? await source.store.plaintextSizeOf(hash)
           : await source.store.sizeOf(hash);
@@ -450,6 +461,7 @@ export const exportArchive = async (
       yield emit(uint32BE(bodyLen));
       yield emit(cipher.iv);
       for await (const chunk of createReadStream(dbTemp)) {
+        signal?.throwIfAborted();
         const ct = cipher.update(chunk as Buffer);
         if (ct.length > 0) yield emit(ct);
       }
@@ -483,6 +495,8 @@ export const exportArchive = async (
       // if a hard kill got in the way.
       let scratchPath: string | undefined;
       try {
+        // Before the decrypt, which cannot itself be interrupted once it starts.
+        signal?.throwIfAborted();
         let plaintext: Readable;
         if (encrypted) {
           if (!store.decryptToFile) {
@@ -506,6 +520,7 @@ export const exportArchive = async (
         }
         let streamed = 0;
         for await (const chunk of plaintext) {
+          signal?.throwIfAborted();
           const buf = chunk as Buffer;
           streamed += buf.length;
           const ct = cipher.update(buf);
@@ -558,7 +573,9 @@ export const exportArchive = async (
     const partialFile = await openFile(partialPath, 'wx', 0o600);
     partialOwned = true;
     try {
-      await pipeline(assemble(), partialFile.createWriteStream());
+      // The signal covers a generator waiting on a slow disk (backpressure);
+      // the checks inside the generators cover the rest.
+      await pipeline(assemble(), partialFile.createWriteStream(), { signal });
     } finally {
       await partialFile.close().catch(() => { /* stream may already have closed it */ });
     }
@@ -567,6 +584,9 @@ export const exportArchive = async (
     // before reporting success. A process crash remains protected by rename;
     // these two barriers close the power-loss window on supporting platforms.
     fsyncFile(partialPath);
+    // Last chance to cancel: past the rename the archive is published and
+    // evicts the previous one, which a cancelled backup must not do.
+    signal?.throwIfAborted();
     await rename(partialPath, opts.destPath);
     fsyncDir(parent);
     committed = true;

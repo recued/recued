@@ -68,7 +68,6 @@ import {
   createMailSyncOutcomeReporter,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
-  MAIL_AUTOMATIC_REPLY_HEADERS,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailAttachmentPartFromBytes,
@@ -76,7 +75,6 @@ import {
   mailParsedHeaderMap,
   mailPartDisposition,
   mailSentReconciliationAttachmentPartFromBytes,
-  mimeFilenameParameter,
   normalizeRfcMessageId,
   type CanonicalMessage,
   type InitialScanOptions,
@@ -100,6 +98,8 @@ import {
   type SentMessageMeta,
 } from './provider.js';
 import type { OAuthAccountStore } from './oauth.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
+import { CollectionStoppedError, throwIfStopped } from '../stop-signal.js';
 
 // ────────────────────────────────────────────────────────────────
 // Narrow client interface — exactly the imapflow surface we use.
@@ -203,102 +203,15 @@ export const defaultImapClientFactory: ImapClientFactory = (opts) => {
 // D-127 P1.5 — SMTP transport (narrow nodemailer surface)
 // ────────────────────────────────────────────────────────────────
 
-/** Narrow SMTP transport surface that matches what nodemailer's
- *  `Transporter` exposes for our send path. `raw` carries the
- *  fully-built RFC 5322 message; `envelope` overrides the SMTP
- *  envelope addresses (To / Cc / Bcc all live in `to`). Tests inject
- *  a fake to assert wire shape + drive error paths without spinning
- *  up a real SMTP server. */
-export interface SmtpMailOptions {
-  raw: string | Buffer;
-  envelope: { from: string; to: string[] };
-}
-
-export interface SmtpSendResponse {
-  /** RFC 5322 Message-Id the server actually delivered with. We
-   *  generate the Message-Id client-side in `buildImapRfc5322` so
-   *  this value matches what we sent — exposed here for symmetry
-   *  with the gmail-api / graph response shapes. */
-  messageId?: string;
-  /** Free-form server response string (e.g. `"250 2.0.0 OK"`). */
-  response?: string;
-}
-
-export interface SmtpTransport {
-  sendMail(options: SmtpMailOptions): Promise<SmtpSendResponse>;
-  /** Idempotent close — production transport pools sockets, the
-   *  fake is a no-op. */
-  close(): void;
-}
-
-export type SmtpTransportFactory = (config: {
-  host: string;
-  port: number;
-  secure: boolean;
-  auth: { user: string; pass: string };
-}) => SmtpTransport;
-
-/** Wraps `nodemailer` for production. Same deferred-require pattern
- *  as `defaultImapClientFactory` — keeps the SMTP boot cost out of
- *  test runs that inject a fake transport. `nodemailer` ships
- *  without bundled types in the repo's tree, so we structural-type
- *  through `SmtpTransport` rather than reaching for `@types/nodemailer`
- *  (kept as a 1-line fix later if/when we ever need richer types). */
-/** The PRODUCTION transport. Nothing else — no env branch.
- *
- *  ⛔ This used to consult `RECUED_BENCH_SMTP_OUTBOX` and, when set, divert the
- *  send to a no-network outbox recorder so the substrate-bench could execute an
- *  APPROVED `mail-send` offline. The lazy `require` meant production never
- *  LOADED the dev module, but the branch itself shipped: esbuild statically
- *  bundled it, so `dist/bin.js` carried the diversion. One env var on a real
- *  server therefore made every outbound mail silently not-send while the mock
- *  returned a synthetic `250 2.0.0 OK` — a delivery failure reported as
- *  `success: true`.
- *
- *  Callers that need a different transport now INJECT one:
- *  `MailAdapterBundle.smtpFactory` → `createImapProvider({ smtpFactory })`
- *  (`compose.ts`). The bench supplies it through its own source-patch step
- *  (internal benchmarks), the same mechanism it already
- *  uses for `wire-chat-orchestrator.ts` — so the diversion exists only in the
- *  bench's own bundle and cannot reach a release artifact. */
-export const defaultSmtpTransportFactory: SmtpTransportFactory = (config) => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const nodemailer = require('nodemailer') as {
-    createTransport: (cfg: unknown) => unknown;
-  };
-  return nodemailer.createTransport(config) as SmtpTransport;
-};
-
-/** Does this SMTP failure PROVE the server never accepted the message?
- *
- *  Only then may the send claim start afresh (`not_sent`); anything else is an
- *  unknown outcome, because an SMTP server that has taken the whole message may
- *  deliver it even when the reply never reaches us.
- *
- *  Proof is one of:
- *   - the server's own REFUSAL: a 4xx/5xx reply, at any stage. Acceptance is a
- *     2xx after the message, and nodemailer only raises an error carrying a code
- *     when the server said no;
- *   - a stage that ends before the message is ever transmitted: DNS, TLS, sign-in
- *     (`EDNS` / `ETLS` / `EAUTH`), the envelope (`EENVELOPE`, `EREQUIRETLS`);
- *   - the socket never connected (`syscall` `connect` / `getaddrinfo`).
- *
- *  ⚠ NOT `command === 'CONN'`: nodemailer labels EVERY socket error and timeout
- *  that way, including ones in the middle of the message. */
-export const smtpProvablyNotAccepted = (err: unknown): boolean => {
-  if (err === null || typeof err !== 'object') return false;
-  const e = err as { code?: unknown; responseCode?: unknown; syscall?: unknown };
-  if (typeof e.responseCode === 'number' && e.responseCode >= 400 && e.responseCode < 600) {
-    return true;
-  }
-  if (
-    e.code === 'EDNS' || e.code === 'ETLS' || e.code === 'EAUTH'
-    || e.code === 'EENVELOPE' || e.code === 'EREQUIRETLS'
-  ) {
-    return true;
-  }
-  return e.syscall === 'connect' || e.syscall === 'getaddrinfo';
-};
+import {
+  defaultSmtpTransportFactory, submitSmtp, buildSmtpRfc5322 as buildImapRfc5322,
+  generateSmtpMessageId as generateImapMessageId, type SmtpTransportFactory,
+} from './smtp.js';
+export {
+  defaultSmtpTransportFactory, smtpProvablyNotAccepted, buildSmtpRfc5322 as buildImapRfc5322,
+  generateSmtpMessageId as generateImapMessageId,
+} from './smtp.js';
+export type { SmtpMailOptions, SmtpSendResponse, SmtpTransport, SmtpTransportFactory } from './smtp.js';
 
 // ────────────────────────────────────────────────────────────────
 // Config + factory types
@@ -406,140 +319,6 @@ export const IMAP_SENT_FOLDER_FALLBACK_CANDIDATES = [
   'Skickat',
   'Sendt',
 ] as const;
-
-/** RFC 5322 Date header serialization. Mirrors the gmail-provider
- *  helper — `+0000` form, not `GMT`. */
-const formatRfc5322Date = (ms: number): string =>
-  new Date(ms).toUTCString().replace(/GMT$/, '+0000');
-
-/** D-127 P1.5 — derive a UUID-based Message-Id whose host suffix
- *  matches the sender's domain so receiving MTAs see a coherent
- *  envelope ↔ Message-Id pairing. Falls back to the SMTP server
- *  hostname when the from address has no `@` (defensive — should
- *  not happen with a validated config). */
-export const generateImapMessageId = (
-  fromAddress: string,
-  hostFallback: string,
-  uuid: () => string = randomUUID,
-): string => {
-  const at = fromAddress.indexOf('@');
-  const domain = at >= 0 ? fromAddress.slice(at + 1) : hostFallback;
-  return `<${uuid()}@${domain}>`;
-};
-
-const newMimeBoundary = (rand: () => number): string =>
-  `recued_${Date.now().toString(36)}_${rand().toString(36).slice(2, 10)}`;
-
-/** D-172 P2 — RFC 2045 §6.8 base64 line wrap (≤76 chars/line). Mirrors
- *  the gmail-provider helper. */
-const wrapBase64 = (b64: string): string =>
-  (b64.match(/.{1,76}/g) ?? []).join('\r\n');
-
-/** D-172 P2 — render the message body as one MIME part: bare
- *  text/plain, or a nested multipart/alternative when `body_html` is
- *  present. Used both at top level (no attachments) and as the lead
- *  part of a multipart/mixed (with attachments). */
-const renderImapBodyPart = (
-  msg: OutgoingMessage,
-  rand: () => number,
-): { contentTypeHeaders: string[]; body: string } => {
-  if (msg.body_html) {
-    const boundary = newMimeBoundary(rand);
-    return {
-      contentTypeHeaders: [
-        `Content-Type: multipart/alternative; boundary="${boundary}"`,
-      ],
-      body: [
-        `--${boundary}`,
-        'Content-Type: text/plain; charset=UTF-8',
-        'Content-Transfer-Encoding: 7bit',
-        '',
-        msg.body_text,
-        `--${boundary}`,
-        'Content-Type: text/html; charset=UTF-8',
-        'Content-Transfer-Encoding: 7bit',
-        '',
-        msg.body_html,
-        `--${boundary}--`,
-      ].join('\r\n'),
-    };
-  }
-  return {
-    contentTypeHeaders: [
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 7bit',
-    ],
-    body: msg.body_text,
-  };
-};
-
-/** D-127 P1.5 — RFC 5322 builder for the IMAP+SMTP send path.
- *  Differs from `buildGmailRfc5322` by adding explicit From and
- *  Message-Id headers (Gmail's API derives From from the OAuth
- *  account; SMTP requires both fields explicit). Otherwise the
- *  composition rules match: text/plain default, multipart/alternative
- *  when body_html is set, threading headers verbatim.
- *
- *  D-172 P2 — when `attachments` are present, the message is wrapped in
- *  a multipart/mixed container (body part first, each attachment a
- *  base64-encoded `Content-Disposition: attachment` part). The same
- *  RFC822 string is both SMTP-submitted (via `raw`) and IMAP-APPENDed
- *  to Sent, so attachments land in both places. */
-export const buildImapRfc5322 = (
-  msg: OutgoingMessage,
-  meta: { from: string; messageId: string; sentAt: number },
-  rand: () => number = Math.random,
-): string => {
-  const headers: string[] = [];
-  headers.push('MIME-Version: 1.0');
-  headers.push(`Date: ${formatRfc5322Date(meta.sentAt)}`);
-  headers.push(`From: ${meta.from}`);
-  headers.push(`Message-ID: ${meta.messageId}`);
-  if (msg.reconciliation_id) {
-    headers.push(`${MAIL_RECONCILIATION_ID_HEADER}: ${msg.reconciliation_id}`);
-  }
-  if (msg.to.length > 0) headers.push(`To: ${msg.to.join(', ')}`);
-  if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${msg.cc.join(', ')}`);
-  if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${msg.bcc.join(', ')}`);
-  headers.push(`Subject: ${msg.subject}`);
-  if (msg.reply_to) headers.push(`Reply-To: ${msg.reply_to}`);
-  if (msg.in_reply_to) headers.push(`In-Reply-To: ${msg.in_reply_to}`);
-  if (msg.references && msg.references.length > 0) {
-    headers.push(`References: ${msg.references.join(' ')}`);
-  }
-  if (msg.automatic === true) {
-    for (const [name, value] of MAIL_AUTOMATIC_REPLY_HEADERS) headers.push(`${name}: ${value}`);
-  }
-
-  const part = renderImapBodyPart(msg, rand);
-  const attachments = msg.attachments ?? [];
-  if (attachments.length === 0) {
-    headers.push(...part.contentTypeHeaders);
-    return `${headers.join('\r\n')}\r\n\r\n${part.body}`;
-  }
-
-  // D-172 P2 — multipart/mixed: body part first, then each attachment.
-  const mixed = newMimeBoundary(rand);
-  headers.push(`Content-Type: multipart/mixed; boundary="${mixed}"`);
-  const segments: string[] = [
-    `--${mixed}`,
-    ...part.contentTypeHeaders,
-    '',
-    part.body,
-  ];
-  for (const att of attachments) {
-    segments.push(
-      `--${mixed}`,
-      `Content-Type: ${att.mime_type}; ${mimeFilenameParameter('name', att.filename)}`,
-      'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; ${mimeFilenameParameter('filename', att.filename)}`,
-      '',
-      wrapBase64(att.bytes_b64),
-    );
-  }
-  segments.push(`--${mixed}--`);
-  return `${headers.join('\r\n')}\r\n\r\n${segments.join('\r\n')}`;
-};
 
 /** D-127 P1.5 — discover the Sent folder. RFC 6154 special-use
  *  `\Sent` flag wins; otherwise the first match against the known
@@ -789,6 +568,10 @@ export const canonicalizeImap = async (
 interface FolderState {
   folder: string;
   direction: MailMessageDirection;
+  /** The connection this folder was opened for: `close()` aborts it. Work for
+   *  the folder (a reconnect, a catch-up, a delivery retry) stops on it rather
+   *  than on `stopped` alone, which the next `connect()` clears again. */
+  signal: AbortSignal;
   client: ImapClient | null;
   stopIdle: (() => void) | null;
   reconnectTask: Promise<void> | null;
@@ -814,6 +597,10 @@ interface FolderState {
   /** Set when an IDLE batch failed: a lower UID may be unfetched, so the
    *  stored cursor waits for a catch-up to account for it. */
   cursorHeld: boolean;
+  /** Whether live sync has started on this folder (`startSync`, or the
+   *  reconnect that stood in for it). A folder whose connection closed before
+   *  then is owed the start's catch-up, from the stored cursor. */
+  syncStarted: boolean;
 }
 
 interface PendingImapDelivery {
@@ -828,6 +615,23 @@ type ImapFetchAddressing = 'uid' | 'sequence';
 const DEFAULT_IDLE_MS = 28 * 60 * 1000;
 const DEFAULT_RECONNECT_CAP_MS = 60_000;
 const DEFAULT_RECONNECT_INITIAL_MS = 1_000;
+
+/** How long `close()` waits for a folder's LOGOUT before it closes the socket.
+ *  An idle connection answers DONE + LOGOUT in a round trip or two; a LOGOUT
+ *  still unanswered by then is queued behind a command or talking to a server
+ *  that has gone quiet, and closing destroys the socket either way. Half of
+ *  `STOP_GRACE_MS`, so what the closed socket rejects can unwind inside it. */
+export const IMAP_LOGOUT_GRACE_MS = 500;
+
+/** Timeouts for a one-off client (`makeClient(…, { lookup: true })`), the ones
+ *  password repair's verification client uses: imapflow's own defaults are
+ *  90 s to connect and 5 minutes of silence, and a lookup's caller waited that
+ *  long on a server that had stopped answering. */
+export const IMAP_LOOKUP_TIMEOUTS = {
+  connectionTimeout: 15_000,
+  greetingTimeout: 15_000,
+  socketTimeout: 15_000,
+} as const;
 
 /** One header's value from a fetched header block (`fetch({ headers })`),
  *  unfolded, or `null`. */
@@ -858,7 +662,33 @@ export const createImapProvider = (
   let errorCount24h = 0;
   let pendingQueueSize = 0;
   let stopped = false;
+  /** Aborted by `close()`, armed again by `connect()`; each folder's state
+   *  keeps the signal it was opened under (`FolderState.signal`). */
+  let session = new AbortController();
+  /** Clients still connecting. They are in `folders` only once every folder
+   *  has opened, so `close()` reaches them here — closing one fails the
+   *  connect it belongs to rather than leaving it to open after the stop. */
+  const connecting = new Set<ImapClient>();
+  /** Commands of ours in flight, per client. A LOGOUT queues behind them —
+   *  behind the rest of a first scan's FETCH, which imapflow reads to its end
+   *  even once we stop consuming it — so `close()` skips LOGOUT on a busy
+   *  client and closes its socket at once. */
+  const busy = new WeakMap<ImapClient, number>();
   const cancelReconnectDelays = new Set<() => void>();
+
+  /** A folder whose connection was closed: none of its work may go on. */
+  const retired = (state: FolderState): boolean => stopped || state.signal.aborted;
+
+  const occupy = async <T>(client: ImapClient, run: () => Promise<T>): Promise<T> => {
+    busy.set(client, (busy.get(client) ?? 0) + 1);
+    try {
+      return await run();
+    } finally {
+      const left = (busy.get(client) ?? 1) - 1;
+      if (left > 0) busy.set(client, left);
+      else busy.delete(client);
+    }
+  };
 
   const waitForReconnectDelay = async (ms: number): Promise<void> => {
     let cancel!: () => void;
@@ -871,9 +701,31 @@ export const createImapProvider = (
     }
   };
 
-  const makeClient = (folder: string): ImapClient => {
+  const markError = (msg: string, err: unknown): void => {
+    errorCount24h++;
+    opts.log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
+  };
+
+  /** `lookup`: a one-off client — a Sent lookup, one message read again, a
+   *  mutation, a capability probe — that runs a few commands and logs out. It
+   *  gets `IMAP_LOOKUP_TIMEOUTS`. ⛔ Never a folder's sync client: its IDLE
+   *  connection is quiet for minutes by design, and a 15 s socket timeout would
+   *  end it.
+   *
+   *  ⛔ Every client listens for `'error'` from the moment it exists. Once
+   *  `connect()` has resolved, imapflow reports a reset socket, a socket timeout
+   *  or a protocol failure as an `'error'` event, and an emitter with no
+   *  `'error'` listener throws it — out of a socket callback, so the whole
+   *  server goes. A folder's client listened only once `startSync` attached its
+   *  listeners, so a connection reset during the first scan (minutes, for a
+   *  large mailbox), while a reconnect opened the folder, or during the LOGOUT
+   *  at a stop crashed the server. The failure is handled where it lands: the
+   *  command the closed socket rejects fails its caller, and a sync connection
+   *  that closed is reconnected (`attachListeners`' `'close'`, or `startSync`
+   *  for one that closed before sync started). */
+  const makeClient = (folder: string, { lookup = false }: { lookup?: boolean } = {}): ImapClient => {
     const cfg = opts.config();
-    return clientFactory({
+    const client = clientFactory({
       host: cfg.host,
       port: cfg.port,
       secure: cfg.secure,
@@ -884,12 +736,45 @@ export const createImapProvider = (
       // fallback below, but never fabricate a UID from the sequence itself.
       qresync: true,
       logger: false,
+      ...(lookup ? IMAP_LOOKUP_TIMEOUTS : {}),
     });
+    client.on('error', (err: unknown) => {
+      // A lookup's failure is its caller's to count.
+      if (lookup) {
+        opts.log?.('warn', `imap ${folder} connection failed`, {
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+      markError(`imap client error folder=${folder}`, err);
+    });
+    return client;
   };
 
-  const markError = (msg: string, err: unknown): void => {
-    errorCount24h++;
-    opts.log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
+  /** End a client's session within `IMAP_LOGOUT_GRACE_MS`: LOGOUT when it is
+   *  idle, then close the socket regardless. Closing destroys the socket and
+   *  rejects every command still queued on it, so whatever was waiting on the
+   *  client settles at once instead of after imapflow's 5-minute socket
+   *  timeout. */
+  const endSession = async (client: ImapClient, folder: string): Promise<void> => {
+    if (client.usable && !busy.has(client)) {
+      const loggedOut = (async () => client.logout())().catch((err: unknown) => {
+        markError(`imap logout failed folder=${folder}`, err);
+      });
+      await settleWithin(loggedOut, IMAP_LOGOUT_GRACE_MS);
+    }
+    try { client.close(); } catch { /* already closed */ }
+  };
+
+  /** A folder's UIDs matching `query`. imapflow's `search` answers `undefined`
+   *  on a client whose connection is gone and `false` when the command failed;
+   *  neither is an empty folder. Read as one, a catch-up moved the cursor past
+   *  mail it never listed, or reported every message it asked about as
+   *  deleted. */
+  const listUids = async (client: ImapClient, query: SearchObject): Promise<number[]> => {
+    const found = await client.search(query, { uid: true });
+    if (!Array.isArray(found)) throw new Error('imap search returned no result: the folder is not open');
+    return found;
   };
 
   const resolveFolderDirection = async (
@@ -1080,7 +965,9 @@ export const createImapProvider = (
   /** Moves a folder's stored cursor up to `uidNext`, once every UID below it
    *  was delivered or known. Never back, and not while `cursorHeld`. */
   const advanceCursor = async (state: FolderState, uidNext: number): Promise<void> => {
-    if (!opts.deliveryStore || state.uidValidity === null || state.cursorHeld) return;
+    // A closed connection's view of the folder moves no cursor: what it did not
+    // reach before the close, the next start fetches from here.
+    if (!opts.deliveryStore || state.uidValidity === null || state.cursorHeld || retired(state)) return;
     if (state.storedUidNext !== null && uidNext <= state.storedUidNext) return;
     try {
       await opts.deliveryStore.set(cursorKey(state.folder), JSON.stringify({
@@ -1151,51 +1038,62 @@ export const createImapProvider = (
             kind,
           })
         : undefined;
-      const iter = state.client.fetch(
+      const client = state.client;
+      if (!client) return false;
+      const iter = client.fetch(
         addressing === 'uid' ? [identifier] : String(identifier),
         { uid: true, flags: true, envelope: true, internalDate: true, source: true },
         ...(addressing === 'uid' ? [{ uid: true }] : []),
       );
       let found = false;
-      for await (const msg of iter) {
-        found = true;
-        if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) {
-          throw new Error(`imap FETCH returned an invalid UID for ${addressing}=${identifier}`);
+      await occupy(client, async () => {
+        for await (const msg of iter) {
+          if (retired(state)) throw new CollectionStoppedError();
+          found = true;
+          if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) {
+            throw new Error(`imap FETCH returned an invalid UID for ${addressing}=${identifier}`);
+          }
+          if (Number.isSafeInteger(msg.seq) && msg.seq > 0) {
+            state.seqToUid.set(msg.seq, msg.uid);
+          }
+          const delivery: PendingImapDelivery = {
+            schema_version: 1,
+            folder: state.folder,
+            uid: msg.uid,
+            kind,
+          };
+          // Once FETCH reveals the stable UID, persist the notification before
+          // parsing its body. A malformed/transient canonicalization failure is
+          // just as retryable as a rejected collection callback.
+          await rememberDelivery(delivery);
+          if (!msg.source) {
+            throw new Error(`imap FETCH returned no source for uid=${msg.uid}`);
+          }
+          const canonical = await canonicalizeImap(msg.source, {
+            uid: msg.uid,
+            folder: state.folder,
+            direction: state.direction,
+            flags: msg.flags,
+            internalDate: msg.internalDate,
+          });
+          await deliverAcknowledged(
+            delivery,
+            { kind, source_id: canonical.source_id, message: canonical },
+            cb,
+          );
+          if (kind === 'created') {
+            state.createdDuringCatchUp?.add(msg.uid);
+            state.highestCreated = Math.max(state.highestCreated, msg.uid);
+          }
         }
-        if (Number.isSafeInteger(msg.seq) && msg.seq > 0) {
-          state.seqToUid.set(msg.seq, msg.uid);
-        }
-        const delivery: PendingImapDelivery = {
-          schema_version: 1,
-          folder: state.folder,
-          uid: msg.uid,
-          kind,
-        };
-        // Once FETCH reveals the stable UID, persist the notification before
-        // parsing its body. A malformed/transient canonicalization failure is
-        // just as retryable as a rejected collection callback.
-        await rememberDelivery(delivery);
-        if (!msg.source) {
-          throw new Error(`imap FETCH returned no source for uid=${msg.uid}`);
-        }
-        const canonical = await canonicalizeImap(msg.source, {
-          uid: msg.uid,
-          folder: state.folder,
-          direction: state.direction,
-          flags: msg.flags,
-          internalDate: msg.internalDate,
-        });
-        await deliverAcknowledged(
-          delivery,
-          { kind, source_id: canonical.source_id, message: canonical },
-          cb,
-        );
-        if (kind === 'created') {
-          state.createdDuringCatchUp?.add(msg.uid);
-          state.highestCreated = Math.max(state.highestCreated, msg.uid);
-        }
-      }
+      });
       if (!found) {
+        // A closed connection's FETCH comes back empty rather than failing: that
+        // is no message expunged meanwhile. Not delivered, so its journal row
+        // stays for the retry or the next start.
+        if (retired(state) || !client.usable) {
+          throw new Error(`imap connection closed before FETCH answered ${addressing}=${identifier}`);
+        }
         // A flags/update notification can race an EXPUNGE. If we already knew
         // the stable UID, converge the mirror with a tombstone; for a brand-new
         // sequence with no UID there is nothing safe to fabricate.
@@ -1220,6 +1118,9 @@ export const createImapProvider = (
       }
       return true;
     } catch (err) {
+      // Closed meanwhile: not delivered, and no failure of the mailbox's. Its
+      // journal row, if it has one, waits for the next start.
+      if (retired(state)) return false;
       // The journal row remains when the callback or its durable cleanup fails.
       // Return false so the owned retry loop is admitted without terminating
       // the IDLE listener for unrelated messages.
@@ -1239,7 +1140,7 @@ export const createImapProvider = (
     const pending = [...pendingDeliveries.values()]
       .filter((delivery) => delivery.folder === state.folder);
     for (const delivery of pending) {
-      if (stopped) return false;
+      if (retired(state)) return false;
       const ok = await fetchAndEmit(state, delivery.uid, delivery.kind, cb, 'uid');
       if (!ok) allAcknowledged = false;
     }
@@ -1251,22 +1152,22 @@ export const createImapProvider = (
     cb: ProviderSyncCallback,
   ): Promise<void> => {
     let attempts = 0;
-    while (!stopped && [...pendingDeliveries.values()].some(
+    while (!retired(state) && [...pendingDeliveries.values()].some(
       (delivery) => delivery.folder === state.folder,
     )) {
-      if (stopped) return;
+      if (retired(state)) return;
       if (attempts > 0) {
         const cfg = opts.config();
         const cap = cfg.reconnectCapMs ?? DEFAULT_RECONNECT_CAP_MS;
         const init = cfg.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
         await waitForReconnectDelay(Math.min(init * Math.pow(2, attempts - 1), cap));
-        if (stopped) return;
+        if (retired(state)) return;
       }
       attempts++;
       await outcomes.run('poll', async () => {
         await drainPendingDeliveries(state, cb);
       });
-      if (stopped) return;
+      if (retired(state)) return;
     }
   };
 
@@ -1275,14 +1176,14 @@ export const createImapProvider = (
     cb: ProviderSyncCallback,
   ): void => {
     if (
-      stopped
+      retired(state)
       || state.deliveryRetryTask
       || ![...pendingDeliveries.values()].some((delivery) => delivery.folder === state.folder)
     ) return;
     let task!: Promise<void>;
     task = deliveryRetryLoop(state, cb)
       .catch((err) => {
-        if (!stopped) markError(`imap delivery retry failed folder=${state.folder}`, err);
+        if (!retired(state)) markError(`imap delivery retry failed folder=${state.folder}`, err);
       })
       .finally(() => {
         if (state.deliveryRetryTask === task) state.deliveryRetryTask = null;
@@ -1300,14 +1201,19 @@ export const createImapProvider = (
     if (typeof heldBefore !== 'number') return null;
     const messages = new Map<string, { is_read: boolean; is_flagged: boolean }>();
     if (heldBefore > 0) {
-      for await (const msg of client.fetch('1:*', { uid: true, flags: true }, { uid: true })) {
-        if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) continue;
-        const flags = msg.flags ?? new Set<string>();
-        messages.set(sourceIdFor(msg.uid, state.folder), {
-          is_read: flags.has('\\Seen'),
-          is_flagged: flags.has('\\Flagged'),
-        });
-      }
+      await occupy(client, async () => {
+        for await (const msg of client.fetch('1:*', { uid: true, flags: true }, { uid: true })) {
+          // A read cut short is no snapshot: the collection would take every
+          // message it did not reach for deleted.
+          if (retired(state)) throw new CollectionStoppedError();
+          if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) continue;
+          const flags = msg.flags ?? new Set<string>();
+          messages.set(sourceIdFor(msg.uid, state.folder), {
+            is_read: flags.has('\\Seen'),
+            is_flagged: flags.has('\\Flagged'),
+          });
+        }
+      });
     }
     // A message can arrive or go during the read; fewer than both counts is a
     // short read, and a short read would take what it missed for deleted.
@@ -1352,7 +1258,7 @@ export const createImapProvider = (
     const deliveredByIdle = new Set<number>();
     state.createdDuringCatchUp = deliveredByIdle;
     let task!: Promise<void>;
-    task = outcomes.run('poll', async () => {
+    task = outcomes.run('poll', () => occupy(client, async () => {
       let acknowledged = true;
       let highestSeen = 0;
       if (args.reconcile) {
@@ -1361,30 +1267,31 @@ export const createImapProvider = (
         // again, and the cursor does not depend on it.
         try {
           const snapshot = await readFolder(state, client);
-          if (stopped || state.client !== client) return;
+          if (retired(state) || state.client !== client) return;
           if (snapshot) await cb({ kind: 'folder', source_id: state.folder, folder: snapshot });
         } catch (err) {
-          markError(`imap folder reconcile failed folder=${state.folder}`, err);
+          if (!retired(state)) markError(`imap folder reconcile failed folder=${state.folder}`, err);
         }
       }
       if (args.from !== null) {
+        if (retired(state) || state.client !== client) return;
         const from = args.from;
-        const listed = await client.search({ uid: `${from}:*` }, { uid: true });
+        const listed = await listUids(client, { uid: `${from}:*` });
         // `N:*` names the highest UID even when it is below N.
-        const fresh = (listed || [])
+        const fresh = listed
           .filter((uid) => uid >= from && !args.known.has(uid))
           .sort((a, b) => a - b);
-        for (const uid of listed || []) highestSeen = Math.max(highestSeen, uid);
+        for (const uid of listed) highestSeen = Math.max(highestSeen, uid);
         for (const uid of fresh) {
-          if (stopped || state.client !== client) return;
+          if (retired(state) || state.client !== client) return;
           if (deliveredByIdle.has(uid)) continue;
           if (!(await fetchAndEmit(state, uid, 'created', cb))) acknowledged = false;
         }
       }
       for (let i = 0; i < args.goneCandidates.length; i += CATCH_UP_UID_CHUNK) {
-        if (stopped || state.client !== client) return;
+        if (retired(state) || state.client !== client) return;
         const chunk = args.goneCandidates.slice(i, i + CATCH_UP_UID_CHUNK);
-        const still = new Set((await client.search({ uid: chunk.join(',') }, { uid: true })) || []);
+        const still = new Set(await listUids(client, { uid: chunk.join(',') }));
         for (const uid of chunk) {
           if (still.has(uid)) continue;
           if (!(await fetchAndEmit(state, uid, 'deleted', cb))) acknowledged = false;
@@ -1394,6 +1301,9 @@ export const createImapProvider = (
         scheduleDeliveryRetry(state, cb);
         return;
       }
+      // Closed or reconnected meanwhile: what this pass listed is not the whole
+      // folder, and the cursor waits for the next one.
+      if (retired(state) || state.client !== client) return;
       // Every UID below this open's UIDNEXT, and every one just listed, is now
       // delivered or known, and IDLE carries on from here: the stored cursor
       // moves up, and an earlier failed IDLE batch no longer holds it.
@@ -1401,8 +1311,8 @@ export const createImapProvider = (
         state.cursorHeld = false;
         await advanceCursor(state, Math.max(state.uidNext, highestSeen + 1));
       }
-    }).catch((err) => {
-      markError(`imap catch-up failed folder=${state.folder}`, err);
+    })).catch((err) => {
+      if (!retired(state)) markError(`imap catch-up failed folder=${state.folder}`, err);
     }).finally(() => {
       if (state.createdDuringCatchUp === deliveredByIdle) state.createdDuringCatchUp = null;
       state.pollTasks.delete(task);
@@ -1491,52 +1401,53 @@ export const createImapProvider = (
       ));
     };
     const onClose = (): void => {
-      if (stopped) return;
+      if (retired(state)) return;
       scheduleReconnect(state, cb);
     };
-    const onError = (err: unknown): void => {
-      markError(`imap client error folder=${state.folder}`, err);
-    };
 
+    // No `'error'` listener here: every client has had one since it was made
+    // (`makeClient`), and keeps it after these detach.
     client.on('exists', onExists);
     client.on('expunge', onExpunge);
     client.on('flags', onFlags);
     client.on('close', onClose);
-    client.on('error', onError);
 
     return (): void => {
       client.off('exists', onExists);
       client.off('expunge', onExpunge);
       client.off('flags', onFlags);
       client.off('close', onClose);
-      client.off('error', onError);
     };
   };
 
   const rebuildSequenceMap = async (state: FolderState): Promise<void> => {
     state.seqToUid.clear();
-    if (!state.client || lastBackfillDays === null) return;
+    const client = state.client;
+    if (!client || lastBackfillDays === null) return;
     const since = new Date(nowOf() - lastBackfillDays * 86400_000);
-    const uids = await state.client.search({ since }, { uid: true });
-    if (uids === false || uids.length === 0) return;
-    const iter = state.client.fetch(uids, { uid: true }, { uid: true });
-    for await (const msg of iter) {
-      if (
-        Number.isSafeInteger(msg.seq)
-        && msg.seq > 0
-        && Number.isSafeInteger(msg.uid)
-        && msg.uid > 0
-      ) {
-        state.seqToUid.set(msg.seq, msg.uid);
+    await occupy(client, async () => {
+      const uids = await client.search({ since }, { uid: true });
+      if (uids === false || uids.length === 0) return;
+      const iter = client.fetch(uids, { uid: true }, { uid: true });
+      for await (const msg of iter) {
+        if (retired(state)) return;
+        if (
+          Number.isSafeInteger(msg.seq)
+          && msg.seq > 0
+          && Number.isSafeInteger(msg.uid)
+          && msg.uid > 0
+        ) {
+          state.seqToUid.set(msg.seq, msg.uid);
+        }
       }
-    }
+    });
   };
 
   const reconnectLoop = async (
     state: FolderState,
     cb: ProviderSyncCallback,
   ): Promise<void> => {
-    while (!stopped) {
+    while (!retired(state)) {
       // Exponential backoff — capped so a bad credential or hard
       // outage doesn't spin at 60 s forever, but also doesn't retry
       // at full speed and trip rate limits. Initial 1 s → 2 → 4 → 8 →
@@ -1550,10 +1461,10 @@ export const createImapProvider = (
       try {
         await waitForReconnectDelay(delay);
       } catch (err) {
-        if (!stopped) markError(`imap reconnect delay failed folder=${state.folder}`, err);
+        if (!retired(state)) markError(`imap reconnect delay failed folder=${state.folder}`, err);
         return;
       }
-      if (stopped) return;
+      if (retired(state)) return;
 
       let candidate: ImapClient | null = null;
       let box: MailboxObject | undefined;
@@ -1571,20 +1482,25 @@ export const createImapProvider = (
         candidate = makeClient(state.folder);
         state.client = candidate;
         await candidate.connect();
-        if (stopped) {
+        if (retired(state)) {
           try { candidate.close(); } catch { /* shutdown containment */ }
           if (state.client === candidate) state.client = null;
           return;
         }
-        state.direction = await resolveFolderDirection(candidate, state.folder);
-        box = await candidate.mailboxOpen(state.folder);
+        const opened = candidate;
+        await occupy(opened, async () => {
+          state.direction = await resolveFolderDirection(opened, state.folder);
+          throwIfStopped(state.signal);
+          box = await opened.mailboxOpen(state.folder);
+          throwIfStopped(state.signal);
+        });
         // What the folder held before it stopped listening, for the catch-up.
         known = new Set(state.seqToUid.values());
         // Sequence positions can change while disconnected. Rebuild the
         // mapping for the same backfill window rather than carrying stale
         // positions into a non-QRESYNC EXPUNGE fallback.
         await rebuildSequenceMap(state);
-        if (stopped) {
+        if (retired(state)) {
           try { candidate.close(); } catch { /* shutdown containment */ }
           if (state.client === candidate) state.client = null;
           return;
@@ -1592,7 +1508,7 @@ export const createImapProvider = (
       } catch (err) {
         try { candidate?.close(); } catch { /* failed attempt cleanup */ }
         if (candidate && state.client === candidate) state.client = null;
-        if (stopped) return;
+        if (retired(state)) return;
         markError(`imap reconnect failed folder=${state.folder}`, err);
         // Reported per ATTEMPT, not once per outage: the owned loop retries, so
         // a permanently-bad credential keeps re-asserting `auth` rather than
@@ -1602,6 +1518,10 @@ export const createImapProvider = (
       }
 
       state.stopIdle = attachListeners(state, cb);
+      // The connection closed before sync started on it: this reconnect stands
+      // in for `startSync`, and owes that start's catch-up.
+      const starting = !state.syncStarted;
+      state.syncStarted = true;
       scheduleDeliveryRetry(state, cb);
       // What came and went while the folder was down (`startCatchUp`).
       const validity = uidValidityOf(box);
@@ -1618,7 +1538,15 @@ export const createImapProvider = (
         state.storedUidNext = null;
         state.cursorHeld = true;
       } else {
-        startCatchUp(state, cb, { from, known, goneCandidates: [...known].filter((uid) => !inWindow.has(uid)) });
+        startCatchUp(state, cb, {
+          // A start catches up from the stored cursor, which reaches mail added
+          // while the server was down, moved-in mail included, and reads every
+          // message's flags against it — as `startSync` would have.
+          from: starting ? (state.storedUidNext ?? from) : from,
+          known,
+          goneCandidates: [...known].filter((uid) => !inWindow.has(uid)),
+          reconcile: starting && state.storedUidNext !== null,
+        });
       }
       state.attempts = 0;
       lastSuccessfulSyncAt = nowOf();
@@ -1633,14 +1561,14 @@ export const createImapProvider = (
     state: FolderState,
     cb: ProviderSyncCallback,
   ): void => {
-    if (stopped || state.reconnectTask) return;
+    if (retired(state) || state.reconnectTask) return;
     let task!: Promise<void>;
     task = reconnectLoop(state, cb)
       .catch((err) => {
         // The loop contains expected transport failures. This final boundary
         // owns programmer/config failures too so EventEmitter never launches an
         // unhandled rejection.
-        if (!stopped) markError(`imap reconnect loop failed folder=${state.folder}`, err);
+        if (!retired(state)) markError(`imap reconnect loop failed folder=${state.folder}`, err);
       })
       .finally(() => {
         if (state.reconnectTask === task) state.reconnectTask = null;
@@ -1659,50 +1587,6 @@ export const createImapProvider = (
   // `MAIL_SEND_APPEND_FAILED` warning to the returned meta so P1.7
   // can audit it.
   //
-  // SMTP error mapping (nodemailer surfaces `code` + `responseCode`):
-  //   EAUTH                                    → MAIL_SEND_AUTH_FAILED
-  //   EENVELOPE / 5xx responseCode             → MAIL_SEND_RECIPIENT_INVALID
-  //   ESOCKET / ECONNECTION / ETIMEDOUT / EDNS → MAIL_SEND_NETWORK_FAILED
-  //   anything else                            → MAIL_SEND_NETWORK_FAILED
-  //
-  // …and, separately, whether the failure PROVES the server never accepted the
-  // message (`not_sent: true`, which lets the send claim start afresh — see
-  // `smtpProvablyNotAccepted`).
-  const throwSmtpError = (err: unknown): never => {
-    const e = err as { code?: string; responseCode?: number; message?: string };
-    const message = e?.message ?? String(err);
-    const detail = {
-      kind: 'imap' as const,
-      slug: opts.slug,
-      smtp_code: e?.code,
-      smtp_response_code: e?.responseCode,
-      ...(smtpProvablyNotAccepted(err) ? { not_sent: true } : {}),
-    };
-    if (e?.code === 'EAUTH') {
-      throw new IngredientError(
-        'MAIL_SEND_AUTH_FAILED',
-        `SMTP authentication failed: ${message.slice(0, 200)}`,
-        detail,
-      );
-    }
-    if (
-      e?.code === 'EENVELOPE'
-      || (typeof e?.responseCode === 'number' && e.responseCode >= 500 && e.responseCode < 600
-          && e.responseCode !== 530 && e.responseCode !== 535)
-    ) {
-      throw new IngredientError(
-        'MAIL_SEND_RECIPIENT_INVALID',
-        `SMTP rejected a recipient: ${message.slice(0, 200)}`,
-        detail,
-      );
-    }
-    throw new IngredientError(
-      'MAIL_SEND_NETWORK_FAILED',
-      `SMTP submission failed: ${message.slice(0, 200)}`,
-      detail,
-    );
-  };
-
   const appendToSentBestEffort = async (
     rfc822: string,
   ): Promise<{ ok: true } | { ok: false; reason: string }> => {
@@ -1852,49 +1736,14 @@ export const createImapProvider = (
         { kind: 'imap', slug: opts.slug },
       );
     }
-    const fromAddress = smtp.from ?? cfg.username;
-    const messageId = generateImapMessageId(fromAddress, smtp.host, messageIdUuid);
-    const sentAt = nowOf();
-    const rfc822 = buildImapRfc5322(msg, { from: fromAddress, messageId, sentAt });
-
-    // ── 1. SMTP submission ────────────────────────────────────
-    // ⛔ Built inside its own catch. A transport that cannot even be built has
-    // sent nothing, and must say so: it used to throw a bare error from outside
-    // the SMTP mapping, which left the send claim `claimed` — and every retry of
-    // that exact message refused as outcome-unknown (found live: a `require` gap
-    // in the transport factory).
-    let transport: SmtpTransport;
-    try {
-      transport = smtpFactory({
-        host: smtp.host,
-        port: smtp.port ?? DEFAULT_SMTP_PORT,
-        secure: smtp.secure ?? false,
-        auth: {
-          user: smtp.username ?? cfg.username,
-          pass: smtp.password ?? cfg.password,
-        },
-      });
-    } catch (err) {
-      markError('imap SMTP transport could not be built', err);
-      const message = err instanceof Error ? err.message : String(err);
-      throw new IngredientError(
-        'MAIL_SEND_NETWORK_FAILED',
-        `SMTP submission could not start: ${message.slice(0, 200)}`,
-        { kind: 'imap', slug: opts.slug, not_sent: true },
-      );
-    }
-    const recipients = [...msg.to, ...(msg.cc ?? []), ...(msg.bcc ?? [])];
-    try {
-      await transport.sendMail({
-        raw: rfc822,
-        envelope: { from: fromAddress, to: recipients },
-      });
-    } catch (err) {
-      try { transport.close(); } catch { /* swallow — transport already errored */ }
-      markError('imap SMTP submission failed', err);
-      throwSmtpError(err);
-    }
-    try { transport.close(); } catch { /* idempotent */ }
+    const { meta: submitted, raw: rfc822 } = await submitSmtp({
+      kind: 'imap', slug: opts.slug, msg,
+      config: { host: smtp.host, port: smtp.port ?? DEFAULT_SMTP_PORT,
+        secure: smtp.secure ?? false, username: smtp.username ?? cfg.username,
+        password: smtp.password ?? cfg.password, from: smtp.from ?? cfg.username },
+      factory: smtpFactory, now: nowOf, uuid: messageIdUuid,
+    });
+    const { message_id: messageId, sent_at: sentAt } = submitted;
 
     // ── 2. IMAP APPEND to Sent (best-effort) ──────────────────
     const append = await appendToSentBestEffort(rfc822);
@@ -1967,7 +1816,7 @@ export const createImapProvider = (
   ): Promise<MailSentReconciliationResult> => {
     assertMailSentReconciliationQuery(query);
     const candidates: MailSentReconciliationCandidate[] = [];
-    const client = makeClient('__sent_reconciliation__');
+    const client = makeClient('__sent_reconciliation__', { lookup: true });
     try {
       await client.connect();
       const sentFolder = await findSentFolder(client);
@@ -2071,7 +1920,7 @@ export const createImapProvider = (
   const lookupSentByMessageId = async (
     query: MailSentByMessageIdQuery,
   ): Promise<MailSentByMessageIdResult> => {
-    const client = makeClient('__sent_lookup__');
+    const client = makeClient('__sent_lookup__', { lookup: true });
     try {
       await client.connect();
       const sentFolder = await findSentFolder(client);
@@ -2121,7 +1970,7 @@ export const createImapProvider = (
   const lookupSentReplies = async (
     query: MailSentRepliesQuery,
   ): Promise<MailSentRepliesResult> => {
-    const client = makeClient('__sent_replies__');
+    const client = makeClient('__sent_replies__', { lookup: true });
     try {
       await client.connect();
       const sentFolder = await findSentFolder(client);
@@ -2254,7 +2103,7 @@ export const createImapProvider = (
     folder: string,
     fn: (client: ImapClient) => Promise<T>,
   ): Promise<T> => {
-    const client = makeClient(`__mutate_${verb}__`);
+    const client = makeClient(`__mutate_${verb}__`, { lookup: true });
     try {
       await client.connect();
       await client.mailboxOpen(folder);
@@ -2285,7 +2134,7 @@ export const createImapProvider = (
    *  the same UID. `null` when the UID is no longer in the folder. */
   const fetchMessageImpl = async (source_id: string): Promise<CanonicalMessage | null> => {
     const { uid, folder } = parseSourceId(source_id);
-    const client = makeClient('__fetch_message__');
+    const client = makeClient('__fetch_message__', { lookup: true });
     try {
       await client.connect();
       const direction = folders.get(folder)?.direction ?? await resolveFolderDirection(client, folder);
@@ -2492,7 +2341,7 @@ export const createImapProvider = (
   const probeMutationCapable = (): boolean => {
     if (mutationCapableMemo !== undefined) return mutationCapableMemo;
     try {
-      const probe = makeClient('__mutation_probe__');
+      const probe = makeClient('__mutation_probe__', { lookup: true });
       mutationCapableMemo =
         typeof probe.messageFlagsAdd === 'function'
         && typeof probe.messageFlagsRemove === 'function'
@@ -2516,7 +2365,7 @@ export const createImapProvider = (
   const probeDraftCapable = (): boolean => {
     if (draftCapableMemo !== undefined) return draftCapableMemo;
     try {
-      const probe = makeClient('__draft_probe__');
+      const probe = makeClient('__draft_probe__', { lookup: true });
       draftCapableMemo =
         typeof probe.list === 'function'
         && typeof probe.append === 'function';
@@ -2541,56 +2390,70 @@ export const createImapProvider = (
    *  not prevent the remaining folders from being scanned, but it is rethrown
    *  after the sweep: resolving here tells MailCollection that it may mark the
    *  whole backfill complete. */
-  const scanAllFolders = async (scanOpts: InitialScanOptions): Promise<void> => {
+  const scanAllFolders = async (scanOpts: InitialScanOptions, signal: AbortSignal): Promise<void> => {
     lastBackfillDays = scanOpts.backfill_days;
     const since = new Date(nowOf() - scanOpts.backfill_days * 86400_000);
     const failures: unknown[] = [];
     let aborted = false;
-    for (const state of folders.values()) {
-      if (!state.client) continue;
+    // A snapshot: `close()` empties `folders`, and a connect after it fills the
+    // map with the next connection's folders, which this scan must not read.
+    for (const state of [...folders.values()]) {
+      throwIfStopped(signal);
+      const client = state.client;
+      if (!client) continue;
       pendingQueueSize++;
       try {
-        const uids = await state.client.search({ since }, { uid: true });
-        if (!Array.isArray(uids)) throw new Error(`imap initial scan could not search folder=${state.folder}`);
-        scanOpts.onAccessVerified?.();
-        if (uids.length === 0) {
-          continue;
-        }
-        const iter = state.client.fetch(
-          uids,
-          { uid: true, flags: true, envelope: true, internalDate: true, source: true },
-          { uid: true },
-        );
-        for await (const msg of iter) {
-          if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) {
-            throw new Error(`imap initial scan returned an invalid UID folder=${state.folder}`);
+        // Busy for the whole folder, callbacks included: the FETCH streams on
+        // while each message is stored, so `close()` closes this socket rather
+        // than queue a LOGOUT behind the rest of the folder.
+        await occupy(client, async () => {
+          const uids = await client.search({ since }, { uid: true });
+          if (!Array.isArray(uids)) throw new Error(`imap initial scan could not search folder=${state.folder}`);
+          scanOpts.onAccessVerified?.();
+          if (uids.length === 0) return;
+          const iter = client.fetch(
+            uids,
+            { uid: true, flags: true, envelope: true, internalDate: true, source: true },
+            { uid: true },
+          );
+          for await (const msg of iter) {
+            throwIfStopped(signal);
+            if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) {
+              throw new Error(`imap initial scan returned an invalid UID folder=${state.folder}`);
+            }
+            if (
+              Number.isSafeInteger(msg.seq)
+              && msg.seq > 0
+              && Number.isSafeInteger(msg.uid)
+              && msg.uid > 0
+            ) {
+              state.seqToUid.set(msg.seq, msg.uid);
+            }
+            if (!msg.source) {
+              throw new Error(`imap initial scan omitted source uid=${msg.uid} folder=${state.folder}`);
+            }
+            const canonical = await canonicalizeImap(msg.source, {
+              uid: msg.uid,
+              folder: state.folder,
+              direction: state.direction,
+              flags: msg.flags,
+              internalDate: msg.internalDate,
+            });
+            const cont = await scanOpts.onMessage(canonical);
+            lastSuccessfulSyncAt = nowOf();
+            if (!cont) {
+              aborted = true;
+              break;
+            }
           }
-          if (
-            Number.isSafeInteger(msg.seq)
-            && msg.seq > 0
-            && Number.isSafeInteger(msg.uid)
-            && msg.uid > 0
-          ) {
-            state.seqToUid.set(msg.seq, msg.uid);
-          }
-          if (!msg.source) {
-            throw new Error(`imap initial scan omitted source uid=${msg.uid} folder=${state.folder}`);
-          }
-          const canonical = await canonicalizeImap(msg.source, {
-            uid: msg.uid,
-            folder: state.folder,
-            direction: state.direction,
-            flags: msg.flags,
-            internalDate: msg.internalDate,
-          });
-          const cont = await scanOpts.onMessage(canonical);
-          lastSuccessfulSyncAt = nowOf();
-          if (!cont) {
-            aborted = true;
-            break;
-          }
-        }
+          // A closed client's FETCH ends early without an error: this folder
+          // was not read to its end.
+          throwIfStopped(signal);
+        });
       } catch (err) {
+        // Stopped: the backfill is not complete (so this throws, as a failure
+        // does), and a stop is no failure of the mailbox's.
+        if (signal.aborted) throw new CollectionStoppedError();
         // Continue through the other folders, then reject the aggregate so the
         // collection cannot persist a false `backfill_complete` marker.
         outcomes.noteFailure(isImapAuthFailure(err) ? 'auth' : 'transient');
@@ -2601,6 +2464,7 @@ export const createImapProvider = (
       }
       if (aborted) break;
     }
+    throwIfStopped(signal);
     if (failures.length > 0) {
       throw new AggregateError(failures, 'imap initial scan was incomplete');
     }
@@ -2639,25 +2503,35 @@ export const createImapProvider = (
       // admission here; leaving the terminal flag set makes the next socket
       // loss silently permanent after the first lock/unlock cycle.
       stopped = false;
+      if (session.signal.aborted) session = new AbortController();
+      const signal = session.signal;
       downFolders.clear();
       const cfg = opts.config();
       const opened = new Map<string, FolderState>();
       try {
         for (const folder of cfg.folders) {
+          throwIfStopped(signal);
           const client = makeClient(folder);
+          // Reachable by `close()` until every folder has opened (`connecting`).
+          connecting.add(client);
           let direction: MailMessageDirection = 'unknown';
           let box: MailboxObject | undefined;
           try {
             await client.connect();
+            throwIfStopped(signal);
             direction = await resolveFolderDirection(client, folder);
+            throwIfStopped(signal);
             box = await client.mailboxOpen(folder);
+            throwIfStopped(signal);
           } catch (err) {
+            connecting.delete(client);
             try { client.close(); } catch { /* failed transport containment */ }
             throw err;
           }
           opened.set(folder, {
             folder,
             direction,
+            signal,
             client,
             stopIdle: null,
             reconnectTask: null,
@@ -2671,28 +2545,31 @@ export const createImapProvider = (
             highestCreated: 0,
             storedUidNext: await loadCursor(folder, uidValidityOf(box)),
             cursorHeld: false,
+            syncStarted: false,
           });
         }
+        // Closed while the last folder's cursor was read.
+        throwIfStopped(signal);
       } catch (err) {
-        markError('imap connect failed', err);
+        if (!signal.aborted) markError('imap connect failed', err);
         // Connection admission is all-or-nothing. If folder N fails after
         // folders 1..N-1 opened, close those transports now; otherwise a later
         // connect retry creates a second set while the first remains live.
-        for (const state of opened.values()) {
+        // (`folders` holds none of them: they are published below, all at once.)
+        await Promise.allSettled([...opened.values()].map((state) => {
           const client = state.client;
-          if (client === null) continue;
-          try {
-            if (client.usable) await client.logout();
-            else client.close();
-          } catch {
-            try { client.close(); } catch { /* cleanup containment */ }
-          }
-        }
-        folders.clear();
+          state.client = null;
+          if (client === null) return Promise.resolve();
+          connecting.delete(client);
+          return endSession(client, state.folder);
+        }));
         connected = false;
         throw err;
       }
-      for (const [folder, state] of opened) folders.set(folder, state);
+      for (const [folder, state] of opened) {
+        if (state.client) connecting.delete(state.client);
+        folders.set(folder, state);
+      }
       connected = true;
       lastSuccessfulSyncAt = nowOf();
     },
@@ -2704,7 +2581,8 @@ export const createImapProvider = (
       // The guard above stays OUTSIDE the wrapper: calling initialScan before
       // connect is a wiring bug in the caller, not a sync attempt, and reporting
       // it as a failed scan would blame the mailbox for our own mistake.
-      return outcomes.run('initial_scan', () => scanAllFolders(scanOpts));
+      const signal = session.signal;
+      return outcomes.run('initial_scan', () => scanAllFolders(scanOpts, signal));
     },
 
     onSyncOutcome(listener: MailSyncOutcomeListener) {
@@ -2715,12 +2593,24 @@ export const createImapProvider = (
       if (!connected) {
         throw new Error('imap provider: startSync called before connect');
       }
+      const signal = session.signal;
       await loadPendingDeliveries();
+      // Closed while the journal was read: attach nothing to a closed folder.
+      throwIfStopped(signal);
       for (const state of folders.values()) {
+        // A connection that closed before now — during the first scan, or while
+        // another folder's ran — had no `'close'` listener to notice, and IDLE on
+        // it would never hear a thing. It reconnects instead, and the reconnect
+        // runs this start's catch-up.
+        if (!state.client?.usable) {
+          scheduleReconnect(state, cb);
+          continue;
+        }
         // What the first scan listed; anything newer arrived before IDLE
         // attached, and the catch-up fetches it (`startCatchUp`).
         const known = new Set(state.seqToUid.values());
         state.stopIdle = attachListeners(state, cb);
+        state.syncStarted = true;
         scheduleDeliveryRetry(state, cb);
         // From the stored cursor after a restart (it reaches mail added while
         // the server was down, moved-in mail included), else this open's
@@ -2742,56 +2632,60 @@ export const createImapProvider = (
           try { state.stopIdle?.(); } catch { /* detach best-effort */ }
           state.stopIdle = null;
         }
-        await Promise.allSettled(
+        // A pass still running is waiting on this mailbox's server or on its
+        // collection; `close` (which the collection runs beside this) closes
+        // the sockets under it, and the wait is bounded either way.
+        await settleWithin(Promise.allSettled(
           [...folders.values()].flatMap((state) => [...state.pollTasks]),
-        );
+        ), STOP_GRACE_MS);
       };
     },
 
     async close(): Promise<void> {
+      // Everything below the first await runs at once: admission closes, the
+      // connection's signal aborts what is in flight, and the folders leave
+      // `folders` — so a connect after this builds a connection of its own
+      // rather than one this close is still tearing down.
       stopped = true;
+      session.abort(new CollectionStoppedError('the imap provider was closed'));
       for (const cancel of [...cancelReconnectDelays]) cancel();
       const states = [...folders.values()];
-      const reconnects = states
-        .map((state) => state.reconnectTask)
-        .filter((task): task is Promise<void> => task !== null);
-      const deliveryRetries = states
-        .map((state) => state.deliveryRetryTask)
-        .filter((task): task is Promise<void> => task !== null);
-      const pollTasks = states.flatMap((state) => [...state.pollTasks]);
+      folders.clear();
+      connected = false;
+      // A client still connecting has no session to log out of.
+      for (const client of connecting) {
+        try { client.close(); } catch { /* connect containment */ }
+      }
+      connecting.clear();
+      const tasks = states.flatMap((state) => [
+        ...(state.reconnectTask ? [state.reconnectTask] : []),
+        ...(state.deliveryRetryTask ? [state.deliveryRetryTask] : []),
+        ...state.pollTasks,
+      ]);
 
-      // Close current transports immediately so an in-progress connect/open is
-      // interrupted where the client supports it, then await every admitted
-      // reconnect. The reconnect loop checks `stopped` after each network await
-      // and closes a transport that nevertheless opened late.
-      for (const state of states) {
+      // Every folder's session ends at once, not one after another: LOGOUT on
+      // an idle client, raced against `IMAP_LOGOUT_GRACE_MS`, then the socket
+      // closes — which rejects the commands the reconnect, catch-up and retry
+      // tasks are waiting on, so they settle soon after. Each loop also checks
+      // its folder's signal after every network await and closes a transport
+      // that opened late anyway. The wait for them is bounded: a task still
+      // running past it can no longer move a cursor or deliver (`retired`), and
+      // what it had not delivered waits for the next start.
+      const ended = states.map((state) => {
         try { state.stopIdle?.(); } catch { /* detach best-effort */ }
         state.stopIdle = null;
-        if (state.client) {
-          const client = state.client;
-          state.client = null;
-          try {
-            if (client.usable) await client.logout();
-            else client.close();
-          } catch (err) {
-            markError(`imap logout failed folder=${state.folder}`, err);
-            try { client.close(); } catch { /* swallow */ }
-          }
-        }
-      }
-      await Promise.allSettled(reconnects);
-      await Promise.allSettled(deliveryRetries);
-      await Promise.allSettled(pollTasks);
+        const client = state.client;
+        state.client = null;
+        return client ? endSession(client, state.folder) : Promise.resolve();
+      });
+      await settleWithin(Promise.allSettled([...ended, ...tasks]), STOP_GRACE_MS);
       // Defensive final fence for a client implementation whose `connect()`
-      // ignored the first close and completed immediately before its stopped
-      // check. Reconnect tasks have settled, so no new client can appear now.
+      // ignored the first close and completed before its retired check.
       for (const state of states) {
         if (!state.client) continue;
         try { state.client.close(); } catch { /* shutdown containment */ }
         state.client = null;
       }
-      folders.clear();
-      connected = false;
     },
 
     health(): ProviderHealth {

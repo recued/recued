@@ -74,6 +74,7 @@ import {
   type CalendarRowSnapshot,
 } from './calendar-table.js';
 import { calendarSyncFailureOf } from './provider.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import type {
   CalendarProvider,
   CalendarSeriesSnapshot,
@@ -638,12 +639,22 @@ export const createCalendarCollection = (
       };
       stops.push(closeProvider());
       if (activeStart) stops.push(activeStart.catch(() => undefined));
-      await Promise.all(stops);
       // `close()` is also the cancellation signal for a slow provider connect
-      // or initial scan. If that operation acquired a socket after the first
-      // close raced past it, seal the late-open window once the owned start has
-      // settled (mail's collection lifecycle has the same final fence).
-      if (activeStart) await closeProvider();
+      // or initial scan: the provider aborts the calls it has in flight, so
+      // these settle soon after it. The wait is bounded all the same — this
+      // runs inside the lifecycle drain, and a start still unwinding past
+      // `STOP_GRACE_MS` can write nothing: the generation bump above refuses
+      // its callbacks, and the provider stores no cursor once stopped.
+      const deadline = Date.now() + STOP_GRACE_MS;
+      const waited = await settleWithin(Promise.all(stops), STOP_GRACE_MS);
+      // If that operation acquired a socket after the first close raced past
+      // it, seal the late-open window once the owned start has settled (mail's
+      // collection lifecycle has the same final fence) — within what is left
+      // of the grace, or past it, once the start settles.
+      if (activeStart) {
+        if (waited === 'settled') await settleWithin(closeProvider(), Math.max(0, deadline - Date.now()));
+        else void activeStart.then(closeProvider, closeProvider);
+      }
       if (failures.length > 0) {
         throw new AggregateError(failures, 'calendar collection failed to stop');
       }

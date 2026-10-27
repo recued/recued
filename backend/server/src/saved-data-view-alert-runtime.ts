@@ -1,5 +1,6 @@
 import type { AuditLogStore } from '@recued/storage';
 import type { NotificationBlock, NotificationMessage } from '@recued/notification';
+import { PUSH_GRACE_MS, settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 import type { SavedDataViewAlertNotice, SavedDataViewAlertStore } from './saved-data-view-alert-store.js';
 
 export const savedViewAlertMessage = (notice: SavedDataViewAlertNotice, publicBaseUrl?: string): NotificationMessage => {
@@ -32,6 +33,8 @@ export const createSavedDataViewAlertRuntime = (deps: {
 }) => {
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
+  /** The claimed push in flight, if any (`stop`). */
+  let pushing: Promise<void> | undefined;
   let stopped = false;
   const tick = (): Promise<void> => {
     if (stopped) return Promise.resolve();
@@ -46,7 +49,9 @@ export const createSavedDataViewAlertRuntime = (deps: {
           action: 'notification_fired', target: notice.view_id,
           detail: JSON.stringify({ ...message, link_url: message.link_url ?? ui_link_url }) });
         if (stopped || !deps.store.claim(notice.id)) continue;
-        await deps.notifier.notify(message, undefined, { persisted_activity_id: notice.id, ui_link_url });
+        const push = (async () => deps.notifier.notify(message, undefined, { persisted_activity_id: notice.id, ui_link_url }))();
+        pushing = push;
+        try { await push; } finally { pushing = undefined; }
       }
     })().catch(error => { console.warn('[saved-view-alert] evaluation or notification persistence failed', error); })
       .finally(() => { running = undefined; });
@@ -60,11 +65,22 @@ export const createSavedDataViewAlertRuntime = (deps: {
       timer.unref();
       void tick();
     },
+    /** Claim no further notice, and wait for the check in progress at most
+     *  `STOP_GRACE_MS` — `PUSH_GRACE_MS` while a claimed push is in flight.
+     *
+     *  A notice not yet claimed is safe to leave: it stays in the store and the
+     *  first tick after the restart sends it under the same activity id. A
+     *  claimed one is not: the claim deletes the notice ("attempted at most
+     *  once, even across restarts", the store) and `notify()` keeps no outbox.
+     *  So its push gets the longer grace, and one still going after it (15 s a
+     *  messenger call; an email longer) is cut by the exit after the drain,
+     *  leaving only its history row: waiting on would run out the drain step,
+     *  which makes an update refuse to swap. */
     async stop(): Promise<void> {
       stopped = true;
       if (timer) clearInterval(timer);
       timer = undefined;
-      await running;
+      if (running) await settleWithin(running, pushing !== undefined ? PUSH_GRACE_MS : STOP_GRACE_MS);
     },
   };
 };

@@ -1078,6 +1078,15 @@ export interface ExecuteHandlerDeps {
    *  the registry's termination marker to stamp the audit anchor `killed` /
    *  flag a `cancelled_before_dispatch`. Omitted ⇒ no live-control surface. */
   inFlightRegistry?: InFlightRegistry;
+  /** True once the server has begun stopping (the drain onwards). A NEW run is
+   *  refused then: the restart stops whatever is still running after a short
+   *  grace, so a run admitted now would only be killed with it, and every one
+   *  started was another thing a drain step waited on (2026-10-26). Late-bound by
+   *  `composeListeners`, where the lifecycle exists. Absent ⇒ never draining. */
+  isDraining?: () => boolean;
+  /** Guided Yours sources pin the reviewed recipe, settings and API account on
+   * manual and scheduled runs alike. Unmanaged dishes pass through unchanged. */
+  prepareAssetWriterRun?: (request: ExecuteRequest) => ExecuteRequest;
   /** D-181 slice 4 — the cli-invocation executor to run `kind: service`
    *  catalog subprocess ops with. When provided (the boot path passes one wired
    *  to the in-flight registry, so a running subprocess registers its SIGKILL
@@ -2421,11 +2430,24 @@ const awaitExecutionOrOwnerAbort = async (
  *  their parent's cancellation through the private entry instead. */
 export const handleExecute = (
   deps: ExecuteHandlerDeps, request: ExecuteRequest, internal: InternalExecuteOverrides = {},
-): Promise<ExecuteResponse> => withoutRunAbortContext(() => handleExecuteInRunContext(deps, request, internal));
+): Promise<ExecuteResponse> => {
+  // ⛔ A FRESH RUN IS REFUSED WHILE THE SERVER STOPS; a resume is not. Refused
+  // before anything is registered or audited, so the caller can keep its item
+  // for the next boot (`draining` is the same code RPC and MCP answer with). A
+  // resume continues an approval already answered: refusing it mid-claim could
+  // strand the claim, and the drain stops it with the rest if it runs long.
+  if (internal.resume_from === undefined && deps.isDraining?.() === true) {
+    return Promise.reject(new RpcError('draining', 'The server is restarting; try again in a moment.', 503));
+  }
+  return withoutRunAbortContext(() => handleExecuteInRunContext(deps, request, internal));
+};
 
 const handleExecuteInRunContext = (
   deps: ExecuteHandlerDeps, request: ExecuteRequest, internal: InternalExecuteOverrides = {},
 ): Promise<ExecuteResponse> => {
+  if (internal.run_id === undefined && internal.resume_from === undefined && deps.prepareAssetWriterRun) {
+    try { request = deps.prepareAssetWriterRun(request); } catch (error) { return Promise.reject(error); }
+  }
   if (internal.preapproval_candidate !== undefined) {
     if (internal.preapproval_run !== undefined || !deps.preapprovalRuntime) {
       throw new RpcError('preapproval_stale', 'The automatic qualification runtime is unavailable or already claimed.', 409);
@@ -5719,12 +5741,18 @@ const handleExecuteInner = async (
   // The engine adds this invocation's budget before entering its host scope.
   // Retain that signal for admission and late callbacks, even outside ALS.
   let effectiveRunAbortSignal = runAbortSignal;
+  // The MCP sessions this run opens end with it (`releaseRunResources`): the
+  // handler below is built for this run alone, and nothing else closes them.
+  const runSessions = new AbortController();
   const ingredientExecutor = createBoundExecutor(
     {
       ...deps.executorConfig,
       ...(reviewed || internal.preapproval_candidate || contractRead ? { cacheStore: undefined } : {}),
       observeConnectionAudit,
       ...(gatedFileRead ? { fileRead: gatedFileRead } : {}),
+      ...(deps.executorConfig?.connectionMcp
+        ? { connectionMcp: { ...deps.executorConfig.connectionMcp, lifetime: runSessions.signal } }
+        : {}),
     },
     stores,
     {
@@ -9089,6 +9117,9 @@ const handleExecuteInner = async (
     // slots already released on settle via the governor's `finally`.
     if (registerLiveRun) deps.inFlightRegistry!.completeRun(run_id);
     const releaseRunResources = (): void => {
+      // Its stdio children, websockets and SSE streams. Also on a resumable
+      // pause: the resumed run builds a handler, and opens sessions, of its own.
+      runSessions.abort();
       recordsExecutionLease?.release();
       // D-316 amendment — drop the run's known-value matcher (~7 MB at 10k
       // contacts). Also on a resumable pause: the resumed run builds a fresh one,

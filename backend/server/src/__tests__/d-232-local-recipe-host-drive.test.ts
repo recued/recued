@@ -260,6 +260,17 @@ describe('D-232 host drive — a recipe invokes a local recipe through the real 
     expect(rowsFor(env, CALLEE)[0]!.run_id).not.toBe(rowsFor(env, CALLER)[0]!.run_id);
   });
 
+  it('enforces a guided source review on a nested recipe before it can dispatch', async () => {
+    env.deps.prepareAssetWriterRun = request => {
+      if (request.recipe_id === CALLEE) throw new Error('The reviewed source account changed');
+      return request;
+    };
+    const result = await run(env, CALLER);
+    expect(result.success).toBe(false);
+    expect(errorText(result)).toContain('The reviewed source account changed');
+    expect(rowsFor(env, CALLEE)).toHaveLength(0);
+  });
+
   it("✅ the callee's args arrive as config.* — the op's args, not the caller's", async () => {
     const res = await run(env, CALLER);
     const nested = res.output.render[0]?.data as {

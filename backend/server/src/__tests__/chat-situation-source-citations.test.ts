@@ -102,7 +102,7 @@ describe('native situation saved-field provenance', () => {
   it('binds a context citation only to the returned saved field value and known flag', async () => {
     const f = fixture(); const result = await f.run(f.field()); const body = result.result as any;
     expect(body.fact_context.nodes[0].value).toEqual({ value: 25, unit: 'm', as_of: 1609459200000 });
-    expect(result.source_citations).toEqual([expect.objectContaining({ kind: 'asset_projection', projection: { kind: 'field', field: 'readings.length' }, label: 'Projection hose · length' })]);
+    expect(result.source_citations?.filter(source => source.kind === 'asset_projection' && source.projection.kind === 'field')).toEqual([expect.objectContaining({ kind: 'asset_projection', projection: { kind: 'field', field: 'readings.length' }, label: 'Projection hose · length' })]);
     expect(body.citation_sources[0].result_paths).toEqual(['/fact_context/nodes/0/value', '/fact_context/nodes/0/known']);
     expect(body.citation_sources[0]).not.toHaveProperty('asset_id');
     expect(Buffer.byteLength(JSON.stringify(body.fact_context))).toBeLessThanOrEqual(6000);
@@ -128,7 +128,7 @@ describe('native situation saved-field provenance', () => {
     const f = fixture(); f.work.writeAsset({ id: ID, source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, attributes: { sample: value } }, NOW);
     const result = await f.run(f.field('sample', 'attributes'));
     expect((result.result as any).fact_context.nodes[0]).toMatchObject({ value, known: value !== null });
-    expect(result.source_citations).toHaveLength(1);
+    expect(result.source_citations?.filter(source => source.kind === 'asset_projection' && source.projection.kind === 'field')).toHaveLength(1);
   });
 
   it('does not cite a value omitted by the context byte budget or unsupported-value guard', async () => {
@@ -137,7 +137,8 @@ describe('native situation saved-field provenance', () => {
       f.work.writeAsset({ id: ID, source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, attributes: { large: value } }, NOW);
       const result = await f.run(f.field('large', 'attributes'));
       expect((result.result as any).fact_context.nodes[0]).toMatchObject({ value: null, known: true, value_omitted: true });
-      expect(result).not.toHaveProperty('source_citations');
+      expect(result.source_citations?.some(source => source.kind === 'asset_projection' && source.projection.kind === 'field')).toBe(false);
+      expect(result.source_citations).toHaveLength(1); // The graph attests the explicit omission, not its placeholder value.
     }
   });
 

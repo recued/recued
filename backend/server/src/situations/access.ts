@@ -23,15 +23,16 @@ export const createSituationAccess = (deps: {
   measure?: (name: string, value: number, labels: Record<string, string>) => void;
   memoryAllowed?: SituationReadContext['memoryAllowed'];
   factContext?(input: AssetFactContextRequest, context: SituationReadContext): AssetFactContext | Promise<AssetFactContext>;
+  fieldVersion?(input: AssetFactContextRequest, context: SituationReadContext): string | undefined | Promise<string | undefined>;
 }) => {
   const now = deps.now ?? Date.now;
   const definitions = createContractDefinitionStore(deps.contracts, { now });
   const grants = createGatedReadGrantResolver(deps.contracts, now);
-  const authority = (source: ExecutionSource | undefined, operation: string): string => {
+  const authority = (source: ExecutionSource | undefined, operation: string, collections: readonly string[] =
+    ['asset', 'task', 'note', 'commitment', 'booking', 'project', 'contact', 'calendar', 'reminder', 'mail', 'mail_fact', 'memory', 'file', 'episode', 'occasion', 'history_trace']): string => {
     const current = context(source, operation);
     return JSON.stringify([current.owner, current.all_spheres, current.spheres,
-      ['asset', 'task', 'note', 'commitment', 'booking', 'project', 'contact', 'calendar', 'reminder', 'mail', 'mail_fact', 'memory', 'file', 'episode', 'occasion', 'history_trace']
-        .map(collection => { const access = situationSourceAccess(collection)!; return [collection,
+      collections.map(collection => { const access = situationSourceAccess(collection)!; return [collection,
           current.grants.isVerbOpGranted(access.verb_op), current.grants.isCollectionReadGranted(access.collection)]; })]);
   };
   const ownerHost: ExecutionSource = { channel: 'chat', actor: 'user_self', user_id: 'owner', chat_session_id: 'situation-host-read' };
@@ -80,6 +81,18 @@ export const createSituationAccess = (deps: {
      * so a run or read this cannot fence is never stopped here. */
     fence: (source: ExecutionSource | undefined): SituationReadContext => resolve(source).context,
     ...(deps.measure ? { measure: deps.measure } : {}),
+    /** The field reader returns no graph or evidence, so its authority snapshot
+     * depends only on asset access. Context still rechecks the vault, live
+     * governing contract, situation operation and sphere scope on both sides.
+     * Absence is not a successful validation; callers dispatch normally. */
+    async fieldVersion(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal): Promise<string | undefined> {
+      const access = context(source);
+      const before = authority(source, SITUATION_READ_OP, ['asset']);
+      if (!deps.fieldVersion) return undefined;
+      const version = await deps.fieldVersion(parseAssetFactContextRequest(raw), { ...access, ...(signal ? { signal } : {}) });
+      if (signal?.aborted || before !== authority(source, SITUATION_READ_OP, ['asset'])) throw new SituationAccessError('Permissions changed during the context read. Refresh before relying on it.');
+      return version;
+    },
     async read(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal): Promise<SituationResult> {
       const access = context(source);
       const before = authority(source, SITUATION_READ_OP);

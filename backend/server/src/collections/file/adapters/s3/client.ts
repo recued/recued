@@ -158,7 +158,8 @@ export interface S3Client {
    *  both Content-Length and the live response stream. */
   getObject(key: string, maxBytes?: number): Promise<{ body: Uint8Array; mime?: string }>;
   deleteObject(key: string): Promise<void>;
-  listObjects(prefix?: string): Promise<{ keys: string[] }>;
+  /** `signal`: the adapter's stop, which aborts the listing in flight. */
+  listObjects(prefix?: string, opts?: { signal?: AbortSignal }): Promise<{ keys: string[] }>;
   /** ListObjectsV2 one page WITH full per-object metadata + the
    *  pagination continuation state. `fetch-owner=true` is always set so
    *  the D-192 file-source projection's `owner` field resolves. The caller
@@ -168,6 +169,8 @@ export interface S3Client {
   listObjectsV2Page(opts?: {
     prefix?: string;
     continuationToken?: string;
+    /** Aborts the page request: a walk to exhaustion stops between pages. */
+    signal?: AbortSignal;
   }): Promise<{
     objects: S3ObjectMeta[];
     isTruncated: boolean;
@@ -413,10 +416,14 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
     return text;
   };
 
+  /** `callerSignal`: a stop from the caller, which aborts the request (and the
+   *  body still streaming) as the timeout does, rather than after it — a
+   *  listing can take the whole `S3_REQUEST_TIMEOUT_MS`. */
   const request = async <T>(
     url: string,
     init: Omit<Parameters<S3Fetch>[1], 'signal'>,
     consume: (res: S3Response) => Promise<T>,
+    callerSignal?: AbortSignal,
   ): Promise<T> => {
     const controller = new AbortController();
     let timedOut = false;
@@ -424,6 +431,9 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
       timedOut = true;
       controller.abort();
     }, S3_REQUEST_TIMEOUT_MS);
+    const abortFromCaller = (): void => controller.abort(callerSignal?.reason);
+    if (callerSignal?.aborted) abortFromCaller();
+    else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
     let res: S3Response | undefined;
     try {
       res = await fetcher(url, { ...init, signal: controller.signal });
@@ -440,6 +450,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
     } finally {
       if (res !== undefined) discardResponseBody(res as Response);
       clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', abortFromCaller);
     }
   };
 
@@ -535,7 +546,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
         };
       });
     },
-    async listObjects(prefix) {
+    async listObjects(prefix, opts) {
       const url = buildUrl(config, undefined, {
         'list-type': '2',
         ...(prefix ? { prefix } : {}),
@@ -552,7 +563,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
           'ListObjectsV2',
         );
         return { keys: parseListKeys(xml) };
-      });
+      }, opts?.signal);
     },
     async listObjectsV2Page(opts) {
       const url = buildUrl(config, undefined, {
@@ -575,7 +586,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
           'ListObjectsV2',
         );
         return parseListObjectsV2(xml);
-      });
+      }, opts?.signal);
     },
   };
 };

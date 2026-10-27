@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Asset, AssetFactContext, AssetFactContextNode, ChatAssetProjectionScope, SituationAssetDetails } from '@recued/contracts';
+import { assetFactRefKey, type Asset, type AssetFactContext, type AssetFactContextNode, type ChatAssetProjectionScope, type SituationAssetDetails } from '@recued/contracts';
 
 type FieldNode = Extract<AssetFactContextNode, { kind: 'field' }>;
 export interface AssetProjectionRead {
@@ -38,6 +38,40 @@ export const rememberAssetContextRead = (asset: Asset, context: AssetFactContext
     remember(asset, node, { kind: 'field', field: `${node.ref.group}.${node.ref.field}` }, assetFieldProjectionValue(node), context.read_at,
       `${asset.name} · ${node.label}`);
   }
+};
+
+const unmarked = (value: unknown): unknown => Array.isArray(value) ? value.map(unmarked)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== '__entity').map(([key, member]) => [key, unmarked(member)])) : value;
+const contextValue = (context: AssetFactContext): unknown => {
+  const { read_at: _clock, ...value } = context;
+  return unmarked(value);
+};
+
+/** A graph version covers only this bounded, authorized native view. Read time
+ * is separate; writer state, rule definitions, evidence and omissions are not. */
+export const rememberAssetGraphRead = (asset: Asset, context: AssetFactContext): void => {
+  const { asset_id: _asset, ...root } = context.root;
+  remember(asset, context, { kind: 'context', root }, contextValue(context), context.read_at, `${asset.name} · Relationships`);
+};
+
+/** The model adapter may drop only a suffix of nodes and its dangling links.
+ * Attest that exact exposed subset with the native graph version, never an
+ * edited value, injected property, serialized lookalike or borrowed receipt. */
+export const assetGraphReadOf = (native: AssetFactContext, rendered: AssetFactContext): AssetProjectionRead | undefined => {
+  const read = assetProjectionReadOf(native, contextValue(native));
+  if (read?.projection.kind !== 'context' || native.read_at !== read.read_at || rendered.nodes.length > native.nodes.length) return undefined;
+  const expected = structuredClone(native);
+  const removed = expected.nodes.splice(rendered.nodes.length);
+  if (removed.length) {
+    const kept = new Set(expected.nodes.map(node => assetFactRefKey(node.ref)));
+    expected.edges = expected.edges.filter(edge => kept.has(assetFactRefKey(edge.from)) && kept.has(assetFactRefKey(edge.to)));
+    expected.missing = expected.missing.filter(ref => kept.has(assetFactRefKey(ref)));
+    expected.completeness = 'partial'; if (!expected.omitted.includes('byte_budget')) expected.omitted.push('byte_budget');
+    if (removed.some(node => node.kind === 'writer') && expected.writer_check?.status === 'complete') {
+      expected.writer_check.status = 'partial'; delete expected.writer_check.enabled_count;
+    }
+  }
+  return JSON.stringify(unmarked(expected)) === JSON.stringify(unmarked(rendered)) ? read : undefined;
 };
 
 /** The rendered view must still equal what the native reader attested. Model

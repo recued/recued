@@ -100,8 +100,11 @@ describe('explicit situation tool relationship context', () => {
     const f = fixture(); const root = { ...f.root, field: 'length' };
     const packet: AssetFactContext = { root, asset: { id: root.asset_id, name: 'Pump' }, nodes: Array.from({ length: 30 }, (_, i) => ({ kind: 'field', ref: i === 0 ? root : { ...root, field: `field_${i}` }, label: `Field ${i}`, value: '測'.repeat(50), known: true, source: null })),
       edges: [], read_at: at, freshness: 'current', completeness: 'complete', omitted: [], missing: [] };
+    packet.nodes.push({ kind: 'writer', ref: { kind: 'writer', asset_id: root.asset_id, binding_id: 'writer' }, name: 'Registered writer', enabled: true });
+    packet.writer_check = { scope: 'enabled_bindings', field: 'attributes.length', status: 'complete', enabled_count: 1 };
     const result = situationModelProjection({ clusters: [], omitted: 0, ambiguous: [], fact_context: packet });
     expect(Buffer.byteLength(JSON.stringify(result.fact_context), 'utf8')).toBeLessThanOrEqual(SITUATION_CONTEXT_MAX_BYTES);
     expect(result.fact_context?.completeness).toBe('partial'); expect(result.fact_context?.omitted).toContain('byte_budget');
+    expect(result.fact_context?.writer_check).toEqual({ scope: 'enabled_bindings', field: 'attributes.length', status: 'partial' });
   });
 });

@@ -55,6 +55,14 @@
  *     whose last probe errored recently is the obvious v2 and is deliberately
  *     not smuggled in here, because "recently" is a policy number and this
  *     module should not be the first place it gets invented.
+ *
+ *  ── Stopping ──────────────────────────────────────────────────────────────
+ *  Each probe can take its full 10 s, one connection after another, so a
+ *  sweep could hold a restart's 5 s drain step on its own. The step's
+ *  `AbortSignal` (the server stopping) ends the sweep before the next
+ *  connection, and the sweep stops waiting for the probe in flight — its
+ *  result is only a hash refresh, which the next cycle redoes. The signal is
+ *  also handed to `probe` so the wiring can cancel the request itself.
  */
 
 import type {
@@ -85,8 +93,9 @@ export interface McpToolsDriftProbeDeps {
   /** Runs the real probe, whose side effect is persisting `tool_hashes` into
    *  `ConnectionHealth`. Its return value is intentionally ignored: this task
    *  reads nothing back, it only causes the write that `handleMcpPackStatus`
-   *  later reads at rest. */
-  probe(args: { name: string; kind: 'mcp' }): Promise<unknown>;
+   *  later reads at rest. `signal` fires when the server stops; a probe that
+   *  can, cancels its request then. */
+  probe(args: { name: string; kind: 'mcp' }, opts?: { signal?: AbortSignal }): Promise<unknown>;
   /** Structured failure sink. A probe failure is an expected runtime condition
    *  (a third party is down), not a programming error, so it must not abort the
    *  sweep for the connections after it. */
@@ -100,16 +109,47 @@ export interface McpToolsDriftProbeResult {
   skipped_no_pack: number;
   /** Probes that threw. Counted, never fatal. */
   failed: number;
+  /** The server began stopping before the sweep finished; the connections it
+   *  did not reach are probed by the next cycle. */
+  interrupted?: true;
 }
+
+/** Settle with `work`, or reject as soon as `signal` fires — without waiting
+ *  for `work`, whose own failure is then contained here so it cannot surface
+ *  later as an unhandled rejection. */
+const unlessAborted = <T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> => {
+  if (signal === undefined) return work;
+  if (signal.aborted) {
+    void work.catch(() => {});
+    return Promise.reject(new Error('stopped'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      void work.catch(() => {});
+      reject(new Error('stopped'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+};
 
 /** Refresh the current-side tool hashes for every mcp connection backed by a
  *  generated pack. Pure sweep — returns counts, writes nothing itself. */
 export const runMcpToolsDriftProbe = async (
   deps: McpToolsDriftProbeDeps,
+  signal?: AbortSignal,
 ): Promise<McpToolsDriftProbeResult> => {
   const result: McpToolsDriftProbeResult = { probed: 0, skipped_no_pack: 0, failed: 0 };
 
   for (const row of deps.listConnections({ kind: 'mcp' })) {
+    // The server is stopping: the rest wait for the next cycle.
+    if (signal?.aborted) {
+      result.interrupted = true;
+      break;
+    }
     const connection = { kind: 'mcp' as const, name: row.name };
     let packSlug: string | null;
     try {
@@ -127,9 +167,17 @@ export const runMcpToolsDriftProbe = async (
       continue;
     }
     try {
-      await deps.probe(connection);
+      await unlessAborted(
+        deps.probe(connection, ...(signal !== undefined ? [{ signal }] : [])),
+        signal,
+      );
       result.probed += 1;
     } catch (err) {
+      // Cut short by the stop: not the third party failing.
+      if (signal?.aborted) {
+        result.interrupted = true;
+        break;
+      }
       result.failed += 1;
       deps.onProbeError?.(row.name, err);
     }
@@ -161,8 +209,13 @@ export const buildMcpToolsDriftProbeTask = (
     _ctx: HousekeepingContext,
     _cursor: HousekeepingCursor,
     _budget_ms: number,
+    signal?: AbortSignal,
   ): Promise<HousekeepingStepResult> {
-    await runMcpToolsDriftProbe(opts.deps);
-    return { cursor: { kind: 'complete' }, status: 'complete' };
+    const swept = await runMcpToolsDriftProbe(opts.deps, signal);
+    // Interrupted, it is not complete: the next cycle sweeps again from the
+    // start (the task keeps no partial cursor — see limit 1).
+    return swept.interrupted
+      ? { cursor: { kind: 'complete' }, status: 'yield', reason: 'budget_exhausted' }
+      : { cursor: { kind: 'complete' }, status: 'complete' };
   },
 });

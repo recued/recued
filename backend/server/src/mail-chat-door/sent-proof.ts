@@ -117,6 +117,7 @@ import type { MailCollection, MailStoredContext, MailUpsertContext } from '../co
 import { senderCheckFor } from '../collections/mail/authentication-results.js';
 import { normalizeRfcMessageId, type CanonicalMessage } from '../collections/mail/provider.js';
 import { collectionTableName } from '../collections/table.js';
+import { PUSH_GRACE_MS, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { MailChatDoorStore } from '../storage/mail-chat-door-store.js';
 import { mailChatReferences, type MailChatConversations } from './conversations.js';
 import { automaticMailSign, subjectAsks, subjectIsForward } from './filters.js';
@@ -306,7 +307,8 @@ export interface MailChatSentProof {
   bindNotify(fn: MailChatProofNotify): void;
   /** Start checking: after the mailboxes are registered and the notice bound. */
   start(): void;
-  /** Stop checking and wait for a check in progress. Idempotent. */
+  /** Stop checking, and wait for the round in progress at most `STOP_GRACE_MS`
+   *  — `PUSH_GRACE_MS` while a notice push is in flight. Idempotent. */
   dispose(): Promise<void>;
   /** One request, for the tests and diagnostics. */
   get(chat_slug: string, rfc_message_id: string): MailChatRequest | null;
@@ -631,6 +633,8 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
   let disposed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<void> | undefined;
+  /** A notice push in flight, after its mark (`dispose`). */
+  let pushing: Promise<void> | undefined;
   let again = false;
 
   const retry = (row: RequestRow, attempts: number, at: number): void => {
@@ -926,7 +930,8 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
    *  push, best-effort. A stop before the mark delivers it again at the next
    *  start, onto the same row. */
   const deliverNotices = async (): Promise<void> => {
-    if (notify === undefined) return;
+    const send = notify;
+    if (send === undefined) return;
     for (const row of selectNoticesDue.all() as RequestRow[]) {
       if (disposed) return;
       const message = JSON.parse(row.notice_json ?? 'null') as NotificationMessage | null;
@@ -954,10 +959,14 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
         }
       }
       markNoticeSent.run(row.chat_slug, row.rfc_message_id);
+      // Without a history row of ours, the notifier writes one.
+      const push = (async () => auditLog !== undefined ? send(message, { persisted_activity_id }) : send(message))();
+      pushing = push;
       try {
-        // Without a history row of ours, the notifier writes one.
-        await (auditLog !== undefined ? notify(message, { persisted_activity_id }) : notify(message));
-      } catch { /* best-effort: the notice is marked given */ }
+        await push;
+      } catch { /* best-effort: the notice is marked given */ } finally {
+        pushing = undefined;
+      }
     }
   };
 
@@ -1262,11 +1271,26 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
       startedAt = now();
       void tick();
     },
+    /** ⛔ A drain step awaits this, with 5 s, and the process exits right after
+     *  the drain anyway, so a round is waited for at most `STOP_GRACE_MS`. A
+     *  Sent-folder lookup can take far longer — over IMAP the library's own
+     *  limits apply, 90 s to connect and minutes idle — and nothing a round
+     *  leaves unfinished is lost: `disposed` starts no further check, hand-over
+     *  or notice; a request whose lookup is cut short is still `pending`, so it
+     *  is checked again after the restart, its wait counted from then; a
+     *  hand-over still `waiting` is made again, and chat's admission names its
+     *  own submission, so a repeat adds nothing; a notice not yet marked is
+     *  given at the next start, onto the same history row.
+     *
+     *  The exception is a notice push in flight, given `PUSH_GRACE_MS`: it
+     *  comes AFTER its mark (D-308's order), so a push cut short is never given
+     *  again and only its history row remains. Waiting on would run out the
+     *  drain step, which makes an update refuse to swap. */
     async dispose(): Promise<void> {
       disposed = true;
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
-      await running?.catch(() => undefined);
+      if (running !== undefined) await settleWithin(running, pushing !== undefined ? PUSH_GRACE_MS : STOP_GRACE_MS);
     },
     get(chat_slug, rfc_message_id): MailChatRequest | null {
       const row = selectOne.get(chat_slug, rfc_message_id) as RequestRow | undefined;

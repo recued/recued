@@ -1,3 +1,4 @@
+import { mailAccountCanBeInteractiveSender } from '@recued/contracts';
 import { fileSourceOAuthProvider, isFileSourceAuthenticationPreview } from '@recued/contracts';
 /** D-165 P3.enroll-host — the generic `connection.*` REACH enrollment panel.
  *
@@ -418,7 +419,8 @@ export type ConnectionsReprobeEngagementCapabilitiesCaller = (args: {
  *  callers). Only `slug` + `send_capable` are consumed; the rpc returns more
  *  per instance (structurally wider returns are accepted). */
 export type ConnectionsMailListCaller = () => Promise<{
-  instances: ReadonlyArray<{ slug: string; send_capable: boolean }>;
+  instances: ReadonlyArray<{ slug: string; send_capable: boolean; adapter_type?: string;
+    receive_capable?: boolean; sent_lookup_capable?: boolean }>;
 }>;
 
 /** Owner-triggered read-only AI setup assistance. The request shape cannot
@@ -2210,7 +2212,7 @@ export const mountConnectionsEnrollPanel = (
         const { instances } = await run();
         if (disposed || gen !== mailOptionsGen) return;
         const slugs = instances
-          .filter((i) => i.send_capable)
+          .filter(mailAccountCanBeInteractiveSender)
           .map((i) => i.slug);
         state.dynamicOptions = {
           ...state.dynamicOptions,

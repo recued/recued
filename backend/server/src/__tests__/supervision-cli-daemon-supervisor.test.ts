@@ -22,6 +22,7 @@ import {
   reapProcessGroupAfterLeaderExit,
 } from '../supervision/process-group-kill.js';
 import type { SupervisedDaemonConfig } from '../supervision/supervised-daemon-store.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type {
   CliMethodBinding,
   IngredientManifest,
@@ -526,6 +527,38 @@ describe('cli-daemon-supervisor — stop + reconcile + dispose', () => {
 
     // The just-finished launch must not arm an orphan poll/restart after the
     // supervisor has detached for server shutdown.
+    h.fs.set(EXIT(1));
+    await vi.advanceTimersByTimeAsync(POLL + 1_000);
+    expect(h.executor).toHaveBeenCalledTimes(2);
+  });
+
+  it('⛔ disposeAll stops waiting for a launch still going after the grace, and that launch arms nothing when it ends', async () => {
+    // A restart's drain step awaits this, with 5 s; a launch can take longer
+    // (the tool's version check, a slow spawn).
+    const h = harness();
+    await h.supervisor.start(config());
+    h.fs.set(EXIT(1));
+    await vi.advanceTimersByTimeAsync(POLL);
+
+    let releaseLaunch!: () => void;
+    const launchHeld = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+    h.executor.mockImplementationOnce(async () => {
+      await launchHeld;
+      return { mode: 'detached', pid: 5252 };
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.executor).toHaveBeenCalledTimes(2);
+
+    let disposed = false;
+    const disposing = h.supervisor.disposeAll().then(() => { disposed = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    expect(disposed).toBe(true);
+    await disposing;
+    expect(h.supervisor.isTracked(ING, OP)).toBe(false);
+
+    // The launch ends after the supervisor let go: no poll, no restart.
+    releaseLaunch();
+    await vi.advanceTimersByTimeAsync(0);
     h.fs.set(EXIT(1));
     await vi.advanceTimersByTimeAsync(POLL + 1_000);
     expect(h.executor).toHaveBeenCalledTimes(2);

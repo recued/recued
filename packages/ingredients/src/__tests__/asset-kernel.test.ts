@@ -11,9 +11,10 @@ describe('asset kernel authority boundaries', () => {
     const observe = vi.fn(async () => ({ asset_id: 'a1', changed_fields: ['readings.battery'] }));
     const adapter = createKernelAdapter({ assetObserve: observe });
     const input = { binding_id: 'b1', readings: { battery: { value: 2, unit: '%', as_of: 1, evidence: [] } } };
-    expect(await adapter(call('asset-observe', input, { recipe_id: 'health', step_id: 'record' })))
+    expect(await adapter(call('asset-observe', input, { recipe_id: 'health', step_id: 'record', run_id: 'native-run' })))
       .toEqual({ asset_id: 'a1', changed_fields: ['readings.battery'] });
-    expect(observe).toHaveBeenCalledWith(input, 'recipe:health', undefined);
+    expect(observe).toHaveBeenCalledWith(input, 'recipe:health', undefined, 'native-run');
+    await expect(adapter(call('asset-observe', { ...input, run_id: 'forged-run' }, { recipe_id: 'health', run_id: 'native-run' }))).rejects.toThrow(/run_id/);
     await expect(adapter(call('asset-observe', { ...input, actor_ref: 'recipe:other' }, { recipe_id: 'health' }))).rejects.toThrow(/actor_ref/);
     await expect(adapter(call('asset-observe', { ...input, status: 'retired' }, { recipe_id: 'health' }))).rejects.toThrow(/status/);
     await expect(adapter(call('asset-observe', input))).rejects.toThrow(/installed recipe/);

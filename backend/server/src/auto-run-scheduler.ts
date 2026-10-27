@@ -20,8 +20,11 @@
  *       scheduleNext. Scheduler-owned promises are tracked and reported so a
  *       single store/runtime failure cannot reach the process-wide fatal
  *       rejection handler.
- *    3. `stop()` clears all timers + waits for every scheduler-owned task
- *       to settle so callers can safely close the database.
+ *    3. `stop()` clears all timers and closes admission: a tick in flight
+ *       finishes the entry it is running and fires no other. It waits for
+ *       scheduler-owned work at most `STOP_GRACE_MS` — a restart drain kills
+ *       the runs themselves, and `inFlight()` keeps reporting one that is
+ *       slower than that.
  *
  *  Spec: D-115 §3.1 (Server implementation).
  */
@@ -51,8 +54,10 @@ import type { NotificationMessage } from '@recued/notification';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
   deriveRunYield,
+  RpcError,
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
+import { settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 import { presentAutomationFailure } from './automation-failure.js';
 import {
   decideAutomationFailure,
@@ -360,8 +365,10 @@ export interface ServerAutoRunHandle {
    *  arms per-entry timers. Fires an immediate tick for anything
    *  already due. */
   start(): Promise<void>;
-  /** Clear all pending timers + await scheduler-owned background work and
-   *  in-flight executions so the caller can close the database safely. */
+  /** Clear all pending timers and close admission, then wait for
+   *  scheduler-owned background work and in-flight executions at most
+   *  `STOP_GRACE_MS`. A tick in flight runs no further entry; a `tick()` asked
+   *  for afterwards fires nothing until `start()`. */
   stop(): Promise<void>;
   /** Run a single synchronous tick — for tests and for the
    *  server-boot "catch up anything due now" path. */
@@ -378,6 +385,10 @@ export interface ServerAutoRunHandle {
    *  or persisting its final state. Used by the drain orchestrator to wait for
    *  a clean shutdown. */
   inFlight(): boolean;
+  /** Resolves once every fire and scheduler-owned task in flight has
+   *  finished, however long the runs take: what a pause or a maintenance
+   *  window waits for after `stop()` (`StoppableService.settled`). */
+  settled?(): Promise<void>;
 }
 
 /** A tick whose dish was switched off after the roster was built: nothing
@@ -417,6 +428,25 @@ export const createServerAutoRunScheduler = (
   let running = false;
   let inflightCount = 0;
   const backgroundTasks = new Set<Promise<void>>();
+  /** Every fire in flight, direct `tick()` calls included — what `stop()`
+   *  waits on, so it settles only after a fire's circuit write has landed. */
+  const inflightFires = new Set<Promise<void>>();
+  /** True from `stop()` until the next `start()`: a `tick()` asked for
+   *  meanwhile — the vault-unlock kick, a test — fires nothing. */
+  let stopped = false;
+  /** Bumped by every `stop()`. A tick keeps the value it started under and
+   *  runs no further entry once it moves, so a stop waits for at most the
+   *  entry already running instead of every entry the tick fired. */
+  let stopEpoch = 0;
+  /** The server has begun its restart drain (`executeDeps.isDraining`, bound
+   *  late where the lifecycle exists). A run started now would only be refused
+   *  or killed, so none is attempted. */
+  const draining = (): boolean => config.executeDeps?.isDraining?.() === true;
+  /** A run the restart stopped is the server going away, not the recipe
+   *  failing: it moves no breaker and sends no notice. An owner's own kill
+   *  outside a stop is still booked as before. */
+  const stoppedByRestart = (code: unknown, terminated?: string): boolean =>
+    (terminated === 'killed' || code === 'run_killed') && (stopped || draining());
 
   const reportBackgroundError = (message: string, error: unknown): void => {
     try {
@@ -524,7 +554,21 @@ export const createServerAutoRunScheduler = (
     });
   };
 
-  const executeFired = async (
+  /** Run one fired entry, kept in `inflightFires` until its finalization has
+   *  landed. */
+  const executeFired = (
+    key: string,
+    process_id: string,
+    firedAt: number,
+  ): Promise<void> => {
+    const fire = executeFiredInner(key, process_id, firedAt);
+    inflightFires.add(fire);
+    const clear = (): void => { inflightFires.delete(fire); };
+    void fire.then(clear, clear);
+    return fire;
+  };
+
+  const executeFiredInner = async (
     key: string,
     process_id: string,
     firedAt: number,
@@ -545,6 +589,11 @@ export const createServerAutoRunScheduler = (
     /** D-268 — the run reported an error the recipe DECIDED to raise. Nothing
      *  about the circuit changed, so nothing about the circuit is written. */
     let notAFailure = false;
+    /** The server refused to start the run because it is restarting. Nothing
+     *  ran: no circuit write, no fire broadcast, and the timer's next tick (in
+     *  the next process) takes it. */
+    let notRun = false;
+    let terminated: string | undefined;
     const visibleFailure = (failure: unknown): string => {
       const presented = presentAutomationFailure(failure);
       if (presented.redacted) {
@@ -644,10 +693,15 @@ export const createServerAutoRunScheduler = (
           const first = result.errors[0] as { message?: string; code?: string } | undefined;
           failureCode = typeof first?.code === 'string' ? first.code : undefined;
           failureReason = visibleFailure(first?.message ?? 'execution failed');
+          terminated = result.run_terminated;
         }
       } catch (e) {
         if (e instanceof SkippedFire) {
           outcome = 'skipped';
+        } else if (e instanceof RpcError && e.code === 'draining') {
+          // ⛔ NOT RUN IS NOT FAILED — see `notRun`.
+          outcome = 'skipped';
+          notRun = true;
         } else {
           outcome = 'failed';
           const code = (e as { code?: unknown } | null)?.code;
@@ -655,6 +709,13 @@ export const createServerAutoRunScheduler = (
           failureReason = visibleFailure(e);
         }
       }
+      if (outcome === 'failed' && stoppedByRestart(failureCode, terminated)) {
+        // Killed by the restart drain: not evidence about the recipe, so the
+        // breaker and the owner hear nothing of it (see `stoppedByRestart`).
+        outcome = 'skipped';
+        notAFailure = true;
+      }
+      if (notRun) notAFailure = true;
 
       // Finalization is part of the in-flight unit. In particular, keep the
       // shutdown gate raised through the SQLite circuit write; releasing it
@@ -715,7 +776,7 @@ export const createServerAutoRunScheduler = (
       // a `trigger_skipped` tick has always rewritten this row without a reason.
       if (!notAFailure) persistCircuitState(key, now(), failureReason);
       try {
-        config.onFired?.(recipe_id);
+        if (!notRun) config.onFired?.(recipe_id);
       } catch {
         // A broken listener is a UI bug, not a scheduler bug.
       }
@@ -725,10 +786,21 @@ export const createServerAutoRunScheduler = (
   };
 
   const fireEntry = async (key: string): Promise<void> => {
+    // Stopped: the timer that called this was armed before the stop, and
+    // nothing re-arms it.
+    if (stopped) return;
     // Vault-locked gate: skip before advancing the scheduler clock so the
     // entry stays due, and do NOT re-arm — the dormant one-shot timer is
     // re-armed by the coordinator's `tick()` kick on unlock.
     if (config.isVaultUnlocked && !config.isVaultUnlocked()) return;
+    // Draining: leave the entry due and look again at the floor cadence, so a
+    // drain that ends without a restart resumes firing on its own. The stop
+    // that follows a drain clears the timer.
+    if (draining()) {
+      const entry = scheduler.roster.get(key);
+      if (entry) scheduleNext(entry);
+      return;
+    }
     const t = now();
     const report = scheduler.tick(t);
     const fired = report.fired.find((f) => f.key === key);
@@ -764,6 +836,12 @@ export const createServerAutoRunScheduler = (
     if (config.isVaultUnlocked && !config.isVaultUnlocked()) {
       return { fired: [], skipped_overlap: [], skipped_circuit: [] };
     }
+    // Stopped, or the server draining: no clock advance, so what is due stays
+    // due for the next process.
+    if (stopped || draining()) {
+      return { fired: [], skipped_overlap: [], skipped_circuit: [] };
+    }
+    const epoch = stopEpoch;
     const t = now();
     const report = scheduler.tick(t);
     // Dispatch each fired entry sequentially — a server is a
@@ -771,6 +849,11 @@ export const createServerAutoRunScheduler = (
     // all hitting the engine at once. A future tuning knob could
     // parallelize with a concurrency cap; Phase 4 keeps it simple.
     for (const fired of report.fired) {
+      // A stop (or the drain) that landed while an earlier entry ran ends the
+      // tick here: stopping waits for at most the entry already running. The
+      // entries left out lose only this cycle — the roster is rebuilt fresh by
+      // the next `start()`.
+      if (stopEpoch !== epoch || draining()) break;
       await executeFired(fired.key, fired.process_id, t);
     }
     // Rearm timers for every entry that's now got an updated
@@ -786,6 +869,7 @@ export const createServerAutoRunScheduler = (
     async start() {
       if (running) return;
       running = true;
+      stopped = false;
       try {
         await refreshRoster();
       } catch (error) {
@@ -802,17 +886,19 @@ export const createServerAutoRunScheduler = (
     },
     async stop() {
       running = false;
+      stopped = true;
+      stopEpoch += 1;
       clearAllTimers();
-      // Preserve the established drain ordering for direct/manual tick()
-      // calls: a stop requested during persistence does not settle in the
-      // same microtask turn as that persistence callback.
-      while (inflightCount > 0) {
-        await new Promise<void>((r) => setImmediate(r));
-      }
-      // Then await the whole scheduler-owned task. scheduler.tick(), roster
-      // lookup, circuit persistence, and timer re-arm can fail outside the
-      // narrower executeFired counter window.
-      await Promise.allSettled([...backgroundTasks]);
+      // Every fire in flight — a direct `tick()`'s included — settles only
+      // after its circuit write, so a stop requested during persistence does
+      // not settle before it. Every scheduler-owned task is waited on too:
+      // scheduler.tick(), roster lookup, circuit persistence and timer re-arm
+      // can fail outside a fire. A recipe run slower than the grace is the
+      // drain's to kill; `inFlight()` keeps reporting it meanwhile.
+      await settleWithin(
+        Promise.allSettled([...inflightFires, ...backgroundTasks]),
+        STOP_GRACE_MS,
+      );
     },
     tick,
     refreshRoster,
@@ -827,6 +913,9 @@ export const createServerAutoRunScheduler = (
     },
     inFlight() {
       return backgroundTasks.size > 0 || inflightCount > 0;
+    },
+    async settled() {
+      await Promise.allSettled([...inflightFires, ...backgroundTasks]);
     },
   };
 };

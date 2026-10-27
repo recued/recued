@@ -807,12 +807,14 @@ export const composeCollectionContext = (
     const quiet = createQuietHoursStore(db);
     householdHomeAssistant = createHouseholdHomeAssistant({ db, work: workEntityStore, isVaultUnlocked,
       connections: () => (connectionStore?.list({ kind: 'api' }) ?? []).filter(row => householdCatalogBindings?.catalogsForConnection(row.name).includes('home-assistant')),
+      authSourceId: name => connectionStore?.getAuthSourceId?.('api', name),
       credential: async row => { const auth = await decodeAuthFromStorage(row.auth_ciphertext, { kind: row.kind, name: row.name }, keys?.keyProvider('connection'));
         return auth.type === 'bearer' && typeof auth.token === 'string' && auth.token ? auth.token : null; },
     });
     assetReminders = createAssetReminderService({ db, work: workEntityStore, dispatchers: workEntityDispatchers,
       occurrences: assetOccurrences, timeZone: serverTimeZone,
       projectHousehold: () => householdHomeAssistant!.tick(),
+      stopHousehold: () => householdHomeAssistant!.stop(),
       householdDestinations: async () => createHouseholdDeliveryStore(db).destinations(connectionStore?.list({ kind: 'notification' }) ?? []),
       additionalSubjects: createOccasionClockService({ db, work: workEntityStore, dispatchers: workEntityDispatchers,
         timeZone: serverTimeZone, isVaultUnlocked: () => keys === undefined || keys.state() === 'unlocked',

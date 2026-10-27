@@ -66,6 +66,7 @@ import { createBlobStore } from '../storage/blob-store.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createMailChatDoorStore } from '../storage/mail-chat-door-store.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
+import { PUSH_GRACE_MS, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { recipeToolTitle } from '../recipe-tool-name.js';
 
@@ -85,8 +86,9 @@ afterEach(async () => {
 });
 
 /** What the chat mailbox's provider does with the next send. `went_unheard`:
- *  the message goes out, and the answer to the send is lost on the way back. */
-type SendOutcome = 'ok' | 'refused' | 'lost' | 'went_unheard' | 'bad_input' | 'message_refused';
+ *  the message goes out, and the answer to the send is lost on the way back.
+ *  `hangs`: the message goes out, and the send never answers at all. */
+type SendOutcome = 'ok' | 'refused' | 'lost' | 'went_unheard' | 'hangs' | 'bad_input' | 'message_refused';
 
 interface SentCopy {
   readonly gmail_id: string;
@@ -153,6 +155,8 @@ const harness = (options: {
   let showSentRecord = true;
   let canSend = true;
   const lookups: MailSentReconciliationQuery[] = [];
+  /** Held: the Sent record's lookup does not answer until released. */
+  let lookupGate: Promise<void> | undefined;
   const sentByOwner = new Set<string>();
   const provider = {
     kind: options.kind ?? 'gmail',
@@ -180,12 +184,14 @@ const harness = (options: {
       const copy: SentCopy = { gmail_id: `g${n}`, message_id: `CAgmail${n}@mail.gmail.com`, msg, sent_at: Date.now() };
       sentRecord.push(copy);
       if (outcome === 'went_unheard') throw new Error('socket hang up');
+      if (outcome === 'hangs') return new Promise<never>(() => {});
       // IMAP and Graph return the Message-ID itself; Gmail its own id.
       const message_id = options.rfcIds ? `<${copy.message_id}>` : copy.gmail_id;
       return { source_id: copy.gmail_id, message_id, sent_at: copy.sent_at, thread_id: msg.thread_id ?? 'new' };
     },
     lookupSentByReconciliationId: async (query: MailSentReconciliationQuery): Promise<MailSentReconciliationResult> => {
       lookups.push(query);
+      if (lookupGate !== undefined) await lookupGate;
       const copy = showSentRecord
         ? sentRecord.find((entry) => entry.msg.reconciliation_id === query.reconciliation_id
           && entry.msg.subject === query.subject && entry.msg.to[0] === query.recipient)
@@ -309,6 +315,12 @@ const harness = (options: {
     answers: answers!,
     setAnswer: (text: string) => { answerText = text; },
     hideSentRecord: (hidden: boolean) => { showSentRecord = !hidden; },
+    /** Hold the Sent record's lookups; the returned function lets them answer. */
+    holdLookups: (): (() => void) => {
+      let release!: () => void;
+      lookupGate = new Promise<void>((resolve) => { release = resolve; });
+      return () => { lookupGate = undefined; release(); };
+    },
     setCanSend: (can: boolean) => { canSend = can; },
     advance: (ms: number) => { skew += ms; },
   };
@@ -616,6 +628,102 @@ describe('D-318 step 5 — the answer goes back by email', () => {
     again.start();
     await eventually(() => expect(again.get(answer)?.state).toBe('sent'));
     expect(h.sends).toHaveLength(1);
+  });
+
+  /** ⛔ A drain step awaits `dispose`, with 5 s; one email send can take far
+   *  longer, and the process exits right after the drain anyway. */
+  it('a dispose waits no longer than the grace for a send that never answers; the next start settles it by the Sent record', async () => {
+    const h = harness();
+    h.outcomes.push('hangs');
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.sends).toHaveLength(1));
+    // Marked before the send, so a stop cannot leave it unaccounted for.
+    expect(h.answers.get(answer)?.state).toBe('sending');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let disposed = false;
+    const disposing = h.answers.dispose().then(() => { disposed = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+      for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(disposed).toBe(true);
+    await disposing;
+
+    // The restart: whether it went is the Sent record's to say, never a second send's.
+    const again = composeMailChatAnswers({
+      db: h.db, chatStore: h.store, door: h.door, mailboxes: () => [h.chatMailbox] as never, requests: h.proof,
+      conversations: h.conversations, claims: createMailSendClaimStore(h.db),
+    })!;
+    cleanup.push(() => again.dispose());
+    again.start();
+    await eventually(() => expect(again.get(answer)?.state).toBe('sent'));
+    expect(h.sends).toHaveLength(1);
+  });
+
+  it('a dispose gives a notice push in flight the longer grace, then stops waiting: marked given, it is never given again', async () => {
+    const h = harness();
+    h.outcomes.push('refused', 'refused', 'refused', 'refused');
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: one', body: 'First.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('pending'));
+    let pushes = 0;
+    let releasePush: () => void = () => {};
+    h.answers.bindNotify(() => {
+      pushes += 1;
+      return new Promise<void>((resolve) => { releasePush = resolve; });
+    });
+    h.advance(MAIL_CHAT_ANSWER_GIVE_UP_MS + 1);
+    void h.answers.tick();
+    await eventually(() => expect(pushes).toBe(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let disposed = false;
+    const disposing = h.answers.dispose().then(() => { disposed = true; });
+    try {
+      // Longer than a send gets…
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+      for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(disposed).toBe(false);
+      // …and no longer than its own grace: a drain step has 5 s.
+      await vi.advanceTimersByTimeAsync(PUSH_GRACE_MS - STOP_GRACE_MS);
+      for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(disposed).toBe(true);
+    await disposing;
+    expect(h.answers.get(answer)?.state).toBe('failed');
+    releasePush();
+  });
+
+  it('a dispose that comes while the Sent record is being asked starts no send after the answer comes', async () => {
+    const h = harness();
+    h.outcomes.push('lost');
+    h.hideSentRecord(true);
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('unknown'));
+    // The owner says it did not go, so the next attempt would send it.
+    const claims = createMailSendClaimStore(h.db);
+    const claim = claims.get(h.answers.get(answer)!.reconciliation_id)!;
+    claims.decideByOwner({ reconciliation_id: claim.reconciliation_id, expected_revision: claim.revision, went_out: false, now: Date.now() });
+
+    const release = h.holdLookups();
+    const asked = h.lookups.length;
+    h.advance(MAIL_CHAT_ANSWER_RETRY_MS[0]!);
+    const round = h.answers.tick();
+    await eventually(() => expect(h.lookups.length).toBe(asked + 1));
+    const disposing = h.answers.dispose();
+    release();
+    await disposing;
+    await round;
+    // Asked, then stopped: still the one send, and still for the Sent record to settle.
+    expect(h.sends).toHaveLength(1);
+    expect(h.answers.get(answer)?.state).toBe('unknown');
   });
 });
 

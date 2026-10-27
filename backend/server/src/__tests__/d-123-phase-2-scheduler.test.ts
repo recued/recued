@@ -506,7 +506,11 @@ describe('createHousekeepingScheduler', () => {
     expect(clearTimer).toHaveBeenCalledWith('token');
   });
 
-  it('serializes concurrent Run-now cycles and drains the queued work on stop', async () => {
+  // ⛔ THIS TEST USED TO PIN THAT A STOP DRAINED THE QUEUED WORK — the second
+  // Run-now ran after the stop and the stop waited for it. That is what let a
+  // restart's 5 s `pause_scheduler` step run out (2026-10-26): a stop now waits
+  // only for the cycle in flight, and a cycle asked for before it never starts.
+  it('serializes concurrent Run-now cycles, and a stop starts none of the queued ones', async () => {
     const { config, state } = setupBalanced();
     const releases: Array<() => void> = [];
     const calls: number[] = [];
@@ -535,15 +539,16 @@ describe('createHousekeepingScheduler', () => {
 
     let stopped = false;
     const stopping = sched.stop().then(() => { stopped = true; });
+    // The cycle in flight is still waited for.
+    await Promise.resolve();
+    expect(stopped).toBe(false);
     releases[0]!();
     await first;
-    await Promise.resolve();
-    expect(calls).toEqual([1, 2]);
-    expect(stopped).toBe(false);
-
-    releases[1]!();
-    await Promise.all([first, second, stopping]);
+    await Promise.all([second, stopping]);
     expect(stopped).toBe(true);
+    // The queued Run-now never stepped its task.
+    expect(calls).toEqual([1]);
+    expect((await second).tasks_stepped).toBe(0);
   });
 
   it('recovers the idle probe after a pre-task cycle failure', async () => {

@@ -9,6 +9,7 @@ import { writeFileAtomicSync } from '../durable-fs.js';
 import { archiveImportOperationId } from './archive-import-receipts.js';
 import { createRemoteBackupStore } from './remote-backup-store.js';
 import { createRestoreDrillStore } from './restore-drill-store.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 const HOUR = 3_600_000, DAY = 24 * HOUR;
 const KINDS: ArchiveBackupHealthAlertKind[] = ['backup_overdue', 'recovery_stale', 'evidence_unavailable'];
@@ -187,7 +188,10 @@ export const createBackupHealth = (options: {
       if (!active) active = deliver().catch(() => { /* Keep durable pending intent; the next tick retries. */ }).finally(() => { active = undefined; });
       return active;
     },
-    async stop(): Promise<void> { stopped = true; await Promise.allSettled([active]); },
+    /** ⛔ BOUNDED, for a restart's 5 s drain step: what a stop cuts short is
+     *  an alert push, whose attempt is recorded before it is sent, so it is tried again an hour later. A pause or a maintenance window waits for all of it (`settled`). */
+    async stop(): Promise<void> { stopped = true; await settleWithin(Promise.allSettled([active]), STOP_GRACE_MS); },
+    async settled(): Promise<void> { await Promise.allSettled([active]); },
     resume(): void { stopped = false; },
   };
 };

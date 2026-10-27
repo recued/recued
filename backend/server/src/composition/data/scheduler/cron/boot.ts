@@ -64,6 +64,9 @@ export const bootCronScheduler = (
       const current = handle;
       if (current) await current.stop();
     },
+    // The stop waits for a tick at most its grace; a pause and a maintenance
+    // window wait for the runs it fired as well.
+    settled: async () => { await handle?.settled?.(); },
   });
 
   return {

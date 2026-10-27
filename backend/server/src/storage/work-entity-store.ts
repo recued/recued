@@ -26,6 +26,7 @@ import {
   type FtsWordCheck,
 } from '@recued/fts';
 import type Database from 'better-sqlite3';
+import type { AssetWriterDeliveryOutcome } from '@recued/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJsonString, canonicalRecipeDefinition } from '@recued/recipes';
 import { readAssetTypeSearchTerms } from '../asset-search-terms.js';
@@ -678,6 +679,12 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
       id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, actor_ref TEXT NOT NULL,
       source_ref TEXT NOT NULL, fields TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
       UNIQUE(asset_id, actor_ref, source_ref)
+    );
+    CREATE TABLE IF NOT EXISTS asset_observation_delivery (
+      binding_id TEXT NOT NULL, path TEXT NOT NULL,
+      at INTEGER NOT NULL, observation_at INTEGER NOT NULL, outcome TEXT NOT NULL, run_id TEXT,
+      accepted_at INTEGER, accepted_observation_at INTEGER, accepted_run_id TEXT,
+      PRIMARY KEY(binding_id, path)
     );
     CREATE TABLE IF NOT EXISTS asset_reading_history (
       asset_id TEXT NOT NULL, field TEXT NOT NULL, as_of INTEGER NOT NULL,
@@ -2446,7 +2453,7 @@ export interface WorkEntityStore {
   assetObservationHandoffs(asset_id: string, limit?: number): Array<{ id: string; path: string; at: number;
     value: AssetReading | AssetCondition | null; source: Asset['field_sources'][string] }>;
   writeAssetObservations(input: { binding_id: string; actor_ref: string; recipe_hash?: string;
-    readings?: Record<string, AssetReading>; observations?: Record<string, Omit<AssetCondition, 'source'>> }, now?: number): { asset: Asset; changed_fields: string[]; prior?: Asset };
+    readings?: Record<string, AssetReading>; observations?: Record<string, Omit<AssetCondition, 'source'>> }, now?: number, runId?: string): { asset: Asset; changed_fields: string[]; prior?: Asset };
   assetReadingHistory(asset_id: string, field: string, limit?: number): AssetReading[];
   /** Fresh histories for distinct asset/field pairs, including empty results.
    * Each pair keeps the individual read's newest-first order and limit. */
@@ -3326,6 +3333,7 @@ export const createWorkEntityStore = (
       ? db.prepare(`UPDATE ${ASSET_TABLE} SET deleted_at=?,sync_state='tombstoned',updated_at=? WHERE id=?`).run(now, now, id)
       : db.prepare(`DELETE FROM ${ASSET_TABLE} WHERE id=?`).run(id);
     if (!result.changes) return false;
+    db.prepare('DELETE FROM asset_observation_delivery WHERE binding_id IN (SELECT id FROM asset_observation_binding WHERE asset_id=?)').run(id);
     db.prepare('DELETE FROM asset_observation_binding WHERE asset_id=?').run(id);
     db.prepare('DELETE FROM asset_reading_history WHERE asset_id=?').run(id);
     db.prepare('DELETE FROM asset_observation_handoff WHERE asset_id=?').run(id);
@@ -3379,6 +3387,7 @@ export const createWorkEntityStore = (
   const moveAssetObservations: WorkEntityStore['moveAssetObservations'] = (from, to) => db.transaction(() => {
     if (from === to || !readAsset(to)) throw new AssetValidationError('Move observations to another live asset');
     db.prepare('UPDATE OR IGNORE asset_observation_binding SET asset_id=? WHERE asset_id=?').run(to, from);
+    db.prepare('DELETE FROM asset_observation_delivery WHERE binding_id IN (SELECT id FROM asset_observation_binding WHERE asset_id=?)').run(from);
     db.prepare('DELETE FROM asset_observation_binding WHERE asset_id=?').run(from);
     db.prepare('UPDATE OR IGNORE asset_reading_history SET asset_id=? WHERE asset_id=?').run(to, from);
     db.prepare('DELETE FROM asset_reading_history WHERE asset_id=?').run(from);
@@ -3423,7 +3432,8 @@ export const createWorkEntityStore = (
     (db.prepare('SELECT id,path,at,receipt FROM asset_observation_handoff WHERE asset_id=? ORDER BY at DESC,rowid DESC LIMIT ?')
       .all(id, Math.min(1000, Math.max(1, limit))) as Array<{ id: string; path: string; at: number; receipt: string }>)
       .map(({ receipt, ...row }) => ({ ...row, ...JSON.parse(receipt) as Pick<ReturnType<WorkEntityStore['assetObservationHandoffs']>[number], 'value' | 'source'> }));
-  const writeAssetObservations: WorkEntityStore['writeAssetObservations'] = (input, now = Date.now()) => db.transaction(() => {
+  const writeAssetObservations: WorkEntityStore['writeAssetObservations'] = (input, now = Date.now(), runId) => db.transaction(() => {
+    if (!Number.isSafeInteger(now) || now < 0 || now > 8.64e15 || runId !== undefined && (typeof runId !== 'string' || !runId.trim() || runId.length > 1024)) throw new AssetValidationError('Invalid native submission identity or time');
     if (Object.keys(input).some(key => !['binding_id', 'actor_ref', 'recipe_hash', 'readings', 'observations'].includes(key))) throw new AssetValidationError('The observation op writes only observations and readings');
     for (const kind of ['readings', 'observations'] as const) if (input[kind] !== undefined
       && (!input[kind] || typeof input[kind] !== 'object' || Array.isArray(input[kind]))) throw new AssetValidationError(`${kind} must be a field map`);
@@ -3440,6 +3450,23 @@ export const createWorkEntityStore = (
     const asset = readAsset(row.asset_id);
     if (!asset || asset.deleted_at != null || asset.sync_state !== 'live' || !['active', 'lent'].includes(asset.status)) throw new AssetValidationError('Observations cannot change a closed asset');
     const draft = structuredClone(asset); const changed_fields: string[] = [];
+    const deliveries: Array<{ path: string; observation_at: number; outcome: AssetWriterDeliveryOutcome }> = [];
+    // Same transaction as acceptance: a later invalid field or persistence
+    // failure cannot leave a receipt for a submission that rolled back.
+    const saveDeliveries = (): void => {
+      if (!deliveries.length) return;
+      const write = db.prepare(`INSERT INTO asset_observation_delivery(binding_id,path,at,observation_at,outcome,run_id,accepted_at,accepted_observation_at,accepted_run_id)
+          VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(binding_id,path) DO UPDATE SET
+          at=excluded.at,observation_at=excluded.observation_at,outcome=excluded.outcome,run_id=excluded.run_id,
+          accepted_at=coalesce(excluded.accepted_at,asset_observation_delivery.accepted_at),
+          accepted_observation_at=coalesce(excluded.accepted_observation_at,asset_observation_delivery.accepted_observation_at),
+          accepted_run_id=CASE WHEN excluded.accepted_at IS NOT NULL THEN excluded.accepted_run_id ELSE asset_observation_delivery.accepted_run_id END`);
+      for (const receipt of deliveries) {
+        const accepted = receipt.outcome === 'accepted' || receipt.outcome === 'confirmed';
+        write.run(binding.id, receipt.path, now, receipt.observation_at, receipt.outcome, runId ?? null,
+            accepted ? now : null, accepted ? receipt.observation_at : null, accepted ? runId ?? null : null);
+      }
+    };
     const readingsToSave = new Set<string>(); let refreshed = false;
     for (const kind of ['readings', 'observations'] as const) for (const [field, raw] of Object.entries(input[kind] ?? {})) {
       const path = `${kind}.${field}`;
@@ -3451,10 +3478,11 @@ export const createWorkEntityStore = (
       const candidate = structuredClone(draft);
       (candidate[kind] as Record<string, unknown>)[field] = value;
       validateAsset(candidate);
+      const settled = (outcome: AssetWriterDeliveryOutcome): void => { deliveries.push({ path, observation_at: value.as_of, outcome }); };
       const handoff = draft.field_sources[path]?.kind === 'owner' ? draft.automatic_updates?.[path] : undefined;
-      if ((draft.field_sources[path] && ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] > ASSET_SOURCE_RANKS.observation && handoff === undefined)
-        || (handoff !== undefined && value.as_of <= handoff)
-        || (draft[kind][field] && value.as_of < draft[kind][field]!.as_of)) continue;
+      if (draft.field_sources[path] && ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] > ASSET_SOURCE_RANKS.observation && handoff === undefined) { settled(draft.field_sources[path]!.kind === 'owner' ? 'manual_priority' : 'protected_source'); continue; }
+      if (handoff !== undefined && value.as_of <= handoff) { settled('before_handoff'); continue; }
+      if (draft[kind][field] && value.as_of < draft[kind][field]!.as_of) { settled('older_observation'); continue; }
       const prior = draft[kind][field];
       const semantic = (item: unknown): string => {
         if (!item || typeof item !== 'object') return JSON.stringify(item);
@@ -3466,6 +3494,9 @@ export const createWorkEntityStore = (
           (draft[kind] as Record<string, unknown>)[field] = value; refreshed = true;
           draft.field_sources[path] = { kind: 'observation', ref: binding.source_ref, at: now };
           if (kind === 'readings') readingsToSave.add(field);
+          settled('confirmed');
+        } else {
+          settled('unchanged');
         }
         continue;
       }
@@ -3478,13 +3509,15 @@ export const createWorkEntityStore = (
       }
       changed_fields.push(path);
       if (kind === 'readings') readingsToSave.add(field);
+      settled('accepted');
     }
-    if (!changed_fields.length && !refreshed) return { asset, changed_fields };
+    if (!changed_fields.length && !refreshed) { saveDeliveries(); return { asset, changed_fields }; }
     // Fresh confirmation advances as-of/history, without changing the semantic
     // update timestamp or publishing a revision. Older contradictory readings
     // are still rejected after a fresh confirmation.
     const written = persistAsset(draft, asset, changed_fields.length ? now : asset.updated_at);
     for (const field of readingsToSave) saveAssetReading(written.id, field, written.readings[field]!);
+    saveDeliveries();
     if (!changed_fields.length) return { asset: written, changed_fields };
     return { asset: written, changed_fields, prior: asset };
   })();

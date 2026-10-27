@@ -1263,7 +1263,9 @@ describe('D-174 contracts route — list → detail shell', () => {
     const snippets = new Map(
       buildMcpClientSnippets('wss://alice.example/ws').map((snippet) => [snippet.id, snippet.body]),
     );
-    expect([...snippets.keys()]).toEqual(['claude', 'claude-code', 'cursor', 'cline', 'codex', 'custom']);
+    expect([...snippets.keys()]).toEqual([
+      'claude', 'claude-code', 'cursor', 'cline', 'codex', 'openclaw', 'custom',
+    ]);
     // Claude Desktop's config file starts local servers only: Recued's stdio
     // mode, by full path, with the door's key in the environment. No address.
     const claude = JSON.parse(snippets.get('claude')!).mcpServers.recued;
@@ -1280,6 +1282,20 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(snippets.get('claude-code')).toMatch(
       /^claude mcp add --transport http recued https:\/\/alice\.example\/mcp --header "Authorization: Bearer /,
     );
+    // OpenClaw: the key goes in the .env its gateway service loads; the command
+    // saves only OpenClaw's placeholder for it, so the key never reaches the
+    // command line or OpenClaw's config.
+    const openclaw = snippets.get('openclaw')!.split('\n');
+    expect(openclaw[0]).toBe('# ~/.openclaw/.env');
+    expect(openclaw[1]).toBe("RECUED_MCP_TOKEN=<this contract's key>");
+    expect(openclaw.at(-1)).toBe('openclaw daemon restart');
+    const set = openclaw.find((line) => line.startsWith('openclaw mcp set recued '))!;
+    expect(set).not.toContain('<this contract');
+    expect(JSON.parse(set.slice("openclaw mcp set recued '".length, -1))).toEqual({
+      url: 'https://alice.example/mcp',
+      transport: 'streamable-http',
+      headers: { Authorization: 'Bearer ${RECUED_MCP_TOKEN}' },
+    });
   });
 
   it('disposes cleanly (removes the route root)', async () => {
@@ -1619,15 +1635,10 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(route.getActiveTab()).toBe('connect');
     expect(collectByAttr(root, CONTRACTS_ROUTE_CONNECT_HOST_ATTR)).toHaveLength(1);
     const snippets = collectByAttr(root, CONTRACTS_ROUTE_SNIPPET_ATTR);
-    expect(snippets).toHaveLength(6);
-    expect(snippets.map((snippet) => snippet.children[0]?.tagName)).toEqual([
-      'H3',
-      'H3',
-      'H3',
-      'H3',
-      'H3',
-      'H3',
-    ]);
+    // One per client `buildMcpClientSnippets` knows, each under its own heading.
+    expect(snippets).toHaveLength(buildMcpClientSnippets('ws://127.0.0.1:3001/ws').length);
+    expect(snippets).toHaveLength(7);
+    expect(snippets.every((snippet) => snippet.children[0]?.tagName === 'H3')).toBe(true);
     // No key callers in this harness → the key panel degrades to a note (it
     // mounts for real in the D-327 coverage).
     expect(collectByAttr(root, CONTRACTS_ROUTE_UNAVAILABLE_ATTR)).toHaveLength(1);

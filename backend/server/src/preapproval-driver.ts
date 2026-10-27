@@ -26,6 +26,29 @@ export const createPreapprovalDriver = (deps: {
   ) => Promise<void>;
 }) => {
   const triggerCandidates = new WeakMap<object, { occurrence: TriggerOccurrence; entered: boolean }>();
+  /** ⛔ A DRAINING SERVER CLAIMS NOTHING. `handleExecute` refuses every run
+   *  once the restart drain begins (`draining`), and a claim is durable: one
+   *  spent on a refused run is finished `failed` and retired, so the owner's
+   *  approval would be used up by the restart. Unclaimed, the occurrence is
+   *  still pending, and the next boot's pump runs it. Asked before EVERY claim,
+   *  not once per sweep: a sweep's earlier runs can outlast the start of a drain.
+   *  A drain that begins in the instant between this check and the run's own
+   *  entry check refuses a claimed run: nothing ran, so the claim is handed
+   *  back for the same occurrence (`handBackRefused`) rather than failed. */
+  const draining = (): boolean => deps.execution.isDraining?.() === true;
+  /** The run was refused at entry because the server is restarting. */
+  const refusedByRestart = (error: unknown): boolean => error instanceof RpcError && error.code === 'draining';
+  /** Finish a claim whose run threw — unless the restart refused it, which
+   *  hands the approval back unused (D-261 amendment 2026-10-26). */
+  const handBackRefused = async (handle: object, error: unknown): Promise<void> => {
+    if (refusedByRestart(error) && await deps.runtime.handBack(handle)) return;
+    await deps.runtime.finish(handle, 'failed');
+  };
+  const refuseWhileDraining = (): void => {
+    if (draining()) {
+      throw new RpcError('draining', 'The server is restarting; the reviewed run waits for it.', 503);
+    }
+  };
   const runReviewedTrigger = async (
     futureRef: string,
     observe: Pick<InternalExecuteOverrides, 'onRunMinted' | 'beforeRunStart'> = {},
@@ -35,6 +58,7 @@ export const createPreapprovalDriver = (deps: {
       const { candidate, event } = await deps.storage.triggerIngress.read(futureRef);
       const selected = deps.activations.resolveAutomationActivation('next_trigger', candidate.trigger_id, false);
       if (selected.kind !== 'preapproved' || selected.future_execution_ref !== futureRef || selected.status !== 'active') return null;
+      refuseWhileDraining();
       const claimed = await deps.runtime.claim({ future_execution_ref: futureRef, occurrence_key: candidate.event_key,
         occurrence_sequence: selected.selector_sequence + 1, payload_hash: candidate.payload_hash });
       handle = claimed.handle;
@@ -47,7 +71,7 @@ export const createPreapprovalDriver = (deps: {
         context: triggerEventContext(candidate.trigger_id, event),
       }, { run_id: claimed.run_id, preapproval_run: handle, ...observe });
     } catch (error) {
-      if (handle) await deps.runtime.finish(handle, 'failed');
+      if (handle) await handBackRefused(handle, error);
       if (error instanceof RpcError && ['preapproval_already_claimed', 'preapproval_cancelled',
         'preapproval_expired', 'preapproval_stale', 'preapproval_authority_changed'].includes(error.code)) return null;
       throw error;
@@ -112,11 +136,15 @@ export const createPreapprovalDriver = (deps: {
    * process restart cannot replace it with a later event. The same root CAS
    * arbitrates this recovery sweep against the live dispatcher. */
   async tickTriggers(): Promise<void> {
-    if (!deps.storage.isReady()) return;
+    if (!deps.storage.isReady() || draining()) return;
     deps.storage.repository.expire();
     for (const futureRef of deps.storage.triggerIngress.pending()) {
+      // The rest wait for the next boot.
+      if (draining()) return;
       try { await recoverTrigger(futureRef); }
       catch (error) {
+        // Refused by the restart: handed back, not failed.
+        if (refusedByRestart(error)) return;
         if (deps.onError) deps.onError(futureRef, error);
         else console.warn('[preapproval] trigger execution failed', futureRef, error);
       }
@@ -172,27 +200,39 @@ export const createPreapprovalDriver = (deps: {
       }
     }
     try {
+      refuseWhileDraining();
       const candidate = await deps.runtime.autoRunCandidate(selected.future_execution_ref);
       const plan = candidate.plan;
       // D-319 — the reviewed run is the dish's run: attributed to it (the
       // reviewed settings are replayed, never re-merged — a run with a
       // `run_id` binds its dish for attribution only).
-      return await handleExecute(deps.execution, { recipe_id: plan.recipe.recipe_id,
-        config: plan.recipe_snapshots[0]!.effective_config, trigger_source: 'auto_run',
-        execution_source: plan.origin.source, ...candidate.origin,
-        dish_id: dishId,
-        ...(request.process_id ? { process_id: request.process_id } : {}),
-      }, { run_id: candidate.run_id, preapproval_candidate: candidate.handle });
+      try {
+        return await handleExecute(deps.execution, { recipe_id: plan.recipe.recipe_id,
+          config: plan.recipe_snapshots[0]!.effective_config, trigger_source: 'auto_run',
+          execution_source: plan.origin.source, ...candidate.origin,
+          dish_id: dishId,
+          ...(request.process_id ? { process_id: request.process_id } : {}),
+        }, { run_id: candidate.run_id, preapproval_candidate: candidate.handle });
+      } catch (error) {
+        // Refused at entry: its qualification poll never ran and claimed
+        // nothing, so it is closed — it would otherwise count against the
+        // approval's open polls for good — and the approval stays armed.
+        if (refusedByRestart(error)) await deps.runtime.finish(candidate.handle, 'failed');
+        throw error;
+      }
     } finally {
       deps.activations.retire(selected.future_execution_ref);
       await deps.pumpOutbox?.();
     }
   },
   async tickSchedules(now: number): Promise<string[]> {
-    if (!deps.storage.isReady()) return [];
+    if (!deps.storage.isReady() || draining()) return [];
     deps.storage.repository.expire();
     await deps.pumpOutbox?.();
+    // Each loop below asks again before it claims (`draining`): the runs of
+    // the loops before it can outlast the start of a drain.
     for (const checkpointId of deps.storage.repository.pendingNestedParents()) {
+      if (draining()) break;
       let resumed: Awaited<ReturnType<typeof deps.runtime.resumeReadyParent>> | undefined;
       try {
         resumed = await deps.runtime.resumeReadyParent(checkpointId);
@@ -210,8 +250,10 @@ export const createPreapprovalDriver = (deps: {
     // The schedule pump is also the recovery clock for durably received event
     // candidates; a vanished in-memory dispatcher queue is not a new event.
     for (const futureRef of deps.storage.triggerIngress.pending()) {
+      if (draining()) break;
       try { await recoverTrigger(futureRef); }
       catch (error) {
+        if (refusedByRestart(error)) break;
         if (deps.onError) deps.onError(futureRef, error);
         else console.warn('[preapproval] trigger recovery failed', futureRef, error);
       }
@@ -224,6 +266,7 @@ export const createPreapprovalDriver = (deps: {
       const selected = deps.activations.resolveAutomationActivation(managed.target_kind, managed.target_key, false);
       if (selected.kind !== 'preapproved' || selected.status !== 'active'
         || selected.due_at === null || selected.due_at > now) continue;
+      if (draining()) break;
       let handle: object | undefined;
       try {
         const claimed = await deps.runtime.claim({ future_execution_ref: selected.future_execution_ref,
@@ -239,11 +282,11 @@ export const createPreapprovalDriver = (deps: {
         }, { run_id: claimed.run_id, preapproval_run: claimed.handle });
         fired.push(managed.target_key);
       } catch (error) {
-        if (handle) await deps.runtime.finish(handle, 'failed');
+        if (handle) await handBackRefused(handle, error);
         // A competing worker, cancellation or material drift never falls
         // through to the ordinary scheduler. The durable state explains why.
         if (!(error instanceof RpcError && ['preapproval_already_claimed', 'preapproval_cancelled',
-          'preapproval_expired', 'preapproval_stale', 'preapproval_authority_changed'].includes(error.code))) {
+          'preapproval_expired', 'preapproval_stale', 'preapproval_authority_changed', 'draining'].includes(error.code))) {
           if (deps.onError) deps.onError(managed.future_execution_ref, error);
           else console.warn('[preapproval] scheduled execution failed', managed.future_execution_ref, error);
         }

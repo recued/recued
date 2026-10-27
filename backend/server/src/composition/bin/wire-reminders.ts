@@ -62,7 +62,7 @@ export const wireReminderDispatchers = (deps: ReminderWiringDeps): ReminderDispa
  *  wait on an old one. */
 export const wireReminderDelivery = async (
   deps: ReminderWiringDeps & {
-    registry: Pick<BackgroundServiceRegistry, 'registerInterval'>;
+    registry: Pick<BackgroundServiceRegistry, 'registerInterval' | 'register'>;
     notification: NotificationDeps;
     isVaultUnlocked?: () => boolean;
     workEntityStore?: ReminderTaskMoveDeps['workEntityStore'];
@@ -105,5 +105,9 @@ export const wireReminderDelivery = async (
       await delivery.tick();
     },
   });
+  // ⛔ The interval's own stop only waits for its tick. This one ends the check
+  // in progress (no further send), so that wait ends within the grace too: the
+  // shutdown's `stop_timers` starts both at once.
+  deps.registry.register({ name: 'reminders-drain', kind: 'emitter', stop: () => delivery.stop() });
   return delivery;
 };

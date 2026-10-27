@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   REMINDER_HISTORY_MS,
   REMINDER_PENDING_MAX,
@@ -20,6 +20,7 @@ import {
   type QuietHoursPolicy,
 } from '@recued/contracts';
 
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createReminderDelivery, type ReminderMessage } from '../reminders/reminder-delivery.js';
 import { makeReminderHandlers } from '../reminders/reminder-rpc-handler.js';
 import { ReminderInputError, createReminderDispatchers } from '../reminders/reminder-service.js';
@@ -295,6 +296,58 @@ describe('ringing', () => {
     release();
     expect(await first).toMatchObject({ delivered: 1 });
     expect(sent).toHaveLength(1);
+  });
+
+  /** ⛔ A drain step awaits the stop (and the minute timer awaits its tick)
+   *  with 5 s, while a check sends up to 50 reminders in turn, each through
+   *  every channel. The stop must not wait for them, and must lose none. */
+  it('a stop sends nothing more and waits no longer than the grace; what it cut short rings after the restart', async () => {
+    const a = await reminders().reminderCreate({ text: 'a', at: NOW });
+    const b = await reminders().reminderCreate({ text: 'b', at: NOW + 1 });
+    clock = NOW + MINUTE;
+    const held = createReminderDelivery({
+      store,
+      // A channel that never answers.
+      send: (message) => {
+        sent.push(message);
+        return new Promise<{ delivered_to: readonly string[] }>(() => {});
+      },
+      isQuiet: () => false,
+      now: () => clock,
+    });
+    const ticking = held.tick();
+    expect(sent).toHaveLength(1);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let stopped = false;
+    let ticked = false;
+    const stopping = held.stop().then(() => { stopped = true; });
+    void ticking.then(() => { ticked = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+      for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(stopped).toBe(true);
+    // The minute timer's tick is released too: the registry waits for it in
+    // the same drain step.
+    expect(ticked).toBe(true);
+    await stopping;
+    // b never went out; a, whose send never answered, is still pending.
+    expect(sent).toHaveLength(1);
+    expect(store.get(a.reminder.reminder_id)).toMatchObject({ state: 'pending', attempts: 1 });
+    expect(store.get(b.reminder.reminder_id)).toMatchObject({ state: 'pending', attempts: 0 });
+    // A stopped service starts no check.
+    expect(await held.tick()).toMatchObject({ due: 0, delivered: 0 });
+
+    // After the restart, both ring.
+    sent.length = 0;
+    clock += MINUTE;
+    expect(await delivery().tick()).toMatchObject({ due: 2, delivered: 2 });
+    expect(sent).toHaveLength(2);
+    expect(store.get(a.reminder.reminder_id)?.state).toBe('delivered');
+    expect(store.get(b.reminder.reminder_id)?.state).toBe('delivered');
   });
 
   it('keeps history 30 days, then drops it', async () => {

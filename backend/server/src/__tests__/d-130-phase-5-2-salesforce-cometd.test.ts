@@ -61,6 +61,7 @@ import {
   createConnectionStore,
   type ConnectionStoreSqlite,
 } from '../storage/connection-store.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 // ────────────────────────────────────────────────────────────────
 // Shared fixtures
@@ -892,5 +893,202 @@ describe('D-130 P5.2 — wireSalesforceCometDLifecycle store-observer pattern', 
     await Promise.resolve();
     expect(lookupConnection).toHaveBeenCalledTimes(1);
     expect(handle.listActive()).toEqual([]);
+  });
+
+  it('stopAll waits for provisioning only up to the grace, and nothing starts after it', async () => {
+    connectionStore.upsert({
+      kind: 'api',
+      name: 'acme',
+      display_name: 'Acme',
+      config_json: JSON.stringify({ base_url: INSTANCE_URL, vendor: 'salesforce' }),
+      auth_ciphertext: 'opaque',
+      enrolled_at: 1,
+      updated_at: 1,
+    });
+    // Provisioning parked on a lookup that never settles — the shape of a
+    // PushTopic call that takes no signal and the provider never answers.
+    let releaseLookup!: (record: ConnectionRecord | null) => void;
+    const lookupConnection = vi.fn(() =>
+      new Promise<ConnectionRecord | null>((resolve) => { releaseLookup = resolve; }));
+    const fetcher = vi.fn<typeof fetch>();
+    const handle = wireSalesforceCometDLifecycle({
+      connectionStore,
+      lookupConnection,
+      refreshAuth: async (connection) => connection.auth,
+      replayIdTracker: createInMemoryReplayIdTracker(),
+      onEvent: async () => {},
+      fetcher,
+      sleep: async () => {},
+    });
+
+    const started = performance.now();
+    await handle.stopAll();
+    const waited = performance.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(STOP_GRACE_MS - 50);
+    expect(waited).toBeLessThan(STOP_GRACE_MS * 3);
+
+    // The provisioning finishes after the drain: it finds admission closed and
+    // starts nothing.
+    releaseLookup(buildConnection());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(handle.listActive()).toEqual([]);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Shutdown — a drain step has 5 s. stop() used to await /meta/disconnect
+// (up to the provider's 30 s) and then an uncancellable reconnect backoff
+// (up to 60 s); a step that runs out makes an update refuse to swap versions.
+// ────────────────────────────────────────────────────────────────
+
+describe('D-130 P5.2 — CometD subscriber stop is bounded', () => {
+  const handshakeOk = (clientId: string): Response => new Response(
+    JSON.stringify([{ channel: '/meta/handshake', successful: true, clientId }]),
+    { status: 200 },
+  );
+  /** A request Salesforce never answers: it settles only when aborted. */
+  const unanswered = (signal: AbortSignal | null | undefined): Promise<Response> =>
+    new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  const isChannel = (init: RequestInit, channel: string): boolean =>
+    typeof init.body === 'string' && init.body.includes(`"channel":"${channel}"`);
+
+  it('does not wait past the grace on a /meta/disconnect Salesforce never answers', async () => {
+    const base = buildBayeuxFetcher();
+    let disconnect: AbortSignal | null | undefined;
+    const fetcher = (async (url: string, init: RequestInit = {}) => {
+      if (isChannel(init, '/meta/disconnect')) {
+        disconnect = init.signal;
+        return unanswered(init.signal);
+      }
+      return base.fetcher(url, init);
+    }) as typeof fetch;
+    let firstCycle!: () => void;
+    const settled = new Promise<void>((resolve) => { firstCycle = resolve; });
+    const subscriber = buildSalesforceCometDSubscriber({
+      connection_name: 'acme',
+      lookupConnection: async () => buildConnection(),
+      refreshAuth: async (c) => c.auth,
+      replayIdTracker: createInMemoryReplayIdTracker(),
+      onEvent: () => {},
+      fetcher,
+      sleep: async () => {},
+      onLongPollSettle: () => firstCycle(),
+    });
+    await subscriber.start();
+    await settled;
+
+    const started = performance.now();
+    await subscriber.stop();
+    expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS * 3);
+    expect(subscriber.state()).toBe('stopped');
+    // And the request is cut off, rather than left for the provider's ceiling.
+    await vi.waitFor(() => expect(disconnect?.aborted).toBe(true));
+  });
+
+  for (const sleepKind of ['default', 'ignores its signal'] as const) {
+    it(`cuts a 60 s reconnect backoff short (${sleepKind} sleep)`, async () => {
+      let backingOff!: () => void;
+      const inBackoff = new Promise<void>((resolve) => { backingOff = resolve; });
+      // The first long-poll fails and so does the reconnect's handshake, which
+      // parks the loop in its backoff.
+      const { fetcher, calls } = buildBayeuxFetcher({
+        onConnect: async () => new Response('unavailable', { status: 503 }),
+        onHandshake: (seq) => (seq === 1 ? handshakeOk('client-1') : new Response('unavailable', { status: 503 })),
+      });
+      let sleepSignal: AbortSignal | undefined;
+      const subscriber = buildSalesforceCometDSubscriber({
+        connection_name: 'acme',
+        lookupConnection: async () => buildConnection(),
+        refreshAuth: async (c) => c.auth,
+        replayIdTracker: createInMemoryReplayIdTracker(),
+        onEvent: () => {},
+        fetcher,
+        reconnectBaseMs: 60_000,
+        ...(sleepKind === 'ignores its signal'
+          ? { sleep: (_ms: number, signal?: AbortSignal) => { sleepSignal = signal; return new Promise<void>(() => {}); } }
+          : {}),
+        log: (_level, message) => { if (message === 'cometd-error: backing off') backingOff(); },
+      });
+      await subscriber.start();
+      await inBackoff;
+      const before = calls.length;
+
+      const started = performance.now();
+      await subscriber.stop();
+      expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS);
+      expect(subscriber.state()).toBe('stopped');
+      if (sleepKind === 'ignores its signal') expect(sleepSignal?.aborted).toBe(true);
+      // The loop is gone: the stop's own disconnect is the only request after it.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(calls.slice(before).map((c) => c.channel)).toEqual(['/meta/disconnect']);
+    });
+  }
+
+  it('aborts a reconnect handshake in flight', async () => {
+    const base = buildBayeuxFetcher({
+      onConnect: async () => new Response('unavailable', { status: 503 }),
+    });
+    let handshakes = 0;
+    let parked: AbortSignal | null | undefined;
+    let inHandshake!: () => void;
+    const reconnecting = new Promise<void>((resolve) => { inHandshake = resolve; });
+    const fetcher = (async (url: string, init: RequestInit = {}) => {
+      if (isChannel(init, '/meta/handshake') && ++handshakes === 2) {
+        parked = init.signal;
+        inHandshake();
+        return unanswered(init.signal);
+      }
+      return base.fetcher(url, init);
+    }) as typeof fetch;
+    const subscriber = buildSalesforceCometDSubscriber({
+      connection_name: 'acme',
+      lookupConnection: async () => buildConnection(),
+      refreshAuth: async (c) => c.auth,
+      replayIdTracker: createInMemoryReplayIdTracker(),
+      onEvent: () => {},
+      fetcher,
+      sleep: async () => {},
+    });
+    await subscriber.start();
+    await reconnecting;
+
+    const started = performance.now();
+    await subscriber.stop();
+    expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS);
+    expect(parked?.aborted).toBe(true);
+  });
+
+  it('delivers no event once stop() has begun — delivery writes to the database', async () => {
+    const event = (replayId: number): SalesforceCometDEvent => ({
+      channel: '/topic/RecuedOpportunityFeed',
+      data: {
+        event: { type: 'created', replayId, createdDate: '2026-05-01T12:00:00Z' },
+        sobject: { Id: `006A${replayId}`, Name: 'Acme', LastModifiedDate: '2026-05-01T12:00:00Z' },
+      },
+    });
+    const { fetcher } = buildBayeuxFetcher({
+      onConnect: async (seq, signal) => (seq === 1
+        ? new Response(JSON.stringify([event(100), event(101), { channel: '/meta/connect', successful: true }]), { status: 200 })
+        : await hangUntilAbort(signal)),
+    });
+    const received: SalesforceCometDEvent[] = [];
+    let stopping: Promise<void> | undefined;
+    const subscriber = buildSalesforceCometDSubscriber({
+      connection_name: 'acme',
+      lookupConnection: async () => buildConnection(),
+      refreshAuth: async (c) => c.auth,
+      replayIdTracker: createInMemoryReplayIdTracker(),
+      // The stop lands while the first event of the batch is being delivered.
+      onEvent: (e) => { received.push(e); stopping ??= subscriber.stop(); },
+      fetcher,
+      sleep: async () => {},
+    });
+    await subscriber.start();
+    await vi.waitFor(() => expect(stopping).toBeDefined());
+    await stopping;
+    expect(received.map((e) => e.data.event.replayId)).toEqual([100]);
   });
 });

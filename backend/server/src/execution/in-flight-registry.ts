@@ -480,6 +480,20 @@ export class InFlightRegistry {
     return 'killed';
   }
 
+  /** Kill every running run, for the restart drain once its grace is up, and
+   *  return how many were killed. The same kill as `kill(run_id)`: subprocesses
+   *  are SIGKILLed and each run's await is abandoned, so the drain does not wait
+   *  on a model, a slow API or a coding agent the process is about to lose
+   *  anyway. A nested run's family is reached through its root and through its
+   *  own entry; the second kill answers `already_terminal`. */
+  killAll(): number {
+    let killed = 0;
+    for (const run_id of [...this.runs.keys()]) {
+      if (this.kill(run_id) === 'killed') killed += 1;
+    }
+    return killed;
+  }
+
   /** Cancel a *queued* call before it dispatches. Delegates to the semaphore +
    *  fans a `cancelled` delta so the active list re-lists. D-181 §7c — does NOT
    *  write a run-level `terminated` marker: a queued-call cancel does not reliably

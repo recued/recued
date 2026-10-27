@@ -44,6 +44,7 @@ import {
   UPDATES_APPLY_CONFIRM_ATTR,
   UPDATES_WEBAPP_VERSION_ATTR,
   UPDATES_APPLY_CANCEL_ATTR,
+  UPDATES_APPLY_WARNING_ATTR,
   UPDATES_AVAILABLE_ATTR,
   UPDATES_CHECK_BTN_ATTR,
   UPDATES_ERROR_ATTR,
@@ -2295,6 +2296,27 @@ describe('an update asks once, in the same words for every release', () => {
     mount.dispose();
   });
 
+  // The restart stops what is still running a few seconds in; the owner hears
+  // that while they can still cancel, and only then.
+  it('says what the restart stops beside Confirm update, and nowhere else', async () => {
+    const h = host();
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE,
+      runApply: vi.fn(async (): Promise<UpdateApplyResponse> => ({ status: 'restarting' })),
+    });
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_WARNING_ATTR)).toBeNull();
+    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_WARNING_ATTR)?.textContent)
+      .toBe('Updating restarts the server: it stops anything still running after a few seconds, '
+        + 'and connected apps reconnect once it is back.');
+    fire(find(h.el, UPDATES_APPLY_CANCEL_ATTR)!, 'click');
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_WARNING_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
   /** Caught by the full-app e2e: "Updating…" is only aria-disabled, so a click
    *  on it still ran the handler and armed the NEXT update mid-run. */
   it('a click on "Updating…" does nothing — it neither applies nor arms the next one', async () => {
@@ -2346,15 +2368,20 @@ describe('after an update, the page says how it went', () => {
   }));
   const target = AVAILABLE.available!.version;
 
-  const runUpdateThroughRestart = async (afterRestart: ReleaseCheckResponse) => {
+  const runUpdateThroughRestart = async (
+    afterRestart: ReleaseCheckResponse,
+    before: ReleaseCheckResponse = AVAILABLE,
+    extra: Partial<Parameters<typeof mountUpdatesPage>[0]> = {},
+  ) => {
     const tabs = sharedServerUpdateTabs();
     const h = host();
     let emit!: (e: { phase: string; status?: string; operation_id?: string }) => void;
-    const runCheck = vi.fn().mockResolvedValueOnce(AVAILABLE).mockResolvedValue(afterRestart);
+    const runCheck = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(afterRestart);
     const mount = mountUpdatesPage({
       host: h.asHost, document: fakeDoc(), runCheck, runApply: accepting,
       serverUpdateTabConvergence: tabs.first,
       updateProgress: { subscribe: (cb) => { emit = cb as typeof emit; return () => {}; } },
+      ...extra,
     });
     await flush();
     pressUpdate(h.el);
@@ -2378,10 +2405,126 @@ describe('after an update, the page says how it went', () => {
     mount.dispose();
   });
 
-  it('a server still on the old version says the update did not take effect', async () => {
+  const fromTerminal = 'If it still does not take effect, run recued stop, then recued update apply, '
+    + 'which says what went wrong, then start the server again.';
+
+  it('a server still on the old version says the update did not take effect, and what to do', async () => {
     const { h, mount } = await runUpdateThroughRestart(AVAILABLE);
     expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
-      `The server is still on ${AVAILABLE.current_version}. The update to ${target} did not take effect.`,
+      `The server is still on ${AVAILABLE.current_version}. The update to ${target} did not take effect. `
+      + 'This version cannot finish an update while an AI app such as Cline or OpenClaw is connected '
+      + `to it, so quit those apps and try the update again. ${fromTerminal}`,
+    );
+    mount.dispose();
+  });
+
+  /** ⛔ Reported 2026-10-26: 26.10.24 → 26.10.25 failed twice with Cline connected
+   *  (its MCP stream held the restart open), and the page said only that the
+   *  update did not take effect. 26.10.25 still waits for open connections, and
+   *  it is the release that runs the next update, so it gets the AI-app advice. */
+  it('names the connected AI apps on the last release whose restart waits for them', async () => {
+    const onLast: ReleaseCheckResponse = {
+      ...AVAILABLE,
+      current_version: '26.10.25',
+      available: { ...AVAILABLE.available!, version: '26.10.26' },
+    };
+    const { h, mount } = await runUpdateThroughRestart(onLast, onLast);
+    expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toContain(
+      'The server is still on 26.10.25. The update to 26.10.26 did not take effect. '
+      + 'This version cannot finish an update while an AI app such as Cline or OpenClaw is connected',
+    );
+    mount.dispose();
+  });
+
+  describe('says why, when the server gives a revert_reason', () => {
+    const later: ReleaseCheckResponse = {
+      ...AVAILABLE,
+      current_version: '26.10.26',
+      available: { ...AVAILABLE.available!, version: '26.10.27' },
+    };
+    const reverted = (revert_reason?: string) => vi.fn(async () => ({
+      status: 'reverted' as const,
+      operation: 'update' as const,
+      ...(revert_reason === undefined ? {} : { revert_reason }),
+    })) as unknown as NonNullable<Parameters<typeof mountUpdatesPage>[0]['runOperationStatus']>;
+    const plain = 'The server is still on 26.10.26. The update to 26.10.27 did not take effect. '
+      + `Try the update again. ${fromTerminal}`;
+
+    it('names the cause, for the exact receipt of this run', async () => {
+      const runOperationStatus = reverted('drain_incomplete');
+      const { h, mount } = await runUpdateThroughRestart(later, later, { runOperationStatus });
+      await flush();
+      expect(runOperationStatus).toHaveBeenCalledTimes(1);
+      expect(runOperationStatus).toHaveBeenCalledWith(expect.stringMatching(/.+/));
+      expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+        'The server is still on 26.10.26. The update to 26.10.27 did not take effect: the server '
+        + 'could not stop what it was running in time to switch versions. Try the update again when '
+        + 'no recipe is running.',
+      );
+      mount.dispose();
+    });
+
+    it('names the program that kept the database open', async () => {
+      const { h, mount } = await runUpdateThroughRestart(later, later, {
+        runOperationStatus: reverted('database_in_use'),
+      });
+      await flush();
+      expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+        'The server is still on 26.10.26. The update to 26.10.27 did not take effect: another '
+        + "program had Recued's database open, such as an AI app's Recued connection (Claude Desktop "
+        + 'starts one). Quit that app and try the update again.',
+      );
+      mount.dispose();
+    });
+
+    it('says the new version did not start, and where the log is', async () => {
+      const { h, mount } = await runUpdateThroughRestart(later, later, {
+        runOperationStatus: reverted('new_version_failed'),
+      });
+      await flush();
+      expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+        'The server is still on 26.10.26. The update to 26.10.27 did not take effect: 26.10.27 did '
+        + 'not start, so the server went back to 26.10.26. Its log, recued-server.log next to its '
+        + 'database, says why.',
+      );
+      mount.dispose();
+    });
+
+    // The server before the code (no reason), `other`, a code this page has
+    // never heard of, and a failed read all leave the line that was already true.
+    it.each([
+      ['an older server sends no reason', reverted()],
+      ['the server says other', reverted('other')],
+      ['a newer server sends a code this page does not know', reverted('a_code_from_later')],
+      ['the read fails', vi.fn(async () => { throw new Error('offline'); }) as never],
+    ])('keeps the plain line when %s', async (_why, runOperationStatus) => {
+      const { h, mount } = await runUpdateThroughRestart(later, later, { runOperationStatus });
+      await flush();
+      expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(plain);
+      mount.dispose();
+    });
+
+    it('does not ask when the update took effect', async () => {
+      const runOperationStatus = reverted('drain_incomplete');
+      const { mount } = await runUpdateThroughRestart(
+        { ...UP_TO_DATE, current_version: target }, AVAILABLE, { runOperationStatus },
+      );
+      await flush();
+      expect(runOperationStatus).not.toHaveBeenCalled();
+      mount.dispose();
+    });
+  });
+
+  it('a later release that kept its version is told to try again, not to quit its AI apps', async () => {
+    const later: ReleaseCheckResponse = {
+      ...AVAILABLE,
+      current_version: '26.10.26',
+      available: { ...AVAILABLE.available!, version: '26.10.27' },
+    };
+    const { h, mount } = await runUpdateThroughRestart(later, later);
+    expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+      'The server is still on 26.10.26. The update to 26.10.27 did not take effect. '
+      + `Try the update again. ${fromTerminal}`,
     );
     mount.dispose();
   });

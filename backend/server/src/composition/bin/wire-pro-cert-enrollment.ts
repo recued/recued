@@ -52,6 +52,7 @@
 import { hostnameForHandle } from '@recued/contracts';
 
 import type { BackgroundServiceRegistry } from './wire-background-services.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import type { HandleStateStore } from '../../handle/index.js';
 import type { HostnameRegistryStore } from '../../storage/hostname-registry.js';
 import type { InitialAcmeDomainIssuer } from '../../keys/rotation/acme-domain-renewer.js';
@@ -143,13 +144,30 @@ export const composeProCertEnrollment = (deps: ProCertEnrollmentDeps): void => {
   let warmupTimer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
 
+  // ── shutdown ────────────────────────────────────────────────────────
+  //
+  // ⛔ A WARM-UP TICK USED TO RUN DETACHED (`void tick()`), so the registry
+  //    never saw it: a stop could finish while its ACME order was still
+  //    pending, and the row writes after it landed once the database was
+  //    closing. And an interval tick that WAS tracked made the stop wait out the
+  //    whole order — up to `ACME_ISSUANCE_TIMEOUT_MS`, far past a drain step's
+  //    budget. Now every tick goes through `run`, which tracks it; the stop
+  //    aborts the order, waits at most the grace, and a tick that finishes after
+  //    a stop writes nothing.
+  let current: Promise<void> | undefined;      // the tick doing work, if any
+  let issuance: AbortController | undefined;   // its ACME order, if one is out
+  // Resolved once the stop has waited its grace, so the interval's own stop
+  // (which waits for the ticks it handed out) is bounded by it too.
+  let releaseTicks = (): void => {};
+  const ticksReleased = new Promise<void>((resolve) => { releaseTicks = resolve; });
+
   const clearWarmup = (): void => {
     if (warmupTimer !== undefined) { clearTimeout(warmupTimer); warmupTimer = undefined; }
   };
   const scheduleWarmup = (): void => {
     if (stopped || warmupTimer !== undefined) return;
     if (warmupDeadline === null || now() >= warmupDeadline) return;
-    warmupTimer = setTimeout(() => { warmupTimer = undefined; if (!stopped) void tick(); }, WARMUP_INTERVAL_MS);
+    warmupTimer = setTimeout(() => { warmupTimer = undefined; if (!stopped) void run(); }, WARMUP_INTERVAL_MS);
     warmupTimer.unref?.();
   };
 
@@ -173,6 +191,7 @@ export const composeProCertEnrollment = (deps: ProCertEnrollmentDeps): void => {
       if (warmupDeadline === null) warmupDeadline = now() + WARMUP_WINDOW_MS;
 
       const handleState = await deps.handleStateStore.load();
+      if (stopped) return;
       // No handle YET is not "nothing to do" — the sibling provisioner is
       // mid-reserve. Re-tick soon rather than waiting a full interval.
       if (!handleState) { skip('no handle state yet'); scheduleWarmup(); return; }
@@ -247,7 +266,21 @@ export const composeProCertEnrollment = (deps: ProCertEnrollmentDeps): void => {
         return;
       }
 
-      const issued = await issuer.issueInitialDomain({ domain: hostname });
+      const order = new AbortController();
+      issuance = order;
+      let issued: Awaited<ReturnType<InitialAcmeDomainIssuer['issueInitialDomain']>>;
+      try {
+        issued = await issuer.issueInitialDomain({ domain: hostname, signal: order.signal });
+      } finally {
+        issuance = undefined;
+      }
+      // Stopped while the order was out. Its result is either the stop's own
+      // abort, which is not a failure to back off from, or an answer that may
+      // land after the drain has closed the database. Record nothing: the row
+      // stays pending, and the next boot's order returns any certificate the
+      // renewer did store without a second CA order (`issueInitialDomain` is
+      // idempotent on a stored fleet-issued row).
+      if (stopped) return;
       if (!issued.ok) {
         backOff();
         deps.hostnameRegistry.upsert({
@@ -287,6 +320,8 @@ export const composeProCertEnrollment = (deps: ProCertEnrollmentDeps): void => {
           + ` (expires ${new Date(issued.cert_expires_at).toISOString().slice(0, 10)})`,
       );
     } catch (err) {
+      // A stop aborted the order (or closed the store under us): not a fault.
+      if (stopped) return;
       // A thrown tick would surface as an unhandled rejection on the interval.
       // Back off so a persistent fault does not spin.
       backOff();
@@ -299,14 +334,37 @@ export const composeProCertEnrollment = (deps: ProCertEnrollmentDeps): void => {
     }
   };
 
+  /** Every tick, the interval's and the warm-up's alike, starts here. */
+  const run = (): Promise<void> => {
+    // A tick already doing work is the one a stop waits for; a re-entry is a
+    // no-op exactly as `inFlight` makes it inside `tick`.
+    if (stopped || current !== undefined) return Promise.resolve();
+    const work = tick().finally(() => { current = undefined; });
+    current = work;
+    return Promise.race([work, ticksReleased]);
+  };
+
+  const stop = async (): Promise<void> => {
+    stopped = true;
+    clearWarmup();
+    issuance?.abort();
+    if (current !== undefined) await settleWithin(current, STOP_GRACE_MS);
+    releaseTicks();
+  };
+
   deps.registry.registerInterval({
     name: 'pro-cert-enrollment',
     intervalMs,
-    tick,
+    tick: run,
     // Fires inside boot, so the vault gate + warm-up above are what make it
     // meaningful: it returns instantly on a sealed or handle-less server and
     // re-ticks every 2s once both preconditions hold.
     fireImmediate: true,
     onStop: () => { stopped = true; clearWarmup(); },
   });
+  // ⚠ A SECOND ENTRY, not the interval's `onStop`: that runs only after the
+  // interval has waited for its ticks, which is the wait this exists to bound.
+  // Every stop path stops both (`stopAll` begins every matched stop before it
+  // awaits any one), so the order is aborted the moment shutdown begins.
+  deps.registry.register({ name: 'pro-cert-enrollment-order', kind: 'timer', stop });
 };

@@ -74,6 +74,13 @@ export const createAutonomousExecutionControl = (refs: {
     // Stops cron / auto-run / housekeeping schedulers AND the disposes the
     // trigger subscriptions + watch loops (all registered `kind:'scheduler'`).
     await refs.backgroundServices.stopAll({ kind: 'scheduler' });
+    // ⛔ THEN WAIT FOR WHAT THEY HAD STARTED, WITH NO BOUND. Each stop waits
+    // for its in-flight work at most `STOP_GRACE_MS`, for a restart's sake: a
+    // restart kills the runs still going and exits. Nothing kills them here,
+    // and the maintenance window rewrites the database next, so it must be
+    // quiet first — as it was when every stop waited in full. A pause waits the
+    // same way, as it always did.
+    await refs.backgroundServices.settledAll({ kind: 'scheduler' });
   },
   async rearm() {
     // Mirror of `stop()` — rebuild each subsystem the stopAll tore down.

@@ -73,7 +73,7 @@ export type {
 } from '@recued/contracts';
 export { MAIL_SENT_RECONCILIATION_MAX_WINDOW_MS } from '@recued/contracts';
 
-export type MailProviderKind = 'imap' | 'gmail' | 'graph';
+export type MailProviderKind = 'imap' | 'gmail' | 'graph' | 'smtp';
 
 export interface InboundMailAttachmentPart {
   filename: string;
@@ -331,6 +331,8 @@ export interface CanonicalMessage {
   from: string;
   to: string[];
   cc: string[];
+  /** Kept for local SMTP Sent copies; never emitted as an SMTP header. */
+  bcc?: string[];
   subject: string;
   /** Thread identifier (Gmail `threadId`, Graph `conversationId`,
    *  IMAP `References/In-Reply-To` chain). Empty when the provider
@@ -991,6 +993,12 @@ export const createMailSyncOutcomeReporter = (deps: {
   };
 };
 
+/** Trusted server checks, repeated after SMTP journal I/O and before submission. */
+export interface MailDispatchBoundary {
+  revalidate?(): Promise<void>;
+  assertActive(): void;
+}
+
 export interface MailProvider {
   readonly kind: MailProviderKind;
   readonly slug: string;
@@ -1055,7 +1063,13 @@ export interface MailProvider {
    *  provider's Sent folder (passive — Gmail / Graph file
    *  automatically; IMAP+SMTP IMAP-APPENDs after submission per
    *  P1.5). Throws `MAIL_SEND_*` typed errors on failure. */
-  send?(msg: OutgoingMessage): Promise<SentMessageMeta>;
+  send?(msg: OutgoingMessage, boundary?: MailDispatchBoundary): Promise<SentMessageMeta>;
+
+  /** Send-only local history. This is never provider Sent-source proof. */
+  localSent?: {
+    replay(onMessage: (message: CanonicalMessage) => Promise<void>): Promise<void>;
+    acknowledge(sourceId: string): Promise<void>;
+  };
 
   /** D-264 — park a message in the mailbox's own Drafts folder.
    *
@@ -1322,6 +1336,8 @@ export interface SavedDraftMeta {
 }
 
 export interface SentMessageMeta {
+  /** An acknowledged SMTP-only submission to retain in local history. */
+  local_copy?: CanonicalMessage;
   /** Provider-side identifier — Gmail message id, Graph id, or
    *  RFC 5322 Message-Id header for SMTP submission. The
    *  warehouse hashes this into `record_id` when ingesting the

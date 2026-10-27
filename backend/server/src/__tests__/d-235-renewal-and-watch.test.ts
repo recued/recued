@@ -6,7 +6,7 @@
  *  discovered."
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 import {
@@ -28,6 +28,8 @@ import {
   selectRenewableCustomDomains,
   DELEGATION_WATCH_INTERVAL_MS,
 } from '../composition/bin/wire-custom-domain-enrollment.js';
+import type { AcmeManagedDomainIssuer } from '../keys/rotation/acme-domain-renewer.js';
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 const CUSTOM = 'recued.their-domain.com';
 const DDNS = 'alice.recued.net';
@@ -356,17 +358,25 @@ const drive = (opts: {
   delegation?: 'ok' | 'missing' | 'unresolved';
   subscription_active?: boolean;
   now?: () => number;
+  /** Replaces the issuer below, whose orders both answer `ok` at once. */
+  issuer?: AcmeManagedDomainIssuer;
+  /** Replaces the preflight below, which answers at once. */
+  runPreflight?: (hostname: string) => Promise<CustomDomainPreflightResult>;
 }) => {
   const store = newStore();
   opts.seed(store);
   const intervals: FakeInterval[] = [];
+  const stops: Array<() => Promise<void> | void> = [];
   const issued: string[] = [];
   const renewedCalls: string[] = [];
   const preflights: string[] = [];
   composeCustomDomainEnrollment({
-    registry: { registerInterval: (s: FakeInterval) => intervals.push(s) } as never,
+    registry: {
+      registerInterval: (s: FakeInterval) => intervals.push(s),
+      register: (s: { stop: () => Promise<void> | void }) => { stops.push(s.stop); },
+    } as never,
     hostnameRegistry: store,
-    getInitialAcmeIssuer: () => ({
+    getInitialAcmeIssuer: () => opts.issuer ?? ({
       async issueInitialDomain({ domain }) {
         issued.push(domain);
         return {
@@ -384,17 +394,21 @@ const drive = (opts: {
         };
       },
     }),
-    runPreflight: async (hostname) => {
+    runPreflight: opts.runPreflight ?? (async (hostname) => {
       preflights.push(hostname);
       return preflightFor(hostname, opts.delegation ?? 'ok');
-    },
+    }),
     readProDdnsBinding: async () => ({
       subscription_active: opts.subscription_active !== false,
     }),
     serverIdentityId: () => SERVER_ID,
     ...(opts.now ? { now: opts.now } : {}),
   });
-  return { store, issued, renewedCalls, preflights, tick: intervals[0]!.tick };
+  return {
+    store, issued, renewedCalls, preflights, tick: intervals[0]!.tick,
+    /** What a drain does: begin every registered stop, then await them all. */
+    stop: async () => { await Promise.all(stops.map((stop) => stop())); },
+  };
 };
 
 describe('D-235 P4 — the service renews and watches', () => {
@@ -542,5 +556,128 @@ describe('D-235 P4 — the service renews and watches', () => {
     await d.tick();
     expect(d.preflights).toEqual([]);
     expect(d.renewedCalls).toEqual([]);
+  });
+});
+
+// ── shutdown ────────────────────────────────────────────────────────────
+// A drain step has 5 s, and a tick can be inside a CA order (up to
+// ACME_ISSUANCE_TIMEOUT_MS, 240 s) or a run of DNS preflights. A step that
+// runs out makes an update refuse to swap versions, while the process exits
+// after the drain anyway.
+
+type Ordered = Awaited<ReturnType<AcmeManagedDomainIssuer['issueInitialDomain']>>;
+type OrderArgs = { domain: string; signal?: AbortSignal };
+
+/** Orders the cloud never answers. Like the real renewer, each settles only
+ *  when aborted, and then as a quiet decline. */
+const unansweredOrders = () => {
+  const signals: AbortSignal[] = [];
+  const order = ({ signal }: OrderArgs) => {
+    if (signal) signals.push(signal);
+    return new Promise<Ordered>((resolve) => {
+      signal?.addEventListener('abort', () => {
+        resolve({ ok: false, reason: 'helper_unavailable' });
+      }, { once: true });
+    });
+  };
+  const issueInitialDomain = vi.fn(order);
+  const renewDomain = vi.fn(order);
+  return { signals, issueInitialDomain, renewDomain, issuer: { issueInitialDomain, renewDomain } };
+};
+
+describe('D-235 — the service stops inside the grace', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('a stop aborts a first order in flight, returns inside the grace, and records nothing', async () => {
+    const cloud = unansweredOrders();
+    const d = drive({ now: () => NOW, issuer: cloud.issuer, seed: (s) => seedCustom(s, CUSTOM) });
+    const upsert = vi.spyOn(d.store, 'upsert');
+    const tick = d.tick();
+    await vi.waitFor(() => expect(cloud.issueInitialDomain).toHaveBeenCalledTimes(1));
+
+    const started = performance.now();
+    await d.stop();
+    expect(performance.now() - started).toBeLessThan(STOP_GRACE_MS);
+    expect(cloud.signals[0]?.aborted).toBe(true);
+    await tick;
+
+    // The decline the abort produced is not a CA failure: no `failed` row and
+    // no backoff. The row stays pending and the next boot orders it.
+    expect(upsert).not.toHaveBeenCalled();
+    expect(d.store.get(CUSTOM)?.cert_provisioning).toBeUndefined();
+  });
+
+  it('bounds the stop when a renewal order ignores the abort, and drops the late answer', async () => {
+    let answer!: (result: Ordered) => void;
+    const renewDomain = vi.fn((_args: OrderArgs) => new Promise<Ordered>((resolve) => { answer = resolve; }));
+    const d = drive({
+      now: () => NOW,
+      issuer: { issueInitialDomain: vi.fn(), renewDomain } as unknown as AcmeManagedDomainIssuer,
+      seed: (s) => seedCustom(s, CUSTOM, { cert_fingerprint: 'old', cert_expires_at: NOW + 5 * DAY }),
+    });
+    const upsert = vi.spyOn(d.store, 'upsert');
+    const tick = d.tick();
+    await vi.waitFor(() => expect(renewDomain).toHaveBeenCalledTimes(1));
+
+    const started = performance.now();
+    await d.stop();
+    const waited = performance.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(STOP_GRACE_MS - 50);
+    expect(waited).toBeLessThan(STOP_GRACE_MS * 3);
+    expect(renewDomain.mock.calls[0]![0].signal?.aborted).toBe(true);
+    // The tick the interval holds is released with the stop, so the interval's
+    // own stop (which waits for its ticks) is bounded by it too.
+    await tick;
+
+    // The cloud answers after the drain, when the database may be closed.
+    answer({ ok: true, new_fingerprint: 'late', cert_expires_at: NOW + 90 * DAY });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(upsert).not.toHaveBeenCalled();
+    expect(d.store.get(CUSTOM)?.cert_fingerprint).toBe('old');
+  });
+
+  it('bounds the stop on a DNS preflight that never answers, and records nothing it returns later', async () => {
+    let answer!: () => void;
+    const runPreflight = vi.fn((hostname: string) => new Promise<CustomDomainPreflightResult>((resolve) => {
+      answer = () => resolve(preflightFor(hostname, 'missing'));
+    }));
+    const cloud = unansweredOrders();
+    const d = drive({
+      now: () => NOW,
+      issuer: cloud.issuer,
+      runPreflight,
+      seed: (s) => {
+        seedCustom(s, CUSTOM, { cert_fingerprint: 'f', cert_expires_at: NOW + 80 * DAY });
+        seedCustom(s, 'second.x.com', { cert_fingerprint: 'f', cert_expires_at: NOW + 80 * DAY });
+      },
+    });
+    const setDelegationState = vi.spyOn(d.store, 'setDelegationState');
+    const tick = d.tick();
+    await vi.waitFor(() => expect(runPreflight).toHaveBeenCalledTimes(1));
+
+    const started = performance.now();
+    await d.stop();
+    const waited = performance.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(STOP_GRACE_MS - 50);
+    expect(waited).toBeLessThan(STOP_GRACE_MS * 3);
+    await tick;
+
+    // The lookup answers after the drain: nothing is recorded, the row stays
+    // due for the next boot's watch, and the second row is never looked up.
+    answer();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(setDelegationState).not.toHaveBeenCalled();
+    expect(d.store.get(CUSTOM)?.delegation_checked_at).toBeUndefined();
+    expect(runPreflight).toHaveBeenCalledTimes(1);
+    expect(cloud.issueInitialDomain).not.toHaveBeenCalled();
+    expect(cloud.renewDomain).not.toHaveBeenCalled();
+  });
+
+  it('starts nothing once stopped', async () => {
+    const d = drive({ now: () => NOW, seed: (s) => seedCustom(s, CUSTOM) });
+    await d.stop();
+    await d.tick();
+    expect(d.preflights).toEqual([]);
+    expect(d.issued).toEqual([]);
   });
 });

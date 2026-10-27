@@ -15,8 +15,9 @@
  *      anyone watches a new integration).
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { MessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
 import {
   buildTeamsPollUrl,
@@ -320,5 +321,92 @@ describe('createTeamsPollRunner', () => {
     await runner.stop();
 
     expect(stamps[1]! - stamps[0]!).toBeGreaterThanOrEqual(TEAMS_POLL_MIN_INTERVAL_MS - 50);
+  });
+});
+
+/** A drain step awaits the stop with 5 s. A Graph token exchange can take 30 s
+ *  and a dispatch has no bound, so the stop must not wait for either. */
+describe('stopping the Teams runner', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+
+  it('ends the wait for a token exchange in progress at once, and asks for no new one', async () => {
+    const { store } = memoryStore();
+    let tokenSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(async () => jsonResponse({ value: [] }));
+    const runner = createTeamsPollRunner({
+      connectionName: 'teams',
+      credentialFingerprint: 'fp',
+      chatId: CHAT,
+      // A refresh exchange that never answers.
+      getAccessToken: (signal) => {
+        tokenSignal = signal;
+        return new Promise<string | null>(() => {});
+      },
+      dispatch: (async () => {}) as never,
+      stateStore: store,
+      pollIntervalMs: TEAMS_POLL_MIN_INTERVAL_MS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => Date.parse('2024-09-26T00:00:00.000Z'),
+    });
+    runner.start();
+    await vi.waitFor(() => expect(tokenSignal).toBeDefined());
+
+    // Fake time that is never advanced: the stop must not need the grace.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let settled = false;
+    const stopping = runner.stop().then(() => { settled = true; });
+    await settle();
+    vi.useRealTimers();
+    expect(settled).toBe(true);
+    await stopping;
+    // The provider was told, so it starts no exchange of its own after this.
+    expect(tokenSignal!.aborted).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('waits no longer than the grace for a dispatch, and leaves the cursor so both messages are read again', async () => {
+    const { store, rows } = memoryStore();
+    rows.set('teams:teams', { mode: 'poll', credential_fingerprint: 'fp', state: { cursor: '2024-09-26T00:00:00.000Z' } });
+    const newer = userMessage({ id: '300', lastModifiedDateTime: '2024-09-26T03:00:00.000Z' });
+    const older = userMessage({ id: '100', lastModifiedDateTime: '2024-09-26T01:00:00.000Z' });
+    const dispatched: unknown[] = [];
+    let releaseDispatch: (() => void) | undefined;
+    const runner = createTeamsPollRunner({
+      connectionName: 'teams',
+      credentialFingerprint: 'fp',
+      chatId: CHAT,
+      getAccessToken: async () => 'at',
+      dispatch: ((event: unknown) => {
+        dispatched.push(event);
+        return new Promise<void>((resolve) => { releaseDispatch = resolve; });
+      }) as never,
+      stateStore: store,
+      pollIntervalMs: TEAMS_POLL_MIN_INTERVAL_MS,
+      fetchImpl: (async () => jsonResponse({ value: [newer, older] })) as unknown as typeof fetch,
+      now: () => Date.parse('2024-09-26T00:00:00.000Z'),
+    });
+    runner.start();
+    await vi.waitFor(() => expect(dispatched).toHaveLength(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let settled = false;
+    const stopping = runner.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settle();
+    vi.useRealTimers();
+    expect(settled).toBe(true);
+    await stopping;
+
+    // The held dispatch ends after the stop: nothing is recorded, and the
+    // newer message never started — the next poll asks from the same cursor.
+    releaseDispatch?.();
+    await settle();
+    expect(dispatched).toHaveLength(1);
+    expect((dispatched[0] as { message_id: string }).message_id).toBe(teamsInboundId(CHAT, '100'));
+    expect(rows.get('teams:teams')?.state).toEqual({ cursor: '2024-09-26T00:00:00.000Z' });
   });
 });

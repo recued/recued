@@ -363,6 +363,7 @@ export const CANONICAL_PII_ENTITY_PRIVACY_TAGS: readonly EntityPrivacyTag[] =
       { path: 'asset_id', kind: 'external_id' }, { path: 'rule_id', kind: 'external_id' }, { path: 'binding_id', kind: 'external_id' },
     ] },
     { entity_id: 'asset_context_evidence', fields: [{ path: 'id', kind: 'external_id' }, { path: 'value', kind: 'content' }] },
+    { entity_id: 'chat_source_fact', fields: [{ path: 'text', kind: 'content' }, { path: 'qualifications[]', kind: 'content' }] },
     { entity_id: 'asset_context_node', fields: [
       { path: 'label', kind: 'content' }, { path: 'title', kind: 'content' }, { path: 'name', kind: 'content' },
       { path: 'value', kind: 'content' }, { path: 'rule', kind: 'content' }, { path: 'rule.id', kind: 'external_id' }, { path: 'source.ref', kind: 'external_id' },
@@ -383,6 +384,7 @@ export const CANONICAL_PII_ENTITY_PRIVACY_TAGS: readonly EntityPrivacyTag[] =
       // one entity merge, so these add to the item's schema-derived tags.
       entity_id: 'situation_item',
       fields: [...OWNER_TYPED_ASSET_FIELDS.map(path => ({ path: `details.${path}`, kind: 'content' as const })),
+        ...['context.root.asset_id', 'context.root.rule_id'].map(path => ({ path, kind: 'external_id' as const })),
         // The chat's lookup sends its items without markers (the chat refuses a
         // producer's own), so the item tags the id of each ref it holds, as a
         // `situation_ref` marker does in the tool's result. A contact's id can be

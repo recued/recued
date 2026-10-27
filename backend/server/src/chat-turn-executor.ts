@@ -1,3 +1,4 @@
+import { visibleSourceFacts, renderSourceFacts, sourceFactOutputSchema, SOURCE_FACT_GUIDANCE, SOURCE_FACT_REPAIR, SOURCE_FACT_FAILURE } from './chat-source-facts.js';
 /** D-160 spec-O-5 — the chat turn MECHANICS.
  *
  *  `runChatTurn` is the cohesive, behavior-preserving turn function the
@@ -138,7 +139,7 @@ import {
   isTier1ToolName,
 } from '@recued/contracts';
 import { dispatchToolCalls } from '@recued/middleware';
-import { estimateConservativeMessagesTokens, isContextOverflowRejection } from '@recued/llm';
+import { estimateConservativeMessagesTokens, isContextOverflowRejection, LLMError } from '@recued/llm';
 import type { LLMMessageRole } from '@recued/llm';
 import type {
   BroadcastChatEvent,
@@ -309,7 +310,7 @@ const NO_LLM_SOURCE_MESSAGE =
  *
  *  ⛔⛔ WITHOUT THIS THE TURN IS SILENTLY EMPTY. `assistantContent` is only
  *  replaced on the no-source path, and a context refusal surfaces as
- *  `AI_TOKEN_BUDGET_EXCEEDED`, which `NO_LLM_SOURCE_DETAIL_RE` does not match —
+ *  `AI_TOKEN_BUDGET_EXCEEDED`, which is not a model-source configuration failure —
  *  so it lands in the generic `provider_failure` bucket and the user reads a
  *  blank assistant turn. Same rationale as {@link NO_LLM_SOURCE_MESSAGE}, and
  *  it applies MORE strongly here: a provider outage is not something the owner
@@ -436,32 +437,27 @@ export class ChatContextLengthError extends Error {
     this.name = 'ChatContextLengthError';
   }
 }
-/** Matcher-level "no usable LLM source" failure details. The matcher's
- *  `AI_LLM_UNAVAILABLE` LLMError carries the human-readable message
- *  "No LLM source matches requirements (…)" — `tryMainTurn`'s catch
- *  surfaces `e.message` as the failure `detail`, so the first two arms
- *  match the real matcher / no-config texts; the code-name arm is
- *  defensive (wrappers or stubs that put the code string into the
- *  message). NOT matched (pre-existing): the executor's rarer
- *  "Cascade exhausted after N walks" variant falls to the generic
- *  message. Shared by the initial-call and mid-loop-abort fail-louds so
- *  the two sites cannot drift apart on what counts as "no source". */
-const NO_LLM_SOURCE_DETAIL_RE =
-  /no llm source matches|no llm config|AI_LLM_UNAVAILABLE/i;
+/** A failed provider cascade appends a matcher no-match to the real error.
+ *  Classify while its code and provenance are still available; that appended
+ *  diagnostic must not turn a timeout or HTTP failure into model-setup advice.
+ *  Prefix matching also supports older untyped no-config errors without
+ *  treating a quoted no-match inside a provider message as configuration. */
+const isNoLlmSourceError = (error: unknown): boolean => {
+  if (error instanceof LLMError && (error.code !== 'AI_LLM_UNAVAILABLE'
+    || error.details?.status !== undefined || error.details?.fallback_unavailable !== undefined)) return false;
+  return error instanceof Error && /^(?:no llm source matches|no llm config|AI_LLM_UNAVAILABLE\b)/i.test(error.message);
+};
 /** PB7 — classify a failed main-turn call for the dedicated
  *  `engine.decoder_unavailable` transparency event (the variant the
  *  in-code "renderer can paint 'AI decoder unavailable'" note deferred).
- *  Order matters: a validation failure CARRIES the model's reply, so it
- *  is checked after the no-source pattern but before the generic bucket. */
+ *  Provider errors were classified at the catch boundary. Output validation
+ *  failures carry the model's reply and remain a distinct event reason. */
 const decoderUnavailableReason = (failure: {
   readonly detail: string;
+  readonly decoder_reason?: TransparencyDecoderUnavailableReason;
   readonly validation_issues?: ReadonlyArray<AIOutputValidationIssue>;
 }): TransparencyDecoderUnavailableReason =>
-  NO_LLM_SOURCE_DETAIL_RE.test(failure.detail)
-    ? 'no_source'
-    : failure.validation_issues !== undefined
-      ? 'invalid_output'
-      : 'provider_failure';
+  failure.decoder_reason ?? (failure.validation_issues !== undefined ? 'invalid_output' : 'provider_failure');
 /** The run address a held dispatch carries, which is the PAIR KEY.
  *
  *  ⚠ `undefined` means only that the halves CANNOT BE JOINED — not that the
@@ -525,16 +521,15 @@ export const retainForReinvoke = (
  *  rendering mentioned below remains the deferred PB7 follow-on).
  *  Trigger mirrors the cap guard: stale-response-trim-empty ONLY — a
  *  non-empty stale planning response may carry partial synthesis and
- *  ships unchanged. A no-source failure detail ships
- *  `NO_LLM_SOURCE_MESSAGE` instead (the matcher can exhaust MID-turn,
- *  e.g. free-pool quota — the Settings pointer is the actionable copy
- *  there). No-executor turns never reach the loop (the initial call
+ *  ships unchanged. A configuration failure ships `NO_LLM_SOURCE_MESSAGE`
+ *  instead; exhausted provider calls keep the provider-failure classification.
+ *  No-executor turns never reach the loop (the initial call
  *  fails first), so this never masks the deliberate silent-substrate
  *  path. Like its siblings the text lands in the next turn's
  *  `chat_tail` — phrased so a follow-up model knows the prior attempt
  *  died mid-work without inferring the tool results carry over. */
 const PROVIDER_FAILED_MID_TURN_MESSAGE =
-  'The AI provider failed partway through this turn, after some tools had already run. Please try again — or switch models in Settings → AI / Models if this keeps happening.';
+  'The AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.';
 
 /** The three documented AIOutput envelope keys — anything else on a decoded
  *  output is a stray key the model invented (preserved through
@@ -2695,6 +2690,10 @@ export const runChatTurn = async (
   };
 
   let projectionRefreshFeedback = '';
+  let sourceFactReadOnly = inputs.prefetch_selected_asset === true && inputs.mail_work === undefined
+    && picker_target === 'self' && dispatchPeerName === null;
+  const invalidSourceAnswers = new WeakSet<AIOutput>();
+  let sourceFactRepairUsed = false;
   const callMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
     output_feedback?: string,
@@ -2704,6 +2703,7 @@ export const runChatTurn = async (
     | {
         kind: 'failed';
         detail: string;
+        decoder_reason?: TransparencyDecoderUnavailableReason;
         context_trim_livelock?: true;
         usage?: TokenUsageReport;
         validation_issues?: ReadonlyArray<AIOutputValidationIssue>;
@@ -2721,7 +2721,9 @@ export const runChatTurn = async (
     // A new read can invalidate old bindings. In that case use the ordinary
     // full-plan contract rather than silently retaining or rebinding stale work.
     const activeEditTarget = mailEvidence && editTarget ? mailWorkEditTarget(editTarget.plan, mailEvidence.planSnapshot()) : null;
-    const systemPrompt = mainSystemPrompt + (activeEditTarget ? `\n\n${MAIL_WORK_EDIT_SHAPE}` : '');
+    const sourceFactDemand = sourceFactReadOnly && visibleSourceFacts(prior_tool_calls ?? [], prior_tool_calls ?? []).active;
+    const systemPrompt = mainSystemPrompt + (activeEditTarget ? `\n\n${MAIL_WORK_EDIT_SHAPE}` : '')
+      + (sourceFactDemand ? `\n\n${SOURCE_FACT_GUIDANCE}` : '');
     const systemRole: LLMMessageRole = inputs.system_role ?? 'system';
     let fittedChatTail = inputs.content.chat_tail.map(message => mailEvidence && message.role === 'assistant'
       ? { ...message, content: `Earlier AI proposal, not source evidence; check it against the supplied observations before refining:\n${message.content}` }
@@ -3183,6 +3185,7 @@ export const runChatTurn = async (
     // admitted on packet 6, nothing changed but the echo).
     lastPacketBody = `${systemPrompt}\n${groundingCorpusFromPacket(promptParts.body)}`;
     lastSourcePacket = promptParts.body;
+    const sourceFacts = sourceFactDemand ? visibleSourceFacts(prior_tool_calls ?? [], fittedPriorToolCalls) : undefined;
     const aiInput: Record<string, unknown> = {
       // Lever-2 slice 3 — index mode appends the `tools.search` two-stage
       // guidance; full mode / absent is byte-identical to the baseline prompt.
@@ -3201,6 +3204,7 @@ export const runChatTurn = async (
       // it; other providers ignore it and send `body` byte-identically.
       'llm.cache_prefix': promptParts.cacheable_prefix,
       'llm.output_format': 'json',
+      ...(sourceFacts?.active ? { 'llm.output_schema': sourceFactOutputSchema(sourceFacts) } : {}),
       ...(mailEvidence ? { 'llm.output_schema': mailWorkChatOutputSchema(mailEvidence.planSnapshot(), inputs.mail_work !== undefined,
         activeEditTarget ? mailWorkEditSchema(activeEditTarget, mailEvidence.planSnapshot()) : undefined) } : {}),
       'llm.model_hint': hint,
@@ -3247,6 +3251,21 @@ export const runChatTurn = async (
       // whose OUTPUT we rejected would be re-injecting the worst possible text.
       // Overwrites rather than accumulates — one turn's working only.
       let output = body as AIOutput;
+      if (sourceFacts?.active) {
+        if (output.tool_calls.length) {
+          // Planning prose and extractions cannot bypass the factual readout.
+          output = { response: '', events: [], tool_calls: output.tool_calls };
+        } else {
+          const rendered = renderSourceFacts(output, sourceFacts);
+          if (rendered === undefined) {
+            output = { response: '', events: [], tool_calls: [] };
+            invalidSourceAnswers.add(output);
+            return { kind: 'ok', output, ...(result.usage !== undefined ? { usage: result.usage } : {}) };
+          }
+          output = { response: rendered, events: [], tool_calls: [],
+            ...(output.nothing_outstanding !== undefined ? { nothing_outstanding: output.nothing_outstanding } : {}) };
+        }
+      }
       carriedWorking = carriedWorkingFrom(output);
       if (mailEvidence && output.tool_calls.length === 0
         && (inputs.mail_work !== undefined || output.mail_work_plan != null)) {
@@ -3285,6 +3304,7 @@ export const runChatTurn = async (
       return {
         kind: 'failed',
         detail: (e as Error)?.message ?? 'main-turn executor failure',
+        decoder_reason: isNoLlmSourceError(e) ? 'no_source' : 'provider_failure',
       };
     }
   };
@@ -3429,13 +3449,20 @@ export const runChatTurn = async (
   }
   const projectionDemand = !assetQuestion && inputs.prefetch_selected_asset && inputs.mail_work === undefined
     && picker_target === 'self' && dispatchPeerName === null && nativeRead('situation.query')
-    ? createProjectionDemand(inputs.source_citations ?? []) : undefined;
+    ? createProjectionDemand(inputs.source_citations ?? [], { nativeFacts: sourceFactReadOnly }) : undefined;
   let projectionSources = (): readonly ChatSourceCitation[] => deps.currentProjectionSources?.() ?? [];
   const tryMainTurn: typeof callMainTurn = async (prior, feedback, draft) => {
     let calls = [...prior ?? []]; let usage: TokenUsageReport | undefined;
+    let repairFeedback = feedback;
     for (let revision = 0; ; revision++) {
-      const result = await callMainTurn(calls, feedback, draft);
+      const result = await callMainTurn(calls, repairFeedback, sourceFactRepairUsed ? undefined : draft);
       usage = aggregateTokenUsageReports(usage, result.usage);
+      if (result.kind === 'ok' && invalidSourceAnswers.has(result.output)) {
+        deps.assertActive?.();
+        if (sourceFactRepairUsed) return { kind: 'ok', output: { response: SOURCE_FACT_FAILURE, events: [], tool_calls: [] }, ...(usage ? { usage } : {}) };
+        sourceFactRepairUsed = true; repairFeedback = SOURCE_FACT_REPAIR;
+        continue;
+      }
       if (result.kind !== 'ok' || !projectionDemand) return { ...result, ...(usage ? { usage } : {}) };
       const before = freshCalls.length;
       const proof = projectionSources();
@@ -3565,10 +3592,7 @@ export const runChatTurn = async (
       // Fail LOUD when the matcher found no usable model (no provider configured
       // for the picked source, or a fail-closed pinned slot that is unavailable
       // — D-191 `pinSlot`) — an actionable message beats the silent empty turn.
-      if (
-        typeof initialResult.detail === 'string' &&
-        NO_LLM_SOURCE_DETAIL_RE.test(initialResult.detail)
-      ) {
+      if (decoderUnavailableReason(initialResult) === 'no_source') {
         assistantContent = NO_LLM_SOURCE_MESSAGE;
       } else if (lastFailureWasContextOverflow) {
         // ⛔ Read from the CLASSIFIED failure, not from the detail string. The
@@ -3904,9 +3928,7 @@ export const runChatTurn = async (
             toolLoopFailure = { detail: critiqueReinvoke.detail };
             terminationReason = 'aborted';
             if (currentAiOutput.response.trim().length === 0) {
-              assistantContent = NO_LLM_SOURCE_DETAIL_RE.test(
-                critiqueReinvoke.detail,
-              )
+              assistantContent = decoderUnavailableReason(critiqueReinvoke) === 'no_source'
                 ? NO_LLM_SOURCE_MESSAGE
                 : PROVIDER_FAILED_MID_TURN_MESSAGE;
             }
@@ -3968,6 +3990,7 @@ export const runChatTurn = async (
         };
         const sourceReadBatch = nextToolCalls.every(tc => nativeRead(tc.tool)
           && ['work.read', 'document.read', 'situation.query'].includes(tc.tool));
+        if (!nextToolCalls.every(tc => nativeRead(tc.tool))) sourceFactReadOnly = false;
         // A mixed batch may contain a write before or after a concurrent read.
         if (!sourceReadBatch) { assetReadReuse?.clear(); projectionDemand?.invalidate(); allowPrefetchProof = false; }
         const dispatchOutput = await dispatchToolCalls<ToolCall, ToolCallExecution>({
@@ -4363,8 +4386,8 @@ export const runChatTurn = async (
           // ⛔ LOG THE CAUSE, BECAUSE THE EMITTED `reason` CANNOT CARRY IT.
           //   `decoderUnavailableReason` is a three-way classification whose
           //   DEFAULT arm is `provider_failure` — returned whenever the failure
-          //   has no `validation_issues` and does not match the no-source
-          //   pattern. So a failure with any other cause is stamped
+          //   has no `validation_issues` or explicit no-source classification.
+          //   So a failure with any other cause is stamped
           //   "provider_failure" and reads, to anyone holding only the
           //   transparency stream, as a network outage.
           //
@@ -4418,9 +4441,7 @@ export const runChatTurn = async (
           // tool_calls, so the loop exits 'completed' before another
           // reinvoke runs.
           if (currentAiOutput.response.trim().length === 0) {
-            assistantContent = NO_LLM_SOURCE_DETAIL_RE.test(
-              effectiveReinvoke.detail,
-            )
+            assistantContent = decoderUnavailableReason(effectiveReinvoke) === 'no_source'
               ? NO_LLM_SOURCE_MESSAGE
               : PROVIDER_FAILED_MID_TURN_MESSAGE;
           }

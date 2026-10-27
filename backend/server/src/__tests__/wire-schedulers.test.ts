@@ -313,6 +313,8 @@ describe('per-scheduler boot side effects', () => {
       name: CRON_SCHEDULER_NAME,
       kind: 'scheduler',
       stop: expect.any(Function),
+      // What a pause or a maintenance window waits for after the stop.
+      settled: expect.any(Function),
     });
   });
 
@@ -384,6 +386,8 @@ describe('per-scheduler boot side effects', () => {
       name: AUTO_RUN_SCHEDULER_NAME,
       kind: 'scheduler',
       stop: expect.any(Function),
+      // What a pause or a maintenance window waits for after the stop.
+      settled: expect.any(Function),
     });
   });
 
@@ -432,6 +436,8 @@ describe('per-scheduler boot side effects', () => {
       name: HOUSEKEEPING_SCHEDULER_NAME,
       kind: 'scheduler',
       stop: expect.any(Function),
+      // What a pause or a maintenance window waits for after the stop.
+      settled: expect.any(Function),
     });
     expect(createScheduler).not.toHaveBeenCalled();
     expect(createServerAutoRunScheduler).not.toHaveBeenCalled();

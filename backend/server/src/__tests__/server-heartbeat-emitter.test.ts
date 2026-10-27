@@ -54,6 +54,7 @@ const createCapturingRegistry = (): {
       return vi.fn();
     }),
     stopAll: vi.fn(async () => {}),
+    settledAll: vi.fn(async () => {}),
     list: vi.fn(() => (captured ? [captured.name] : [])),
   };
   return {

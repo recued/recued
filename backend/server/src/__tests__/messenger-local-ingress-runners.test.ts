@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import {
   createDiscordGatewayRunner,
   createSlackSocketRunner,
   createTelegramPollRunner,
+  type MessengerLocalIngressRunner,
   type WebSocketLike,
 } from '../messenger-ingress/local-runners.js';
 import type { MessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
@@ -18,6 +20,39 @@ const eventually = async (predicate: () => boolean): Promise<void> => {
   }
   throw new Error('condition was not reached');
 };
+
+/** Let every queued continuation run. */
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+};
+
+/** A dispatch that does not finish until the test lets it: a turn's admission
+ *  waiting on a slow attachment download, say. */
+const heldDispatch = () => {
+  const releases: Array<() => void> = [];
+  const dispatch = vi.fn((_event: Parameters<MessengerWebhookDispatch>[0]) =>
+    new Promise<void>((resolve) => { releases.push(resolve); }));
+  return { dispatch, release: () => { for (const release of releases.splice(0)) release(); } };
+};
+
+/** Stop the runner on fake time and say whether the stop settled within the
+ *  grace. ⚠ Only `setTimeout` is faked, so `eventually`'s `setImmediate` and
+ *  the runner's own promises keep running; the dispatch held above never ends,
+ *  so without a bound the stop would not settle at all. */
+const stopWithinGrace = async (runner: MessengerLocalIngressRunner): Promise<boolean> => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  let settled = false;
+  const stopping = runner.stop().then(() => { settled = true; });
+  await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+  await settle();
+  vi.useRealTimers();
+  if (settled) await stopping;
+  return settled;
+};
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const memoryState = (): MessengerIngressStateStore => {
   const rows = new Map<string, Parameters<MessengerIngressStateStore['put']>[0]>();
@@ -36,6 +71,12 @@ const memoryState = (): MessengerIngressStateStore => {
 class FakeSocket implements WebSocketLike {
   readyState = 0;
   sent: string[] = [];
+  /** The codes this side closed with, politely. */
+  closes: number[] = [];
+  terminated = false;
+  /** The other end never answers a closing frame — a socket left half-dead by
+   *  a sleep. A polite close then never finishes, as `ws` would wait 30 s. */
+  unanswered = false;
   private listeners = new Map<string, Array<(...args: never[]) => void>>();
 
   on(event: 'open' | 'message' | 'close' | 'error', listener: (...args: never[]) => void): this {
@@ -64,8 +105,21 @@ class FakeSocket implements WebSocketLike {
 
   close(code = 1000, reason = ''): void {
     if (this.readyState === 3) return;
+    this.closes.push(code);
+    if (this.unanswered) {
+      this.readyState = 2;
+      return;
+    }
     this.readyState = 3;
     this.emit('close', code, Buffer.from(reason));
+  }
+
+  /** As `ws`: the connection is dropped, so it closes whatever the other end does. */
+  terminate(): void {
+    if (this.readyState === 3) return;
+    this.terminated = true;
+    this.readyState = 3;
+    this.emit('close', 1006, Buffer.from(''));
   }
 }
 
@@ -331,7 +385,13 @@ describe('local messenger ingress runners', () => {
     expect(stateStore.get('discord', 'discord')?.state).toMatchObject({ sequence: 12 });
     releaseInteractionAck();
     await runner.stop();
-    expect(stateStore.get('discord', 'discord')).toBeNull();
+    // A terminated socket leaves the session resumable, so its state is kept
+    // for the next runner's RESUME (see the stop tests below).
+    expect(socket.terminated).toBe(true);
+    expect(socket.closes).toEqual([]);
+    expect(stateStore.get('discord', 'discord')?.state).toEqual({
+      sequence: 12, session_id: 'session-1', resume_gateway_url: 'wss://gateway-us-east1-b.discord.gg',
+    });
   });
 
   it('Discord drops guild traffic outside the bound channel and still advances the cursor', async () => {
@@ -563,5 +623,231 @@ describe('local messenger ingress runners', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(states.at(-1)).toBe('error');
     await runner.stop();
+  });
+});
+
+/** A drain step awaits each stop with 5 s, and a step that runs out makes an
+ *  update refuse to swap. These hold the in-flight work open for good — a
+ *  dispatch that never ends, a peer that never answers a closing frame — and
+ *  require the stop to settle anyway, the work to receive the abort or the
+ *  terminate, and nothing queued to be lost. */
+describe('stopping a local messenger ingress runner within the grace', () => {
+  const slackTicket = () => vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+    Response.json({ ok: true, url: 'wss://wss-primary.slack.com/link/?ticket=opaque' }));
+  const slackEvent = (n: number) => ({
+    envelope_id: `env-${n}`,
+    type: 'events_api',
+    payload: { event_id: `Ev-${n}`, type: 'event_callback', event: { type: 'message' } },
+  });
+
+  it('Slack terminates a half-dead socket, waits no longer than the grace, and starts nothing queued', async () => {
+    const socket = new FakeSocket();
+    socket.unanswered = true;
+    let socketCreated = false;
+    const { dispatch, release } = heldDispatch();
+    const runner = createSlackSocketRunner({
+      connectionName: 'slack',
+      credentialFingerprint: CREDENTIAL_FINGERPRINT,
+      appToken: 'xapp-test',
+      stateStore: memoryState(),
+      dispatch,
+      fetchImpl: slackTicket() as unknown as typeof fetch,
+      webSocketFactory: () => { socketCreated = true; return socket; },
+    });
+    runner.start();
+    await eventually(() => socketCreated);
+    socket.open();
+    socket.message(slackEvent(1));
+    socket.message(slackEvent(2));
+    await eventually(() => dispatch.mock.calls.length === 1);
+
+    expect(await stopWithinGrace(runner)).toBe(true);
+    // Dropped — never the polite close, whose closing frame this peer never answers.
+    expect(socket.terminated).toBe(true);
+    expect(socket.closes).toEqual([]);
+
+    // The held dispatch ends after the stop. Neither envelope is acknowledged,
+    // so Slack sends both again, and the one queued behind it never started.
+    release();
+    await settle();
+    expect(socket.sent).toEqual([]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('Discord terminates, waits no longer than the grace, and keeps the session so the restart resumes and Discord replays', async () => {
+    const stateStore = memoryState();
+    const socket = new FakeSocket();
+    socket.unanswered = true;
+    let socketCreated = false;
+    let ackSignal: AbortSignal | null | undefined;
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/gateway/bot')) return Response.json({ url: 'wss://gateway.discord.gg' });
+      if (url.includes('/interactions/I-1/tok/callback')) {
+        ackSignal = init?.signal;
+        return abortedFetch(init?.signal);
+      }
+      throw new Error(`unexpected URL ${url}`);
+    });
+    const { dispatch, release } = heldDispatch();
+    const options = {
+      connectionName: 'discord',
+      credentialFingerprint: CREDENTIAL_FINGERPRINT,
+      botToken: 'discord-token',
+      stateStore,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      random: () => 1,
+    };
+    const runner = createDiscordGatewayRunner({
+      ...options,
+      dispatch,
+      webSocketFactory: () => { socketCreated = true; return socket; },
+    });
+    runner.start();
+    await eventually(() => socketCreated);
+    socket.open();
+    socket.message({ op: 10, d: { heartbeat_interval: 60_000 } });
+    await eventually(() => socket.sent.length === 1);
+    socket.message({
+      op: 0,
+      t: 'READY',
+      s: 10,
+      d: { session_id: 'session-1', resume_gateway_url: 'wss://gateway-us-east1-b.discord.gg' },
+    });
+    socket.message({
+      op: 0,
+      t: 'MESSAGE_CREATE',
+      s: 11,
+      d: { id: 'M-1', channel_id: 'C-1', content: 'held', author: { id: 'U-1' } },
+    });
+    socket.message({
+      op: 0,
+      t: 'INTERACTION_CREATE',
+      s: 12,
+      d: { id: 'I-1', token: 'tok', type: 3, channel_id: 'C-1', data: {} },
+    });
+    await eventually(() => dispatch.mock.calls.length === 1 && ackSignal !== undefined);
+
+    expect(await stopWithinGrace(runner)).toBe(true);
+    expect(socket.terminated).toBe(true);
+    // Never 1000, which would end the session at Discord.
+    expect(socket.closes).toEqual([]);
+    // The interaction acknowledgement in flight received the stop.
+    expect(ackSignal?.aborted).toBe(true);
+
+    release();
+    await settle();
+    // The press queued behind the held message never started, and neither
+    // was recorded: the cursor is still READY's, with the session kept.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(stateStore.get('discord', 'discord')?.state).toEqual({
+      sequence: 10, session_id: 'session-1', resume_gateway_url: 'wss://gateway-us-east1-b.discord.gg',
+    });
+
+    // The restart resumes that session from 10, so Discord replays 11 and 12.
+    const next = new FakeSocket();
+    const urls: string[] = [];
+    const restarted = createDiscordGatewayRunner({
+      ...options,
+      dispatch: vi.fn(async (_event: Parameters<MessengerWebhookDispatch>[0]) => undefined),
+      webSocketFactory: (url) => { urls.push(url); return next; },
+    });
+    restarted.start();
+    await eventually(() => urls.length === 1);
+    expect(urls[0]).toContain('gateway-us-east1-b.discord.gg');
+    next.open();
+    next.message({ op: 10, d: { heartbeat_interval: 60_000 } });
+    await eventually(() => next.sent.length === 1);
+    expect(JSON.parse(next.sent[0]!)).toMatchObject({
+      op: 6, d: { token: 'discord-token', session_id: 'session-1', seq: 10 },
+    });
+    await restarted.stop();
+  });
+
+  it('Discord forgets the session only when the socket could not be terminated and was closed with 1000', async () => {
+    const stateStore = memoryState();
+    const socket = new FakeSocket();
+    // A minimal socket with no `terminate`: the stop can only close it politely.
+    (socket as { terminate?: unknown }).terminate = undefined;
+    let socketCreated = false;
+    const runner = createDiscordGatewayRunner({
+      connectionName: 'discord',
+      credentialFingerprint: CREDENTIAL_FINGERPRINT,
+      botToken: 'discord-token',
+      stateStore,
+      dispatch: vi.fn(async () => undefined),
+      fetchImpl: vi.fn(async () => Response.json({ url: 'wss://gateway.discord.gg' })) as unknown as typeof fetch,
+      webSocketFactory: () => { socketCreated = true; return socket; },
+      random: () => 1,
+    });
+    runner.start();
+    await eventually(() => socketCreated);
+    socket.open();
+    socket.message({ op: 10, d: { heartbeat_interval: 60_000 } });
+    await eventually(() => socket.sent.length === 1);
+    socket.message({
+      op: 0,
+      t: 'READY',
+      s: 10,
+      d: { session_id: 'session-1', resume_gateway_url: 'wss://gateway-us-east1-b.discord.gg' },
+    });
+    expect(stateStore.get('discord', 'discord')).not.toBeNull();
+
+    await runner.stop();
+    expect(socket.closes).toEqual([1000]);
+    expect(stateStore.get('discord', 'discord')).toBeNull();
+  });
+
+  it('Telegram waits no longer than the grace for a dispatch, and keeps the offset so both updates come again', async () => {
+    const stateStore = memoryState();
+    stateStore.put({
+      vendor: 'telegram',
+      connection_name: 'telegram',
+      mode: 'poll',
+      credential_fingerprint: CREDENTIAL_FINGERPRINT,
+      state: { offset: 41 },
+    });
+    const polls: Array<{ offset: unknown; signal: AbortSignal | null | undefined }> = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/deleteWebhook')) return Response.json({ ok: true, result: true });
+      polls.push({ offset: (JSON.parse(String(init?.body)) as { offset: unknown }).offset, signal: init?.signal });
+      if (polls.length === 1) {
+        return Response.json({
+          ok: true,
+          result: [{ update_id: 41, message: { text: 'held' } }, { update_id: 42, message: { text: 'next' } }],
+        });
+      }
+      return abortedFetch(init?.signal);
+    });
+    const { dispatch, release } = heldDispatch();
+    const options = {
+      connectionName: 'telegram',
+      credentialFingerprint: CREDENTIAL_FINGERPRINT,
+      botToken: 'bot-token',
+      stateStore,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    };
+    const runner = createTelegramPollRunner({ ...options, dispatch });
+    runner.start();
+    await eventually(() => dispatch.mock.calls.length === 1);
+
+    expect(await stopWithinGrace(runner)).toBe(true);
+    release();
+    await settle();
+    // 42 never started, and 41 — whose dispatch ended after the stop — is not
+    // counted as received: Telegram still holds both.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(stateStore.get('telegram', 'telegram')?.state).toEqual({ offset: 41 });
+
+    // The restart asks from 41 again; its long poll ends on the stop's abort.
+    const restarted = createTelegramPollRunner({
+      ...options,
+      dispatch: vi.fn(async (_event: Parameters<MessengerWebhookDispatch>[0]) => undefined),
+    });
+    restarted.start();
+    await eventually(() => polls.length === 2);
+    expect(polls[1]!.offset).toBe(41);
+    await restarted.stop();
+    expect(polls[1]!.signal?.aborted).toBe(true);
   });
 });

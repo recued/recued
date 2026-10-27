@@ -10,6 +10,7 @@ import { writeFileAtomicSync } from '../durable-fs.js';
 import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
 import { createWebhookBoundedHttpsUrlParser } from '../webhook-bounded-https-url-parser.js';
 import { advanceWatchdogDrill, validStoredWatchdogDrill, watchdogDrillMinutes, watchdogDrillOpen, watchdogDrillView, watchdogUuid, type StoredWatchdogDrill } from './backup-watchdog-drill.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 export const backupWatchdogPath = (dbPath: string): string => `${resolve(dbPath)}.backup-watchdog.json`;
 const parseUrl = createWebhookBoundedHttpsUrlParser({ kind: 'bounded_https_url.v1', max_bytes: 2048, allowed_ports: [443] }).parse;
@@ -239,7 +240,10 @@ export const createBackupWatchdog = (options: {
       if (stopped || saving || options.canRun?.() === false || active) return Promise.resolve();
       active = send().catch(() => {}).finally(() => { active = undefined; }); return active;
     },
-    async stop(): Promise<void> { stopped = true; controller?.abort(); await Promise.allSettled([active, saving]); },
+    /** ⛔ BOUNDED, for a restart's 5 s drain step: what a stop cuts short is
+     *  an aborted heartbeat ping, sent again at the next interval. A pause or a maintenance window waits for all of it (`settled`). */
+    async stop(): Promise<void> { stopped = true; controller?.abort(); await settleWithin(Promise.allSettled([active, saving]), STOP_GRACE_MS); },
+    async settled(): Promise<void> { await Promise.allSettled([active, saving]); },
     resume(): void { stopped = false; },
   };
 };

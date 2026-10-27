@@ -7066,6 +7066,7 @@ export {
 } from './asset-rule-clock.js';
 export type { AssetRuleClock, AssetReminderPoint } from './asset-rule-clock.js';
 export * from './yours.js';
+export * from './asset-writer-setup.js';
 export * from './asset-fact-context.js';
 export * from './asset-documents.js';
 export * from './asset-search-terms.js';
@@ -7096,3 +7097,4 @@ export * from './automation-rehearsal.js';
 export { formatAssetChatQuestion, parseAssetChatQuestion, type ChatAssetQuestionContext } from './chat-asset-question.js';
 
 export * from './common-words.js';
+export * from './mail-account-capabilities.js';

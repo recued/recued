@@ -89,7 +89,7 @@ export interface ArchiveRuntime {
    *  `insufficient_storage` BEFORE starting a doomed job — never an ENOSPC
    *  mid-write. statfs-unsupported filesystems gate open. Async because
    *  sizing the referenced blobs reads per-hash sizes off the CAS. */
-  preflightExport(opts: { includeBlobs: boolean }): Promise<
+  preflightExport(opts: { includeBlobs: boolean; signal?: AbortSignal }): Promise<
     | { ok: true }
     | { ok: false; reason: string; need_bytes: number; free_bytes: number }
   >;
@@ -110,7 +110,9 @@ export interface ArchiveRuntime {
     expires_at: number;
   }>;
   prepareUnattendedExport?(recoveryKey: string): Promise<ArchiveBackupCapability>;
-  runUnattendedExport?(capability: ArchiveBackupCapability): ReturnType<ArchiveRuntime['runExport']>;
+  /** `signal` cancels the export; an unattended backup aborts it when the
+   *  server stops, and nothing is committed. */
+  runUnattendedExport?(capability: ArchiveBackupCapability, signal?: AbortSignal): ReturnType<ArchiveRuntime['runExport']>;
   /** Read the manifest of an archive at `path` WITHOUT restoring.
    *  Decrypts with the recovery-key-derived key (so it also validates
    *  the key before any destructive import). */

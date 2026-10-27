@@ -51,6 +51,7 @@ const build = (opts: { handleStateStore: HandleStateStore; statefulIpStore?: boo
       return vi.fn();
     }),
     stopAll: vi.fn(async () => {}),
+    settledAll: vi.fn(async () => {}),
     list: vi.fn(() => []),
   };
   const fetchPublicIpv4 = vi.fn<() => Promise<string | null>>(async () => '203.0.113.10');

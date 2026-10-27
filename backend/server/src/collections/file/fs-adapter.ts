@@ -67,6 +67,8 @@ import { lstat, realpath, stat, readdir } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
 import { watch } from 'node:fs';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
+import { CollectionStoppedError } from '../stop-signal.js';
 import { sharedWatchHost, watchesInOwnProcess } from './watch-host.js';
 
 export type FsEventType = 'present' | 'change' | 'remove';
@@ -129,7 +131,8 @@ export interface FsWatcher {
    *  second call is a no-op (matches `CollectionSyncAdapter.start`
    *  contract). */
   start(): Promise<void>;
-  /** Cancels debounce timers and closes the fs.watch handle.
+  /** Cancels debounce timers, closes the fs.watch handle and stops a walk in
+   *  progress; waits for events being handled at most `STOP_GRACE_MS`.
    *  Idempotent. */
   stop(): Promise<void>;
   /** Directories the initial walk could not read — the root among them when
@@ -321,8 +324,12 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
   };
 
   /** Fires `present` for every file under `dir`; returns how many directories
-   *  it could not read. */
+   *  it could not read. A stop ends the walk at the next entry, and the folder
+   *  it was in counts as unread: a walk cut short is no full list of what is on
+   *  disk, and read as one, its owner would take every file it did not reach
+   *  for removed. */
   const scanDir = async (dir: string): Promise<number> => {
+    if (stopped) return 1;
     let entries: import('node:fs').Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -332,6 +339,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
     }
     let unread = 0;
     for (const entry of entries) {
+      if (stopped) return unread + 1;
       const abs = join(dir, entry.name);
       if (isIgnored(abs)) continue;
       if (entry.isDirectory()) {
@@ -469,6 +477,9 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
       if (started || stopped) return;
       started = true;
       walkErrorCount = await scanDir(root);
+      // Stopped during the walk: attach no watch that nothing would close, and
+      // say the start did not finish (its walk was not complete).
+      if (stopped) throw new CollectionStoppedError('the folder watcher was stopped while it walked the folder');
       if (watchMode === 'none') {
         settled = true;
         known.clear();
@@ -498,6 +509,8 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
         if (attachmentFailed) {
           throw new FsWatchUnavailableError(root, attachmentError);
         }
+        // Stopped while the watch attached: `stop` closed it; set no timer.
+        if (stopped) throw new CollectionStoppedError('the folder watcher was stopped while it attached');
         if (settleMs >= 0) {
           settleTimer = setTimeout(() => {
             settleTimer = undefined;
@@ -512,6 +525,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
         settled = true;
         known.clear();
         closeWatchHandle();
+        if (stopped) throw err instanceof CollectionStoppedError ? err : new CollectionStoppedError();
         log('error', `fs.watch failed to attach for ${root}`, { err });
         if (err instanceof FsWatchUnavailableError) throw err;
         throw new FsWatchUnavailableError(root, err);
@@ -535,8 +549,12 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
       for (const timer of pending.values()) clearTimeout(timer);
       pending.clear();
       closeWatchHandle();
+      // Events already being handled are local work (a stat, a read, a row),
+      // but a folder on a network mount can make even that hang, and this runs
+      // inside the lifecycle drain. One cut off is read again by the next
+      // start's walk.
       const active = [...inFlight];
-      if (active.length > 0) await Promise.allSettled(active);
+      if (active.length > 0) await settleWithin(Promise.allSettled(active), STOP_GRACE_MS);
     },
   };
 };

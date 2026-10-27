@@ -1,4 +1,6 @@
-/** Host-kept sources that a successful native asset/document/field read returned.
+import { parseAssetFactContextRequest, type AssetFieldRef, type AssetRuleRef } from './asset-fact-context.js';
+
+/** Host-kept sources that a successful native asset/document/field/graph read returned.
  * These locate evidence, never grant access or prove a model's interpretation.
  * Links open the current source; read_at/read_version describe the earlier read. */
 interface CitationRead {
@@ -8,9 +10,11 @@ interface CitationRead {
   readonly read_version: string;
 }
 
-/** A returned saved-field view; its version does not attest a complete asset. */
+export type ChatAssetContextRoot = Omit<AssetFieldRef, 'asset_id'> | Omit<AssetRuleRef, 'asset_id'>;
+/** Returned saved fields or a bounded relationship view, never a complete asset. */
 export type ChatAssetProjectionScope = { readonly kind: 'details' }
-  | { readonly kind: 'field'; readonly field: string };
+  | { readonly kind: 'field'; readonly field: string }
+  | { readonly kind: 'context'; readonly root: ChatAssetContextRoot };
 
 export type ChatSourceCitation = CitationRead & (
   | { readonly kind: 'asset'; readonly asset_id: string }
@@ -44,6 +48,12 @@ export const chatSourceCitationsOf = (value: unknown): ChatSourceCitation[] => {
       } else if (scope.kind === 'field' && Object.keys(scope).every(key => key === 'kind' || key === 'field')
         && typeof scope.field === 'string' && /^(?:attributes|settings|dates|readings|observations)\.[a-z][a-z0-9_]{0,63}$/u.test(scope.field)) {
         citation = { ...read, kind: 'asset_projection', asset_id: row.asset_id, projection: { kind: 'field', field: scope.field } };
+      } else if (scope.kind === 'context' && Object.keys(scope).every(key => key === 'kind' || key === 'root')
+        && scope.root && typeof scope.root === 'object' && !Array.isArray(scope.root) && !Object.hasOwn(scope.root, 'asset_id')) {
+        try {
+          const { asset_id: _asset, ...root } = parseAssetFactContextRequest({ root: { ...scope.root, asset_id: row.asset_id } }).root;
+          citation = { ...read, kind: 'asset_projection', asset_id: row.asset_id, projection: { kind: 'context', root } };
+        } catch { continue; }
       } else continue;
     }
     else if (row.kind === 'file' && text(row.file_ref, 2048) && text(row.collection_slug, 128)

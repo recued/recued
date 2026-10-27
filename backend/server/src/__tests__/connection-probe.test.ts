@@ -1074,6 +1074,43 @@ describe('handleConnectionProbe real health probes', () => {
     expect(stream.close).toHaveBeenCalledTimes(1);
   });
 
+  // The idle drift probe's cycle stops with the server, and the probe went on
+  // for up to its 10 s deadline with its child running, then recorded a check
+  // it never finished as the connection's health.
+  it('ends a stdio probe the server stops at once, and leaves the row\'s health as it was', async () => {
+    const name = await enroll('mcp', {
+      subtype: 'stdio',
+      config: { transport: 'stdio', command: '/usr/local/bin/example-mcp', args: [] },
+      auth: { type: 'none' },
+    });
+    const answering = makeMcpStream();
+    await probe('mcp', name, vi.fn<HttpFetcher>(), { spawnStdioMcp: async () => answering.handle });
+    const before = storedHealth('mcp', name);
+    expect(before).toMatchObject({ status: 'ok', tools: ['search', 'write-note'] });
+
+    // A child that never answers.
+    const close = vi.fn();
+    const silent: McpStreamHandle = {
+      send: () => {}, onMessage: () => {}, onClose: () => {}, onError: () => {}, close,
+    };
+    let spawned!: () => void;
+    const spawning = new Promise<void>((resolve) => { spawned = resolve; });
+    const stop = new AbortController();
+    const started = Date.now();
+    const probing = handleConnectionProbe(
+      { store, now: () => NOW + 2_000, getEncryptionKey, fetcher: vi.fn<HttpFetcher>(),
+        spawnStdioMcp: async () => { spawned(); return silent; } },
+      { kind: 'mcp', name },
+      { signal: stop.signal },
+    );
+    await spawning;
+    stop.abort();
+    await probing.catch(() => undefined);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(close).toHaveBeenCalled();
+    expect(storedHealth('mcp', name)).toEqual(before);
+  });
+
   it('maps a websocket JSON-RPC initialize error to auth_failed and closes', async () => {
     const name = await enroll('mcp', {
       subtype: 'websocket',

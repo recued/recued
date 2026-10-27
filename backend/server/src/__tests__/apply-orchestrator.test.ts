@@ -18,6 +18,8 @@ import {
   type ApplyOrchestratorPorts,
 } from '../update/apply-orchestrator.js';
 import type { VerifyArtifactResult } from '../update/binary-apply-executor.js';
+import { updateRevertReason } from '../update/revert-reason.js';
+import { DatabaseStillOpenError } from '../database-still-open-error.js';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'recued-orch-'));
 
@@ -270,6 +272,15 @@ describe('runApply', () => {
     expect(deriveInFlightRelease(ports.ledger)).toBeNull();
     const terminal = ports.ledger.readAll()[1];
     expect(String(terminal?.detail)).toMatch(/not quiesced at commit time/);
+    // ⛔ And the owner can be told why: the row's cause is typed, and the receipt
+    // resolves to it (2026-10-26, two updates lost to a held MCP stream showed
+    // only "did not take effect").
+    expect(terminal?.revert_reason).toBe('drain_incomplete');
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      ports.ledger.readAll()[0]!.id,
+      ctx().fromVersion,
+    )).toEqual({ status: 'reverted', operation: 'update', revert_reason: 'drain_incomplete' });
   });
 
   // ⛔⛔ THE BUNDLE IS PROMOTED BEFORE THE COMMIT, SO EVERY ABORT OWES AN UNDO.
@@ -645,6 +656,7 @@ describe('durable update receipt reservation', () => {
     expect(resolveUpdateOperationOutcome(ports.ledger, 'receipt-2', '1.3.0')).toEqual({
       status: 'reverted',
       operation: 'update',
+      revert_reason: 'not_started',
     });
   });
 
@@ -675,6 +687,7 @@ describe('durable update receipt reservation', () => {
     expect(resolveUpdateOperationOutcome(ports.ledger, 'receipt-reused-pid', '1.3.0')).toEqual({
       status: 'reverted',
       operation: 'update',
+      revert_reason: 'not_started',
     });
   });
 });
@@ -1241,11 +1254,12 @@ describe('resolveUpdateOperationOutcome', () => {
       ...base,
     });
 
+    // A bare row (no typed cause, no prose) is honestly unexplained.
     expect(resolveUpdateOperationOutcome(
       ports.ledger,
       'failed-apply',
       '1.3.0',
-    )).toEqual({ status: 'reverted', operation: 'update' });
+    )).toEqual({ status: 'reverted', operation: 'update', revert_reason: 'other' });
     expect(resolveUpdateOperationOutcome(
       ports.ledger,
       'rollback-receipt',
@@ -1264,6 +1278,79 @@ describe('resolveUpdateOperationOutcome', () => {
       'missing',
       '1.3.0',
     )).toEqual({ status: 'unknown' });
+  });
+});
+
+describe('revert_reason — why an update was reverted, as a closed code', () => {
+  const terminalReason = (ports: ApplyOrchestratorPorts) =>
+    ports.ledger.readAll().find((e) => e.kind === 'apply_reverted')?.revert_reason;
+
+  it('each writer on the apply path records its cause as a typed field', async () => {
+    const download = makePorts({ download: vi.fn(async () => { throw new Error('ECONNRESET'); }) });
+    expect((await runApply(download, ctx())).status).toBe('download-failed');
+    expect(terminalReason(download)).toBe('download_failed');
+
+    const verify = makePorts({ verifyArtifact: vi.fn(() => ({ ok: false, reason: 'sha256 mismatch' })) });
+    expect((await runApply(verify, ctx())).status).toBe('verify-failed');
+    expect(terminalReason(verify)).toBe('verify_failed');
+
+    const swap = makePorts({ preserveAndSwap: vi.fn(() => { throw new Error('EACCES'); }) });
+    await applyAndCommit(swap, ctx());
+    expect(terminalReason(swap)).toBe('install_failed');
+
+    // The snapshot's refusal of a realm another process still holds (an AI
+    // app's `recued --mcp`) is named, not reported as a failed install.
+    const held = makePorts({
+      takeSnapshot: vi.fn(async () => { throw new DatabaseStillOpenError('still open somewhere'); }),
+    });
+    await applyAndCommit(held, ctx({ migration: true }));
+    expect(terminalReason(held)).toBe('database_in_use');
+    expect(held.preserveAndSwap).not.toHaveBeenCalled();
+  });
+
+  it('the typed field wins over the prose, and a code this binary does not know reads as other', () => {
+    const row = {
+      id: 'r', kind: 'apply_reverted' as const, at: 1, from_version: '1.3.0', to_version: '1.4.2',
+      channel: 'stable' as const, trigger: 'manual' as const, release_identity: 'stable:1.4.2',
+    };
+    expect(updateRevertReason({ ...row, detail: 'download: x', revert_reason: 'install_failed' }))
+      .toBe('install_failed');
+    // A NEWER binary's code, read after a rollback to this one.
+    expect(updateRevertReason({ ...row, revert_reason: 'a_code_from_later' as never })).toBe('other');
+  });
+
+  // ⛔ FROZEN: this is what releases up to 26.10.25 wrote. A writer rewording its
+  // detail must never change these rows' meaning, so the expectations here are
+  // literal history, not the writers' current strings.
+  it.each([
+    ['download: ECONNRESET', 'download_failed'],
+    ['download (native addon): 404', 'download_failed'],
+    ['verify: sha256 mismatch', 'verify_failed'],
+    ['verify (native addon): bad signature', 'verify_failed'],
+    ['stage: the realm was not quiesced at commit time, so the database may still be open — nothing was swapped',
+      'drain_incomplete'],
+    ['stage: copyClosedDatabaseForSnapshot: /r/db-wal survived the close, so this realm is still open '
+      + 'somewhere and the copy would be incomplete', 'database_in_use'],
+    ['stage: EACCES: permission denied', 'install_failed'],
+    ['staging aborted (crash before swap)', 'interrupted'],
+    ['auto-revert: health check failed (snapshot restored)', 'new_version_failed'],
+    ['supervisor revert: the new binary exited 3 times', 'new_version_failed'],
+    ['something nobody wrote', 'other'],
+  ] as const)('reads a pre-field row by its prose: %s → %s', (detail, reason) => {
+    expect(updateRevertReason({
+      id: 'r', kind: 'apply_reverted', at: 1, from_version: '1.3.0', to_version: '1.4.2',
+      channel: 'stable', trigger: 'revert', release_identity: 'stable:1.4.2', detail,
+    })).toBe(reason);
+  });
+
+  it('reads a refusal and a supervisor revert by what they are, not by prose', () => {
+    const row = {
+      id: 'r', at: 1, from_version: '1.3.0', to_version: '1.3.0', channel: 'stable' as const,
+      trigger: 'manual' as const, release_identity: 'stable:1.3.0',
+    };
+    expect(updateRevertReason({ ...row, kind: 'operation_refused', detail: 'anything' })).toBe('not_started');
+    expect(updateRevertReason({ ...row, kind: 'apply_reverted', recovery_source: 'outer-supervisor' }))
+      .toBe('new_version_failed');
   });
 });
 

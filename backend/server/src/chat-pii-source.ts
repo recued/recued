@@ -2,6 +2,7 @@
 
 import {
   PII_ENTITY_MARKER_KEY,
+  parseAssetFactContextRequest,
   isEntityFieldPrivacy,
   type PiiAliasableData,
 } from '@recued/contracts';
@@ -35,6 +36,7 @@ type CoreFieldShape =
   | 'situation_ref'
   | 'situation_refs'
   | 'situation_dimension'
+  | 'asset_context_request'
   | 'json_object';
 
 const CORE_ENTITY_FIELDS: ReadonlyMap<
@@ -98,6 +100,7 @@ const CORE_ENTITY_FIELDS: ReadonlyMap<
     ['updated_at', 'number'],
     // Read-time context: an asset's own fields, and a trip's country and days.
     ['details', 'json_object'],
+    ['context', 'asset_context_request'],
     ['trip', 'json_object'],
     ['citation_source', 'json_object'],
     ['cluster_id', 'string'],
@@ -229,6 +232,8 @@ const coreFieldMatches = (
       return Array.isArray(value) && value.every(isSituationRef);
     case 'situation_dimension':
       return isSituationDimension(value);
+    case 'asset_context_request':
+      try { parseAssetFactContextRequest(value); return true; } catch { return false; }
     case 'json_object':
       return isPlainRecord(value);
   }

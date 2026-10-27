@@ -310,10 +310,44 @@ export interface UpdateRollbackResponse {
   detail?: string;
 }
 
+/** Why an update or rollback did not take effect, as a closed code. A server
+ * derives it from its update ledger and sends the code, never the ledger's own
+ * text, versions or timestamps.
+ *  - `download_failed`: the release could not be downloaded.
+ *  - `verify_failed`: the download did not match its signature, so nothing was
+ *    installed.
+ *  - `drain_incomplete`: the server could not stop what it was running in time
+ *    to switch versions, so nothing was swapped.
+ *  - `install_failed`: preparing or swapping in the new version failed.
+ *  - `database_in_use`: another program still had the database open when the
+ *    update needed it alone — typically an AI app's `recued --mcp` from a
+ *    release before it stepped aside for updates — so nothing was swapped.
+ *  - `interrupted`: the server stopped before the new version was swapped in.
+ *  - `new_version_failed`: the new version did not start, so the previous one
+ *    was put back.
+ *  - `not_started`: the operation was refused before it started.
+ *  - `other`: anything else.
+ *
+ * ⚠ Servers before this field send none, and a newer server may send a code
+ * an older client does not know: a client treats both as "not explained". */
+export const UPDATE_REVERT_REASONS = [
+  'download_failed',
+  'verify_failed',
+  'drain_incomplete',
+  'install_failed',
+  'database_in_use',
+  'interrupted',
+  'new_version_failed',
+  'not_started',
+  'other',
+] as const;
+export type UpdateRevertReason = (typeof UPDATE_REVERT_REASONS)[number];
+
 /** Owner-only, read-only resolution of one accepted update/rollback receipt.
  * No version or ledger detail is exposed: the browser learns only whether the
  * exact operation awaits restart, completed, reverted, or has a durable
- * owner-reviewed unresolved closure. */
+ * owner-reviewed unresolved closure, and for a revert, the closed
+ * `revert_reason` code. */
 export type UpdateOperationStatusResponse =
   | { status: 'unknown' }
   | {
@@ -323,6 +357,8 @@ export type UpdateOperationStatusResponse =
         | 'reverted'
         | 'closed_unresolved';
       operation: 'update' | 'rollback';
+      /** On `reverted` only. Optional: older servers never send it. */
+      revert_reason?: UpdateRevertReason;
     };
 
 /** Owner-reviewed, server-authoritative retirement of a receipt that the

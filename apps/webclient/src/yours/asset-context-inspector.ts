@@ -58,7 +58,18 @@ export const mountAssetContextInspector = (host: HTMLElement, request: AssetFact
           node(row, 'h3', 'Supporting evidence');
           if (item.evidence.value !== undefined) node(row, 'p', `Recorded evidence: ${String(item.evidence.value)}`);
           if (!options.sourceLink(row, item.evidence)) node(row, 'p', `${item.evidence.collection} · ${item.evidence.id}`);
-        } else { node(row, 'h3', item.name); node(row, 'p', item.enabled ? 'Authorized observation writer. Review its availability and handoff in Rules.' : 'Observation writer disabled.'); }
+        } else {
+          node(row, 'h3', item.name); node(row, 'p', item.enabled ? 'Authorized observation writer. Review its availability and handoff in Rules.' : 'Observation writer disabled.');
+          const delivery = item.delivery;
+          if (delivery?.status === 'recorded') {
+            const words = { accepted: 'Observation accepted', confirmed: 'Fresh observation confirmed', unchanged: 'No newer observation accepted',
+              manual_priority: 'Kept your manual entry', protected_source: 'Kept the higher-priority source', before_handoff: 'Observation predates permission', older_observation: 'Older observation ignored' };
+            node(row, 'p', `Last submission · ${new Date(delivery.last_submission.at).toLocaleString()} · ${words[delivery.last_submission.outcome]}`);
+            node(row, 'small', `Submitted observation dated ${new Date(delivery.last_submission.observation_at).toLocaleString()}`);
+            node(row, 'p', delivery.last_accepted ? `Last accepted · ${new Date(delivery.last_accepted.at).toLocaleString()} · Observation dated ${new Date(delivery.last_accepted.observation_at).toLocaleString()}` : 'No accepted submission receipt on file.');
+            node(row, 'small', 'These are settled submissions for this field. Current running state and scheduling have not been checked.');
+          } else node(row, 'small', delivery?.status === 'no_receipt' ? 'No submission receipt on file. This does not establish that the writer never ran.' : 'Submission evidence is unavailable.');
+        }
       }
       if (!result.edges.length && result.completeness === 'complete') yoursEmpty(body, 'No connected rules, evidence, or writers are recorded for this item.');
     } catch (error) {

@@ -6,7 +6,7 @@ export type AccountPasswordRepair = (args: { slug: string; password?: string; sm
 export const createAccountPasswordPanel = (deps: {
   host: HTMLElement; changed(): Promise<void>; closed(slug: string): void;
 }) => {
-  let selected: { lane: string; slug: string; smtp: boolean; call: AccountPasswordRepair } | undefined;
+  let selected: { lane: string; slug: string; smtp: boolean; smtpOnly: boolean; call: AccountPasswordRepair } | undefined;
   let password = ''; let smtpPassword = ''; let busy = false; let error = ''; let notice = ''; let disposed = false;
   const render = () => {
     const host = deps.host.querySelector<HTMLElement>('[data-account-password-host]');
@@ -15,7 +15,7 @@ export const createAccountPasswordPanel = (deps: {
       <h3 tabindex="-1" data-account-password-heading>Update credentials for ${e(selected.slug)}</h3>
       <p>Keep this account’s server, username, selections and saved data. Recued checks the replacement login before saving it. No test email is sent.</p>
       <form data-account-password-form>
-        <label>New ${selected.lane === 'mail' ? 'IMAP' : 'CalDAV'} password / app password
+        <label>New ${selected.smtpOnly ? 'SMTP' : selected.lane === 'mail' ? 'IMAP' : 'CalDAV'} password / app password
           <input type="password" autocomplete="new-password" data-account-password-field="password" value="${e(password)}"${busy ? ' readonly' : ''}>
         </label>
         ${selected.smtp ? `<label>New SMTP password (optional)<input type="password" autocomplete="new-password" data-account-password-field="smtp" value="${e(smtpPassword)}"${busy ? ' readonly' : ''}></label>
@@ -56,7 +56,8 @@ export const createAccountPasswordPanel = (deps: {
       if (disposed || selected !== account) return;
       if (result.ok !== true || typeof result.restart_needed !== 'boolean') throw new Error('Recued could not confirm the credential update. Reopen the account and check its access before retrying.');
       password = ''; smtpPassword = '';
-      notice = result.restart_needed ? 'Credentials verified and saved. Restart Recued to resume this account’s sync.' : 'Credentials verified and saved. Sync resumes with the updated login.';
+      notice = account.smtpOnly ? 'SMTP credentials verified and saved.'
+        : result.restart_needed ? 'Credentials verified and saved. Restart Recued to resume this account’s sync.' : 'Credentials verified and saved. Sync resumes with the updated login.';
       try { await deps.changed(); } catch { notice += ' Refresh this account to read its current status.'; }
     } catch (err) { if (!disposed) error = err instanceof Error ? err.message : 'Credentials could not be updated. Try again.'; }
     finally { if (!disposed) { busy = false; render(); deps.host.querySelector<HTMLElement>('[data-account-password-heading]')?.focus(); } }
@@ -64,8 +65,8 @@ export const createAccountPasswordPanel = (deps: {
   deps.host.addEventListener('input', input); deps.host.addEventListener('click', click); deps.host.addEventListener('submit', submit);
   return {
     render,
-    open(lane: string, slug: string, smtp: boolean, call: AccountPasswordRepair) {
-      if (busy) return; selected = { lane, slug, smtp, call }; password = ''; smtpPassword = ''; error = ''; notice = ''; render();
+    open(lane: string, slug: string, smtp: boolean, call: AccountPasswordRepair, smtpOnly = false) {
+      if (busy) return; selected = { lane, slug, smtp, smtpOnly, call }; password = ''; smtpPassword = ''; error = ''; notice = ''; render();
       const heading = deps.host.querySelector<HTMLElement>('[data-account-password-heading]'); heading?.focus(); heading?.scrollIntoView?.({ block: 'start' });
     },
     context(lane: string, slug: string | null) { if (selected && (selected.lane !== lane || selected.slug !== slug)) close(); },

@@ -182,9 +182,10 @@ const flush = async (): Promise<void> => {
 
 const CHAT = 'recued-chat';
 const MAILBOXES: MailChatDoorMailboxRow[] = [
-  { slug: CHAT, account_email: 'recued@chat.example', send_capable: true },
-  { slug: 'me', account_email: 'me@owner.example', send_capable: true },
-  { slug: 'archive', account_email: 'archive@owner.example', send_capable: false },
+  { slug: 'smtp-only', adapter_type: 'smtp', account_email: 'hello@example.test', send_capable: true },
+  { slug: CHAT, adapter_type: 'imap', account_email: 'recued@chat.example', send_capable: true },
+  { slug: 'me', adapter_type: 'imap', account_email: 'me@owner.example', send_capable: true },
+  { slug: 'archive', adapter_type: 'imap', account_email: 'archive@owner.example', send_capable: false },
 ];
 const OFF: MailChatDoorSettings = { ...MAIL_CHAT_DOOR_DEFAULTS };
 const ON: MailChatDoorSettings = {

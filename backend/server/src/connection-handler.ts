@@ -215,6 +215,7 @@ const repairMethod = (deps: ConnectionRpcDeps, auth: ConnectionAuth) => authenti
     : auth.type === 'oauth2_refresh' && auth.saved_oauth_app ? deps.oauthAppConfig?.getApp(auth.saved_oauth_app.issuer, auth.saved_oauth_app.id)?.label : undefined);
 
 export interface ConnectionRpcDeps {
+  mailAccountCapabilities?: (slug: string) => import('@recued/contracts').MailAccountCapabilities;
   authenticationAccess?: import('./authentication-access-verification.js').AuthenticationAccessService;
   authenticationRepairTargets?(name: string): readonly import('@recued/contracts').AuthenticationRepairTarget[];
   authenticationRepairs?: () => Promise<import('@recued/contracts').AuthenticationRepairWorklist>;
@@ -1705,6 +1706,13 @@ const assertPeerContractBinding = (
   }
 };
 
+const assertEmailMailbox = (deps: ConnectionRpcDeps, kind: ConnectionKind, subtype: string | undefined, config: Record<string, unknown>): void => {
+  if (kind !== 'notification' || subtype !== 'email' || !deps.mailAccountCapabilities) return;
+  const caps = deps.mailAccountCapabilities(String(config.sender_mail_instance ?? ''));
+  if (!caps.receive_capable || !caps.sent_lookup_capable) throw new RpcError('failed_precondition',
+    'Approval and notification email requires a receiving mailbox with provider Sent access. Choose another account.', 409);
+};
+
 export const handleConnectionEnroll = async (
   deps: ConnectionRpcDeps,
   args: {
@@ -1756,6 +1764,7 @@ export const handleConnectionEnroll = async (
   );
   ensureValidMatchPatterns('collection.connection.enroll', config);
   ensureValidPeerAdmission('collection.connection.enroll', config);
+  assertEmailMailbox(deps, kind, subtype, config);
   let auth = ensureAuth('collection.connection.enroll', a.auth);
   if (a.oauth_app_issuer !== undefined || a.oauth_app_id !== undefined) {
     if (kind !== 'api' || auth.type !== 'oauth2_refresh') throw new RpcError('bad_request','Saved OAuth apps can be used with API OAuth refresh connections.');
@@ -2019,6 +2028,7 @@ export const handleConnectionUpdate = async (
     config_json = JSON.stringify(normalized);
   }
   const finalConfig = parseStoredConfig(config_json);
+  assertEmailMailbox(deps, kind, existing.subtype, finalConfig);
   // D-322 — metadata edits cannot move a managed credential to another vendor.
   const editedBase = patch.config !== undefined && finalConfig.base_url !== parseStoredConfig(existing.config_json).base_url;
   const destinationAuth = auth ?? (kind === 'api' && editedBase
@@ -2362,6 +2372,11 @@ const probeConnection = async (
     kind: ConnectionKind;
     expected_updated_at?: number;
   },
+  /** `signal`: the server is stopping (the idle drift probe's cycle). It
+   *  aborts the probe's own requests and channels, never a token exchange,
+   *  and a stopped probe leaves the row's health as it was — what it saw was
+   *  cut short. A credential it renewed is still written. */
+  opts: { signal?: AbortSignal } = {},
 ): Promise<{
   health: ConnectionHealth;
   connection_updated_at: number;
@@ -2413,9 +2428,11 @@ const probeConnection = async (
   // deadline active through response-body consumption, cap every body, and
   // refuse cross-origin redirects before credentials can follow them. The
   // narrow injected seam remains for deterministic tests.
-  const fetcher: HttpFetcher = deps.fetcher ?? makeBoundedOriginHttpFetcher({
-    timeoutMs: probeTimeoutMs,
-  });
+  const stop = opts.signal;
+  const fetcher: HttpFetcher = deps.fetcher ?? (() => {
+    const bounded = makeBoundedOriginHttpFetcher({ timeoutMs: probeTimeoutMs });
+    return stop === undefined ? bounded : (url, init) => bounded(url, { ...init, signal: stop });
+  })();
   const truncateError = (message: string): string =>
     message.length > maxErrorLen ? message.slice(0, maxErrorLen) : message;
   // D-225 Slice 2 — the full descriptors behind `health.tool_hashes`, surfaced
@@ -2924,6 +2941,7 @@ const probeConnection = async (
         return streamHealth(await probeMcpStreamTools(
           (signal) => spawnStdioMcp(spec, { signal }),
           remainingProbeMs(),
+          stop,
         ));
       } catch (err) {
         return streamFailure(
@@ -2961,6 +2979,7 @@ const probeConnection = async (
         return streamHealth(await probeMcpStreamTools(
           (signal) => wsConnect(url.toString(), { headers, signal }),
           remainingProbeMs(),
+          stop,
         ));
       } catch (err) {
         return streamFailure(err);
@@ -3061,8 +3080,12 @@ const probeConnection = async (
           }
           return healthOf('unreachable', 'jsonrpc_initialize_unsupported_version');
         } else {
+          const legacyFetch = deps.resolveFetch ?? globalThis.fetch.bind(globalThis);
           return await streamHealth(await probeMcpLegacySseTools(
-            deps.resolveFetch ?? globalThis.fetch.bind(globalThis),
+            stop === undefined ? legacyFetch : (input, init) => legacyFetch(input, {
+              ...init,
+              signal: init?.signal ? AbortSignal.any([init.signal, stop]) : stop,
+            }),
             url.toString(),
             headers,
             remainingProbeMs(),
@@ -3616,9 +3639,17 @@ const probeConnection = async (
       }
     } catch { /* Malformed setup cannot create resource-level access proof. */ }
   }
+  // Stopped while it ran (`opts.signal`): what it saw, its health and any
+  // scopes it read from the key, was cut short and is not the connection's, so
+  // the row keeps its own. A credential it renewed meanwhile is still written —
+  // the provider may already have retired the one it replaced.
+  const cutShort = stop?.aborted === true;
+  if (cutShort) probedGrantedScopes = undefined;
+  const healthJsonFor = (row: ConnectionRow): string | undefined =>
+    cutShort ? row.health_json : JSON.stringify(health);
   if (nativeRenewed) {
     const latest = deps.store.get(kind, name)!;
-    deps.store.upsert({ ...latest, health_json: JSON.stringify(health),
+    deps.store.upsert({ ...latest, health_json: healthJsonFor(latest),
       ...(probedGrantedScopes === undefined ? {} : { granted_scopes_json: probedGrantedScopes === null ? undefined : JSON.stringify(probedGrantedScopes) }) });
   } else deps.store.upsert({
     name,
@@ -3631,7 +3662,7 @@ const probeConnection = async (
     enrolled_at: existing.enrolled_at,
     updated_at: connectionUpdatedAt,
     ...(existing.last_used_at !== undefined ? { last_used_at: existing.last_used_at } : {}),
-    health_json: JSON.stringify(health),
+    health_json: healthJsonFor(currentBeforeWrite),
     // D-165 P3.path-picker — preserve the scope across a probe re-stamp.
     ...(existing.subresource_path !== undefined ? { subresource_path: existing.subresource_path } : {}),
     // granted-scopes — preserve the coverage set across a probe re-stamp,
@@ -3668,13 +3699,13 @@ const probeConnection = async (
 
 /** A probe can renew a rotating token, then persist it after its access check.
  * Keep that entire interval under the same lease as saved-app rotation. */
-export const handleConnectionProbe: typeof probeConnection = async (deps, args) => {
+export const handleConnectionProbe: typeof probeConnection = async (deps, args, opts) => {
   const a = ensureRecordArgs('collection.connection.probe', args);
   const name = ensureName('collection.connection.probe', a.name);
   const kind = ensureKind('collection.connection.probe', a.kind);
   return kind === 'api' && deps.store.withCredentialLease
-    ? deps.store.withCredentialLease([name], () => probeConnection(deps, args))
-    : probeConnection(deps, args);
+    ? deps.store.withCredentialLease([name], () => probeConnection(deps, args, opts))
+    : probeConnection(deps, args, opts);
 };
 
 /** D-225 Slice 2 — is this connection's generated pack still current?

@@ -63,6 +63,7 @@ const build = (opts: { results: UpdateResult[]; withLifecycle?: boolean }) => {
       return vi.fn();
     }),
     stopAll: vi.fn(async () => {}),
+    settledAll: vi.fn(async () => {}),
     list: vi.fn(() => []),
   };
 

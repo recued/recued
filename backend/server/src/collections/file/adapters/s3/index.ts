@@ -38,6 +38,7 @@ import {
   startDrainingInterval,
   type ProviderPollStop,
 } from '../../../draining-interval.js';
+import { CollectionStoppedError, throwIfStopped } from '../../../stop-signal.js';
 
 const MAX_OBJECT_BYTES = 5 * 1024 * 1024;
 
@@ -170,39 +171,53 @@ export const createS3AdapterFactory = (
 
     let pollStop: ProviderPollStop | undefined;
     let seenKeys = new Set<string>();
+    /** Aborted by `stop()`: the first listing and its events stop on it, and
+     *  each poll on its loop's own signal. One instance serves one start. */
+    const lifecycle = new AbortController();
 
-    const runPollTick = async (): Promise<void> => {
+    /** A poll compares the bucket with what the last one saw. Stopped, it ends
+     *  by throwing before `seenKeys` moves, and the next start lists the
+     *  bucket whole; the events it did fire are idempotent. */
+    const runPollTick = async (signal: AbortSignal): Promise<void> => {
       try {
-        const { keys } = await client.listObjects();
+        const { keys } = await client.listObjects(undefined, { signal });
         const fresh = new Set(keys);
         for (const key of fresh) {
+          throwIfStopped(signal);
           if (!seenKeys.has(key)) {
             await ctx.onEvent({ type: 'change', path: key });
           }
         }
         for (const key of seenKeys) {
+          throwIfStopped(signal);
           if (!fresh.has(key)) {
             await ctx.onEvent({ type: 'remove', path: key });
           }
         }
+        throwIfStopped(signal);
         seenKeys = fresh;
       } catch (err) {
-        ctx.log?.('warn', `s3 poll tick failed for ${parsed.bucket}`, { err });
+        if (!signal.aborted) ctx.log?.('warn', `s3 poll tick failed for ${parsed.bucket}`, { err });
       }
     };
 
     return {
       async start() {
+        const signal = lifecycle.signal;
         // Initial scan → `present` events for each key.
         try {
-          const { keys } = await client.listObjects();
+          const { keys } = await client.listObjects(undefined, { signal });
           seenKeys = new Set(keys);
           for (const key of keys) {
+            throwIfStopped(signal);
             await ctx.onEvent({ type: 'present', path: key });
           }
         } catch (err) {
-          ctx.log?.('error', 's3 initial scan failed', { err });
+          if (!signal.aborted) ctx.log?.('error', 's3 initial scan failed', { err });
         }
+        // Stopped during the listing: a start that did not finish says so, and
+        // starts no poll loop that nothing would stop.
+        if (signal.aborted) throw new CollectionStoppedError('the s3 adapter was stopped while it listed the bucket');
         if (!parsed.notifications_enabled) {
           pollStop = startDrainingInterval({
             tick: runPollTick,
@@ -214,6 +229,7 @@ export const createS3AdapterFactory = (
         }
       },
       async stop() {
+        lifecycle.abort(new CollectionStoppedError('the s3 adapter was stopped'));
         const stop = pollStop;
         pollStop = undefined;
         await stop?.();

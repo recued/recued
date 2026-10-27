@@ -116,7 +116,8 @@ export interface PreapprovalReconciliation {
 }
 export interface PreapprovalRecoveryResult {
   future_execution_ref: string;
-  status: 'worker_live' | 'worker_unknown' | 'checkpoint_required' | 'unchanged' | 'stopped';
+  /** `rearmed`: the run had sent nothing, so its approval is active again. */
+  status: 'worker_live' | 'worker_unknown' | 'checkpoint_required' | 'unchanged' | 'stopped' | 'rearmed';
   execution_status: PreapprovalExecutionStatus;
 }
 export interface PreapprovalPrompt {
@@ -1799,6 +1800,56 @@ export class PreapprovalRepository {
     }).immediate();
   }
 
+  /** Nothing the owner approved was sent. A member is claimed for dispatch —
+   * its receipt written in the same transaction — before anything is sent, so
+   * no member past `available` means no reviewed operation went out, and none
+   * was about to; no nested run, hold or uncovered continuation began either. */
+  private nothingSent(futureRef: string): boolean {
+    return this.db.prepare(`SELECT 1 FROM preapproval_members WHERE future_ref=? AND state<>'available'
+      UNION ALL SELECT 1 FROM preapproval_nested_calls WHERE future_ref=?
+      UNION ALL SELECT 1 FROM preapproval_run_checkpoints WHERE future_ref=?
+      UNION ALL SELECT 1 FROM preapproval_ordinary_recipes WHERE future_ref=? LIMIT 1`)
+      .get(futureRef, futureRef, futureRef, futureRef) === undefined;
+  }
+
+  /** D-261 amendment 2026-10-26 (owner: "auto re-arm if nothing was sent"): a
+   * claimed run that a restart or a lost process stopped before it sent
+   * anything leaves its approval unused. ⛔ This replaces § 8.4's "stop for
+   * review" for exactly that row; a run that claimed any member is still
+   * stopped and reported as it was. */
+  private canRearm(execution: ExecutionRow): boolean {
+    return execution.state === 'running' && !execution.stop_requested && execution.checkpoint_id === null
+      && this.grant(execution.future_ref)?.status === 'active' && this.now() < execution.dispatch_deadline
+      && this.nothingSent(execution.future_ref);
+  }
+
+  /** Active again for the SAME occurrence, inside the same window: the claim's
+   * occurrence selection stays recorded, so the next claim returns its sequence
+   * rather than spending another use. The fence moves, so the stopped run's
+   * binding can claim nothing; and with no `occurrence_key` a later expiry
+   * reports the occurrence as never run, which it was not. */
+  private rearm(execution: ExecutionRow, reason: 'stopped_by_restart' | 'process_ended'): void {
+    this.db.prepare(`UPDATE preapproval_executions SET state='active', root_run_id=NULL, worker_id=NULL,
+      occurrence_key=NULL, occurrence_hash='', fence=fence+1, revision=revision+1, updated_at=?
+      WHERE future_ref=? AND state='running'`).run(this.now(), execution.future_ref);
+    this.enqueue(execution.future_ref, execution.revision + 1, 'execution_rearmed', { reason });
+  }
+
+  /** Hand a stopped root run's approval back when nothing it approved was sent
+   * (`canRearm`). False, changing nothing, otherwise — or when this binding no
+   * longer owns the run: the caller then finishes the run as it would have. */
+  async handBackUnsentRun(binding: PreapprovalExecutionBinding): Promise<boolean> {
+    if (binding.run_id !== binding.root_run_id) return false;
+    const loaded = await this.load(this.execution(binding.future_execution_ref).proposal_id);
+    return this.db.transaction((): boolean => {
+      const { execution } = this.current(loaded, false);
+      try { this.checkRun(execution, binding, true); } catch { return false; }
+      if (!this.canRearm(execution)) return false;
+      this.rearm(execution, 'stopped_by_restart');
+      return true;
+    }).immediate();
+  }
+
   private provenLocalEffects(plan: PreparedFutureExecution, execution: ExecutionRow, members: MemberRow[]): boolean {
     const attempted = members.filter(member => member.attempt_id !== null);
     // An outer caller may stop before a local result settles. Its uncertainty
@@ -1869,6 +1920,12 @@ export class PreapprovalRepository {
       // on resume. Do not steal a run here just because a pointer exists.
       if (!this.hasUnresolvedEffects(futureRef) && !execution.stop_requested && execution.state === 'held' && execution.checkpoint_id
         && !members.some(member => member.state === 'in_doubt')) return result('checkpoint_required');
+      // The process ended before the run sent anything it was approved for:
+      // the approval goes back for the same occurrence rather than being spent.
+      if (this.canRearm(execution)) {
+        this.rearm(execution, 'process_ended');
+        return result('rearmed');
+      }
       const now = this.now();
       for (const row of dispatching) {
         const claim = this.memberClaim(execution, row);

@@ -37,6 +37,7 @@ import {
 
 import type { HostnameRegistryStore } from '../../storage/hostname-registry.js';
 import type { AcmeManagedDomainIssuer } from '../../keys/rotation/acme-domain-renewer.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import type { BackgroundServiceRegistry } from './wire-background-services.js';
 
 /** Same cadence as the sibling enrollment + DDNS timers. */
@@ -144,6 +145,23 @@ export const composeCustomDomainEnrollment = (
   //    validations, so racing attempts can exhaust the limit and block both.
   let inFlight = false;
   let stopped = false;
+
+  // ── shutdown ────────────────────────────────────────────────────────
+  //
+  // ⛔ A STOP USED TO WAIT OUT WHATEVER THE TICK WAS DOING. The interval's stop
+  //    waits for its ticks, and a tick here can be inside a CA order (up to
+  //    `ACME_ISSUANCE_TIMEOUT_MS`, 240s) or a run of DNS preflights — far past
+  //    a drain step's 5s, after which an update refuses to swap versions. The
+  //    `stopped` flag was set only after the tick had finished, so it guarded
+  //    nothing. Now the stop aborts the order, waits at most the grace, and a
+  //    tick that comes back after a stop writes nothing.
+  let current: Promise<void> | undefined;      // the tick doing work, if any
+  let tickAbort: AbortController | undefined;  // aborts that tick's CA order
+  // Resolved once the stop has waited its grace, so the interval's own stop
+  // (which waits for the ticks it handed out) is bounded by it too.
+  let releaseTicks = (): void => {};
+  const ticksReleased = new Promise<void>((resolve) => { releaseTicks = resolve; });
+
   // One line per DISTINCT reason per hostname. A boot legitimately hits several
   // of these while substrate composes, so per-tick logging is noise — but never
   // knowing which gate stopped the service is worse.
@@ -198,6 +216,9 @@ export const composeCustomDomainEnrollment = (
     const fresh = new Map<string, CustomDomainPreflightResult>();
     for (const row of selectDelegationWatchDue(rows, at, delegationWatchMs)) {
       const preflight = await deps.runPreflight(row.hostname);
+      // Answered after a stop: record nothing, and look nothing else up. The
+      // row stays due, so the next boot's watch checks it.
+      if (stopped) break;
       fresh.set(row.hostname, preflight);
       const state = delegationStateFromPreflight(preflight);
       // ⚠ PERSISTED EVEN WHEN NOTHING CHANGED. `delegation_checked_at` is what
@@ -222,7 +243,7 @@ export const composeCustomDomainEnrollment = (
     return fresh;
   };
 
-  const tick = async (): Promise<void> => {
+  const tick = async (signal: AbortSignal): Promise<void> => {
     if (inFlight) return;
     inFlight = true;
     try {
@@ -244,10 +265,12 @@ export const composeCustomDomainEnrollment = (
       // subscription lapsed, because the answer ("your delegation is gone")
       // is still true and still worth showing.
       const freshPreflights = await runDelegationWatch(custom, at);
+      if (stopped) return;
 
       const serverIdentityId = deps.serverIdentityId();
       if (serverIdentityId === undefined || serverIdentityId.length === 0) return;
       const binding = await deps.readProDdnsBinding();
+      if (stopped) return;
       const issuer = deps.getInitialAcmeIssuer();
       if (!issuer) return;
 
@@ -266,6 +289,7 @@ export const composeCustomDomainEnrollment = (
       );
       for (const row of renewable) {
         const preflight = await preflightFor(row.hostname);
+        if (stopped) return;
         // ⛔ A NARROWER GATE THAN ISSUANCE, DELIBERATELY. Renewal re-checks the
         //    things that can still stop the CA — the delegation must resolve,
         //    the subscription must pay for it, the hostname must still be in
@@ -287,7 +311,12 @@ export const composeCustomDomainEnrollment = (
         }
 
         lastSkip.delete(row.hostname);
-        const renewed = await issuer.renewDomain({ domain: row.hostname });
+        const renewed = await issuer.renewDomain({ domain: row.hostname, signal });
+        // Stopped while the order was out. Its result is either the stop's own
+        // abort, which is not a renewal failure, or an answer that may land
+        // after the drain has closed the database. Record nothing: the row still
+        // reads as due, so the next boot renews it.
+        if (stopped) return;
         if (!renewed.ok) {
           backOff();
           recordFailure(row, serverIdentityId, renewed.reason);
@@ -330,6 +359,7 @@ export const composeCustomDomainEnrollment = (
 
       for (const row of pending) {
         const preflight = await preflightFor(row.hostname);
+        if (stopped) return;
         const decision = evaluateCustomDomainIssuanceEligibility({
           row: {
             cert_source: row.cert_source,
@@ -353,7 +383,12 @@ export const composeCustomDomainEnrollment = (
         }
 
         lastSkip.delete(row.hostname);
-        const issued = await issuer.issueInitialDomain({ domain: row.hostname });
+        const issued = await issuer.issueInitialDomain({ domain: row.hostname, signal });
+        // As for renewal: nothing is recorded after a stop. The row stays
+        // pending, and the next boot's order returns any certificate the renewer
+        // did store without a second CA order (`issueInitialDomain` is
+        // idempotent on a stored fleet-issued row).
+        if (stopped) return;
         if (!issued.ok) {
           backOff();
           recordFailure(row, serverIdentityId, issued.reason);
@@ -388,6 +423,8 @@ export const composeCustomDomainEnrollment = (
         return;
       }
     } catch (err) {
+      // A stop aborted the order (or closed the store under us): not a fault.
+      if (stopped) return;
       // A thrown tick surfaces as an unhandled rejection on the interval.
       backOff();
       console.warn('[custom-domain-certs] tick failed', err);
@@ -398,10 +435,33 @@ export const composeCustomDomainEnrollment = (
     }
   };
 
+  /** Every tick starts here, so a stop can see the one doing work. */
+  const run = (): Promise<void> => {
+    // A re-entry is a no-op, exactly as `inFlight` makes it inside `tick`.
+    if (stopped || current !== undefined) return Promise.resolve();
+    const order = new AbortController();
+    tickAbort = order;
+    const work = tick(order.signal).finally(() => {
+      current = undefined;
+      tickAbort = undefined;
+    });
+    current = work;
+    return Promise.race([work, ticksReleased]);
+  };
+
+  const stop = async (): Promise<void> => {
+    stopped = true;
+    tickAbort?.abort();
+    // A DNS preflight takes no signal through this seam; the grace bounds it,
+    // and its answer is dropped by the `stopped` checks above.
+    if (current !== undefined) await settleWithin(current, STOP_GRACE_MS);
+    releaseTicks();
+  };
+
   deps.registry.registerInterval({
     name: 'custom-domain-enrollment',
     intervalMs,
-    tick,
+    tick: run,
     // ⚠ NOT `fireImmediate`. Unlike the fleet-zone service there is nothing to
     //   race to: a custom domain only exists once the user enrolled it, which
     //   they did through a UI that already ran a preflight, so there is no
@@ -411,7 +471,9 @@ export const composeCustomDomainEnrollment = (
     fireImmediate: false,
     onStop: () => { stopped = true; },
   });
-
-  // Referenced so the stop hook is not dead weight if a future tick wants it.
-  void stopped;
+  // ⚠ A SECOND ENTRY, not the interval's `onStop`: that runs only after the
+  // interval has waited for its ticks, which is the wait this exists to bound.
+  // Every stop path stops both (`stopAll` begins every matched stop before it
+  // awaits any one), so the order is aborted the moment shutdown begins.
+  deps.registry.register({ name: 'custom-domain-enrollment-order', kind: 'timer', stop });
 };

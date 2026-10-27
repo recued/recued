@@ -3,8 +3,16 @@
  * The sink contract is idempotent on `idempotency_key === event.event_id`.
  * A crash after the sink side effect but before `markOutboxDispatched` therefore
  * causes a safe replay after lease expiry instead of losing accepted work.
+ *
+ * Stopping (a restart): no new claim once the server is stopping, and a claim
+ * the server refused to run (`draining`) — or one a stopping pass never got to
+ * — is handed back unrun (`releaseOutboxClaim`): pending again, with the attempt
+ * its claim counted given back, so the next boot dispatches it at once. It is
+ * never marked failed: nothing ran.
  */
 
+import { RpcError } from '@recued/contracts';
+import { settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 import type {
   WebhookDeliveryStore,
   WebhookOutboxClaim,
@@ -33,6 +41,9 @@ export interface WebhookOutboxDispatcherOptions {
     message: string,
     metadata: Readonly<Record<string, string | number>>,
   ) => void;
+  /** Asked before each claimed event is dispatched: true ends the pass
+   *  there, handing the rest back for the next boot. */
+  shouldStop?: () => boolean;
 }
 
 export interface WebhookOutboxDispatchResult {
@@ -110,6 +121,11 @@ export const dispatchWebhookOutboxOnce = async (
     || maxRetryMs > 24 * 60 * 60 * 1_000) {
     throw new Error('webhook outbox: retry bounds are invalid');
   }
+  // Stopping already: claim nothing — a claim spends one of the event's
+  // attempts, and nothing would run it.
+  if (options.shouldStop?.() === true) {
+    return { claimed: 0, dispatched: 0, retried: 0, dead_lettered: 0 };
+  }
   const exhaustedClaims = store.deadLetterExhaustedOutbox({
     max_attempts: maxAttempts,
   });
@@ -125,7 +141,29 @@ export const dispatchWebhookOutboxOnce = async (
     dead_lettered: exhaustedClaims,
   };
 
-  for (const claim of claims) {
+  /** Claims handed back because the server is stopping. */
+  let deferred = 0;
+  // ⛔ NOT RUN IS NOT FAILED, AND COSTS NO ATTEMPT. A stopping server starts no
+  // further dispatch; what this pass claimed and did not run goes back to
+  // pending with the attempt its claim counted given back. Marking it failed
+  // spends that attempt, and so does leaving it leased as a crash would: a lease
+  // expires with its attempt still counted, so eight restarts at the wrong
+  // moment dead-lettered an event that never once ran.
+  const handBack = (from: number): void => {
+    for (const claim of claims.slice(from)) {
+      try {
+        store.releaseOutboxClaim(claim.outbox_id, claim.claim_token);
+      } catch {
+        // A newer worker reclaimed an expired lease; that claim is its own.
+      }
+    }
+    deferred = claims.length - from;
+  };
+  for (const [index, claim] of claims.entries()) {
+    if (options.shouldStop?.() === true) {
+      handBack(index);
+      break;
+    }
     try {
       await withTimeout(sink.dispatch({
         idempotency_key: claim.event.event_id,
@@ -134,7 +172,15 @@ export const dispatchWebhookOutboxOnce = async (
       }), timeoutMs);
       store.markOutboxDispatched(claim.outbox_id, claim.claim_token);
       result.dispatched += 1;
-    } catch {
+    } catch (error) {
+      // The server refused to start the run because it is restarting: the
+      // same "not run" as above, for this claim and every one after it. (A
+      // target that ran before the refusal is dispatched in the consumer store,
+      // and the replay skips it.)
+      if (error instanceof RpcError && error.code === 'draining') {
+        handBack(index);
+        break;
+      }
       try {
         const state = store.markOutboxFailed({
           outbox_id: claim.outbox_id,
@@ -159,14 +205,22 @@ export const dispatchWebhookOutboxOnce = async (
       }
     }
   }
+  if (deferred > 0) {
+    options.log?.('warn', 'webhook outbox left work for the next start: the server is stopping', {
+      code: 'server_stopping',
+      deferred,
+    });
+  }
   return result;
 };
 
 export interface WebhookOutboxRuntime {
   start(): void;
-  /** Permanently close admission, stop polling, and wait for the active pass
-   * plus any dispatch that outlived its per-pass timeout before stores close.
-   * Dispatch failures remain owned by the pass/caller. */
+  /** Permanently close admission and stop polling; the active pass starts no
+   * further dispatch. Waits for the active pass and any dispatch that
+   * outlived its per-pass timeout at most `STOP_GRACE_MS` — those are recipe
+   * runs, which the restart drain kills. Dispatch failures remain owned by the
+   * pass/caller. */
   stop(): Promise<void>;
   isStarted(): boolean;
   drainOnce(): Promise<WebhookOutboxDispatchResult>;
@@ -184,6 +238,12 @@ export interface WebhookOutboxRuntimeOptions extends WebhookOutboxDispatcherOpti
   /** Live autonomous-execution gate. A paused or vault-locked server returns an
    * empty pass without claiming work, so a long pause cannot burn retry counts. */
   canDispatch?: () => boolean;
+  /** The server has begun stopping (its restart drain). From then on a pass
+   * claims nothing and the active pass dispatches nothing more, so the drain
+   * neither waits on new recipe runs nor spends attempts on runs the server
+   * would refuse. Wire it to `executeDeps.isDraining`. Absent ⇒ only `stop()`
+   * closes admission, which happens late in the drain. */
+  isStopping?: () => boolean;
 }
 
 /** The listener checks `isStarted()` before exposing any profile route. */
@@ -228,9 +288,23 @@ export const createWebhookOutboxRuntime = (
     dead_lettered: 0,
   });
 
+  /** Closed by `stop()`, or the server already stopping. A throwing predicate
+   *  reads as stopping: claiming on an unknown answer could spend attempts on
+   *  runs the server refuses. */
+  const stopping = (): boolean => {
+    if (!accepting) return true;
+    try {
+      return options.isStopping?.() === true;
+    } catch {
+      return true;
+    }
+  };
+
   const runPass = async (): Promise<WebhookOutboxDispatchResult> => {
+    if (stopping()) return emptyResult();
     await options.reconcileWaitingDispatches?.();
     try {
+      if (stopping()) return emptyResult();
       if (options.canDispatch && !options.canDispatch()) return emptyResult();
     } catch {
       options.log?.('warn', 'webhook outbox dispatch gate unavailable', {
@@ -272,6 +346,7 @@ export const createWebhookOutboxRuntime = (
       // than the currently free capacity guarantees that every timed-out
       // underlying task can remain live without exceeding the process cap.
       batch_size: Math.min(configuredBatchSize, availableDispatches),
+      shouldStop: stopping,
     });
   };
 
@@ -308,23 +383,18 @@ export const createWebhookOutboxRuntime = (
       if (timer) clearInterval(timer);
       timer = null;
       const activePass = inFlight;
-      stopPromise = (async () => {
-        if (activePass) {
-          try {
-            await activePass;
-          } catch {
-            // The polling callback or explicit drain caller owns reporting the
-            // failed pass; shutdown only guarantees that it has settled.
-          }
-        }
-        // `withTimeout` deliberately releases a polling pass so one slow recipe
-        // does not stall the outbox. The underlying in-process execution is not
-        // cancellable, however, and may still write SQLite. Keep ownership here
-        // until every such residual dispatch settles.
-        while (activeDispatches.size > 0) {
-          await Promise.allSettled([...activeDispatches]);
-        }
-      })();
+      // With admission closed the active pass dispatches nothing more
+      // (`stopping()`), so what is running now is all there is: the pass
+      // itself (its failure is the polling callback's or the caller's to
+      // report) and any dispatch that outlived its per-pass timeout. Those are
+      // in-process recipe runs that may still write SQLite — the restart drain
+      // kills them, and `await_inflight` covers them before the database
+      // closes — so they get the grace and no more. A stop that waited for
+      // each one used to outlast the drain step.
+      stopPromise = settleWithin(
+        Promise.allSettled([...(activePass ? [activePass] : []), ...activeDispatches]),
+        STOP_GRACE_MS,
+      ).then(() => undefined);
       return stopPromise;
     },
     isStarted: () => started,

@@ -11,6 +11,7 @@ import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createAuthenticationRepairSnapshot, type AuthenticationRepairSnapshot } from '../authentication-repair-worklist.js';
 import { createAuthenticationAlertStore, AUTHENTICATION_ALERT_GRACE_MS } from '../authentication-alert-store.js';
 import { createAuthenticationAlertRuntime, authenticationAlertMessage, authenticationRepairHash } from '../authentication-alert-runtime.js';
+import { PUSH_GRACE_MS, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { CollectionInstanceRecord } from '../collections/instance-store.js';
 import { initialFileSourceSyncState } from '../storage/file-source-sync-state.js';
 import { connectionsAccountAddress, connectionsReviewAccessAddress, connectionsOAuthAppsAddress } from '../../../../apps/webclient/src/connections/connections-navigation.js';
@@ -352,4 +353,59 @@ it('uses the webclient repair destinations and bounded copy on every channel', a
   const described = authenticationAlertMessage(notice);
   expect(described.message.link_url).toBeUndefined(); expect(described.message.text.length).toBeLessThan(1300);
   expect(described.message.text).toContain('and 4 more');
+});
+
+/** ⛔ A drain step awaits the stop, with 5 s; a push goes to each channel in
+ *  turn (15 s a messenger call, an email longer). */
+describe('authentication alerts — stopping', () => {
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+
+  it('waits no longer than the grace for local work, and the notice it left is sent after the restart', async () => {
+    const f = fixture();
+    const history = vi.spyOn(f.auditLog, 'logActivity').mockImplementationOnce(() => new Promise(() => {}));
+    void f.runtime.tick();
+    await vi.waitFor(() => expect(history).toHaveBeenCalledTimes(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let stopped = false;
+    const stopping = f.runtime.stop().then(() => { stopped = true; });
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settle();
+    vi.useRealTimers();
+    expect(stopped).toBe(true);
+    await stopping;
+    expect(f.notify).not.toHaveBeenCalled();
+    expect(f.store.pending()).toHaveLength(1);
+
+    const restarted = createAuthenticationAlertRuntime({ store: f.store, read: f.read, auditLog: f.auditLog, notifier: { notify: f.notify } });
+    await restarted.tick();
+    await restarted.stop();
+    expect(f.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives a claimed push in flight the longer grace, then stops waiting: a claimed push is never replayed', async () => {
+    const f = fixture();
+    let release: (() => void) | undefined;
+    f.notify.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    void f.runtime.tick();
+    await vi.waitFor(() => expect(f.notify).toHaveBeenCalledTimes(1));
+    expect(f.store.pending()).toEqual([]);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let stopped = false;
+    const stopping = f.runtime.stop().then(() => { stopped = true; });
+    // Longer than other work gets…
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS);
+    await settle();
+    expect(stopped).toBe(false);
+    // …and no longer than its own grace: a drain step has 5 s.
+    await vi.advanceTimersByTimeAsync(PUSH_GRACE_MS - STOP_GRACE_MS);
+    await settle();
+    vi.useRealTimers();
+    expect(stopped).toBe(true);
+    await stopping;
+    release?.();
+  });
 });

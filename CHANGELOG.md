@@ -7,6 +7,76 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.26 — 2026-10-26
+
+An update now goes through while an AI app is connected to Recued, and an update that did not
+take effect says why and what to do next. A restart or an update stops what is still running
+after a few seconds instead of waiting on it, and a pre-approved run it stopped before it sent
+anything keeps its approval. A mail connection that resets no longer crashes the server.
+Mailgun, Amazon SES or another SMTP service can send your mail as a send-only account. In Yours,
+a reading or condition can be kept up to date from a Home Assistant device, and an item shows how
+each saved reading compares with its rule's target.
+
+### Added
+
+- **Send-only mail accounts.** Connections → Mail → Connect mailbox → **SMTP only** connects a
+  sending service such as Mailgun or Amazon SES, for the mail you write and the mail recipes send.
+  Recued checks the login without sending a test email and keeps its own copy of each message the
+  service accepted. A send-only account never sends approval email and is never an email chat
+  mailbox.
+- **Automatic updates from Home Assistant.** On an item in Yours, **Automatic updates** keeps a
+  reading or condition up to date from a Home Assistant device you pick by its name: whether it is
+  available, unexplained flicker, its battery, or a problem it reports, checked every 5, 15, 30 or
+  60 minutes. You see a current sample before you approve, and nothing starts until you do. It
+  needs version 4 of the Home Assistant pack.
+- **Saved comparisons.** An item's Overview shows how each saved reading compares with its rule's
+  target, such as "8.2 m below target", and says why when it cannot compare them.
+- **Each source's last update.** An item's relationship view shows, for each recipe that keeps a
+  reading or condition up to date, its last submission, its last accepted one, and why a
+  submission was not kept, such as your own entry taking priority.
+- **OpenClaw can connect to Recued.** A contract's Connect tab, and the connection example in
+  Settings → Server, show the lines for OpenClaw. The key goes in `~/.openclaw/.env`, so it is
+  never typed into a command or saved in OpenClaw's settings.
+- **AI apps see which of Recued's tools only read.** Each read says so in the standard MCP way,
+  so an app that asks before every call can run a read without asking you. A tool that changes
+  something still asks you in Recued.
+
+### Changed
+
+- **The chat answers about rules from what Recued read.** Asked how a rule works, what keeps a
+  reading up to date, or how far a reading is from its target, the chat answers with facts Recued
+  looked up and worked out itself, each with its link, and reads them again before it reuses them.
+- **A restart or an update stops what is still running after a few seconds.** It no longer
+  waits on a recipe run, a mail sync or a slow service, and what it cuts short is picked up after
+  the restart. Confirm update, and the restart in the server menu, now say so before you choose.
+- **A pre-approved run a restart stopped before it sent anything keeps its approval.** It runs
+  after the restart, for the same time or event. A run that sent anything is reported as before
+  and never runs again on its approval.
+- **An update that did not take effect says why**, such as a download whose signature did not
+  check out or a new version that did not start, and says what to do next.
+
+### Fixed
+
+- **Blind copies stay blind.** Mail sent through an IMAP/SMTP account no longer includes its Bcc
+  line in the message it hands the provider, which a provider could pass on to every recipient.
+  The copy in your Sent folder still says who got a blind copy.
+- **A failing AI provider no longer reads as a missing model.** When every provider the chat tried
+  failed, the chat said no AI model was set up and sent you to Settings. It now says the provider
+  failed, and when some tools had already run, it says so and asks you to check their results
+  before trying again.
+- **An AI app that stays connected no longer stops an update.** An AI app's connection never
+  closed by itself, so the update gave up after a few seconds and kept the old version. A
+  `recued --mcp` connection, such as Claude Desktop's, also closes for an update now; the app
+  starts it again when it next needs Recued. A server on 26.10.25 or older still waits while it
+  installs this release: if the update keeps coming back as available, quit the AI apps connected
+  to Recued and update again.
+- **A mail connection that resets no longer crashes the server**, and a mail folder it cut off
+  catches up instead of staying silent until the next restart.
+- **A restart no longer costs a webhook or a Records delivery an attempt.** A delivery the
+  restart refused waits and runs after it, so restarts can no longer use up its retries.
+- **A recipe run's MCP connections close when the run ends.** Each run that used a local MCP
+  server left its program running until the server stopped.
+
 ## 26.10.25 — 2026-10-25
 
 Your AI now keeps the things you own up to date. It adds a thing with its details and where it

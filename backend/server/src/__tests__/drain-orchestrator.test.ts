@@ -191,6 +191,47 @@ describe('drain — await_inflight', () => {
   });
 });
 
+/** ⛔ Waiting on a long run only cost the update: the step ran out, the update
+ *  refused to swap, and the run died at exit anyway (2026-10-26). Now the drain
+ *  lets in-flight work finish inside a grace and stops the rest. */
+describe('drain — running work is stopped, not waited for', () => {
+  it('stops what is still running once the grace is up, and no step is aborted', async () => {
+    let count = 2;
+    const stopInFlight = vi.fn(() => { const stopped = count; count = 0; return stopped; });
+    const { drain } = newOrchestrator({}, {
+      getInFlightCount: () => count,
+      stopInFlight,
+      inflightGraceMs: 50,
+    });
+    const result = await drain.drain({ reason: 't', intent: 'restart' });
+    expect(stopInFlight).toHaveBeenCalledTimes(1);
+    expect(result.aborted).toEqual([]);
+    // Stopped in stop_accepting_rpc, so await_inflight finds nothing left.
+    expect(result.completed).toEqual(expect.arrayContaining(['stop_accepting_rpc', 'await_inflight']));
+  });
+
+  it('lets work that finishes inside the grace finish, and stops nothing', async () => {
+    let count = 1;
+    setTimeout(() => { count = 0; }, 20);
+    const stopInFlight = vi.fn(() => 0);
+    const { drain } = newOrchestrator({}, {
+      getInFlightCount: () => count,
+      stopInFlight,
+      inflightGraceMs: 400,
+    });
+    const result = await drain.drain({ reason: 't', intent: 'restart' });
+    expect(stopInFlight).not.toHaveBeenCalled();
+    expect(result.aborted).toEqual([]);
+  });
+
+  it('stops nothing when nothing is running', async () => {
+    const stopInFlight = vi.fn(() => 0);
+    const { drain } = newOrchestrator({}, { getInFlightCount: () => 0, stopInFlight });
+    await drain.drain({ reason: 't', intent: 'shutdown' });
+    expect(stopInFlight).not.toHaveBeenCalled();
+  });
+});
+
 describe('drain — idempotency / coalesce', () => {
   it('second drain call returns the in-flight Promise', async () => {
     const { drain } = newOrchestrator({

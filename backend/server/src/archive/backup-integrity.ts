@@ -11,6 +11,7 @@ import { archiveImportOperationId } from './archive-import-receipts.js';
 import { createRemoteBackupStore } from './remote-backup-store.js';
 import type { RemoteBackups } from './remote-backups.js';
 import { nextBackupTime, validateBackupSchedule } from './unattended-backups.js';
+import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 
 const HOUR = 3_600_000;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -193,7 +194,10 @@ export const createBackupIntegrity = (options: {
       }
       startAlerts(); return active ?? Promise.resolve();
     },
-    async stop(): Promise<void> { stopped = true; controller?.abort(); await Promise.allSettled([active, alertActive]); },
+    /** ⛔ BOUNDED, for a restart's 5 s drain step: what a stop cuts short is
+     *  an aborted recheck, recorded as stopped, and an alert push. A pause or a maintenance window waits for all of it (`settled`). */
+    async stop(): Promise<void> { stopped = true; controller?.abort(); await settleWithin(Promise.allSettled([active, alertActive]), STOP_GRACE_MS); },
+    async settled(): Promise<void> { await Promise.allSettled([active, alertActive]); },
     resume(): void { stopped = false; },
   };
 };

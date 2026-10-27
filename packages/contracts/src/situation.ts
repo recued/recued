@@ -1,6 +1,6 @@
 import type { AssetEvidence, AssetStatus, Sphere } from './assets.js';
 import type { Commitment } from './work-entities.js';
-import { ASSET_FACT_CONTEXT_REQUEST_SCHEMA, type AssetFactContext } from './asset-fact-context.js';
+import { ASSET_FACT_CONTEXT_REQUEST_SCHEMA, type AssetFactContext, type AssetFactContextRequest } from './asset-fact-context.js';
 
 export const SITUATION_CONTEXT_MAX_BYTES = 6000;
 /** At most this many items in one `situation.query` result. The tool returns every match up to
@@ -97,6 +97,8 @@ export interface SituationFact {
   visa?: { name: string; valid_for?: string; expires_on?: string };
   /** The one bounded copy a fact may carry: an asset's own fields. */
   details?: SituationAssetDetails;
+  /** Native request for this rule's graph; identity only, no relationship read. */
+  context?: AssetFactContextRequest;
 }
 export interface SituationItem {
   ref: SituationRef;
@@ -114,6 +116,8 @@ export interface SituationItem {
   updated_at: number;
   /** Read-time context, not part of the situation: a saved snapshot leaves it out. */
   details?: SituationAssetDetails;
+  /** Read-time native request, copied to situation.query to inspect this rule. */
+  context?: AssetFactContextRequest;
   /** Where a trip goes and its days of entry and exit, as its booking or the owner
    * gave them, so a model can weigh a traveller's documents against it. Its
    * travellers are `who`. Read-time context, like `details`. */

@@ -16,7 +16,10 @@ const DEFAULT_PART = 8 * MiB;
 export interface RemoteObjectIdentity { etag?: string; version_id?: string }
 export interface RemoteArchiveBytes { bytes: number; sha256: string }
 export interface RemoteBackupTransport {
-  upload(key: string, path: string, expected: RemoteArchiveBytes, onMultipart: (id: string | null) => void): Promise<void>;
+  /** `signal` aborts the transfer, including a multipart upload's own cleanup
+   *  request; the multipart id stays recorded, so a later check removes the
+   *  parts. */
+  upload(key: string, path: string, expected: RemoteArchiveBytes, onMultipart: (id: string | null) => void, signal?: AbortSignal): Promise<void>;
   verify(key: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity, signal?: AbortSignal): Promise<RemoteObjectIdentity>;
   retrieve(key: string, path: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity, signal?: AbortSignal): Promise<void>;
   remove(key: string, identity: RemoteObjectIdentity, signal?: AbortSignal): Promise<void>;
@@ -60,9 +63,10 @@ const readControl = async (response: Response): Promise<string> => {
 };
 const discard = async (response: Response): Promise<void> => { try { await response.body?.cancel(); } catch { /* no provider body is needed */ } };
 
-export const hashRemoteBackupFile = async (path: string): Promise<RemoteArchiveBytes> => {
+export const hashRemoteBackupFile = async (path: string, signal?: AbortSignal): Promise<RemoteArchiveBytes> => {
   const hash = createHash('sha256'); let bytes = 0;
-  for await (const chunk of createReadStream(path)) { hash.update(chunk); bytes += chunk.length; }
+  // Checked per chunk, so hashing a multi-GB archive cannot hold up a stop.
+  for await (const chunk of createReadStream(path)) { signal?.throwIfAborted(); hash.update(chunk); bytes += chunk.length; }
   if (!Number.isSafeInteger(bytes) || bytes < 4) fail('verification_failed');
   return { bytes, sha256: hash.digest('hex') };
 };
@@ -81,6 +85,8 @@ export const createS3RemoteBackupTransport = (options: {
   const request = async (method: string, key: string, args: {
     query?: Record<string, string>; headers?: Record<string, string>; body?: BodyInit; hash?: string; signal?: AbortSignal;
   } = {}): Promise<Response> => {
+    // A cancelled operation sends nothing and resolves no credential.
+    if (args.signal?.aborted) return fail();
     options.assertCurrent();
     const url = s3ObjectUrl(config, key);
     if (args.query) url.search = Object.entries(args.query).map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`).join('&');
@@ -93,12 +99,12 @@ export const createS3RemoteBackupTransport = (options: {
     try { return await fetchImpl(signed.url, init); } catch { return fail(); }
   };
   const fileRequest = async (key: string, path: string, start: number, end: number, sha256: string,
-    query?: Record<string, string>, extraHeaders?: Record<string, string>): Promise<Response> => {
+    query?: Record<string, string>, extraHeaders?: Record<string, string>, signal?: AbortSignal): Promise<Response> => {
     const source = createReadStream(path, { start, end, highWaterMark: 64 * 1024 });
     try {
       return await request('PUT', key, { query, hash: sha256,
         headers: { 'content-type': 'application/octet-stream', 'content-length': String(end - start + 1), ...extraHeaders },
-        body: Readable.toWeb(source) as ReadableStream<Uint8Array> });
+        body: Readable.toWeb(source) as ReadableStream<Uint8Array>, ...(signal ? { signal } : {}) });
     } finally { source.destroy(); }
   };
   const abort = async (key: string, uploadId: string, signal?: AbortSignal): Promise<void> => {
@@ -138,14 +144,15 @@ export const createS3RemoteBackupTransport = (options: {
     }
   };
   return {
-    async upload(key, path, expected, onMultipart) {
+    async upload(key, path, expected, onMultipart, signal) {
       const partBytes = Math.max(options.partBytes ?? DEFAULT_PART, Math.ceil(expected.bytes / 10000 / MiB) * MiB);
       if (!Number.isSafeInteger(partBytes) || partBytes < 5 * MiB || partBytes > 5 * 1024 * MiB) fail();
+      const cancel = signal ? { signal } : {};
       if (expected.bytes <= partBytes) {
-        const response = await fileRequest(key, path, 0, expected.bytes - 1, expected.sha256, undefined, { 'if-none-match': '*' });
+        const response = await fileRequest(key, path, 0, expected.bytes - 1, expected.sha256, undefined, { 'if-none-match': '*' }, signal);
         const ok = response.ok; await discard(response); if (!ok) fail(); return;
       }
-      const init = await request('POST', key, { query: { uploads: '' }, headers: { 'content-type': 'application/octet-stream' } });
+      const init = await request('POST', key, { query: { uploads: '' }, headers: { 'content-type': 'application/octet-stream' }, ...cancel });
       if (!init.ok) { await discard(init); return fail(); }
       const id = xmlValue(await readControl(init), 'UploadId'); if (!opaque(id ?? null)) return fail();
       const uploadId = id!; let completed = false;
@@ -154,21 +161,24 @@ export const createS3RemoteBackupTransport = (options: {
         const parts: string[] = [];
         for (let start = 0, part = 1; start < expected.bytes; start += partBytes, part++) {
           const end = Math.min(expected.bytes, start + partBytes) - 1, hash = createHash('sha256');
-          for await (const chunk of createReadStream(path, { start, end, highWaterMark: 64 * 1024 })) hash.update(chunk);
-          const response = await fileRequest(key, path, start, end, hash.digest('hex'), { partNumber: String(part), uploadId });
+          for await (const chunk of createReadStream(path, { start, end, highWaterMark: 64 * 1024 })) { signal?.throwIfAborted(); hash.update(chunk); }
+          const response = await fileRequest(key, path, start, end, hash.digest('hex'), { partNumber: String(part), uploadId }, undefined, signal);
           const etag = response.headers.get('etag'), ok = response.ok; await discard(response);
           if (!ok || !strongEtag(etag)) return fail();
           parts.push(`<Part><PartNumber>${part}</PartNumber><ETag>${escapeXml(etag)}</ETag></Part>`);
         }
         const body = `<CompleteMultipartUpload>${parts.join('')}</CompleteMultipartUpload>`;
         const response = await request('POST', key, { query: { uploadId }, headers: { 'content-type': 'application/xml', 'if-none-match': '*' },
-          body, hash: createHash('sha256').update(body).digest('hex') });
+          body, hash: createHash('sha256').update(body).digest('hex'), ...cancel });
         const ok = response.ok, xml = await readControl(response);
         // CompleteMultipartUpload can return an Error inside HTTP 200.
         if (!ok || !/<CompleteMultipartUploadResult(?:\s|>)/u.test(xml) || /<Error(?:\s|>)/u.test(xml)) fail();
         completed = true; onMultipart(null);
       } finally {
-        if (!completed) { try { await abort(key, uploadId); onMultipart(null); } catch { /* durable id permits later cleanup */ } }
+        // A cancelled upload sends no cleanup either: it would hold the stop for
+        // as long as the provider takes to answer. The recorded id lets the next
+        // check remove the parts.
+        if (!completed) { try { await abort(key, uploadId, signal); onMultipart(null); } catch { /* durable id permits later cleanup */ } }
       }
     },
     verify: (key, expected, identity, signal) => readObject(key, expected, identity, undefined, signal),

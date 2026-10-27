@@ -91,7 +91,10 @@ export const composePreapproval = (deps: {
       child_calls: mail ? ['mail_attachments', 'ai_input', 'http_upload'] : [], decision_channels: deps.keys ? ['webclient', 'telegram'] : ['webclient'],
     } : { activation_kinds: [], bindings: [], child_calls: [], decision_channels: [] },
   });
-  const runtime = createPreapprovalExecutionRuntime({ storage: deps.storage, service });
+  // `isDraining` is bound late, where the lifecycle exists, so it is read on
+  // every check rather than captured here.
+  const runtime = createPreapprovalExecutionRuntime({ storage: deps.storage, service,
+    isStopping: () => deps.execution.isDraining?.() === true });
   const notifications = createPreapprovalNotifications({ repository: deps.storage.repository,
     block: deps.notifications, gatedActions: deps.execution.gatedActionStore, reviewLink: deps.reviewLink });
   const telegram = deps.keys ? createPreapprovalTelegramDelivery({ repository: deps.storage.repository,

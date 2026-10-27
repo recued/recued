@@ -66,10 +66,14 @@ export interface HousekeepingSchedulerRegistry {
    *  `getScheduler()` calls return undefined (prevents rpc handlers
    *  from dispatching into a stopped scheduler post-maintenance-enter). */
   stop(): Promise<void>;
+  /** Resolves once the scheduler `stop()` stopped has ended every cycle it
+   *  admitted (`HousekeepingScheduler.settled`). */
+  settled(): Promise<void>;
 }
 
 export const createHousekeepingSchedulerRegistry = (): HousekeepingSchedulerRegistry => {
   let scheduler: HousekeepingScheduler | undefined;
+  let stopped: HousekeepingScheduler | undefined;
   const enrichmentProducers = new Map<string, EnrichmentProducerEntry>();
   return {
     setScheduler(next) {
@@ -85,7 +89,11 @@ export const createHousekeepingSchedulerRegistry = (): HousekeepingSchedulerRegi
       const current = scheduler;
       if (!current) return;
       scheduler = undefined;
+      stopped = current;
       await current.stop();
+    },
+    async settled() {
+      await stopped?.settled?.();
     },
   };
 };

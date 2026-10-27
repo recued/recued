@@ -43,6 +43,7 @@ describe('ACCOUNT_LANES structure', () => {
     // (OAuth document providers use connection-backed D-192 Sources + packs).
     expect(findAccountLane('mail')!.providers.map((p) => p.id)).toEqual([
       'imap',
+      'smtp',
       'gmail',
       'graph',
     ]);

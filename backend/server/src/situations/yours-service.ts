@@ -37,6 +37,8 @@ import { completionQuestionKey, lastDoneQuestionKey } from './owner-completion.j
 import type { ProactiveLearning } from './learning-runtime.js';
 import { ruleNotice } from './rule-titles.js';
 import { assetContextWriters, createAssetFactContextReader } from './asset-fact-context.js';
+import { createAssetWriterSetup, type AssetWriterSetup, type AssetWriterRuntime } from './asset-writer-setup.js';
+import { compareSavedAssetReading } from '../asset-reading-comparison.js';
 
 /** "Never this kind" names what stops, in the owner's words; a mail fact kind as the learner names it. */
 const DISMISSED_KINDS: Record<string, string> = { travel_validity: 'travel document checks', episode: 'last-time suggestions',
@@ -106,6 +108,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
   const mutations = new Map<string, Promise<unknown>>();
   let notifier: NotificationBlock | undefined;
   let recipes: import('../recipe-store.js').RecipeStore | undefined;
+  let writers: AssetWriterSetup | undefined;
   let scheduled: import('./scheduled-situations.js').ScheduledSituations | undefined;
   let subscribers: { store: import('../triggers/store.js').EventTriggersStore; contracts: import('../storage/contract-definition-store.js').ContractDefinitionStore; changed(): void } | undefined;
   deps.db.exec(`CREATE TABLE IF NOT EXISTS asset_identity_links (
@@ -1189,7 +1192,12 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     // card without names rather than failing the whole read.
     let sharedAssets: ReturnType<NonNullable<WorkEntityStore['listHouseholdAssets']>> | undefined;
     try { sharedAssets = deps.work.listHouseholdAssets?.(HOUSEHOLD_ASSETS_SHOWN); } catch { sharedAssets = undefined; }
-    return { assets, ...(input.asset_id && assets[0]?.holder_contact ? { holder: holderOf(assets[0].holder_contact) } : {}),
+    // D-325 — derive only the open item's comparisons from values already read.
+    // No graph walk, model call, maintained result or extra source query.
+    const reading_comparisons = input.asset_id && assets[0] ? { asset_id: assets[0].id, rules: assets[0].rules.flatMap(rule =>
+      rule.when.kind === 'objective' ? [{ rule_id: rule.id, comparison: compareSavedAssetReading(assets[0]!.readings[rule.when.field], rule.when, now()) }] : []) } : undefined;
+    return { assets, ...(reading_comparisons?.rules.length ? { reading_comparisons } : {}),
+      ...(input.asset_id && assets[0]?.holder_contact ? { holder: holderOf(assets[0].holder_contact) } : {}),
       related_assets: [...new Map([...(parent ? [parent] : []), ...descendants, ...linked].map(asset => [asset.id, asset])).values()], total_assets,
       ...(input.asset_filter ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}), classes: classes.list(), proposals: shown,
       ...(input.asset_sphere ? { asset_sphere: input.asset_sphere } : {}),
@@ -1251,6 +1259,14 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     bindScheduled(service: import('./scheduled-situations.js').ScheduledSituations) { scheduled = service; },
     bindSubscribers(value: NonNullable<typeof subscribers>) { subscribers = value; },
     bindRecipes(value: import('../recipe-store.js').RecipeStore) { recipes = value; },
+    bindWriters(runtime: AssetWriterRuntime) {
+      if (recipes && deps.homeAssistant) writers = createAssetWriterSetup({ ...runtime, db: deps.db, work: deps.work,
+        recipes, source: deps.homeAssistant, ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}), now });
+    },
+    writerRead(input: Parameters<AssetWriterSetup['read']>[0]) { requireOpen(); if (!writers) throw new Error('Automatic source setup is unavailable'); return writers.read(input); },
+    writerPreview(input: Parameters<AssetWriterSetup['preview']>[0]) { requireOpen(); if (!writers) throw new Error('Automatic source setup is unavailable'); return writers.preview(input); },
+    writerChange(input: Parameters<AssetWriterSetup['change']>[0], owner: ExecutionSource) { requireOpen(); if (!writers) throw new Error('Automatic source setup is unavailable'); return writers.change(input, owner); },
+    prepareWriterRun(input: import('../types.js').ExecuteRequest) { return writers?.prepareRun(input) ?? input; },
     /** §15.7 amendment — the to-do lists a Home Assistant connection offers, for Settings. */
     async householdLists(input: { connection_name: string; connection_enrolled_at: number }) {
       if (!deps.homeAssistant) throw new Error('Home Assistant household delivery is unavailable');
@@ -1269,7 +1285,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     },
     bind(block: NotificationBlock) { notifier = block; },
     async tick() { if (deps.isVaultUnlocked?.() === false) return; await intake.scan(); deps.learning?.refreshPending(); refreshQuestions(); refreshClassUpdates(); refreshTrips(); await refreshEvidence(); mailProof.scan(); publishProposalEvents(proposals, deps.situations, spheres); },
-    async stop() { await intake.drain(); await Promise.allSettled([...mutations.values()]); },
+    async stop() { await intake.drain(); await writers?.stop(); await Promise.allSettled([...mutations.values()]); },
   };
 };
 export type YoursService = ReturnType<typeof createYoursService>;

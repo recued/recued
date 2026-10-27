@@ -55,6 +55,7 @@ import type { AuditLogStore } from '@recued/storage';
 import type { MailCollection } from '../collections/mail/mail-collection.js';
 import { normalizeRfcMessageId } from '../collections/mail/provider.js';
 import { messengerInstallOfferLines } from '../install-offers/messenger-lines.js';
+import { PUSH_GRACE_MS, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
 import type { ChatStore } from '../storage/chat-store.js';
 import type { MailSendClaimStore } from '../storage/mail-send-claim-store.js';
@@ -165,7 +166,8 @@ export interface MailChatAnswers {
   /** How the owner is told of an answer given up. Until bound, a notice waits. */
   bindNotify(fn: MailChatProofNotify): void;
   start(): void;
-  /** Stop, and wait for an attempt in progress. Idempotent. */
+  /** Stop, and wait for the round in progress at most `STOP_GRACE_MS` —
+   *  `PUSH_GRACE_MS` while a notice push is in flight. Idempotent. */
   dispose(): Promise<void>;
   /** One answer, for the tests and diagnostics. */
   get(answer_id: string): MailChatAnswer | null;
@@ -377,6 +379,8 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
   let started = false;
   let disposed = false;
   let running: Promise<void> | undefined;
+  /** A notice push in flight, after its mark (`dispose`). */
+  let pushing: Promise<void> | undefined;
   let again = false;
   let locked = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -560,6 +564,9 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
       settleUnsent(row, 'dropped', 'the answer is empty');
       return;
     }
+    // ⛔ Disposed during the reads above (the Sent record's lookup can take a
+    // while): no send starts. The answer stays as it was, for the next start.
+    if (disposed) return;
     const attempts = row.attempts + 1;
     const first_attempt_at = row.first_attempt_at ?? now();
     const withThread = envelope.thread_id !== undefined && row.thread_dropped === 0;
@@ -616,7 +623,7 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
       // It may have gone. The Sent record, or the owner, settles it; nothing is
       // sent again before then.
       retryLater(current, code, { state: 'unknown' });
-      if (askOwner !== undefined) {
+      if (askOwner !== undefined && !disposed) {
         try { await askOwner(reconciliation_id); } catch { /* asked again at the next attempt */ }
       }
       return;
@@ -653,7 +660,8 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
 
   /** D-308's order: the history row under a fixed id, then the mark, then the push. */
   const deliverNotices = async (): Promise<void> => {
-    if (notify === undefined) return;
+    const send = notify;
+    if (send === undefined) return;
     for (const row of selectNoticesDue.all() as AnswerRow[]) {
       if (disposed) return;
       const message = JSON.parse(row.notice_json ?? 'null') as NotificationMessage | null;
@@ -679,9 +687,13 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
         }
       }
       markNoticeSent.run(row.answer_id);
+      const push = (async () => auditLog !== undefined ? send(message, { persisted_activity_id }) : send(message))();
+      pushing = push;
       try {
-        await (auditLog !== undefined ? notify(message, { persisted_activity_id }) : notify(message));
-      } catch { /* best-effort: the notice is marked given */ }
+        await push;
+      } catch { /* best-effort: the notice is marked given */ } finally {
+        pushing = undefined;
+      }
     }
   };
 
@@ -814,11 +826,26 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
       recoverSending.run();
       void tick();
     },
+    /** ⛔ A drain step awaits this, with 5 s, and the process exits right after
+     *  the drain anyway, so a round is waited for at most `STOP_GRACE_MS`. One
+     *  email send can take far longer, and so can a Sent-record lookup over
+     *  IMAP (the library's 90 s to connect). Nothing a round leaves unfinished
+     *  is lost: `disposed` starts no further attempt or notice; an answer is
+     *  marked `sending` BEFORE its send, and `start` turns a `sending` one into
+     *  `unknown`, which the Sent record settles before anything is sent again
+     *  (its reconciliation id makes the send claim refuse a second copy); a
+     *  lookup cut short leaves the answer as it was, to be asked again; a
+     *  notice not yet marked is given at the next start, onto the same row.
+     *
+     *  The exception is a notice push in flight, given `PUSH_GRACE_MS`: it
+     *  comes AFTER its mark (D-308's order), so a push cut short is never given
+     *  again and only its history row remains. Waiting on would run out the
+     *  drain step, which makes an update refuse to swap. */
     async dispose(): Promise<void> {
       disposed = true;
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
-      await running?.catch(() => undefined);
+      if (running !== undefined) await settleWithin(running, pushing !== undefined ? PUSH_GRACE_MS : STOP_GRACE_MS);
     },
     get(answer_id): MailChatAnswer | null {
       const row = read(answer_id);

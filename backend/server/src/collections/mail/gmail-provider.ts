@@ -119,6 +119,7 @@ import {
   type ProviderPollScheduler,
   type ProviderPollStop,
 } from '../draining-interval.js';
+import { CollectionStoppedError, throwIfStopped } from '../stop-signal.js';
 
 // ────────────────────────────────────────────────────────────────
 // Gmail-specific config + constants
@@ -390,6 +391,8 @@ export const canonicalizeGmail = async (
 interface GmailFetchOptions {
   accessToken: string | undefined;
   fetcher: HttpFetcher;
+  /** A sync's stop (`stop-signal.ts`); absent on an rpc read. */
+  signal?: AbortSignal;
 }
 
 /** Perform a GET against the Gmail API with automatic 401 handling.
@@ -403,6 +406,7 @@ const gmailGet = async <T>(
   const res = await opts.fetcher(url, {
     method: 'GET',
     headers: { ...oauthAuthorizationHeaders(opts.accessToken) },
+    ...(opts.signal ? { signal: opts.signal } : {}),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -578,7 +582,11 @@ export const createGmailProvider = (
   const fetcher = opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
-  let stopped = false;
+  /** Aborted by `close()`, armed again by `connect()`: the first scan and the
+   *  poll `startSync` runs at once go by it, and each scheduled poll by its
+   *  loop's own signal. A scan or poll captures the signal when it begins, so
+   *  one begun before a close stays stopped across the next connect. */
+  let lifecycle = new AbortController();
   let pollStop: ProviderPollStop | null = null;
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
@@ -648,19 +656,26 @@ export const createGmailProvider = (
     {
       treat404AsAbsent = true,
       onFailureStatus,
+      signal,
     }: {
       treat404AsAbsent?: boolean;
       /** Observe the failing status. A per-call CLOSURE rather than shared
        *  provider state, so overlapping ticks cannot read each other's status. */
       onFailureStatus?: (status: number) => void;
+      /** A sync's stop: aborts the request, and no new one (nor a token
+       *  refresh) starts once it has fired. */
+      signal?: AbortSignal;
     } = {},
   ): Promise<T | null> => {
-    const first = await gmailGet<T>(url, { accessToken: await ensureToken(false), fetcher });
+    throwIfStopped(signal);
+    const first = await gmailGet<T>(url, { accessToken: await ensureToken(false), fetcher, signal });
     if (first.ok) return first.data;
     if (first.status === 401 && !opts.managedFetcher) {
+      throwIfStopped(signal);
       const second = await gmailGet<T>(url, {
         accessToken: await ensureToken(true),
         fetcher,
+        signal,
       });
       if (second.ok) return second.data;
       if (second.status === 404 && treat404AsAbsent) return null;
@@ -690,11 +705,11 @@ export const createGmailProvider = (
     throw new Error(`gmail reconciliation source read failed (${first.status})`);
   };
 
-  const fetchMessageRaw = async (id: string): Promise<GmailMessagePayload | null> => {
+  const fetchMessageRaw = async (id: string, signal?: AbortSignal): Promise<GmailMessagePayload | null> => {
     let failureStatus: number | undefined;
     const message = await getWithRetry<GmailMessagePayload>(
       `${GMAIL_API_BASE}/messages/${id}?format=raw`,
-      { onFailureStatus: (status) => { failureStatus = status; } },
+      { onFailureStatus: (status) => { failureStatus = status; }, signal },
     );
     if (message === null && failureStatus !== undefined) {
       throw new Error(`gmail message ${id} read failed (${failureStatus})`);
@@ -710,9 +725,10 @@ export const createGmailProvider = (
     return hydrateGmailAttachments(await canonicalizeGmail(raw));
   };
 
-  const fetchMessageFull = async (id: string): Promise<GmailMessageFullPayload | null> => {
+  const fetchMessageFull = async (id: string, signal?: AbortSignal): Promise<GmailMessageFullPayload | null> => {
     return getWithRetry<GmailMessageFullPayload>(
       `${GMAIL_API_BASE}/messages/${id}?format=full`,
+      { signal },
     );
   };
 
@@ -725,6 +741,11 @@ export const createGmailProvider = (
     );
   };
 
+  /** ⚠ Not tied to the sync's stop, unlike the reads that list a message: a
+   *  part's bytes are fetched lazily, by whoever holds the message, and may be
+   *  after the sync that read it has ended. The collection checks its own
+   *  generation before each part, so a stop leaves at most the one download
+   *  in flight. */
   const attachmentBytesFetcher = (
     messageId: string,
     body: GmailMessagePartBody | undefined,
@@ -793,9 +814,10 @@ export const createGmailProvider = (
 
   const hydrateGmailAttachments = async (
     canonical: CanonicalMessage,
+    signal?: AbortSignal,
   ): Promise<CanonicalMessage> => {
     if (!canonical.has_attachments) return canonical;
-    const full = await fetchMessageFull(canonical.source_id);
+    const full = await fetchMessageFull(canonical.source_id, signal);
     if (!full) {
       throw new Error(`gmail message ${canonical.source_id} missing full payload for attachments`);
     }
@@ -817,6 +839,7 @@ export const createGmailProvider = (
     id: string,
     kind: ProviderSyncEventKind,
     cb: ProviderSyncCallback,
+    signal: AbortSignal,
   ): Promise<boolean> => {
     pendingQueueSize++;
     try {
@@ -825,17 +848,20 @@ export const createGmailProvider = (
         lastSuccessfulSyncAt = nowOf();
         return true;
       }
-      const raw = await fetchMessageRaw(id);
+      const raw = await fetchMessageRaw(id, signal);
       // A message that disappeared between history.list and messages.get is
       // already in the desired absent state. It needs no callback and is safe
       // to acknowledge; non-404 read failures throw from fetchMessageRaw.
       if (!raw) return true;
       if (!applyLabelFilter(raw.labelIds)) return true;
-      const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw));
+      const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw), signal);
       await cb({ kind, source_id: canonical.source_id, message: canonical });
       lastSuccessfulSyncAt = nowOf();
       return true;
     } catch (err) {
+      // A stop is no failure, and no delivery either: false keeps the cursor
+      // where it was.
+      if (signal.aborted) return false;
       // The history cursor is the retry journal. Report the attempt as failed
       // and tell the caller not to advance it; resolving here used to turn a
       // transient detail/attachment/collection failure into permanent loss.
@@ -856,7 +882,11 @@ export const createGmailProvider = (
   };
 
   // ── initial scan ────────────────────────────────────────────
-  const runInitialScan = async (scanOpts: InitialScanOptions): Promise<void> => {
+  /** `signal` stops the scan between pages and messages by THROWING: it
+   *  returns normally only once every page was read, and both callers treat a
+   *  normal return as complete — the collection marks the backfill done, and
+   *  the history recovery below overwrites the old watermark. */
+  const runInitialScan = async (scanOpts: InitialScanOptions, signal: AbortSignal): Promise<void> => {
     // Capture historyId before listing — ensures we don't miss
     // deliveries that arrive between list + sync start. Gmail ordering
     // guarantees `history?startHistoryId=profile.historyId` returns
@@ -867,6 +897,7 @@ export const createGmailProvider = (
     if ((await readHistoryWatermark()) === null) {
       const profile = await getWithRetry<GmailProfile>(`${GMAIL_API_BASE}/profile`, {
         treat404AsAbsent: false,
+        signal,
       });
       if (!profile || typeof profile.historyId !== 'string' || profile.historyId.length === 0) {
         throw new Error('gmail initial scan could not establish a history watermark');
@@ -888,6 +919,7 @@ export const createGmailProvider = (
       if (pageToken) url.searchParams.set('pageToken', pageToken);
       const list = await getWithRetry<GmailMessageList>(pagination.claim(url.toString()), {
         treat404AsAbsent: false,
+        signal,
       });
       if (!list) {
         throw new Error('gmail initial scan could not fetch a complete message page');
@@ -895,15 +927,19 @@ export const createGmailProvider = (
       const ids = (list.messages ?? []).map((m) => m.id);
       scanOpts.onAccessVerified?.();
       for (const id of ids) {
+        // Outside the per-message catch, which would count a stop as one
+        // failed message and read on.
+        throwIfStopped(signal);
         try {
-          const raw = await fetchMessageRaw(id);
+          const raw = await fetchMessageRaw(id, signal);
           if (!raw) continue;
           if (!applyLabelFilter(raw.labelIds)) continue;
-          const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw));
+          const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw), signal);
           const cont = await scanOpts.onMessage(canonical);
           lastSuccessfulSyncAt = nowOf();
           if (!cont) { aborted = true; break; }
         } catch (err) {
+          if (signal.aborted) throw new CollectionStoppedError();
           markError(`gmail canonicalize failed id=${id}`, err);
           failures.push(err);
         }
@@ -920,12 +956,16 @@ export const createGmailProvider = (
   };
 
   // ── incremental poll ────────────────────────────────────────
-  const runHistoryTick = async (cb: ProviderSyncCallback): Promise<void> => {
+  /** `signal` stops the poll between pages and messages; a stopped poll
+   *  throws before it writes the watermark, so the next one replays the range
+   *  (every delivery in it is an idempotent upsert or delete). */
+  const runHistoryTick = async (cb: ProviderSyncCallback, signal: AbortSignal): Promise<void> => {
     const watermark = await readHistoryWatermark();
     if (!watermark) {
       // No watermark → either first run skipped (scan error) or the
       // account store lost state. Re-seed from the profile.
-      const profile = await getWithRetry<GmailProfile>(`${GMAIL_API_BASE}/profile`);
+      const profile = await getWithRetry<GmailProfile>(`${GMAIL_API_BASE}/profile`, { signal });
+      throwIfStopped(signal);
       if (profile) await writeHistoryWatermark(profile.historyId);
       return;
     }
@@ -952,6 +992,7 @@ export const createGmailProvider = (
       const page = await getWithRetry<GmailHistoryResponse>(pagination.claim(url.toString()), {
         treat404AsAbsent: false,
         onFailureStatus: (status) => { if (status === 404) cursorAgedOut = true; },
+        signal,
       });
       if (!page) {
         if (cursorAgedOut) {
@@ -967,7 +1008,7 @@ export const createGmailProvider = (
           try {
             const profile = await getWithRetry<GmailProfile>(
               `${GMAIL_API_BASE}/profile`,
-              { treat404AsAbsent: false },
+              { treat404AsAbsent: false, signal },
             );
             if (
               !profile
@@ -987,9 +1028,14 @@ export const createGmailProvider = (
                 });
                 return true;
               },
-            });
+            }, signal);
+            // The replay read every page (a stopped one throws), so its
+            // boundary may replace the aged-out cursor.
+            throwIfStopped(signal);
             await writeHistoryWatermark(profile.historyId);
           } catch (err) {
+            // A stop leaves the aged-out cursor for the next poll to recover.
+            if (signal.aborted) throw err;
             outcomes.noteFailure(
               err instanceof OAuthError
                 ? classifyOAuthFailure(err.status, err.oauth_error)
@@ -1001,21 +1047,26 @@ export const createGmailProvider = (
         return;
       }
       for (const entry of page.history ?? []) {
+        throwIfStopped(signal);
         for (const add of entry.messagesAdded ?? []) {
-          if (!(await fetchAndEmit(add.message.id, 'created', cb))) deliveryFailed = true;
+          throwIfStopped(signal);
+          if (!(await fetchAndEmit(add.message.id, 'created', cb, signal))) deliveryFailed = true;
         }
         for (const del of entry.messagesDeleted ?? []) {
-          if (!(await fetchAndEmit(del.message.id, 'deleted', cb))) deliveryFailed = true;
+          throwIfStopped(signal);
+          if (!(await fetchAndEmit(del.message.id, 'deleted', cb, signal))) deliveryFailed = true;
         }
         for (const la of entry.labelsAdded ?? []) {
+          throwIfStopped(signal);
           if (la.labelIds.includes(DELETED_LABEL)) {
-            if (!(await fetchAndEmit(la.message.id, 'deleted', cb))) deliveryFailed = true;
+            if (!(await fetchAndEmit(la.message.id, 'deleted', cb, signal))) deliveryFailed = true;
           } else {
-            if (!(await fetchAndEmit(la.message.id, 'updated', cb))) deliveryFailed = true;
+            if (!(await fetchAndEmit(la.message.id, 'updated', cb, signal))) deliveryFailed = true;
           }
         }
         for (const lr of entry.labelsRemoved ?? []) {
-          if (!(await fetchAndEmit(lr.message.id, 'updated', cb))) deliveryFailed = true;
+          throwIfStopped(signal);
+          if (!(await fetchAndEmit(lr.message.id, 'updated', cb, signal))) deliveryFailed = true;
         }
         if (entry.id && Number(entry.id) > Number(latestId)) latestId = entry.id;
       }
@@ -1033,6 +1084,7 @@ export const createGmailProvider = (
     // another chance. A poison item remains visible as a failed outcome rather
     // than being silently skipped.
     if (deliveryFailed) return;
+    throwIfStopped(signal);
     if (latestId !== watermark) await writeHistoryWatermark(latestId);
     lastSuccessfulSyncAt = nowOf();
   };
@@ -1685,6 +1737,9 @@ export const createGmailProvider = (
     accountEmail,
 
     async connect() {
+      // `sync.stop()` closes the provider and a later `sync.start()` reuses it
+      // (the vault lock edge): a new connection gets a new signal.
+      if (lifecycle.signal.aborted) lifecycle = new AbortController();
       try {
         await ensureToken(false);
       } catch (err) {
@@ -1694,18 +1749,24 @@ export const createGmailProvider = (
     },
 
     async initialScan(scanOpts) {
-      await outcomes.run('initial_scan', () => runInitialScan(scanOpts));
+      const signal = lifecycle.signal;
+      await outcomes.run('initial_scan', () => runInitialScan(scanOpts, signal));
     },
 
     async startSync(cb) {
       const scheduler = opts.scheduler ?? defaultScheduler;
       const intervalMs = Math.max(1, opts.config().poll_seconds) * 1000;
+      const session = lifecycle.signal;
       // Every tick is wrapped, not just the first — the scheduled ones are
       // precisely the attempts whose failures used to vanish into `markError`.
-      const tick = (): Promise<void> => outcomes.run('poll', () => runHistoryTick(cb));
+      // A scheduled poll gets its loop's signal; a test scheduler calls it bare.
+      const tick = (signal?: AbortSignal): Promise<void> =>
+        outcomes.run('poll', () => runHistoryTick(cb, signal ?? session));
       // Run an immediate tick so testers don't need to wait for the
       // first interval.
-      await tick();
+      await tick(session);
+      // Closed during that first poll: start no loop that nothing would stop.
+      if (session.aborted) throw new CollectionStoppedError();
       pollStop = scheduler(tick, intervalMs);
       return async () => {
         const stop = pollStop;
@@ -1715,7 +1776,9 @@ export const createGmailProvider = (
     },
 
     async close() {
-      stopped = true;
+      // Close admission and abort the scan or poll in flight; the poll loop's
+      // stop then waits for its pass at most `STOP_GRACE_MS`.
+      lifecycle.abort(new CollectionStoppedError('the gmail provider was closed'));
       const stop = pollStop;
       pollStop = null;
       await stop?.();

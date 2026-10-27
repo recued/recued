@@ -48,6 +48,7 @@ import {
   syncDeferredWhileLocked,
 } from '../vault-gated-sync.js';
 import type { FileReadDeps } from '../file/file-read-handler.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 
 import {
   createMailCollection,
@@ -58,7 +59,9 @@ import {
 } from './mail-collection.js';
 import type { MailProvider } from './provider.js';
 import type { MailEnrollDeps } from './enroll.js';
-import { readImapPassword, readImapSmtpPassword } from './enroll.js';
+import { readImapPassword, readImapSmtpPassword, readSmtpPassword } from './enroll.js';
+import { createSmtpProvider } from './smtp-provider.js';
+import { verifySmtpCredentials } from './smtp.js';
 import {
   createImapProvider,
   type ImapProviderConfig,
@@ -309,6 +312,18 @@ export const composeMailStack = (
   ): Promise<MailProvider | null> => {
     const slug = row.slug;
     const cfg = (row.config ?? {}) as Record<string, unknown>;
+    if (row.adapter_type === 'smtp') {
+      if (!bundle.accountStore?.getAll) return null;
+      const password = await readSmtpPassword(bundle.accountStore, slug);
+      if (!password) return null;
+      return createSmtpProvider({ slug, accountStore: bundle.accountStore,
+        config: { host: String(cfg.host), port: Number(cfg.port), secure: cfg.secure === true,
+          requireTLS: cfg.secure !== true, username: String(cfg.username), password, from: String(cfg.from),
+          ...(typeof cfg.reply_to === 'string' ? { reply_to: cfg.reply_to } : {}) },
+        ...(bundle.smtpFactory ? { smtpFactory: bundle.smtpFactory } : {}),
+        ...(bundle.now ? { now: bundle.now } : {}),
+      });
+    }
     if (row.adapter_type === 'imap') {
       if (!bundle.accountStore) {
         log('warn', `mail-stack: no accountStore configured — cannot hydrate imap creds for '${slug}'`);
@@ -590,6 +605,7 @@ export const composeMailStack = (
   };
 
   const enrollDeps: MailEnrollDeps = {
+    verifySmtp: config => verifySmtpCredentials(config, bundle.smtpFactory),
     ...(bundle.managedOAuth ? { managedOAuth: bundle.managedOAuth } : {}),
     instances,
     accountStore: bundle.accountStore ?? {
@@ -611,7 +627,12 @@ export const composeMailStack = (
       if (full) await startLive(full, 'background');
     },
     onDeleted: async (slug) => {
+      const deleting = live.get(slug);
       await stopLive(slug);
+      // The stop waits for an SMTP send at most its grace; the deletion that
+      // follows removes the credentials and the outgoing journal, so it waits
+      // for every admitted send to have its outcome first.
+      await deleting?.settledSends();
       storage.onMailboxDeleted?.(slug);
     },
     authenticationChange: {
@@ -647,19 +668,31 @@ export const composeMailStack = (
   const disposeAll = (): Promise<void> => {
     if (disposePromise) return disposePromise;
     closed = true;
-    const activeStarts = [...starts.values()];
-    // Close vault-edge admission and let its serialized pass interrupt/drain an
-    // admitted provider start before `close()` tears down the live objects.
-    // Starting both concurrently reintroduced the start-vs-stop race this
-    // controller exists to remove.
-    disposePromise = Promise.allSettled([
+    // Every stop begins at once: the vault-edge controller's dispose, the
+    // starts in flight, and each live collection's close. They used to run in
+    // two phases — the controller's serialized pass and the starts first, the
+    // closes after — so the closes waited on whatever a start or a pass was
+    // waiting on, a first scan's server included. Concurrent is safe now that
+    // `close()` sets the collection's own `closed` before it awaits anything: a
+    // controller pass that reaches a closed collection afterwards finds
+    // `sync.start()` a no-op and `sync.stop()` an idempotent second stop, and a
+    // start in flight is cancelled by the provider close and fenced by the
+    // generation bump in `sync.stop()`. A start that is still building its
+    // provider sees `closed` when it resumes and closes it unopened.
+    const work = Promise.allSettled([
       syncController.dispose(),
-      ...activeStarts,
-    ]).then(async (preStopResults) => {
-      const stops = [...live.keys()].map((slug) => stopLive(slug, true));
-      const stopResults = await Promise.allSettled(stops);
-      const results = [...preStopResults, ...stopResults];
-      const failures = results
+      ...starts.values(),
+      ...[...live.keys()].map((slug) => stopLive(slug, true)),
+    ]);
+    // Each close aborts its outbound work and bounds its own wait; this bounds
+    // the stack's. What runs past it was told to stop and can write nothing,
+    // and the drain's process exit ends it.
+    disposePromise = settleWithin(work, STOP_GRACE_MS).then(async (waited) => {
+      if (waited === 'timed_out') {
+        log('warn', `mail-stack: stopped waiting for mailboxes to stop after ${STOP_GRACE_MS} ms`);
+        return;
+      }
+      const failures = (await work)
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => result.reason);
       if (failures.length > 0) {

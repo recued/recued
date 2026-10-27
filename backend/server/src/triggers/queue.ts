@@ -30,7 +30,16 @@
  *  Errors raised by `processEvent` are swallowed at the queue layer.
  *  The dispatcher's existing try/catch already handles recipe failures
  *  (sets `last_error`, increments the 24h error counter); the queue's
- *  swallow is defense-in-depth against errors that escape that path. */
+ *  swallow is defense-in-depth against errors that escape that path.
+ *
+ *  Stopping (a restart, a pause, a maintenance window): `stop()` starts
+ *  nothing more and hands every event it will not process to `onUnstarted`
+ *  — at once for a key with nothing running, and for a key whose event is
+ *  running, after that event, so a key's events are handed over in the order
+ *  they came. `processEvent` answering `'not_run'` (the server refused to
+ *  start the run) hands that event over the same way. The dispatcher keeps
+ *  what cannot be told again; nothing is waited on but what is already
+ *  running. */
 
 import { MAIL_FACT_EVENT_PLATFORM, type EventTrigger } from '@recued/contracts';
 import type { WarehouseEvent } from '@recued/warehouse-events';
@@ -61,11 +70,21 @@ export const TRIGGER_QUEUE_PRODUCER_KEYS = TRIGGER_QUEUE_MAX_KEYS / 2;
  *  it. A mail fact's events are never coalesced, so a key can be this deep. */
 export const TRIGGER_QUEUE_PRODUCER_DEPTH = 32;
 
+/** One queued event, as `onUnstarted` is handed it. */
+export interface TriggerQueueEntry {
+  readonly trigger: EventTrigger;
+  readonly event: WarehouseEvent;
+  readonly candidate?: object;
+  /** Where it was parked, when a replay brought it back (see
+   *  `EventTriggersStore.parkTriggerEvents`). */
+  readonly parked_seq?: number;
+}
+
 export interface TriggerDispatchQueue {
   /** Enqueue an event for processing. Starts a fresh drain if the key
    *  is idle. Same-key events serialize; diff-key events run in
-   *  parallel. */
-  enqueue(trigger: EventTrigger, event: WarehouseEvent, candidate?: object): boolean;
+   *  parallel. Stopped, the event is handed straight to `onUnstarted`. */
+  enqueue(trigger: EventTrigger, event: WarehouseEvent, candidate?: object, parked_seq?: number): boolean;
   /** Number of retained queue keys (running + waiting; tests + observability). */
   activeKeys(): number;
   /** Number of events refused because a new key arrived at the hard ceiling. */
@@ -79,11 +98,29 @@ export interface TriggerDispatchQueue {
    *  `depth` events or more: a producer that can wait (a backfill that runs
    *  recipes) waits for room rather than build a backlog. */
   room(keys: number, depth?: number): Promise<void>;
+  /** Start no further event. Every event not yet handed to `processEvent` goes
+   *  to `onUnstarted`: now for a key with nothing running, after the running
+   *  event for one that has. Later enqueues go straight there. */
+  stop(): void;
+  /** Hand over now what keys whose event is STILL running hold. For the end
+   *  of a stop's grace: an event running that long is a real run, never one
+   *  that will come back `'not_run'`, so nothing older is left to go first. */
+  flushUnstarted(): void;
+  /** Undo `stop()`: what a running key still holds is queued behind it
+   *  again, and new events are accepted. */
+  resume(): void;
+  /** Resolves once no event is being processed. */
+  idle(): Promise<void>;
 }
 
 export interface TriggerDispatchQueueDeps {
-  /** The actual event handler — typically `dispatcher.onEvent`. */
-  processEvent: (trigger: EventTrigger, event: WarehouseEvent, candidate?: object) => Promise<void>;
+  /** The actual event handler — typically `dispatcher.onEvent`. `'not_run'`
+   *  means it started nothing (the server is stopping, or refused the run):
+   *  the event goes to `onUnstarted` instead of counting as processed. */
+  processEvent: (trigger: EventTrigger, event: WarehouseEvent, candidate?: object) => Promise<void | 'not_run'>;
+  /** Told of every event the queue will not process, a key's in the order
+   *  they came. Throws are contained. Absent ⇒ they are dropped. */
+  onUnstarted?: (entries: readonly TriggerQueueEntry[]) => void;
   /** Test/embedding overrides. Values are sanitized to positive integers. */
   maxConcurrentKeys?: number;
   maxKeys?: number;
@@ -95,11 +132,7 @@ export interface TriggerDispatchQueueDeps {
   }) => void;
 }
 
-interface QueueEntry {
-  trigger: EventTrigger;
-  event: WarehouseEvent;
-  candidate?: object;
-}
+type QueueEntry = TriggerQueueEntry;
 
 /** Build the canonical queue key from the trigger row + event. Exported
  *  so tests can assert against `queue.size(queueKey(...))` without
@@ -123,6 +156,20 @@ export const createTriggerDispatchQueue = (
     positiveInteger(deps.maxConcurrentKeys, TRIGGER_QUEUE_MAX_CONCURRENT_KEYS),
   );
   let droppedEvents = 0;
+  /** Between `stop()` and `resume()`. */
+  let stopped = false;
+  /** What each running key held behind its running event when `stop()` came,
+   *  handed over once that event is done, so the key's events go in order. */
+  const setAside = new Map<string, QueueEntry[]>();
+
+  const handOver = (entries: readonly QueueEntry[]): void => {
+    if (entries.length === 0) return;
+    try {
+      deps.onUnstarted?.(entries);
+    } catch {
+      // A failed hand-over must not wedge the key it came from.
+    }
+  };
 
   const drain = async (key: string): Promise<void> => {
     while (true) {
@@ -132,19 +179,29 @@ export const createTriggerDispatchQueue = (
         return;
       }
       const next = queue[0];
+      let outcome: void | 'not_run' = undefined;
       try {
-        await deps.processEvent(next.trigger, next.event, next.candidate);
+        outcome = await deps.processEvent(next.trigger, next.event, next.candidate);
       } catch {
         // Defense-in-depth — the dispatcher's `onEvent` already catches
         // recipe errors internally.
       }
       queue.shift();
+      // Nothing ran: the event goes to whoever keeps it, ahead of what this
+      // key set aside behind it.
+      if (outcome === 'not_run') handOver([next]);
+      const rest = setAside.get(key);
+      if (rest !== undefined) {
+        setAside.delete(key);
+        handOver(rest);
+      }
       // A key one shallower may be what a producer waits for.
       wakeRoomWaiters();
     }
   };
 
   const startWaiting = (): void => {
+    if (stopped) return;
     while (drains.size < maxConcurrentKeys && waitingKeys.size > 0) {
       const next = waitingKeys.values().next().value as string | undefined;
       if (next === undefined) return;
@@ -177,7 +234,23 @@ export const createTriggerDispatchQueue = (
     drains.set(key, task);
   };
 
-  const enqueue = (trigger: EventTrigger, event: WarehouseEvent, candidate?: object): boolean => {
+  const enqueue = (
+    trigger: EventTrigger,
+    event: WarehouseEvent,
+    candidate?: object,
+    parked_seq?: number,
+  ): boolean => {
+    const entry: QueueEntry = {
+      trigger,
+      event,
+      ...(candidate ? { candidate } : {}),
+      ...(parked_seq !== undefined ? { parked_seq } : {}),
+    };
+    if (stopped) {
+      // Not queued, and not lost: whoever keeps unstarted events has it.
+      handOver([entry]);
+      return false;
+    }
     const key = queueKey(trigger.trigger_id, event.record_id);
     const existing = queues.get(key);
 
@@ -196,14 +269,14 @@ export const createTriggerDispatchQueue = (
         }
         return false;
       }
-      queues.set(key, [{ trigger, event, ...(candidate ? { candidate } : {}) }]);
+      queues.set(key, [entry]);
       if (drains.size < maxConcurrentKeys) startDrain(key);
       else waitingKeys.add(key);
       return true;
     }
 
     if (mailFact || existing.length < TRIGGER_QUEUE_MAX_DEPTH_PER_KEY) {
-      existing.push({ trigger, event, ...(candidate ? { candidate } : {}) });
+      existing.push(entry);
       return true;
     }
 
@@ -253,5 +326,40 @@ export const createTriggerDispatchQueue = (
     room: (keys, depth = Number.POSITIVE_INFINITY) => (hasRoom(keys, depth)
       ? Promise.resolve()
       : new Promise<void>((resolve) => { roomWaiters.push({ keys, depth, resolve }); })),
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      const now: QueueEntry[] = [];
+      for (const [key, queue] of [...queues]) {
+        if (drains.has(key)) {
+          // Its first event is running: what is behind it waits for that one,
+          // so the key's events are handed over in the order they came.
+          const rest = queue.splice(1);
+          if (rest.length > 0) setAside.set(key, rest);
+        } else {
+          now.push(...queue.splice(0));
+          queues.delete(key);
+        }
+      }
+      waitingKeys.clear();
+      handOver(now);
+      // Emptied keys may be the room a producer waits for.
+      wakeRoomWaiters();
+    },
+    flushUnstarted: () => {
+      if (!stopped) return;
+      const rest = [...setAside.values()].flat();
+      setAside.clear();
+      handOver(rest);
+    },
+    resume: () => {
+      if (!stopped) return;
+      stopped = false;
+      for (const [key, rest] of setAside) queues.get(key)?.push(...rest);
+      setAside.clear();
+    },
+    idle: async () => {
+      while (drains.size > 0) await Promise.allSettled([...drains.values()]);
+    },
   };
 };

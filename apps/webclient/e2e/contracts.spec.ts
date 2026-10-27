@@ -582,6 +582,7 @@ test('Contracts Connect renders a full-size mobile credential editor', async ({ 
     'Cursor',
     'Cline',
     'Codex',
+    'OpenClaw',
     'Another AI app',
   ]);
 

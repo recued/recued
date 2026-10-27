@@ -1023,34 +1023,73 @@ const streamProbeTimeoutError = (timeoutMs: number): Error => {
   return err;
 };
 
+const streamProbeStoppedError = (): Error => {
+  const err = new Error('MCP stream probe stopped: the server is stopping');
+  err.name = 'AbortError';
+  return err;
+};
+
 /** Open disposable websocket / stdio MCP channels, negotiate modern-first with
  *  legacy initialization fallback, enumerate tools, then close. This deliberately
  *  shares `McpStreamSession` with live MCP execution so message framing,
  *  response-id correlation, timeout behavior, and close/error handling cannot
  *  drift between "Probe" and a real recipe run. The opener owns transport and
- *  auth details; the helper owns protocol lifecycle and leak-safe teardown. */
+ *  auth details; the helper owns protocol lifecycle and leak-safe teardown.
+ *
+ *  `signal` stops the probe as its deadline would: an open in progress is
+ *  aborted (no child is left starting) and an open channel closes, failing
+ *  whatever waits on it. */
 export const probeMcpStreamTools = async (
   open: (signal: AbortSignal) => Promise<McpStreamHandle>,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<McpStreamProbeResult> => {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw streamProbeTimeoutError(timeoutMs);
   }
+  if (signal?.aborted) throw streamProbeStoppedError();
   const deadline = Date.now() + timeoutMs;
   const remainingMs = (): number => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw streamProbeTimeoutError(timeoutMs);
     return remaining;
   };
+  /** Undone when the probe ends, whichever way it ends. */
+  const onStop: Array<() => void> = [];
+  /** ⚠ Runs `stop` at once on a signal already aborted: a listener added then
+   *  never fires, and negotiation's fallback opens a second channel after the
+   *  first failed — on a stop, among other reasons. */
+  const whenStopped = (stop: () => void): void => {
+    if (signal === undefined) return;
+    if (signal.aborted) { stop(); return; }
+    signal.addEventListener('abort', stop, { once: true });
+    onStop.push(() => signal.removeEventListener('abort', stop));
+  };
   const openBounded = async (): Promise<McpStreamHandle> => {
+    if (signal?.aborted) throw streamProbeStoppedError();
     const controller = new AbortController();
     let openTimer: ReturnType<typeof setTimeout> | undefined;
-    const openPromise = open(controller.signal).then((handle) => {
+    whenStopped(() => controller.abort());
+    const openPromise = open(controller.signal).then((handle): McpStreamHandle => {
       if (controller.signal.aborted) {
         try { handle.close(); } catch { /* already closed */ }
-        throw streamProbeTimeoutError(timeoutMs);
+        throw signal?.aborted ? streamProbeStoppedError() : streamProbeTimeoutError(timeoutMs);
       }
-      return handle;
+      if (signal === undefined) return handle;
+      // A stop closes the channel, and the session hears of it at once rather
+      // than whenever the child or socket gets round to reporting its close.
+      const closeListeners: Array<(info: { code?: number; reason?: string }) => void> = [];
+      whenStopped(() => {
+        try { handle.close(); } catch { /* already closed */ }
+        for (const listener of closeListeners) listener({ reason: 'the server is stopping' });
+      });
+      return {
+        send: (data) => handle.send(data),
+        onMessage: (listener) => handle.onMessage(listener),
+        onClose: (listener) => { closeListeners.push(listener); handle.onClose(listener); },
+        onError: (listener) => handle.onError(listener),
+        close: () => handle.close(),
+      };
     });
     const openTimeout = new Promise<never>((_resolve, reject) => {
       openTimer = setTimeout(() => {
@@ -1058,13 +1097,28 @@ export const probeMcpStreamTools = async (
         reject(streamProbeTimeoutError(timeoutMs));
       }, remainingMs());
     });
+    const openStopped = new Promise<never>((_resolve, reject) => {
+      whenStopped(() => reject(streamProbeStoppedError()));
+    });
+    openStopped.catch(() => { /* settled through the race below */ });
     try {
-      return await Promise.race([openPromise, openTimeout]);
+      return await Promise.race([openPromise, openTimeout, openStopped]);
     } finally {
       if (openTimer !== undefined) clearTimeout(openTimer);
     }
   };
+  try {
+    return await probeOverStream(openBounded, remainingMs);
+  } finally {
+    for (const undo of onStop) undo();
+  }
+};
 
+/** `probeMcpStreamTools`' protocol half, over a channel its opener bounds. */
+const probeOverStream = async (
+  openBounded: () => Promise<McpStreamHandle>,
+  remainingMs: () => number,
+): Promise<McpStreamProbeResult> => {
   let nextProbeRequestId = 1;
   const allocProbeRequestId = (): number => nextProbeRequestId++;
   let session: McpStreamSession;
@@ -1258,6 +1312,18 @@ export interface ConnectionMcpHandlerDeps {
    *  `MCP_CLIENT_IDLE_TIMEOUT_MS` (5 min). Tests use a small value
    *  to assert the reaper without slowing the suite. */
   idleTimeoutMs?: number;
+
+  /** How long this handler lives. When it aborts, every pooled session closes
+   *  (a websocket, a stdio child, a legacy HTTP+SSE stream), a session still
+   *  opening closes as it lands, and no call is taken after.
+   *
+   *  ⛔ A HANDLER BUILT FOR ONE RUN NEEDS ONE. The idle reaper runs on the
+   *  handler's NEXT dispatch, and the server builds a handler per run and per
+   *  direct call, so for those the next dispatch never came: every run that
+   *  used a stdio connection left its child running until the server exited
+   *  (one a minute, for a recipe firing every minute). A handler kept for the
+   *  server's whole life (the watch poll's) needs none. */
+  lifetime?: AbortSignal;
 
   /** Open a WebSocket for `transport: 'websocket'` connections (D-125
    *  §920). The server boot site supplies a `ws`-backed connector that
@@ -1702,9 +1768,16 @@ export const createConnectionMcpHandler = (
   // Per-record client state. Modern HTTP entries are bookkeeping; legacy
   // HTTP+SSE, websocket, and stdio entries carry a live stream session.
   const clientPool = new Map<string, McpClient>();
-  const superseded = () => new IngredientError('CONNECTION_REFUSED',
+  const ended = () => new IngredientError('run_killed', 'The run ended before its MCP session opened.');
+  // An open that lands after the lifetime ended finds its pool slot gone, as a
+  // superseded one does; it closes its channel the same way, and says why.
+  const superseded = () => deps.lifetime?.aborted ? ended() : new IngredientError('CONNECTION_REFUSED',
     'The MCP account changed while its session was opening. Review the account and try again.',
     { reason: 'connection_changed' });
+  deps.lifetime?.addEventListener('abort', () => {
+    for (const client of clientPool.values()) client.session?.close();
+    clientPool.clear();
+  }, { once: true });
   // Single-flight session open per record — two concurrent dispatches to
   // the same record share one ws-connect / stdio-spawn + initialize rather
   // than racing two channels. Keyed by record.pk; the entry carries the
@@ -1750,6 +1823,7 @@ export const createConnectionMcpHandler = (
     transport: McpTransport,
     open: () => Promise<McpStreamSession>,
   ): Promise<McpStreamSession> => {
+    if (deps.lifetime?.aborted) throw ended();
     const existing = clientPool.get(pk);
     // Reuse only a LIVE session still pointed at the SAME target. A
     // re-enrolled connection (same pk, new endpoint / command) must not keep
@@ -2260,6 +2334,7 @@ export const createConnectionMcpHandler = (
     /** Set on the one retry after the server ended this call's session. */
     afterSessionLoss = false,
   ): Promise<unknown> => {
+    if (deps.lifetime?.aborted) throw ended();
     // Lazy reaper — every dispatch entry prunes idle clients before
     // taking its own slot. Cheap when the pool is small; correct.
     reapIdleClients();

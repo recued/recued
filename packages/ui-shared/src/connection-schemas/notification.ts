@@ -823,7 +823,7 @@ const email: ConnectionSchema = {
   kind: 'notification',
   subtype: 'email',
   label: 'Email',
-  description: 'Send mail via one of your enrolled mail accounts (IMAP+SMTP / Gmail / Microsoft 365). The picker below lists every send-capable account.',
+  description: 'Send notifications and approvals through a receiving mailbox that can also send (IMAP+SMTP / Gmail / Microsoft 365). SMTP-only accounts are available for compose and recipe mail.',
   fields: [
     {
       key: 'name',
@@ -837,7 +837,7 @@ const email: ConnectionSchema = {
       label: 'Send from',
       type: 'select',
       options_source: MAIL_SEND_CAPABLE_INSTANCES_SOURCE,
-      help: 'The data.mail.<name> account this destination sends through. Configure SMTP for an IMAP account, or grant Send permission to Gmail / Microsoft, to populate this list.',
+      help: 'Choose a receiving mailbox with sending and provider Sent access. Configure SMTP for an IMAP account, or grant Send permission to Gmail / Microsoft, to populate this list.',
       emptyGuidance: 'You have no mailbox that can send. Set up SMTP for an IMAP account, or allow sending on a Gmail or Microsoft account first.',
     },
     {

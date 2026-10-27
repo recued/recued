@@ -44,7 +44,7 @@ import type {
   Link,
   MailSendAuditDetail,
 } from '@recued/contracts';
-import { MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD } from '@recued/contracts';
+import { MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD, mailAccountCapabilities } from '@recued/contracts';
 import { icsInviteKey } from '@recued/transforms';
 import {
   MAIL_SEND_ATTACHMENT_MAX_BYTES,
@@ -137,6 +137,7 @@ import {
   mailRecordIdHeldByAnotherMailbox,
   scopedMailAttachmentSourceId,
 } from './mail-attachment-source-id.js';
+import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 
 export interface MailCollectionConfig {
   /** Number of days to backfill on first boot. */
@@ -663,6 +664,12 @@ export interface MailCollection extends Collection {
    *  stopped. `null` until a sync starts: one deferred while the vault is locked
    *  has not. The owner's Re-sync answers on it (`resync-wait.ts`). */
   readonly caughtUp: Promise<void> | null;
+  /** Settles once every SMTP-only send this collection admitted has finished,
+   *  however long that takes. `close()` waits for them at most `STOP_GRACE_MS`
+   *  (the lifecycle drain cannot wait on an SMTP server); deleting the mailbox
+   *  waits for them in full, so its credentials and outgoing journal go only
+   *  after the last send has its outcome. */
+  settledSends(): Promise<void>;
   /** Records adjacent in time to an anchor — the reply direction (`next`) or
    *  the context direction (`prev`).
    *
@@ -675,6 +682,8 @@ export interface MailCollection extends Collection {
 
   readonly platform: 'mail';
   readonly sendCapable: boolean;
+  readonly receiveCapable: boolean;
+  readonly sentLookupCapable: boolean;
   /** D-239 — mirrors `MailProvider.mutationCapable` so the dispatcher's
    *  capability gate reads it without reaching through the provider, the
    *  same way `sendCapable` is surfaced for the sender picker. */
@@ -1027,6 +1036,7 @@ export const createMailCollection = (
         `mail attachment ingest skipped for ${msg.source_id}: inbound attachment deps not wired`,
         new Error('mail_attachment_deps_not_configured'),
       );
+      if (provider.kind === 'smtp') throw new Error('Local Sent attachment storage is unavailable.');
       return materialized;
     }
 
@@ -1118,6 +1128,7 @@ export const createMailCollection = (
         }
       } catch (err) {
         bumpError(`mail attachment ingest failed for ${msg.source_id}:${sourcePartId}`, err);
+        if (provider.kind === 'smtp') throw err;
       }
     }
     return materialized;
@@ -1173,6 +1184,11 @@ export const createMailCollection = (
     recovered = false,
   ): Promise<void> => {
     const { record, bodyBytes } = buildRecord(msg, nowOf, provider.accountEmail);
+    if (provider.kind === 'smtp') {
+      record.hot_fields.local_sent_copy = true;
+      record.hot_fields.smtp_submission_status = 'accepted';
+      record.hot_fields.bcc = msg.bcc ?? [];
+    }
     try {
       if (opts.isChatConversation?.(msg, { provider_kind: provider.kind, account_email: provider.accountEmail }) === true) {
         record.hot_fields[MAIL_CHAT_CONVERSATION_FIELD] = true;
@@ -1210,7 +1226,7 @@ export const createMailCollection = (
         // D-315 — news is news from the moment the row lands: the upsert hook
         // runs after the attachments' awaits, and a stop in between would make a
         // replay see the row as old.
-        if (!prev && opts.onMessageStored) {
+        if (provider.kind !== 'smtp' && !prev && opts.onMessageStored) {
           try {
             opts.onMessageStored(msg, {
               slug,
@@ -1232,7 +1248,7 @@ export const createMailCollection = (
         // ago" on a mailbox that is fine, which is a fresh lie in place of the
         // old one. Throttled, because this runs once per ingested message and a
         // 30-day backfill is thousands of them.
-        touchSyncClock();
+        if (provider.kind !== 'smtp') touchSyncClock();
         const attachments = await materializeInboundAttachments(msg, record.record_id, prev !== null, shouldContinue);
         // The row may already be durable here; rejecting still matters because a
         // provider that outlived stop must not persist a newer checkpoint. Replay
@@ -1244,7 +1260,7 @@ export const createMailCollection = (
         // no sync reads would never bring it back.
         const recordId = upserting.get(moving) ?? record.record_id;
         const current = table.get(recordId);
-        if (opts.onMessageUpserted && current !== null) {
+        if (provider.kind !== 'smtp' && opts.onMessageUpserted && current !== null) {
           try {
             const firstSeen = !prev;
             // Relabelled or filed elsewhere meanwhile (a verified mutation), it
@@ -1476,6 +1492,14 @@ export const createMailCollection = (
    *  an outcome or scan result arriving after stop cannot write SQLite. */
   const runSyncStart = async (generation: number): Promise<void> => {
     const shouldContinue = (): boolean => isCurrentGeneration(generation);
+    if (provider.kind === 'smtp') {
+      // Draining local receipts proves nothing about mailbox access or sync.
+      await provider.connect();
+      if (!shouldContinue()) return;
+      await provider.localSent?.replay(message => upsertMessage(message, shouldContinue, true));
+      if (shouldContinue()) { state = 'connected'; markCaughtUp(); }
+      return;
+    }
     state = 'syncing';
     lastProviderFailure = undefined;
     // Subscribe BEFORE connect so the first attempt is observed. Drop any prior
@@ -1634,12 +1658,22 @@ export const createMailCollection = (
       };
       stops.push(closeProvider());
       if (activeStart) stops.push(activeStart.catch(() => undefined));
-      await Promise.all(stops);
       // `close()` above is also the cancellation signal for a slow connect or
-      // scan. If that operation races through after the first close, it may
+      // scan: the provider aborts the calls it has in flight, so these settle
+      // soon after it. The wait is bounded all the same — this runs inside the
+      // lifecycle drain, and a start still unwinding past `STOP_GRACE_MS` can
+      // write nothing: the generation bump above refuses its callbacks, and the
+      // provider stores no cursor once stopped.
+      const deadline = Date.now() + STOP_GRACE_MS;
+      const waited = await settleWithin(Promise.all(stops), STOP_GRACE_MS);
+      // If that operation races through after the first close, it may
       // have acquired fresh sockets; the provider contract is idempotent, so a
       // final close after the owned start settles seals that late-open window.
-      if (activeStart) await closeProvider();
+      // Within what is left of the grace; past it, once the start settles.
+      if (activeStart) {
+        if (waited === 'settled') await settleWithin(closeProvider(), Math.max(0, deadline - Date.now()));
+        else void activeStart.then(closeProvider, closeProvider);
+      }
       if (failures.length > 0) {
         throw new AggregateError(failures, 'mail collection failed to stop');
       }
@@ -2230,7 +2264,9 @@ export const createMailCollection = (
     // A customer can reply while the reviewed-send check awaits. Refuse at
     // the last synchronous boundary; this attempt provably never reached mail.
     try {
-      await reviewed?.beforeMailProvider(slug, args);
+      // SMTP's durable journal adds an await; its provider repeats the private
+      // review at the actual handoff rather than admitting before that write.
+      if (provider.kind !== 'smtp') await reviewed?.beforeMailProvider(slug, args);
       assertPreapprovalOrdinaryRun();
       assertHandoff();
       args.before_dispatch?.();
@@ -2243,7 +2279,7 @@ export const createMailCollection = (
       throw error;
     }
     try {
-      meta = await provider.send({
+      const outgoing = {
         to: args.to,
         cc: args.cc,
         bcc: args.bcc,
@@ -2266,7 +2302,15 @@ export const createMailCollection = (
             ),
           }
           : {}),
-      });
+      };
+      meta = provider.kind === 'smtp'
+        ? await provider.send(outgoing, {
+            ...(reviewed ? { revalidate: () => reviewed.beforeMailProvider(slug, args) } : {}),
+            assertActive() {
+              assertPreapprovalOrdinaryRun(); assertHandoff(); args.before_dispatch?.(); assertHandoff();
+            },
+          })
+        : await provider.send(outgoing);
     } catch (err) {
       // ⛔ THE CLAIM SURVIVES THIS. A `provider.send` that THROWS does not mean the
       // mail did not go out — an SMTP timeout after the server accepted the message
@@ -2294,7 +2338,8 @@ export const createMailCollection = (
       const code = err instanceof IngredientError ? err.code : 'UNKNOWN';
       const message = err instanceof Error ? err.message : String(err);
       await emitAudit(buildDetail(false, '', { error: { code, message } }));
-      if (reviewed) throw new IngredientError('ACTION_DELIVERY_UNCERTAIN',
+      const blockedLocally = provider.kind === 'smtp' && err instanceof IngredientError && err.details?.dispatch_blocked === true;
+      if (reviewed && !blockedLocally) throw new IngredientError('ACTION_DELIVERY_UNCERTAIN',
         'The reviewed mail provider did not confirm delivery. Check this attempt before sending again.', { slug });
       throw err;
     }
@@ -2309,6 +2354,18 @@ export const createMailCollection = (
         sent_at: meta.sent_at,
         now: nowOf(),
       });
+    }
+
+    if (provider.kind === 'smtp' && meta.local_copy) {
+      try {
+        await upsertMessage(meta.local_copy, () => !closed);
+        await provider.localSent?.acknowledge(meta.source_id);
+      } catch {
+        // Submission succeeded. Preserve the journal for local replay, without
+        // turning a local storage error into permission to submit again.
+        meta.warnings = [...(meta.warnings ?? []), { code: 'MAIL_SEND_LOCAL_COPY_FAILED',
+          message: 'SMTP accepted the message. Its local Sent copy is pending recovery; do not resend.' }];
+      }
     }
 
     // Merge the over-size resolve-warnings with the provider's own
@@ -2387,6 +2444,7 @@ export const createMailCollection = (
     }
   };
 
+  const smtpSends = new Set<Promise<MailSendResult>>();
   return {
     platform: 'mail',
     slug,
@@ -2394,7 +2452,10 @@ export const createMailCollection = (
     sync,
     get mailboxAccessVerified() { return mailboxAccessVerified; },
     get caughtUp() { return caughtUp; },
+    async settledSends() { await Promise.allSettled([...smtpSends]); },
     sendCapable: provider.sendCapable,
+    receiveCapable: mailAccountCapabilities(provider.kind).receive_capable,
+    sentLookupCapable: mailAccountCapabilities(provider.kind).sent_lookup_capable,
     // D-239 — a getter, because IMAP's `mutationCapable` is itself a lazy
     // getter on the provider. Reading it eagerly here would force that
     // probe at collection construction, i.e. on every boot for every
@@ -2430,14 +2491,29 @@ export const createMailCollection = (
     legacyAttachmentsAmbiguous,
     health,
     runRetention,
-    send,
+    send(args) {
+      if (provider.kind !== 'smtp') return send(args);
+      if (closed) return Promise.reject(new IngredientError('MAIL_SEND_NETWORK_FAILED',
+        'This SMTP account is no longer active.', { kind: 'smtp', slug, not_sent: true }));
+      const pending = send(args);
+      smtpSends.add(pending);
+      void pending.then(() => smtpSends.delete(pending), () => smtpSends.delete(pending));
+      return pending;
+    },
     saveDraft,
     lookupSentByReconciliationId,
     lookupSentByMessageId,
     lookupSentReplies,
     async close() {
       closed = true;
-      await sync.stop();
+      // Side by side, inside one grace: the stop bounds itself, and an
+      // SMTP-only send in flight gets `STOP_GRACE_MS` — one the exit cuts off
+      // stays in the provider's outgoing journal as an unknown outcome, kept
+      // and never sent again (`smtp-provider.ts`).
+      await Promise.all([
+        sync.stop(),
+        settleWithin(Promise.allSettled([...smtpSends]), STOP_GRACE_MS),
+      ]);
     },
   };
 };

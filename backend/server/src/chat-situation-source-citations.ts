@@ -1,15 +1,19 @@
+import { attachSourceFacts } from './chat-source-facts.js';
 import { assetFactRefKey, chatSourceCitationsOf, CHAT_SOURCE_CITATION_LIMIT, type ChatSourceCitation, type SituationResult } from '@recued/contracts';
-import { ASSET_PROJECTION_CITATION_GUIDANCE, sourceCitation } from './chat-source-citations.js';
-import { assetFieldProjectionValue, assetProjectionReadOf, type AssetProjectionRead } from './situations/asset-projection-provenance.js';
+import { ASSET_PROJECTION_CITATION_GUIDANCE, ASSET_CONTEXT_CITATION_GUIDANCE, ASSET_COMPARISON_READ_GUIDANCE, sourceCitation } from './chat-source-citations.js';
+import { assetFieldProjectionValue, assetProjectionReadOf, assetGraphReadOf, type AssetProjectionRead } from './situations/asset-projection-provenance.js';
 
 /** The Markdown is ready to copy; a raw locator or source_ref is not a link. */
 export const projectionCitationHint = (source: Extract<ChatSourceCitation, { kind: 'asset_projection' }>, resultPaths: string[]) => ({
-  source_ref: `#source/${source.id}`, citation: `[source](#source/${source.id})`, source_kind: source.kind,
-  read_version: source.read_version, read_at: source.read_at, result_paths: resultPaths, projection: source.projection,
+  source_ref: `#source/${source.id}`, citation: `[${source.projection.kind === 'context' ? 'relationships' : 'source'}](#source/${source.id})`, source_kind: source.kind,
+  read_version: source.read_version, read_at: source.read_at, result_paths: resultPaths,
+  projection: source.projection.kind === 'context' ? { kind: 'context' as const } : source.projection,
+  ...(source.projection.kind === 'context' ? { claim_scope: 'Returned declared rules, copied support, relationships, writer_check and writer field-submission receipts.' }
+    : source.projection.kind === 'field' ? { claim_scope: 'Only this field value and known state; excludes copied support, rules and writers.' } : {}),
 });
 
-/** Native query output only. Result paths bind a citation to saved values, not
- * an item's computed clocks or the relationships around a context node. No
+/** Native query output only. Result paths distinguish saved fields from the
+ * bounded native graph; neither covers computed situation clocks. No
  * lookup, extra asset read, write or serialized attestation is introduced. */
 export const situationSourceCitations = (native: SituationResult, rendered: SituationResult) => {
   const citations = new Map<string, ChatSourceCitation>();
@@ -41,12 +45,13 @@ export const situationSourceCitations = (native: SituationResult, rendered: Situ
     add(assetProjectionReadOf(original, assetFieldProjectionValue(node)),
       [`/fact_context/nodes/${index}/value`, `/fact_context/nodes/${index}/known`]);
   });
+  if (native.fact_context && rendered.fact_context) add(assetGraphReadOf(native.fact_context, rendered.fact_context), ['/fact_context']);
   if (!citations.size) return { result: rendered };
   const sources = [...citations.values()];
-  return { source_citations: sources, result: { ...rendered,
-    citation_hint: ASSET_PROJECTION_CITATION_GUIDANCE,
+  return { source_citations: sources, result: attachSourceFacts({ ...rendered,
+    citation_hint: ASSET_PROJECTION_CITATION_GUIDANCE + ' ' + ASSET_COMPARISON_READ_GUIDANCE + (sources.some(source => source.kind === 'asset_projection' && source.projection.kind === 'context') ? ' ' + ASSET_CONTEXT_CITATION_GUIDANCE : ''),
     citation_sources: sources.filter((source): source is Extract<ChatSourceCitation, { kind: 'asset_projection' }> => source.kind === 'asset_projection')
       .map(source => projectionCitationHint(source, paths.get(source.id)!)),
     ...(omitted.size ? { citations_omitted: omitted.size } : {}),
-  } };
+  }, rendered.fact_context, sources) };
 };

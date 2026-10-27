@@ -4,6 +4,7 @@ import type { CalendarEnrollDeps } from './calendar/enroll.js';
 import type { CollectionInstanceRecord } from './instance-store.js';
 import { probeCalendarAdapter } from './calendar/adapter-registry.js';
 import { defaultImapClientFactory } from './mail/imap-provider.js';
+import { verifySmtpCredentials } from './mail/smtp.js';
 import { withCollectionAuthenticationLock } from '../collection-authentication-locks.js';
 
 export interface PasswordRepairResult { ok: true; restart_needed: boolean }
@@ -19,6 +20,11 @@ export const verifyImapPasswords = async (config: Record<string, unknown>, passw
     logger: false, disableAutoIdle: true, connectionTimeout: 15_000,
     greetingTimeout: 15_000, socketTimeout: 15_000,
   });
+  // ⛔ Once connected, a reset socket or the 15 s socket timeout reaches the
+  // client as an `'error'` event, and one nobody listens for is thrown out of a
+  // socket callback: the server's crash handler exits. This check fails anyway,
+  // through the command the closed socket rejects.
+  client.on('error', () => { /* reported by the rejected command */ });
   try {
     await client.connect();
     const folders = Array.isArray(config.folders) && config.folders.length ? config.folders : ['INBOX'];
@@ -51,15 +57,21 @@ export const repairCollectionPasswords = async (
     || platform === 'calendar' && (args.password === undefined || args.smtp_password !== undefined)) throw new RpcError('bad_request', 'Enter a replacement password.');
   return withCollectionAuthenticationLock(deps.instances.authenticationLocks, platform + ':' + args.slug, async () => {
     const row = deps.instances.get(platform, args.slug);
-    const adapter = platform === 'mail' ? 'imap' : 'caldav';
-    if (!row || row.adapter_type !== adapter) throw new RpcError('bad_request', 'This account does not use password authentication.');
+    const adapter = platform === 'mail' ? row?.adapter_type : 'caldav';
+    if (!row || (platform === 'mail' ? adapter !== 'imap' && adapter !== 'smtp' : row.adapter_type !== adapter)) throw new RpcError('bad_request', 'This account does not use password authentication.');
     if (args.smtp_password !== undefined && !row.config.smtp) throw new RpcError('bad_request', 'This mailbox has no SMTP configuration.');
     const before = material(row); const prefix = adapter + '.' + args.slug + '.';
     const saved: Passwords = { password: await deps.accountStore.get(prefix + 'password') ?? undefined,
       ...(platform === 'mail' ? { smtp_password: await deps.accountStore.get(prefix + 'smtp_password') ?? undefined } : {}) };
     const replacement = { ...saved, ...Object.fromEntries(changedKeys.map(key => [key, args[key]])) };
     try {
-      if (platform === 'mail') await ((deps as MailEnrollDeps).verifyPasswords ?? verifyImapPasswords)(row.config, replacement);
+      if (adapter === 'smtp') {
+        await ((deps as MailEnrollDeps).verifySmtp ?? verifySmtpCredentials)({
+          host: String(row.config.host), port: Number(row.config.port), secure: row.config.secure === true,
+          requireTLS: row.config.secure !== true, username: String(row.config.username),
+          from: String(row.config.from), password: replacement.password ?? '',
+        });
+      } else if (platform === 'mail') await ((deps as MailEnrollDeps).verifyPasswords ?? verifyImapPasswords)(row.config, replacement);
       else {
         const factory = (deps as CalendarEnrollDeps).adapters.get('caldav');
         if (!factory) throw new Error('CalDAV is unavailable.');
