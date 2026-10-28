@@ -50,6 +50,8 @@ import {
 } from '@recued/contracts';
 
 import type { WsClient } from './ws-server.js';
+import { handleWorkEntitySearch } from './work-entity-search.js';
+import { handleWorkEntityProjectItems } from './work-entity-project-items.js';
 import {
   SourceRegistrationError,
   WorkEntityValidationError,
@@ -678,6 +680,8 @@ export const handleWorkEntityCommitmentClose = async (
 };
 
 type WorkEntityCrudMethods =
+  | 'work_entity.project.items'
+  | 'work_entity.search'
   | 'work_entity.list'
   | 'work_entity.get'
   | 'work_entity.upsert'
@@ -694,6 +698,8 @@ export const makeWorkEntityCrudHandlers = (
   if (!deps) return undefined;
   return {
     methods: [
+      'work_entity.project.items',
+      'work_entity.search',
       'work_entity.list',
       'work_entity.get',
       'work_entity.upsert',
@@ -703,6 +709,14 @@ export const makeWorkEntityCrudHandlers = (
       'work_entity.delete',
     ],
     handlers: {
+      'work_entity.project.items': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleWorkEntityProjectItems(deps, args);
+      },
+      'work_entity.search': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleWorkEntitySearch(deps, args);
+      },
       // Registered-client gate (the WS-rpc local-UI boundary) is enforced
       // at the slice arrow — the exported handlers stay client-agnostic +
       // unit-testable. An unregistered / pre-register WS caller is rejected

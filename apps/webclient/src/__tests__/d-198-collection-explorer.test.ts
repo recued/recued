@@ -148,7 +148,7 @@ describe('collection-explorer — schema-driven list', () => {
     expect(rowOf('Conference')).toContain(far);
   });
 
-  it("says a record is all-day in its detail, and leaves a timed one's times as they were", () => {
+  it("distinguishes all-day dates from precise timed event details", () => {
     const now = new Date(2026, 11, 20, 12, 0).getTime();
     const allDay = renderCollectionExplorer(base({
       collection: 'calendar',
@@ -171,7 +171,8 @@ describe('collection-explorer — schema-driven list', () => {
       },
     }));
     expect(timed).not.toContain('All day');
-    expect(timed).toContain('<dt>Start</dt><dd>in 3h</dd>');
+    expect(timed).toContain(new Date(now + 3 * 3_600_000).toLocaleTimeString(undefined, { timeStyle: 'medium' }));
+    expect(timed).toContain(`device time: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
   });
 
   it('escapes field values (XSS)', () => {

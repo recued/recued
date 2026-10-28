@@ -641,6 +641,21 @@ export const getInstalledPack = (
 ): { pack_slug: string; version?: number; publisher?: string } | null =>
   installedPackFromRow(store.get(INSTALLED_PACK_SCOPE, [pack_slug]));
 
+/** D-333 — when the installed pack row was last written, or null when the pack is not
+ *  installed. Every install writes it, so it tells one install from the next. */
+export const installedPackInstalledAt = (
+  store: ContractStore,
+  pack_slug: string,
+): number | null => {
+  const row = store.get(INSTALLED_PACK_SCOPE, [pack_slug]);
+  if (row === null || !isRecord(row.value)) return null;
+  const at = row.value.installed_at;
+  if (typeof at === 'number') return Number.isFinite(at) ? at : null;
+  // The schema types it `datetime`: read a stored date string as the same instant.
+  const parsed = typeof at === 'string' ? Date.parse(at) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 // ════════════════════════════════════════════════════════════════
 // D-170 — standalone (1×1, no-pack) ingredient inventory
 // ════════════════════════════════════════════════════════════════

@@ -409,6 +409,7 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.delivery.retry',
       'chat.delivery.skip',
       'chat.messenger.connect',
+      'chat.messenger.status',
       'chat.turns.list',
       'chat.turn.withdraw',
       'chat.turn.cancel',

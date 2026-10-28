@@ -11,9 +11,9 @@
  *
  *  Read path (all server-wired, callers added at mount): `collection.listInstances`
  *  → the `(platform, slug)` instances → `collection.list` → the records →
- *  `collection.get` → one record's full detail. Read-only: these rows are
- *  adapter-synced server-side (`origin_actor: 'system'`), never user-authored, so
- *  there's no CRUD surface (unlike the Memory lens / Owned tabs).
+ *  `collection.get` → one record's full detail. The generic renderer is read-only.
+ *  The route may supply specialized owner controls, including an editor for
+ *  single local Calendar events, through the detail content slot.
  *
  *  Pure render (HTML strings) + styles + click-dispatch constants the route
  *  wires — mirrors `memory-lens.ts`.
@@ -84,6 +84,8 @@ export interface CollectionExplorerProps {
    *  file's bytes are reachable from the record detail. Rendered ONLY in the
    *  detail view (the list view never shows it). */
   detailActionsHtml?: string;
+  /** Specialized content for a loaded record; recovery and Back remain shared. */
+  detailBodyHtml?: string;
   /** D-210 step 3 — pre-rendered timeline section slotted BELOW the record's
    *  fields (the event's move history: D-120 write links + the D-119
    *  `scheduled-from` origin). Generic string slot like `detailActionsHtml` —
@@ -359,6 +361,7 @@ const renderDetail = (
   detailTimelineHtml: string,
   stateField: StateField | undefined,
   allDay: AllDayField | undefined,
+  detailBodyHtml: string | undefined,
 ): string => {
   const back = `<button type="button" class="col-explorer-btn" ${actionAttr}="${COLLECTION_DETAIL_CLOSE_ACTION}">← Back</button>`;
   let body: string;
@@ -377,6 +380,8 @@ const renderDetail = (
     body = `<p class="col-explorer-loading">Loading record…</p>`;
   } else if (detail.record === null) {
     body = `<p class="col-explorer-empty">This record no longer exists.</p>`;
+  } else if (detailBodyHtml !== undefined) {
+    body = detailBodyHtml;
   } else {
     const record = detail.record;
     const rec = record as unknown as Record<string, unknown>;
@@ -385,7 +390,12 @@ const renderDetail = (
     const days = allDayValues(record, allDay, now);
     const metaFields: Array<[string, string]> = [
       ...summaryFields.map(
-        (f) => [fieldLabel(f), days?.get(f) ?? formatFieldValue(f, readDisplayField(rec, f), now)] as [string, string],
+        (f) => {
+          const value = readDisplayField(rec, f);
+          const precise = collection === 'calendar' && days === null && (f === 'start_at' || f === 'end_at') && typeof value === 'number'
+            ? `${new Date(value).toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'long' })} (device time: ${Intl.DateTimeFormat().resolvedOptions().timeZone})` : undefined;
+          return [fieldLabel(f), days?.get(f) ?? precise ?? formatFieldValue(f, value, now)] as [string, string];
+        },
       ),
     ];
     if (days !== null) metaFields.push(['All day', 'Yes']);
@@ -525,6 +535,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
       props.detailTimelineHtml ?? '',
       stateField,
       allDay,
+      props.detailBodyHtml,
     )}</section>`;
   }
 

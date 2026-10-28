@@ -9,8 +9,8 @@
  *
  *  🔑 THE TEST THAT MATTERS IS THE SWEEP, NOT THE UNIT. Each call site is one
  *  line and a unit test per line proves only that I edited the line I edited.
- *  What can regress is a FOURTH stamp appearing, so the last test counts the
- *  idiom across the tree and names the two places it is still correct. */
+ *  What can regress is another browser-zone read feeding a durable policy
+ *  stamp, so the sweep names each deliberate context, display or fallback read. */
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -48,7 +48,7 @@ const walk = (dir: string, out: string[] = []): string[] => {
 };
 
 describe('D-269 — the browser-zone idiom is accounted for, file by file', () => {
-  it('⛔ every remaining `Intl…resolvedOptions().timeZone` is one of the two CORRECT ones', () => {
+  it('⛔ every remaining `Intl…resolvedOptions().timeZone` has a reviewed purpose', () => {
     const roots = [
       join(process.cwd(), 'apps/webclient/src'),
       join(process.cwd(), 'packages/ui-shared/src'),
@@ -65,17 +65,22 @@ describe('D-269 — the browser-zone idiom is accounted for, file by file', () =
 
     // ⚠ NAMED, NOT COUNTED. A bare count is a ratchet against colleagues — it
     // fails when anyone adds an unrelated file and says nothing about WHICH
-    // reading is wrong. These two are the readings that SHOULD stay:
+    // reading is wrong. These are the readings that SHOULD stay:
     //
     //  · the chat route — D-193's per-turn `time_zone`. That answers "what time
     //    is it WHERE I AM", and a connected browser is live evidence of it, so
     //    the browser's zone is the right answer there and the server's is not.
     //    ⛔ Do not "unify" it with the stamps; they disagree on purpose.
+    //  · the collection explorer — its read-only calendar fallback explicitly
+    //    labels timestamps as device time when event-zone details are absent.
+    //    It does not stamp a saved alert, mail send or scheduled recipe; the
+    //    calendar editor uses the event's own zone.
     //  · two-clock.ts — the fallback implementations themselves (`stampZone`
     //    and the preview's own client-zone default). This is where the reading
     //    is supposed to live, exactly once.
     expect(hits.sort()).toEqual([
       'apps/webclient/src/chat/bootstrap-chat-route.ts',
+      'apps/webclient/src/data/collection-explorer.ts',
       'packages/ui-shared/src/two-clock.ts',
     ]);
   });

@@ -4,6 +4,7 @@ import {
   isCatalogForm,
   isPrefetchOpStep,
   isRef,
+  markResolvedInput,
   resolveDeep,
   resolveValue,
   preapprovalStepPath,
@@ -183,7 +184,7 @@ const executePrefetchStep = async (
     if (typeof rawInput === 'string' && isRef(rawInput)) {
       const resolved = resolveValue(rawInput, ctx.stores);
       input = (resolved && typeof resolved === 'object' && !Array.isArray(resolved))
-        ? (resolved as Record<string, unknown>)
+        ? markResolvedInput(resolved as Record<string, unknown>)
         : {};
     } else {
       input = (rawInput as Record<string, unknown>) ?? {};

@@ -34,6 +34,7 @@ import { parseMailWorkReadRequest } from './mail-work-fresh-read.js';
 import { parseBrief } from './chat-rolling-brief.js';
 import { parseMailWorkEvidence } from './mail-work-evidence.js';
 import { parseChatSearchCursor, searchChatHistory } from './chat-history-search.js';
+import { parseSessionListRequest, readChatSessionPage } from './chat-session-list.js';
 import { parseChatDeliveryListRequest } from './chat-delivery-read.js';
 import { createListPager, readListPageRequest, type ListPager } from './list-pager.js';
 import {
@@ -60,6 +61,9 @@ import {
   type ChatEgressPacket,
   type ChatTurnAcceptance,
   type ChatMessengerReceiveState,
+  CHAT_MESSENGER_STATUS_BATCH,
+  type ChatMessengerStatusRequest,
+  type ChatMessengerStatusResult,
   type ChatDataDiagnosisContext,
   type ChatDataDiagnosisRequest,
   type ChatDataDiagnosisResolution,
@@ -80,6 +84,8 @@ import {
   type ChatHistoryCursor,
   type ChatSessionGetRequest,
   type ChatSessionSummary,
+  type ChatSessionListRequest,
+  type ChatSessionListResult,
   type ConnectionMcpAnnotationState,
   type ExecutionCaseLearnedEntry,
   type RecipeDefinition,
@@ -304,6 +310,7 @@ type ChatMethods =
   | 'chat.delivery.retry'
   | 'chat.delivery.skip'
   | 'chat.messenger.connect'
+  | 'chat.messenger.status'
   | 'chat.turns.list'
   | 'chat.turn.withdraw'
   | 'chat.turn.cancel'
@@ -513,7 +520,15 @@ const ensurePeerPickerTargetIsLive = (
 
 export const handleSessionsList = (
   deps: ChatRpcDeps,
-): { sessions: ChatSessionSummary[]; busy_session_ids?: string[]; messenger_status_available?: boolean; history_filters_available: true } => {
+  args?: ChatSessionListRequest,
+): ChatSessionListResult => {
+  // Both the WebSocket server and the webclient encode an omitted payload as
+  // {}. It remains the legacy full-list call; only nonempty requests opt in.
+  const emptyArgs = args && typeof args === 'object' && !Array.isArray(args) && Object.keys(args).length === 0;
+  if (args !== undefined && !emptyArgs) {
+    const request = parseSessionListRequest(args);
+    if (deps.store.listSessionsPage) return readChatSessionPage(deps, request);
+  }
   let sessions = deps.store.listSessions();
   const bridge = deps.orchestrator.messengerBridge;
   let messengerStatus: { messenger_status_available?: boolean } = {};
@@ -533,8 +548,23 @@ export const handleSessionsList = (
   // which is what an older one says by saying nothing. Collapsing them would
   // put the client back to inferring, which is the whole reason this exists.
   return deps.sessionBusy === undefined
-    ? { sessions, ...messengerStatus, history_filters_available: true }
-    : { sessions, busy_session_ids: deps.sessionBusy.busySessionIds(), ...messengerStatus, history_filters_available: true };
+    ? { sessions, ...messengerStatus, history_filters_available: true, messenger_status_refresh_available: true }
+    : { sessions, busy_session_ids: deps.sessionBusy.busySessionIds(), ...messengerStatus, history_filters_available: true, messenger_status_refresh_available: true };
+};
+
+export const handleMessengerStatus = (deps: ChatRpcDeps, args: ChatMessengerStatusRequest): ChatMessengerStatusResult => {
+  const safe = ensureRecordArgs('chat.messenger.status', args);
+  if (!Array.isArray(safe.session_ids) || safe.session_ids.length > CHAT_MESSENGER_STATUS_BATCH
+    || safe.session_ids.some(id => typeof id !== 'string' || !id.trim() || id.length > 2048)) {
+    throw new RpcError('bad_request', `Provide up to ${CHAT_MESSENGER_STATUS_BATCH} conversation IDs.`, 400);
+  }
+  const ids = [...new Set(safe.session_ids as string[])];
+  const bridge = deps.orchestrator.messengerBridge;
+  if (!bridge) return { sessions: [], messenger_status_available: false };
+  try {
+    const statuses = bridge.sessionStatuses(ids, deps.messengerReceiveStatus, { requestedOnly: true });
+    return { sessions: ids.map(id => ({ id, ...(statuses.has(id) ? { messenger: statuses.get(id)! } : {}) })), messenger_status_available: true };
+  } catch { return { sessions: [], messenger_status_available: false }; }
 };
 
 export const handleMessagesSearch = (deps: ChatRpcDeps, args: unknown) =>
@@ -3204,6 +3234,7 @@ export const makeChatHandlers = (
       'chat.session.export',
       'chat.egress.get',
       'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
+      'chat.messenger.status',
       'chat.turns.list',
       'chat.turn.withdraw',
       'chat.turn.cancel',
@@ -3244,7 +3275,7 @@ export const makeChatHandlers = (
       'chat.inbound_token.tool_catalog',
     ],
     handlers: {
-      'chat.sessions.list': async () => handleSessionsList(deps),
+      'chat.sessions.list': async args => handleSessionsList(deps, args as ChatSessionListRequest | undefined),
       'chat.messages.search': async (args, client) => {
         if (!client?.instance_id) {
           throw new RpcError('unauthorized', 'Message search requires a paired client', 401);
@@ -3282,6 +3313,10 @@ export const makeChatHandlers = (
       'chat.messenger.connect': async (args, client) => {
         if (!client?.instance_id) throw new RpcError('unauthorized', 'Linking Messenger requires a paired client.', 401);
         return handleChatDelivery(deps, 'connect', args) as Promise<{ session_id: string }>;
+      },
+      'chat.messenger.status': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Messenger status requires a paired client.', 401);
+        return handleMessengerStatus(deps, args);
       },
       'chat.turns.list': async (args, client) => {
         if (!client?.instance_id) throw new RpcError('unauthorized', 'Conversation queue requires a paired client.', 401);

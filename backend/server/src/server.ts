@@ -297,6 +297,7 @@ export interface ServerConfig {
    *  the paired server in the Devices Dropdown). Absent → returns
    *  `not_configured`. */
   recipeListDeps?: import('./recipe-list-handler.js').RecipeListHandlerDeps;
+  kitchenDraftStore?: import('./kitchen-draft-store.js').KitchenDraftStore;
   /** D-201 Slice 5B1 — Kitchen recipe save plus disarmed webhook binding and
    * explicit local-recipe arm/disarm authority. */
   recipeSaveDeps?: import('./recipe-save-handler.js').RecipeSaveHandlerDeps;
@@ -1581,6 +1582,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     collectionDeps: config.collectionDeps,
     triggerTestRpcDeps: config.triggerTestRpcDeps,
     recipeListDeps: config.recipeListDeps,
+    kitchenDraftStore: config.kitchenDraftStore,
     recipeSaveDeps: config.recipeSaveDeps,
     recipeRunnabilityDeps: config.recipeRunnabilityDeps,
     approvalDeps: config.approvalDeps,

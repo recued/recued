@@ -70,6 +70,8 @@ export const isMcpToolName = (name: string): boolean => {
  *  Prefixes are matched against the full rpc method name (e.g.
  *  `'contact.merge.list'.startsWith('contact.merge.')` is true). */
 export const MCP_RESERVED_RPC_PREFIXES = [
+  // Source import has one narrow Tier-1 tool; owner draft reads/edits remain private.
+  'kitchen.',
   // Backup delivery, history, verification and restore are paired-owner
   // controls. They must never be reachable through an agent's generic RPC.
   'server.archive.',
@@ -368,6 +370,8 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // connection + grant topology. None is in the MCP catalog today, but the
   // reserved-prefix gate is the durable channel-isolation invariant.
   'collection.connection.',
+  // Direct owner event edits never grant an agent a write path.
+  'collection.calendar.event.',
   // D-322: only the owner may activate a Mail/Calendar mirror against a saved
   // broker account. Agent reads/writes continue through the governed adapters.
   'collection.mail.enrollManagedOAuth',

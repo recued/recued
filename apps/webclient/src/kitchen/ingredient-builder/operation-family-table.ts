@@ -21,6 +21,7 @@ import type {
   FieldDerivation,
   GraphQLExecutionBinding,
   GraphQLOperationType,
+  IngredientDraftBasePack,
   IngredientDraftSummary,
   IngredientEntity,
   IngredientEntityField,
@@ -53,6 +54,7 @@ import type {
 import {
   BULK_PACK_INSTALL_PERMISSION,
   BULK_PACK_MANIFEST_VERSION_V2,
+  KITCHEN_PACK_PUBLISHER,
   CLI_STDIN_HANDLINGS,
   CLI_OUTPUT_SHAPES,
   CLI_OUTPUT_STORAGES,
@@ -90,6 +92,7 @@ import {
   resolveInstallAudienceSelection,
 } from '../../settings/install-grant-picker.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
+import { serializeShellRoute } from '../../shell/route.js';
 
 export const INGREDIENT_BUILDER_STYLES_MARKER =
   'data-recued-ingredient-builder-styles';
@@ -169,6 +172,8 @@ export const INGREDIENT_BUILDER_SECTION_NAV_ATTR =
  *  but carry an `is-hidden` class — every control stays in the DOM. */
 export const INGREDIENT_BUILDER_SECTION_VIEW_ATTR =
   'data-recued-ingredient-builder-section-view';
+/** D-333 — the note that a draft changes an installed pack (value = that pack's slug). */
+export const INGREDIENT_BUILDER_BASE_PACK_ATTR = 'data-recued-ingredient-builder-base-pack';
 export const INGREDIENT_BUILDER_PACK_SLUG_ATTR =
   'data-recued-ingredient-builder-pack-slug';
 export const INGREDIENT_BUILDER_PUBLISHER_ATTR =
@@ -222,6 +227,7 @@ type IngredientBuilderRpcMethods =
   | 'ingredient.draft.save'
   | 'ingredient.draft.list'
   | 'ingredient.draft.get'
+  | 'ingredient.draft.delete'
   | 'ingredient.compose.decompose'
   | 'ingredient.preview'
   | 'ingredient.install';
@@ -420,6 +426,12 @@ interface IngredientBuilderState {
   cliReadinessProbe: string;
   packSlug: string;
   packPublisher: string;
+  /** D-333 — the installed pack this draft changes. Installing replaces it, so its slug and
+   *  publisher come from it and stay. Absent for a new pack. */
+  basePack?: { packSlug: string; name: string };
+  /** D-333 — the pack this one is a copy of (`<publisher>.<slug>`), kept with the installed copy
+   *  so a recipe can be switched between them. */
+  copyOf?: string;
   packKind: PackKind;
   packServiceKind: PackServiceKindDraft;
   packDescription: string;
@@ -2177,7 +2189,7 @@ const packStateFromManifest = (
     : packSlugFor(slug),
   packPublisher: typeof pack?.publisher === 'string' && pack.publisher.trim().length > 0
     ? pack.publisher
-    : 'local-authoring',
+    : KITCHEN_PACK_PUBLISHER,
   packKind: isPackKindValue(pack?.pack_kind) ? pack.pack_kind : 'app_pack',
   packServiceKind: isPackServiceKindValue(pack?.service_kind) ? pack.service_kind : '',
   packDescription: typeof pack?.description === 'string' && pack.description.trim().length > 0
@@ -2761,6 +2773,24 @@ const packDependenciesFromText = (text: string): PackDependency[] => {
   return parsed as PackDependency[];
 };
 
+/** D-333 — the pack a draft installs as, kept with the draft so reopening it does not fall
+ *  back to defaults: recipes reach a pack by `<publisher>.<slug>`. Pack dependencies that do not
+ *  parse yet are left out rather than refusing the save. */
+const packIdentityOf = (state: IngredientBuilderState): Record<string, unknown> => {
+  let dependencies: PackDependency[] | undefined;
+  try { dependencies = packDependenciesFromText(state.packDependenciesText); } catch { dependencies = undefined; }
+  return {
+    slug: state.packSlug,
+    publisher: state.packPublisher,
+    ...(state.copyOf !== undefined ? { copy_of: state.copyOf } : {}),
+    description: state.packDescription,
+    tags: packTagsFromText(state.packTagsText),
+    pack_kind: state.packKind,
+    ...(state.packServiceKind !== '' ? { service_kind: state.packServiceKind } : {}),
+    ...(dependencies !== undefined ? { dependencies } : {}),
+  };
+};
+
 const packServiceKindForState = (state: IngredientBuilderState): PackServiceKind => {
   if (state.packServiceKind !== '') return state.packServiceKind;
   return state.authModel === 'cli_delegated'
@@ -2785,7 +2815,7 @@ const installManifestFor = (
     pack_kind: state.packKind,
     service_kind: packServiceKindForState(state),
     slug: state.packSlug.trim() || packSlugFor(slug),
-    publisher: state.packPublisher.trim() || 'local-authoring',
+    publisher: state.packPublisher.trim() || KITCHEN_PACK_PUBLISHER,
     name: title,
     description: state.packDescription.trim() || defaultPackDescription(slug),
     version: 1,
@@ -4409,6 +4439,11 @@ const isWorkflowReady = (state: IngredientBuilderState): boolean =>
   && state.saveStage === 'saved'
   && state.review?.valid === true;
 
+/** D-333 — installed, and its work in progress gone from Kitchen: nothing is left to
+ *  install until it changes, and the next save starts a new version. */
+const isInstalledAndDone = (state: IngredientBuilderState): boolean =>
+  state.draftId === undefined && state.installStage === 'installed';
+
 const canPreview = (state: IngredientBuilderState): boolean =>
   state.draftId !== undefined
   && state.saveStage === 'saved'
@@ -4443,8 +4478,8 @@ const installStatusText = (
   if (installInFlight) {
     if (!installBelongsToCurrentDraft) return 'Finishing the last install';
     return state.installStage === 'installing'
-      ? 'Installing the checked draft'
-      : 'Installing an earlier checked draft';
+      ? 'Installing the checked pack'
+      : 'Installing an earlier checked version';
   }
   if (state.installStage === 'installed' || state.installStage === 'error') {
     return state.installMessage;
@@ -4470,7 +4505,7 @@ const parsePreviewArgs = (
 /** The blank-draft identity defaults (stateFromBody's no-body branch) — the
  *  unsaved-content predicate compares against these so Setup/Overview-only
  *  edits on a fresh draft count as content. */
-const BLANK_DRAFT_TITLE = 'Local ingredient';
+const BLANK_DRAFT_TITLE = 'New pack';
 const BLANK_DRAFT_SLUG = 'local-ingredient';
 
 /** True when the current draft has USER EDITS that a New / draft-switch /
@@ -4517,7 +4552,7 @@ const renderDraftPicker = (
   const field = doc.createElement('div');
   field.className = 'ingredient-builder-field';
   const label = doc.createElement('label');
-  label.textContent = 'Draft';
+  label.textContent = 'In progress';
   field.appendChild(label);
   const select = doc.createElement('select');
   select.setAttribute(INGREDIENT_BUILDER_DRAFT_PICKER_ATTR, '');
@@ -4525,12 +4560,12 @@ const renderDraftPicker = (
     INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
     ingredientBuilderFocusFieldKey(INGREDIENT_BUILDER_DRAFT_PICKER_ATTR, ''),
   );
-  select.setAttribute('aria-label', 'Draft');
+  select.setAttribute('aria-label', 'In progress');
   select.disabled = state.draftsStage === 'loading';
 
   const empty = doc.createElement('option');
   empty.value = '';
-  empty.textContent = state.draftsStage === 'loading' ? 'Loading drafts' : 'New draft';
+  empty.textContent = state.draftsStage === 'loading' ? 'Loading…' : 'New pack';
   if (state.draftId === undefined) empty.selected = true;
   select.appendChild(empty);
   for (const draft of state.drafts) {
@@ -4694,7 +4729,7 @@ const renderPackSettings = (
         () => undefined,
       );
       kind.setAttribute('readonly', '');
-      addField('Ingredient kind', kind);
+      addField('Kind', kind);
     } else {
       const authSelect = makeSelectWithAttr(
         doc,
@@ -4812,7 +4847,7 @@ const renderPackSettings = (
   );
   addField('Default grants (group ids)', defaultGrantsInput);
 
-  addField('Pack slug', makeTextInputWithAttr(
+  const packSlugInput = makeTextInputWithAttr(
     doc,
     state.packSlug,
     INGREDIENT_BUILDER_PACK_SLUG_ATTR,
@@ -4821,9 +4856,8 @@ const renderPackSettings = (
       state.packSlug = next;
       markInstallDirty(state);
     },
-  ));
-
-  addField('Publisher', makeTextInputWithAttr(
+  );
+  const publisherInput = makeTextInputWithAttr(
     doc,
     state.packPublisher,
     INGREDIENT_BUILDER_PUBLISHER_ATTR,
@@ -4832,7 +4866,21 @@ const renderPackSettings = (
       state.packPublisher = next;
       markInstallDirty(state);
     },
-  ));
+  );
+  // D-333 — changes to an installed pack install over it: another slug or publisher would
+  // make a second pack instead.
+  if (state.basePack !== undefined) {
+    packSlugInput.readOnly = true;
+    publisherInput.readOnly = true;
+    appendText(
+      doc,
+      grid,
+      'p',
+      `These are changes to ${state.basePack.name}, which is installed. Installing them replaces it, so its slug and publisher stay.`,
+    ).setAttribute(INGREDIENT_BUILDER_BASE_PACK_ATTR, state.basePack.packSlug);
+  }
+  addField('Pack slug', packSlugInput);
+  addField('Publisher', publisherInput);
 
   addField('Pack kind', makeSelectWithAttr(
     doc,
@@ -5135,6 +5183,40 @@ const renderWorkflow = (
   return { previewBtn: preview, installBtn: install };
 };
 
+/** D-333 — what replaces Install once the pack is installed and has left Kitchen. Returns
+ *  the link to the installed pack, which takes Install's focus. */
+const renderInstalledDone = (
+  doc: Document,
+  state: IngredientBuilderState,
+  host: HTMLElement,
+): HTMLAnchorElement | undefined => {
+  const section = doc.createElement('section');
+  section.className = 'ingredient-builder-workflow';
+  appendText(doc, section, 'h2', 'Publish');
+  const status = doc.createElement('div');
+  status.className = 'ingredient-builder-workflow-status';
+  status.setAttribute(INGREDIENT_BUILDER_INSTALL_STATUS_ATTR, '');
+  status.textContent = state.installMessage;
+  section.appendChild(status);
+  appendText(
+    doc,
+    section,
+    'p',
+    'It is no longer in progress in Kitchen. Change it and save to start a new version.',
+  ).className = 'ingredient-builder-publish-hint';
+  const installed = state.installResult?.ok === true ? state.installResult.installed : undefined;
+  let link: HTMLAnchorElement | undefined;
+  if (installed?.kind === 'pack') {
+    link = doc.createElement('a');
+    link.setAttribute('href', serializeShellRoute('packs', installed.pack_slug));
+    link.textContent = 'Open it in Packs';
+    section.appendChild(link);
+  }
+  renderInstallDetail(doc, state, section);
+  host.appendChild(section);
+  return link;
+};
+
 /** Live refs the topbar sync updates in place on a focused field edit. */
 interface StatusLineRefs {
   chip: HTMLElement;
@@ -5324,6 +5406,8 @@ export const bootstrapIngredientBuilderRoute = (
   // the author moves to another live control during the request.
   let previewBtn: HTMLButtonElement | undefined;
   let installBtn: HTMLButtonElement | undefined;
+  /** D-333 — the link to the installed pack, which holds Install's focus once Install is gone. */
+  let installedLink: HTMLAnchorElement | undefined;
   let pendingWorkflowFocus: 'preview' | 'install' | null = null;
   let previewGeneration = 0;
   let pendingAddedOperationFocusId: string | null = null;
@@ -5480,11 +5564,34 @@ export const bootstrapIngredientBuilderRoute = (
     body: unknown,
     title: string | undefined,
     draftId: string | undefined,
+    basePack?: IngredientDraftBasePack,
+    pack?: Record<string, unknown>,
   ): void => {
     const drafts = state.drafts;
     const draftsStage = state.draftsStage;
     const draftsError = state.draftsError;
     const next = stateFromBody(body, title, draftId);
+    // D-333 — the pack the draft installs as, as it was last saved. Changes to an installed
+    // pack keep that pack's slug and publisher whatever was saved, so installing them replaces
+    // it rather than adding another.
+    const identity: Record<string, unknown> = { ...(basePack?.identity ?? {}), ...(pack ?? {}),
+      ...(basePack?.identity !== undefined
+        ? { slug: basePack.identity.slug, publisher: basePack.identity.publisher }
+        : {}) };
+    if (basePack?.identity !== undefined || pack !== undefined) {
+      Object.assign(next, packStateFromManifest(identity, next.slug));
+    }
+    if (typeof identity.copy_of === 'string') next.copyOf = identity.copy_of;
+    if (next.copyOf === undefined) delete state.copyOf;
+    else state.copyOf = next.copyOf;
+    if (basePack?.identity !== undefined) {
+      next.basePack = {
+        packSlug: basePack.pack_slug,
+        name: typeof basePack.identity.name === 'string' ? basePack.identity.name : basePack.pack_slug,
+      };
+    }
+    if (next.basePack === undefined) delete state.basePack;
+    else state.basePack = next.basePack;
     if (next.draftId === undefined) delete state.draftId;
     else state.draftId = next.draftId;
     state.title = next.title;
@@ -5574,7 +5681,7 @@ export const bootstrapIngredientBuilderRoute = (
   const newDraft = (): void => {
     applyDraftState(undefined, undefined, undefined);
     state.newConfirmPending = false;
-    state.status = 'New draft';
+    state.status = 'New pack';
     rerender();
   };
 
@@ -5584,7 +5691,7 @@ export const bootstrapIngredientBuilderRoute = (
       return;
     }
     state.newConfirmPending = false;
-    state.status = 'Loading draft';
+    state.status = 'Opening…';
     state.saveStage = 'idle';
     clearPreviewState(state);
     clearInstallState(state);
@@ -5602,11 +5709,11 @@ export const bootstrapIngredientBuilderRoute = (
           rerender();
           return;
         }
-        applyDraftState(result.draft.body, result.draft.title, result.draft.draft_id);
+        applyDraftState(result.draft.body, result.draft.title, result.draft.draft_id, result.draft.base_pack, result.draft.pack);
         genEntitled = draftGeneration;
         const epochAtLoad = state.editEpoch;
         state.saveStage = 'reviewing';
-        state.status = 'Checking the draft';
+        state.status = 'Checking…';
         rerender();
 
         const decompose = await options.conn('ingredient.compose.decompose', {
@@ -5627,7 +5734,7 @@ export const bootstrapIngredientBuilderRoute = (
           state.reviewIssues = decompose.ok ? [] : decompose.issues;
           state.saveStage = decompose.ok ? 'saved' : 'error';
           if (decompose.ok) {
-            state.status = 'Draft opened and checked';
+            state.status = 'Opened and checked';
             state.previewOperationKey = state.previewOperationKey || firstOperationKey(state.rows);
           } else if (decompose.code === 'validation_failed') {
             state.status = 'Check failed';
@@ -5713,7 +5820,7 @@ export const bootstrapIngredientBuilderRoute = (
     installFlight = flight;
     let installRequestSent = false;
     state.installStage = 'installing';
-    state.installMessage = 'Installing the checked draft';
+    state.installMessage = 'Installing the checked pack';
     state.installResult = undefined;
     state.installWarnings = [];
     rerender();
@@ -5756,6 +5863,7 @@ export const bootstrapIngredientBuilderRoute = (
         const result = await options.conn('ingredient.install', {
           manifest,
           ...(installScope !== undefined ? { install_scope: installScope } : {}),
+          ...(state.copyOf !== undefined ? { copy_of: state.copyOf } : {}),
         });
         if (
           disposed
@@ -5770,10 +5878,30 @@ export const bootstrapIngredientBuilderRoute = (
           state.installStage = 'installed';
           const receipt = result.installed.kind === 'pack'
             ? `Installed pack ${result.installed.pack_slug}`
-            : `Installed ingredient ${result.installed.ingredient_id}`;
+            : `Installed action ${result.installed.ingredient_id}`;
           state.installMessage = newerEdits
             ? `${receipt} — newer edits pending`
             : receipt;
+          // D-333 — installed: the work in progress is done, so it leaves Kitchen. Edits
+          // made meanwhile are work not yet installed, so that draft stays.
+          const finished = state.draftId;
+          if (!newerEdits && finished !== undefined) {
+            void options.conn('ingredient.draft.delete', { draft_id: finished }).then((removed) => {
+              // An edit since the install is a new version: its next save keeps it in progress.
+              if (
+                !removed.ok
+                || disposed
+                || state.draftId !== finished
+                || state.editEpoch !== flight.editEpoch
+                || state.installInputEpoch !== flight.installInputEpoch
+              ) return;
+              delete state.draftId;
+              state.status = 'Installed';
+              options.onDraftChange?.(undefined);
+              refreshDrafts();
+              rerender();
+            }).catch(() => { /* it stays in progress; Kitchen can discard it */ });
+          }
         } else {
           state.installStage = 'error';
           state.installMessage = newerEdits
@@ -5834,7 +5962,7 @@ export const bootstrapIngredientBuilderRoute = (
       return;
     }
     state.saveStage = 'saving';
-    state.status = 'Saving draft';
+    state.status = 'Saving…';
     state.review = undefined;
     state.reviewIssues = [];
     clearPreviewState(state);
@@ -5852,6 +5980,7 @@ export const bootstrapIngredientBuilderRoute = (
       ...(state.draftId !== undefined ? { draft_id: state.draftId } : {}),
       ...(state.title.trim().length > 0 ? { title: state.title.trim() } : {}),
       body,
+      pack: packIdentityOf(state),
     })
       .then(async (result) => {
         if (disposed || draftGeneration !== genAtDispatch) return;
@@ -5870,7 +5999,7 @@ export const bootstrapIngredientBuilderRoute = (
         // directly rather than via applyDraftState, so fire the hook here too.
         options.onDraftChange?.(state.draftId);
         state.saveStage = 'reviewing';
-        state.status = 'Checking the draft';
+        state.status = 'Checking…';
         rerender();
 
         const decompose = await options.conn('ingredient.compose.decompose', {
@@ -5894,7 +6023,7 @@ export const bootstrapIngredientBuilderRoute = (
           if (decompose.ok) {
             // Everything through epochAtSave is durable — new clean baseline.
             state.cleanEpoch = epochAtSave;
-            state.status = 'Draft saved and checked';
+            state.status = 'Saved and checked';
             state.previewOperationKey = state.previewOperationKey || firstOperationKey(state.rows);
             refreshDrafts(true);
           } else if (decompose.code === 'validation_failed') {
@@ -5995,7 +6124,7 @@ export const bootstrapIngredientBuilderRoute = (
     } else if (activeBeforeRender === previewBtn) {
       pendingSaveFocus = false;
       pendingWorkflowFocus = 'preview';
-    } else if (activeBeforeRender === installBtn) {
+    } else if (activeBeforeRender === installBtn || activeBeforeRender === installedLink) {
       pendingSaveFocus = false;
       pendingWorkflowFocus = 'install';
     } else if (
@@ -6026,6 +6155,7 @@ export const bootstrapIngredientBuilderRoute = (
     }
     previewBtn = undefined;
     installBtn = undefined;
+    installedLink = undefined;
     clearChildren(content);
     renderedOperationFocusTargets = new Map();
     renderedEntityFieldFocusTargets = new Map();
@@ -6039,7 +6169,7 @@ export const bootstrapIngredientBuilderRoute = (
 
     const header = doc.createElement('div');
     header.className = 'ingredient-builder-header';
-    const eyebrow = appendText(doc, header, 'span', 'Ingredient workspace');
+    const eyebrow = appendText(doc, header, 'span', 'Pack builder');
     eyebrow.className = 'ingredient-builder-eyebrow';
     routeHeading = appendText(doc, header, 'h1', 'Pack editor');
     routeHeading.setAttribute(INGREDIENT_BUILDER_HEADING_ATTR, '');
@@ -6183,14 +6313,14 @@ export const bootstrapIngredientBuilderRoute = (
     const titleWrap = doc.createElement('div');
     titleWrap.className = 'ingredient-builder-field';
     const titleLabel = doc.createElement('label');
-    titleLabel.textContent = 'Draft title';
+    titleLabel.textContent = 'Title';
     titleWrap.appendChild(titleLabel);
     const titleInput = makeTextInput(doc, state.title, 'title', (next) => {
       state.title = next;
       markDirty(state);
     });
     titleInput.setAttribute(INGREDIENT_BUILDER_TITLE_ATTR, '');
-    titleInput.setAttribute('aria-label', 'Draft title');
+    titleInput.setAttribute('aria-label', 'Title');
     titleWrap.appendChild(titleInput);
     identity.appendChild(titleWrap);
 
@@ -6314,7 +6444,9 @@ export const bootstrapIngredientBuilderRoute = (
     // ── Publish — pack metadata + (once validated) preview / install.
     const publishView = view('publish');
     renderPackSettings(doc, state, publishView, rerender, 'publish');
-    if (!isWorkflowReady(state)) {
+    if (isInstalledAndDone(state)) {
+      installedLink = renderInstalledDone(doc, state, publishView);
+    } else if (!isWorkflowReady(state)) {
       // The Preview/Install workflow only renders once reviewed — say WHY it's
       // absent instead of ending the section silently.
       const hint = doc.createElement('p');
@@ -6376,6 +6508,11 @@ export const bootstrapIngredientBuilderRoute = (
         pendingWorkflowFocus = null;
         target.focus({ preventScroll: true });
       }
+    }
+    // D-333 — Install went with the finished work; the installed pack takes its focus.
+    if (pendingWorkflowFocus === 'install' && installedLink !== undefined) {
+      pendingWorkflowFocus = null;
+      installedLink.focus({ preventScroll: true });
     }
     if (restoreActiveField !== null) restoreFieldFocus(restoreActiveField);
     if (pendingAddedOperationFocusId !== null) {

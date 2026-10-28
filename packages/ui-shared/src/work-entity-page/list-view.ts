@@ -97,9 +97,9 @@ const rowTextForTask = (entity: WorkEntity & { _kind: 'task' }): RowText => ({
 });
 
 const rowTextForNote = (entity: WorkEntity & { _kind: 'note' }): RowText => ({
-  primary: entity.title ?? truncate(entity.body, 60),
+  primary: entity.title?.trim() || truncate(entity.body, 60),
   secondary:
-    entity.title !== undefined && entity.body !== ''
+    Boolean(entity.title?.trim()) && entity.body !== ''
       ? truncate(entity.body, 80)
       : undefined,
   meta: `Updated ${timeAgo(entity.last_user_action_at)}`,

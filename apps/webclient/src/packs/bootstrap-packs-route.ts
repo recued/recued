@@ -260,6 +260,10 @@ export interface BootstrapPacksRouteOptions {
    *  the "Add a pack" section. Both forwarded into `mountPacksPanel`; the section
    *  renders only when BOTH are present. */
   packsResolveCaller?: PacksResolveCaller;
+  /** D-333 — open the pack builder on changes to a pack made in Kitchen. */
+  editPackInKitchen?: (packSlug: string) => Promise<void>;
+  /** D-333 — open the pack builder on a copy of another author's pack. */
+  copyPackInKitchen?: (manifest: import('@recued/contracts').BulkPackManifest) => Promise<void>;
   packsInstallBySlugCaller?: PacksInstallBySlugCaller;
   /** D-247 D15 — `packs.install_preview`, feeding the install dialog's recipe
    *  disclosure + the grant picker's per-recipe tier. Optional: absent ⇒ the
@@ -745,6 +749,8 @@ export const bootstrapPacksRoute = (
           ...(opts.packsResolveCaller !== undefined
             ? { runResolvePack: opts.packsResolveCaller }
             : {}),
+          ...(opts.editPackInKitchen ? { editPackInKitchen: opts.editPackInKitchen } : {}),
+          ...(opts.copyPackInKitchen ? { copyPackInKitchen: opts.copyPackInKitchen } : {}),
           ...(opts.packUpdateCaller ? { packUpdateCaller: opts.packUpdateCaller } : {}),
           ...(opts.packRemovalCaller ? { packRemovalCaller: opts.packRemovalCaller } : {}),
           ...(opts.packRepairCaller ? { packRepairCaller: opts.packRepairCaller } : {}),

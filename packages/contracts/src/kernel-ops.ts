@@ -129,6 +129,7 @@ export const KERNEL_DOMAINS: readonly KernelDomain[] = [
   // creates rows in the server-owned schedule store for recipes already
   // installed on this instance; no vendor connection participates.
   { domain: 'schedule', class: 'closed_kind' },
+  { domain: 'kitchen', class: 'closed_kind' },
   // D-324 — the owner's reminders, their own store: "tell me at T", rung once by
   // the server. Not `notification` (that is a delivery, made now) and not
   // `work-entity` (a reminder was a task until D-324, and that is what it fixed).

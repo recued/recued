@@ -137,13 +137,24 @@ describe('the REAL kernel manifests', () => {
     //    the caller names, behind the same `data.file` fence — read as an
     //    invite's method and events instead of as bytes.
     //
+    // ── D-332, 2026-10-28 — `kitchen-draft-{import,list,get,update}`. Import and
+    //    update are writes, admitted for the mail-draft reason above: the damage
+    //    class is bounded by the store. Every method keys on an origin the host
+    //    derives from the authenticated MCP token, so a caller reaches only the
+    //    drafts it imported; update needs the current `expected_revision`; none of
+    //    them installs, runs or publishes source; none can delete. Each needs its
+    //    own grant, off for every door until the owner switches it on
+    //    (`OWNER_DEFAULT_ONLY_GRANT_ENTRIES`). Discarding stays an owner act in
+    //    Kitchen, on the paired-owner RPC.
+    //
     // ⚠ The `preapproval.` / `mail.drafts.` RPC namespaces are the OTHER half of
     // the same decision, and they went the other way: both are in
     // `MCP_RESERVED_RPC_PREFIXES`, so the owner control plane stays unreachable
     // from this channel. An agent gets the governed kernel ops and nothing else.
     expect(flagged).toEqual([
       'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
-      'ics-read', 'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
+      'ics-read', 'kitchen-draft-get', 'kitchen-draft-import', 'kitchen-draft-list', 'kitchen-draft-update',
+      'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);
   });
@@ -156,7 +167,8 @@ describe('the REAL kernel manifests', () => {
     // are reachable, not the file's layout.
     expect(reachable.map((m) => m.slug).sort()).toEqual([
       'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
-      'ics-read', 'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
+      'ics-read', 'kitchen-draft-get', 'kitchen-draft-import', 'kitchen-draft-list', 'kitchen-draft-update',
+      'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);
   });

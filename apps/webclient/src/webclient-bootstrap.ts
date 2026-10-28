@@ -1,3 +1,6 @@
+import { mountKitchenWorkItemRoute } from './kitchen/work-item-route.js';
+import { mountKitchenHomeRoute } from './kitchen/kitchen-home-route.js';
+import { bootstrapRecipeEditorRoute as bootstrapImportedRecipeEditor } from './kitchen/recipe-editor/recipe-editor-route.js';
 import { parseRecordsRecordAddress } from './data/records-navigation.js';
 import { createManagedOAuthCaller } from './settings/managed-oauth-panel.js';
 import { createConnectionReplacementCaller } from './connections/connection-replacement-caller.js';
@@ -481,6 +484,7 @@ import {
   type DataWorkEntityDeleteCaller,
   type DataWorkEntityGetCaller,
   type DataWorkEntityListCaller,
+  type DataWorkEntitySearchCaller,
   type DataWorkEntityUpsertCaller,
   type DataTaskMarkDoneCaller,
   type WorkEntitySourceListCaller,
@@ -570,6 +574,7 @@ import {
   kitchenHierarchicalAddress,
   kitchenPackAddress,
   kitchenRecipeAddress,
+  kitchenWorkItemAddress,
   parseKitchenAddress,
 } from './kitchen/kitchen-navigation.js';
 import { injectWebclientPolishStyles } from './shell/webclient-polish-styles.js';
@@ -820,6 +825,7 @@ import {
   RECIPE_DRAFT_CONFIRMATION,
   RECIPE_REFINE_CONFIRMATION,
   getPref,
+  packCopyFor,
 } from '@recued/contracts';
 import {
   readExecutionCaseDraft,
@@ -7468,6 +7474,10 @@ export const bootstrapWebclient = async (
     rpcConn.call('work_entity.source.list', undefined);
   const dataWorkEntityListCaller: DataWorkEntityListCaller = (args) =>
     rpcConn.call('work_entity.list', args);
+  const dataWorkEntitySearchCaller: DataWorkEntitySearchCaller = (args) =>
+    rpcConn.call('work_entity.search', args);
+  const dataProjectItemsCaller: import('./data/project-work.js').ProjectItemsCaller = (args) =>
+    rpcConn.call('work_entity.project.items', args);
   const dataWorkEntityGetCaller: DataWorkEntityGetCaller = (args) =>
     rpcConn.call('work_entity.get', args);
   const dataWorkEntityUpsertCaller: DataWorkEntityUpsertCaller = (args) =>
@@ -10905,6 +10915,20 @@ export const bootstrapWebclient = async (
           ? { packsUninstallCaller: switchWorkTracker.track(packsUninstallCaller) }
           : {}),
         ...(packsResolveCaller !== undefined ? { packsResolveCaller } : {}),
+        // D-333 — a pack made in Kitchen goes back to the pack builder to be changed.
+        editPackInKitchen: async (pack_slug: string) => {
+          const opened = await rpcConn.call('ingredient.draft.edit', { pack_slug });
+          if (!opened.ok) throw new Error(opened.message);
+          hashSource?.setHash?.(kitchenPackAddress(opened.draft.draft_id).hash);
+        },
+        // …and another author's is copied: the copy is the owner's own, beside the original.
+        copyPackInKitchen: async (manifest) => {
+          const copy = packCopyFor(manifest);
+          if (copy === null) throw new Error('This pack has no operations to copy.');
+          const saved = await rpcConn.call('ingredient.draft.save', { title: copy.title, body: copy.composition, pack: copy.pack });
+          if (!saved.ok) throw new Error(saved.message);
+          hashSource?.setHash?.(kitchenPackAddress(saved.draft.draft_id).hash);
+        },
         ...(options.enablePacksPanel !== false ? (() => {
           const caller = createPackUpdateCaller(rpcConn.call), tests = createRecipeRegressionCaller(rpcConn.call),removal = createPackRemovalCaller(rpcConn.call),repair = createPackRepairCaller(rpcConn.call);
           return { packUpdateCaller: { get: switchWorkTracker.track(caller.get),stage: switchWorkTracker.track(caller.stage),test: switchWorkTracker.track(caller.test),apply: switchWorkTracker.track(caller.apply),release: switchWorkTracker.track(caller.release),restore: switchWorkTracker.track(caller.restore) },
@@ -11365,6 +11389,8 @@ export const bootstrapWebclient = async (
         ...(options.document !== undefined ? { document: options.document } : {}),
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
         workEntityListCaller: dataWorkEntityListCaller,
+        workEntitySearchCaller: dataWorkEntitySearchCaller,
+        projectItemsCaller: dataProjectItemsCaller,
         workEntityGetCaller: dataWorkEntityGetCaller,
         onOwnerRecordOpened: ref => { void rpcConn.call('yours.change', { action: 'navigation.open', ref }).catch(() => {}); },
         workEntityUpsertCaller: dataWorkEntityUpsertCaller,
@@ -11399,6 +11425,14 @@ export const bootstrapWebclient = async (
         reminderCallers: dataReminderCallers,
         recipeListCaller: recipesListCaller,
         recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
+        sheetImportUploadCaller: sheetImportUploader,
+        fileRefSearchCaller,
+        sheetImportSettings: mainDishSettings({
+          list: automationDishesListCaller,
+          update: switchWorkTracker.track(automationDishesUpdateCaller),
+          create: switchWorkTracker.track(automationDishesCreateCaller),
+        }),
+        followHeldRun: (result, deliver) => heldRunFollower.follow(result, deliver),
         manageRescheduleLinkCaller,
         timelineCaller: dataTimelineCaller,
         mirrorSearchCaller: dataMirrorSearchCaller,
@@ -11412,6 +11446,10 @@ export const bootstrapWebclient = async (
         collectionListInstancesCaller: dataCollectionListInstancesCaller,
         collectionListCaller: dataCollectionListCaller,
         collectionGetCaller: dataCollectionGetCaller,
+        calendarEventCallers: {
+          get: args => rpcConn.call('collection.calendar.event.get', args),
+          update: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.update', args)),
+        },
         collectionSearchAllCaller: dataCollectionSearchAllCaller,
         packInstalledListCaller: dataPackInstalledListCaller,
         marketplacePackSearchCaller: dataMarketplacePackSearchCaller,
@@ -13100,11 +13138,14 @@ export const bootstrapWebclient = async (
     }
     if (route === 'kitchen') {
       activeSettingsRoute = null;
-      // Edit→Kitchen — one route, two sibling authoring surfaces:
+      // Edit→Kitchen — one route, its home and two sibling authoring surfaces:
+      //   #kitchen                   → Kitchen's home: start, and work in progress (D-333)
+      //   #kitchen/new/recipe        → a new recipe, an item from its first change
+      //   #kitchen/import/<id>       → an item of work in progress, in its editor
       //   #kitchen/recipe/<id>       → the recipe editor (recipes-detail link)
       //   #kitchen/new/form-response/<form_definition_id>
       //                              → a new accepted-response automation
-      //   #kitchen/pack[/<draft_id>] → the pack editor (bare #kitchen too)
+      //   #kitchen/pack[/<draft_id>] → the pack editor
       // `kitchen` is a deep-link route, so switching between them re-mounts.
       const kitchenRoute =
         hashSource !== null ? parseShellRoute(hashSource.getHash()) : null;
@@ -13132,6 +13173,96 @@ export const bootstrapWebclient = async (
       if (mountedKitchenAddress.hash !== canonicalKitchenAddress.hash) {
         kitchenHistory.navigate(canonicalKitchenAddress, { intent: 'replace' });
       }
+      // D-333 — Kitchen home, a new recipe, and an item of work in progress. A new recipe
+      // becomes an item at its first change and keeps that address from then on.
+      if (
+        parsedKitchenAddress.kind === 'home'
+        || parsedKitchenAddress.kind === 'start-recipe'
+        || parsedKitchenAddress.kind === 'import'
+      ) {
+        const workChrome = mountKitchenChrome({
+          root: appShell.contentRoot,
+          active: parsedKitchenAddress.kind === 'home' ? 'home' : 'recipe',
+          ...(options.document !== undefined ? { document: options.document } : {}),
+        });
+        const discardWork = switchWorkTracker.track((draft_id: string, expected_revision: number) =>
+          rpcConn.call('kitchen.draft.discard', { draft_id, expected_revision }));
+        // The home has nothing to lose on leaving; an item answers for itself.
+        const surface: { dispose(): void; hasUnsavedChanges?(): boolean; hasInFlightWork?(): boolean } =
+          parsedKitchenAddress.kind === 'home'
+          ? mountKitchenHomeRoute({
+              root: workChrome.contentRoot,
+              listWork: () => rpcConn.call('kitchen.draft.list', undefined),
+              listPacks: () => rpcConn.call('ingredient.draft.list', undefined),
+              discardWork,
+              discardPack: switchWorkTracker.track((draft_id: string) =>
+                rpcConn.call('ingredient.draft.delete', { draft_id })),
+              ...(options.document !== undefined ? { document: options.document } : {}),
+            })
+          : mountKitchenWorkItemRoute({
+              root: workChrome.contentRoot,
+              ...(parsedKitchenAddress.kind === 'import' ? { draftId: parsedKitchenAddress.draftId } : {}),
+              get: (draft_id) => rpcConn.call('kitchen.draft.get', { draft_id }),
+              create: switchWorkTracker.track((kind: 'recipe' | 'pack', source: string) =>
+                rpcConn.call('kitchen.draft.create', { kind, source })),
+              update: switchWorkTracker.track((draft_id: string, expected_revision: number, source: string) =>
+                rpcConn.call('kitchen.draft.update', { draft_id, expected_revision, source })),
+              discard: discardWork,
+              openRecipe: (recipe, root, hooks) => bootstrapImportedRecipeEditor({
+                root,
+                ...(recipe !== undefined ? { initialRecipe: recipe } : {}),
+                initialDirty: true,
+                validateCaller: (args) => rpcConn.call('recipe.validate', args),
+                simulateCaller: switchWorkTracker.track(createRecipeSimulationCaller(rpcConn.call)),
+                saveCaller: switchWorkTracker.track((args) => rpcConn.call('recipe.save', args)),
+                onChange: hooks.onChange,
+                packCopiesCaller: () => rpcConn.call('ingredient.copies.list', undefined),
+                onSaved: ({ recipe_id }) => {
+                  hooks.onSaved();
+                  hashSource?.setHash?.(kitchenRecipeAddress(recipe_id).hash);
+                },
+                ...(options.document !== undefined ? { document: options.document } : {}),
+              }),
+              openPack: (item, root, hooks) => bootstrapIngredientBuilderRoute({
+                root,
+                initialBody: JSON.parse(item.source),
+                initialTitle: item.title,
+                conn: trackSelectedRpcMethods<IngredientBuilderConn>(new Set([
+                  'ingredient.draft.save', 'ingredient.draft.delete', 'ingredient.compose.decompose', 'ingredient.install',
+                ])),
+                // The builder keeps the work from its first save: this item is done.
+                onDraftChange: (id) => {
+                  if (!id) return;
+                  hooks.onMoved();
+                  hashSource?.setHash?.(kitchenPackAddress(id).hash);
+                },
+                ...(options.document !== undefined ? { document: options.document } : {}),
+              }),
+              // The active tab links to the item itself, not to a fresh start.
+              onCreated: (draftId) => {
+                const address = kitchenWorkItemAddress(draftId);
+                kitchenHistory.navigate(address, { intent: 'replace' });
+                workChrome.setActive('recipe', address.hash);
+              },
+              onDiscarded: () => hashSource?.setHash?.(serializeShellRoute('kitchen')),
+              onKind: (kind) => workChrome.setActive(kind, parsedKitchenAddress.kind === 'import'
+                ? kitchenWorkItemAddress(parsedKitchenAddress.draftId).hash
+                : undefined),
+              ...(options.document !== undefined ? { document: options.document } : {}),
+            });
+        return withTrackedServerSwitchWork({
+          // Chrome teardown in `finally`, as the other Kitchen surfaces do.
+          dispose: () => {
+            try {
+              surface.dispose();
+            } finally {
+              workChrome.dispose();
+            }
+          },
+          hasUnsavedChanges: () => surface.hasUnsavedChanges?.() ?? false,
+          hasInFlightWork: () => surface.hasInFlightWork?.() ?? false,
+        });
+      }
       const kitchenRecipeId =
         kitchenRoute !== null ? kitchenEditRecipeId(kitchenRoute) : null;
       const kitchenRecipeSeed =
@@ -13153,11 +13284,11 @@ export const bootstrapWebclient = async (
               'execution-case',
               kitchenRecipeSeed.draft_key,
             );
-      // Route chrome — the persistent `[ Recipe | Ingredient pack ]` tab bar.
-      // Mounted FIRST so it survives the editor's loading / not-found / error
-      // states; the active surface mounts into its content slot. The Recipe tab
-      // is contextual (points at the open recipe on the recipe surface, else at
-      // `#recipes` to pick one); the Pack tab always opens `#kitchen/pack`.
+      // Route chrome — the persistent `Kitchen [ Recipe | Pack ]` bar. Mounted
+      // FIRST so it survives the editor's loading / not-found / error states; the
+      // active surface mounts into its content slot. The Recipe tab is contextual
+      // (points at the open recipe on the recipe surface, else starts a new one);
+      // the Pack tab always opens `#kitchen/pack`; "Kitchen" links home.
       const kitchenChrome = mountKitchenChrome({
         root: appShell.contentRoot,
         active: isRecipeSurface ? 'recipe' : 'pack',
@@ -13282,6 +13413,19 @@ export const bootstrapWebclient = async (
       } else if (kitchenRecipeId !== null) {
         editor = mountRecipeEditorRoute({
           recovery: kitchenDraftRecovery,
+          // D-333 — Kitchen keeps changes to the saved recipe as they are typed.
+          changes: {
+            list: () => rpcConn.call('kitchen.draft.list', undefined),
+            get: (draft_id) => rpcConn.call('kitchen.draft.get', { draft_id }),
+            create: switchWorkTracker.track((source: string, base: { recipe_id: string; version: number }) =>
+              rpcConn.call('kitchen.draft.create', { kind: 'recipe', source, base })),
+            update: switchWorkTracker.track((draft_id: string, expected_revision: number, source: string) =>
+              rpcConn.call('kitchen.draft.update', { draft_id, expected_revision, source })),
+            discard: switchWorkTracker.track((draft_id: string, expected_revision: number) =>
+              rpcConn.call('kitchen.draft.discard', { draft_id, expected_revision })),
+          },
+          // D-333 — a pack the recipe needs switches to its copy, or back, with one button.
+          packCopiesCaller: () => rpcConn.call('ingredient.copies.list', undefined),
           root: kitchenChrome.contentRoot,
           recipeId: kitchenRecipeId,
           regressionCaller,
@@ -13331,10 +13475,10 @@ export const bootstrapWebclient = async (
       }
       // Pack editor. A draft id in seg 1 (`#kitchen/pack/<draft_id>`) self-loads
       // that draft; in-page draft selection syncs the URL through onDraftChange
-      // so a selected draft is a durable, shareable deep link. Bare `#kitchen`
-      // (or any non-`pack` sub-route) canonicalizes to `#kitchen/pack` without a
-      // remount. The shared history writer lives HERE; the builder stays
-      // route-agnostic.
+      // so a selected draft is a durable, shareable deep link. Any unknown
+      // Kitchen sub-route canonicalizes to `#kitchen/pack` without a remount
+      // (bare `#kitchen` is the home, D-333). The shared history writer lives
+      // HERE; the builder stays route-agnostic.
       const packDraftId =
         kitchenRoute !== null ? kitchenPackDraftId(kitchenRoute) : null;
       const syncPackHash = (
@@ -13345,6 +13489,8 @@ export const bootstrapWebclient = async (
       };
       const kitchenMutationMethods = new Set<string>([
         'ingredient.draft.save',
+        // D-333 — an installed pack's draft leaves Kitchen.
+        'ingredient.draft.delete',
         'ingredient.compose.decompose',
         'ingredient.install',
       ]);

@@ -629,13 +629,15 @@ describe('D-170 draft + preview rpc handlers', () => {
     expect(makeIngredientDraftHandlers(undefined)).toBeUndefined();
   });
 
-  it('wires all six methods', () => {
+  it('wires all seven methods', () => {
     const slice = makeIngredientDraftHandlers({ draftStore: freshStore() });
     expect(slice?.methods).toEqual([
       'ingredient.draft.save',
       'ingredient.draft.list',
       'ingredient.draft.get',
       'ingredient.draft.delete',
+      // D-333 — the draft of changes to a pack made in Kitchen.
+      'ingredient.draft.edit',
       'ingredient.compose.decompose',
       'ingredient.preview',
     ]);

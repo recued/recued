@@ -104,7 +104,7 @@ describe('its empty and error states', () => {
     }, NOW);
     expect(html).toContain('Kestrel item A pricing');
     expect(html).toContain('Searching installed recipes and packs');
-    expect(html).not.toContain('Nothing on this server matches');
+    expect(html).not.toContain('No matches in the searched sources');
   });
 
   it('keeps capability hits visible while records are still loading', () => {
@@ -119,12 +119,12 @@ describe('its empty and error states', () => {
   });
 
   it('waits for every local search before claiming nothing matches or offering the cloud', () => {
-    for (const pending of [{ loading: true }, { capabilitiesLoading: true }]) {
+    for (const pending of [{ loading: true }, { workLoading: true }, { capabilitiesLoading: true }]) {
       const html = renderUniversalSearch({
         ...base, query: 'kestrel', groups: [], marketplaceOffered: true, ...pending,
       }, NOW);
       expect(html).toContain('role="status"');
-      expect(html).not.toContain('Nothing on this server matches');
+      expect(html).not.toContain('No matches in the searched sources');
       expect(html).not.toContain(SEARCH_MARKETPLACE_ACTION);
     }
   });
@@ -132,7 +132,7 @@ describe('its empty and error states', () => {
   // ⛔ "No results" alone cannot be told apart from "the search did not run".
   it('names the scope it searched when nothing matched', () => {
     const html = renderUniversalSearch({ ...base, query: 'zzz', groups: [] }, NOW);
-    expect(html).toContain('Nothing on this server matches');
+    expect(html).toContain('No matches in the searched sources');
     expect(html).toContain('still syncing');
   });
 
@@ -140,10 +140,14 @@ describe('its empty and error states', () => {
     expect(renderUniversalSearch({ ...base, query: '   ' }, NOW)).toContain('Type to search');
   });
 
-  it('shows an error with a retry', () => {
-    const html = renderUniversalSearch({ ...base, query: 'k', error: 'server unreachable' }, NOW);
-    expect(html).toContain('server unreachable');
-    expect(html).toContain('universal-search-retry');
+  it('keeps failed searches retryable without claiming an empty result or offering the cloud', () => {
+    for (const error of [{ error: 'server unreachable' }, { workError: 'server unreachable' }, { capabilitiesError: 'server unreachable' }]) {
+      const html = renderUniversalSearch({ ...base, query: 'k', ...error, marketplaceOffered: true }, NOW);
+      expect(html).toContain('server unreachable');
+      expect(html).toContain('universal-search-retry');
+      expect(html).not.toContain('No matches in the searched sources');
+      expect(html).not.toContain(SEARCH_MARKETPLACE_ACTION);
+    }
   });
 });
 
@@ -214,7 +218,7 @@ describe('the capabilities group', () => {
     const html = renderUniversalSearch({
       ...base, query: 'invoice', groups: [], recipes: [recipe()],
     }, NOW);
-    expect(html).not.toContain('Nothing on this server matches');
+    expect(html).not.toContain('No matches in the searched sources');
     expect(html).toContain('Invoice book');
   });
 
@@ -273,7 +277,7 @@ describe('the packs group', () => {
 
   it('a pack alone is a result, not an empty state', () => {
     const html = renderUniversalSearch({ ...base, query: 'money', groups: [], packs: [pack()] }, NOW);
-    expect(html).not.toContain('Nothing on this server matches');
+    expect(html).not.toContain('No matches in the searched sources');
   });
 });
 
@@ -376,7 +380,7 @@ describe('did you mean', () => {
       ...base, query: 'Castelanos invoice', groups: [], didYouMean: dym,
     }, NOW);
     expect(empty).toContain('Did you mean');
-    expect(empty).toContain('Nothing on this server matches');
+    expect(empty).toContain('No matches in the searched sources');
   });
 
   it('is absent without a suggestion', () => {
@@ -406,23 +410,23 @@ describe('words the stores dropped', () => {
     const html = renderUniversalSearch({
       ...base, query: 'Castelanos invoice', groups: [group('inbox', 'mail', [row()])], absentWords: ['Castelanos'],
     }, NOW);
-    expect(html).toContain('No record holds “Castelanos”, so these results match only your other words.');
+    expect(html).toContain('No searched mail, calendar or file record holds “Castelanos”, so those collection results match only your other words.');
     // Before the count, which would otherwise read as an answer to the whole query.
-    expect(html.indexOf('No record holds')).toBeLessThan(html.indexOf('1 in 1 place'));
+    expect(html.indexOf('No searched mail, calendar or file record holds')).toBeLessThan(html.indexOf('1 in 1 place'));
   });
 
   it('lists several words, and escapes them', () => {
     const html = renderUniversalSearch({
       ...base, query: 'x', groups: [group('inbox', 'mail', [row()])], absentWords: ['Zylberstein', '<b>Kestral'],
     }, NOW);
-    expect(html).toContain('No record holds “Zylberstein” or “&lt;b&gt;Kestral”, so these results');
+    expect(html).toContain('No searched mail, calendar or file record holds “Zylberstein” or “&lt;b&gt;Kestral”, so those collection results');
     expect(html).not.toContain('<b>Kestral');
   });
 
   it('says nothing on an empty page, which already says nothing matched', () => {
     const html = renderUniversalSearch({ ...base, query: 'Zylberstein', groups: [], absentWords: ['Zylberstein'] }, NOW);
-    expect(html).not.toContain('No record holds');
-    expect(html).toContain('Nothing on this server matches');
+    expect(html).not.toContain('No searched mail, calendar or file record holds');
+    expect(html).toContain('No matches in the searched sources');
   });
 
   it('says nothing beside installed recipes alone — they are matched by another rule', () => {
@@ -430,7 +434,7 @@ describe('words the stores dropped', () => {
       ...base, query: 'Zylberstein invoice', groups: [],
       recipes: [{ recipe_id: 'r', name: 'Invoice chaser' }], absentWords: ['Zylberstein'],
     }, NOW);
-    expect(html).not.toContain('No record holds');
+    expect(html).not.toContain('No searched mail, calendar or file record holds');
   });
 });
 

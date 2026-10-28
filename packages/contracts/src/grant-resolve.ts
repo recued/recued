@@ -91,6 +91,15 @@ export const situationHistoryGrantEntry = (collection: typeof SITUATION_HISTORY_
   `${COLLECTION_GRANT_PREFIX}${collection}`;
 
 export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
+  // Kitchen drafts: every op is off for a door until the owner switches it on.
+  // ⛔ All four, not only import: list/get/update were left to the author
+  // default, which a WILDCARD door reads as permissive, so such a door could
+  // list, read and overwrite the drafts its key had imported — owner edits
+  // included — with no grant row at all (D-332).
+  'core.kitchen.draft.import',
+  'core.kitchen.draft.list',
+  'core.kitchen.draft.get',
+  'core.kitchen.draft.update',
   // The cross-pack adapter defaults to the owner and still holds every release
   // for its own decision. Customer response links confer no execution grant.
   'core.work-entity.quote-signoff.release',

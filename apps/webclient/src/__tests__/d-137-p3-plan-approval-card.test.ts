@@ -1163,15 +1163,20 @@ describe('D-137 P3 plan-approval chat route', () => {
       args: { kind: 'task', id: 'task-1', done: true },
     }));
     await tick();
+    // Each row as its label and its value.
+    const rows = (card: FakeEl): string[][] => requireChildClass(card, 'chat-plan-card-details').children
+      .map((row) => row.children.map((cell) => cell.textContent));
     const named = requirePlanCard(h.root, 'plan_named');
     expect(allText(requireChildClass(named, 'chat-plan-card-tool'))).toBe('Change a thing you own');
-    const details = allText(requireChildClass(named, 'chat-plan-card-details'));
-    expect(details).toContain('Family car');
-    expect(details).not.toContain('e1a798e8');
+    // Named as what it is, and its kind left to the title (2026-10-27): it read "Kind: asset"
+    // and "Id: Family car".
+    expect(rows(named).map(([label]) => label)).toEqual(['Thing', 'Readings']);
+    expect(rows(named)[0]).toEqual(['Thing', 'Family car']);
+    expect(allText(requireChildClass(named, 'chat-plan-card-details'))).not.toContain('e1a798e8');
     expect(allText(requireChildClass(named, 'chat-plan-card-args'))).toContain('e1a798e8');
     const unnamed = requirePlanCard(h.root, 'plan_unnamed');
     expect(allText(requireChildClass(unnamed, 'chat-plan-card-tool'))).toBe('Tick a task off');
-    expect(allText(requireChildClass(unnamed, 'chat-plan-card-details'))).toContain('task-1');
+    expect(rows(unnamed)).toEqual([['Task', 'task-1'], ['Done', 'Yes']]);
     h.route.dispose();
   });
 

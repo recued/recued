@@ -1,3 +1,6 @@
+import { createKitchenDraftStore, describeKitchenDraftOrigin } from '../kitchen-draft-store.js';
+import { createKitchenPackSourceStore } from '../ingredient-authoring/kitchen-pack-source-store.js';
+import { installedPackInstalledAt } from '../pack-inventory.js';
 import { mailAccountCapabilities } from '@recued/contracts';
 import { handleExecute } from '../execute-handler.js';
 import { createAutomationRehearsalHost } from '../automation-rehearsal-host.js';
@@ -2018,9 +2021,16 @@ export const composeListeners = async (
   // publish half without a new server.ts forward.
   const previewConnectionStore = app.connectionStoreRef;
   const previewConnectionApi = execution.executorConfig.connectionApi;
+  // D-333 — the source each pack made in Kitchen was installed from, so it can be edited
+  // again; it counts only while that install is still the installed one.
+  const kitchenPackSources = storage.db
+    ? createKitchenPackSourceStore(storage.db, (slug) =>
+      app.contractStoreRef ? installedPackInstalledAt(app.contractStoreRef, slug) : null)
+    : undefined;
   const ingredientDraftDeps: IngredientDraftRpcDeps = {
     draftStore: storage.draftStore,
     localManifestStore: storage.localManifestStore,
+    ...(kitchenPackSources ? { packSourceFor: (slug: string) => kitchenPackSources.current(slug) } : {}),
     ...(previewConnectionStore
       ? { connectionLookup: (kind, name) => previewConnectionStore.get(kind, name) }
       : {}),
@@ -3268,6 +3278,9 @@ export const composeListeners = async (
     ? {
         calendarCreate: collection.calendarStack.kernelDispatchers.calendarCreate,
         calendarUpdate: collection.calendarStack.kernelDispatchers.calendarUpdate,
+        // D-329 — the same writes' own checks, asked before the owner is.
+        checkCalendarCreate: collection.calendarStack.writeChecks.create,
+        checkCalendarUpdate: collection.calendarStack.writeChecks.update,
       } as never
     : null;
 
@@ -4065,6 +4078,7 @@ export const composeListeners = async (
       ? {
           packInstallDeps: {
             ...packInstallDepsWithComposition,
+            ...(kitchenPackSources ? { kitchenPackSource: (slug: string) => kitchenPackSources.current(slug) } : {}),
             ...(app.connectionStoreRef ? {
               getVendorPermissionSourceId: name => app.connectionStoreRef!.getAuthSourceId?.('api', name),
               getVendorPermissionSnapshot: () => JSON.stringify(app.connectionStoreRef!.list({ kind: 'api' })
@@ -4268,6 +4282,7 @@ export const composeListeners = async (
           ingredientAuthoringDeps: {
             localManifestStore: storage.localManifestStore,
             contractStore: app.contractStoreRef,
+            ...(kitchenPackSources ? { kitchenPackSources } : {}),
             registry: execution.executorConfig.manifests,
             recipeStore: storage.recipeStore,
             compiledRecipeStore: storage.recipeStore,
@@ -4299,6 +4314,9 @@ export const composeListeners = async (
     // on drafts, so it rides this same dependency family and the single
     // server.ts forward for `ingredientDraftDeps`.
     ...{ ingredientDraftDeps },
+    // D-333 — In progress names an AI app by its key's label ("From VS Code").
+    ...(storage.db ? { kitchenDraftStore: createKitchenDraftStore(storage.db, Date.now, (origin) =>
+      describeKitchenDraftOrigin(origin, (tokenId) => app.chatInboundTokenStoreRef?.getTokenById(tokenId)?.label)) } : {}),
     bridgeCapabilityDeps: { registry: bridgeRegistry },
     // D-169 P0 follow-on — same registry instance threaded through the
     // WS upgrade's `bridgeRegistry.attach()` call (gated on

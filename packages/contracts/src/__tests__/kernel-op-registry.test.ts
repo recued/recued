@@ -93,6 +93,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // emailed attachment into a folder the owner names (D-318 follow-up 11).
   storage: 30,
   schedule: 1,
+  kitchen: 4,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
   // `order.link-customer` edge that binds a paid order to the customer it issued,
@@ -242,6 +243,10 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // webhook collection they read.
       'core.dom.read|dom|dom-read|read',
       'core.dom.write|dom|dom-write|write',
+      'core.kitchen.draft.get|kitchen|kitchen-draft-get|read',
+      'core.kitchen.draft.import|kitchen|kitchen-draft-import|write',
+      'core.kitchen.draft.list|kitchen|kitchen-draft-list|read',
+      'core.kitchen.draft.update|kitchen|kitchen-draft-update|write',
       'core.mail.body-read|mail|mail-body-read|read',
       // D-239 — the write-back four. `delete` is destructive; D-261 adds
       // draft deletion with the same risk. Mark / flag / move are writes that stay

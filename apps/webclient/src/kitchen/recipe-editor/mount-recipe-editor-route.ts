@@ -19,6 +19,7 @@
  */
 
 import type {
+  KitchenImportDraft,
   LocalRecipeWebhookStatus,
   RecipeDefinition,
   ServerRecipeFullEntry,
@@ -37,6 +38,13 @@ import type { RecipeReleaseView } from '@recued/contracts';
 import { serializeShellRoute } from '../../shell/route.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
 import {
+  createRecipeChangesKeeper,
+  findRecipeChanges,
+  type RecipeChangesCallers,
+  type RecipeChangesKeeper,
+} from '../recipe-changes.js';
+import {
+  adoptRecipe,
   bootstrapRecipeEditorRoute,
   RECIPE_EDITOR_ROUTE_ATTR,
   type BootstrapRecipeEditorRouteOptions,
@@ -56,6 +64,10 @@ import {
   type FormResponseAutomationMatch,
   type FormResponseWorkflowTemplateMatch,
 } from './form-response-automation-discovery.js';
+
+/** D-333 — the bar above the editor while changes to the saved recipe are kept
+ *  (`orphaned`: the link to changes whose recipe is gone). */
+export const RECIPE_CHANGES_ATTR = 'data-recued-recipe-changes';
 
 /** The loader host (value = the recipe_id being loaded). */
 export const MOUNT_RECIPE_EDITOR_HOST_ATTR = 'data-recued-recipe-editor-mount';
@@ -119,6 +131,22 @@ const MOUNT_STYLES = `
 [${MOUNT_RECIPE_EDITOR_RETRY_ATTR}] {
   margin-top: 12px;
   margin-right: 10px;
+}
+[${RECIPE_CHANGES_ATTR}]:not([${RECIPE_CHANGES_ATTR}="orphaned"]) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 24px;
+  color: var(--fg-muted);
+}
+[${RECIPE_CHANGES_ATTR}][hidden] {
+  display: none;
+}
+[${RECIPE_CHANGES_ATTR}="orphaned"] {
+  display: inline-block;
+  margin: 12px 16px 0 0;
+  color: var(--accent);
 }
 [${MOUNT_RECIPE_EDITOR_RETRY_ATTR}][aria-disabled="true"] {
   cursor: progress;
@@ -287,6 +315,12 @@ export interface MountRecipeEditorRouteOptions {
   mailTemplatesCaller?: BootstrapRecipeEditorRouteOptions['mailTemplatesCaller'];
   mailTemplateStarterCaller?: BootstrapRecipeEditorRouteOptions['mailTemplateStarterCaller'];
   onSaved?: (result: RecipeSaveResult) => void;
+  /** D-333 — Kitchen keeps changes to the saved recipe as they are typed, in place of
+   *  this browser's {@link recovery} copy. A server from before D-333 keeps that copy. */
+  changes?: RecipeChangesCallers;
+  /** D-333 — the packs copied in Kitchen, for the editor's switch between a pack and its copy. */
+  packCopiesCaller?: BootstrapRecipeEditorRouteOptions['packCopiesCaller'];
+  confirm?: (message: string) => boolean;
 }
 
 export interface MountRecipeEditorRoute {
@@ -352,6 +386,56 @@ export const mountRecipeEditorRoute = (
   let editor: RecipeEditorRoute | undefined;
   let loadBusy = false;
   let lastLoadError = '';
+  let keeper: RecipeChangesKeeper | undefined;
+  const confirmDiscard = options.confirm ?? ((message: string) => doc.defaultView?.confirm(message) ?? false);
+
+  /** D-333 — above the editor while changes are kept: that they are kept, and Discard. */
+  const mountChangesBar = (item: KitchenImportDraft | undefined, saved: ServerRecipeFullEntry): (() => void) => {
+    const bar = doc.createElement('div');
+    bar.setAttribute(RECIPE_CHANGES_ATTR, '');
+    const note = doc.createElement('span');
+    note.textContent = item?.base !== undefined && item.base.version !== saved.version
+      ? 'The recipe was saved again after these changes began. They are kept until you save or discard them.'
+      : 'Your changes are kept until you save or discard them.';
+    const status = doc.createElement('span');
+    status.setAttribute('role', 'status');
+    const discard = doc.createElement('button');
+    discard.type = 'button';
+    discard.className = 'rx-btn rx-btn-secondary rx-btn-sm';
+    discard.textContent = 'Discard changes';
+    bar.appendChild(note);
+    bar.appendChild(status);
+    bar.appendChild(discard);
+    host.appendChild(bar);
+    const sync = (): void => {
+      if (disposed) return;
+      bar.hidden = !(keeper?.hasChanges() ?? false);
+      const now = keeper?.status() ?? { state: 'idle' as const };
+      status.textContent = now.state === 'saving' ? 'Keeping your changes…'
+        : now.state === 'stopped' || now.state === 'error' ? now.message : 'Kept as you type';
+    };
+    discard.addEventListener('click', () => {
+      const current = keeper;
+      if (current === undefined || discard.disabled) return;
+      if (!confirmDiscard('Discard your changes? The saved recipe stays as it is.')) return;
+      discard.disabled = true;
+      status.textContent = 'Discarding…';
+      void current.discard().then(() => {
+        if (disposed) return;
+        // Start again from the saved recipe.
+        current.dispose();
+        keeper = undefined;
+        editor?.dispose();
+        editor = undefined;
+        void loadRecipe();
+      }).catch(() => {
+        discard.disabled = false;
+        sync();
+      });
+    });
+    sync();
+    return sync;
+  };
 
   /** Replace the host body with a status line (+ a back link on failure). */
   const renderStatus = (
@@ -468,8 +552,23 @@ export const mountRecipeEditorRoute = (
           'error',
           { focusBack: (retryOwned && focusOwner.retry) || focusOwner.back },
         );
+        // D-333 — changes in progress outlive their recipe: they open as work of their own.
+        if (options.changes !== undefined) {
+          void findRecipeChanges(options.changes, options.recipeId).then((found) => {
+            if (!found || disposed || editor !== undefined) return;
+            const open = doc.createElement('a');
+            open.setAttribute(RECIPE_CHANGES_ATTR, 'orphaned');
+            open.setAttribute('href', serializeShellRoute('kitchen', 'import', found.draft_id));
+            open.textContent = 'Open your changes to it';
+            host.appendChild(open);
+          });
+        }
         return;
       }
+      // D-333 — read alongside the others; used unless the recipe keeps a release draft.
+      const changesRead = options.changes !== undefined
+        ? findRecipeChanges(options.changes, entry.recipe_id)
+        : undefined;
       let webhookControl: RecipeWebhookControl | undefined;
       if (options.webhookIngressListCaller
         && options.webhookStatusCaller
@@ -503,12 +602,39 @@ export const mountRecipeEditorRoute = (
         }
         if (disposed) return;
       }
+      // D-333 — Kitchen keeps changes to a saved recipe. A recipe under reviewed releases
+      // keeps its own draft; a server from before D-333 keeps this browser's copy.
+      const managed = releaseInitial?.managed === true;
+      const changes = changesRead !== undefined && !managed ? await changesRead : null;
+      if (disposed) return;
+      let changed: RecipeDefinition | undefined;
+      if (changes) {
+        try { changed = JSON.parse(changes.source) as RecipeDefinition; } catch { /* the first edit replaces it */ }
+      }
       clearChildren(host);
+      if (options.changes !== undefined && changes !== null) {
+        const sync = mountChangesBar(changes, entry);
+        keeper = createRecipeChangesKeeper({
+          callers: options.changes,
+          base: { recipe_id: entry.recipe_id, version: entry.version },
+          saved: adoptRecipe(entry.recipe)!,
+          ...(changes !== undefined ? { item: changes } : {}),
+          onStatus: sync,
+        });
+        sync();
+      }
+      const kept = keeper;
       editor = bootstrapRecipeEditorRoute({
-        recovery: options.recovery,
+        recovery: kept === undefined ? options.recovery : undefined,
         root: host,
         ...(options.document !== undefined ? { document: options.document } : {}),
-        initialRecipe: releaseInitial?.managed && releaseInitial.draft ? releaseInitial.draft.recipe : entry.recipe,
+        initialRecipe: changed
+          ?? (releaseInitial?.managed && releaseInitial.draft ? releaseInitial.draft.recipe : entry.recipe),
+        ...(changed !== undefined ? { initialDirty: true } : {}),
+        ...(kept !== undefined ? { onChange: (recipe: RecipeDefinition) => kept.changed(recipe) } : {}),
+        ...(options.packCopiesCaller !== undefined ? { packCopiesCaller: options.packCopiesCaller } : {}),
+        // Recipes saved from Kitchen are the owner's; switching another author's makes a copy.
+        ownRecipe: entry.publisher_id === 'kitchen',
         validateCaller: options.validateCaller,
         simulateCaller: options.simulateCaller,
         ...(options.regressionCaller ? { regressionCaller: options.regressionCaller } : {}),
@@ -522,10 +648,16 @@ export const mountRecipeEditorRoute = (
         ...(options.mailTemplateStarterCaller !== undefined
           ? { mailTemplateStarterCaller: options.mailTemplateStarterCaller }
           : {}),
-        ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
+        onSaved: (result, saved) => {
+          kept?.saved({ recipe_id: result.recipe_id, version: result.version }, saved);
+          options.onSaved?.(result);
+        },
       });
     } catch (error: unknown) {
       if (disposed) return;
+      // No editor to keep changes for.
+      keeper?.dispose();
+      keeper = undefined;
       const focusOwner = statusFocusOwner();
       lastLoadError = humanizeRpcError(error);
       renderStatus(lastLoadError, 'error', {
@@ -543,15 +675,18 @@ export const mountRecipeEditorRoute = (
   return {
     dispose(): void {
       disposed = true;
+      keeper?.dispose(); // writes the last changes now
       editor?.dispose();
       editor = undefined;
       host.remove();
     },
     hasUnsavedChanges(): boolean {
+      // Kept as typed, so leaving loses nothing unless keeping them stopped or failed.
+      if (keeper !== undefined && !keeper.stopped()) return false;
       return editor?.hasUnsavedChanges() ?? false;
     },
     hasInFlightWork(): boolean {
-      return editor?.hasInFlightWork() ?? false;
+      return (keeper?.busy() ?? false) || (editor?.hasInFlightWork() ?? false);
     },
   };
 };
@@ -635,7 +770,8 @@ export const mountFormResponseRecipeSeedRoute = (
         ...(options.mailTemplateStarterCaller !== undefined
           ? { mailTemplateStarterCaller: options.mailTemplateStarterCaller }
           : {}),
-        ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
+        // This route's callers take the result alone.
+        ...(options.onSaved !== undefined ? { onSaved: (result: RecipeSaveResult) => options.onSaved?.(result) } : {}),
       });
     } catch (error: unknown) {
       if (!disposed) renderDraftFailure(error);

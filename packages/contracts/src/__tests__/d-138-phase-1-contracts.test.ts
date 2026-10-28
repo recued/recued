@@ -476,8 +476,12 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       expect(tool.startsWith('housekeeping.')).toBe(false);
     }
   });
-  it('isReservedLocalRpc flags every contact.merge.* method', () => {
-    for (const m of CONTACT_MERGE_RPC_METHODS) {
+  it('isReservedLocalRpc flags owner contact and calendar methods', () => {
+    for (const m of [
+      ...CONTACT_MERGE_RPC_METHODS,
+      'collection.calendar.event.get',
+      'collection.calendar.event.update',
+    ]) {
       expect(isReservedLocalRpc(m)).toBe(true);
     }
   });
@@ -490,7 +494,7 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
     expect(isMcpToolName('recued_ingredient_deal-reader-hubspot')).toBe(true);
     expect(isMcpToolName('contact.merge.list')).toBe(false);
   });
-  it('MCP_RESERVED_RPC_PREFIXES includes contact.merge. + housekeeping. + upstream_merge. + D-145 PA8 alias / identity surfaces + D-148 W3.FU exposure. + D-148 FU4 tls_domain. + D-148 A.6.5 tls. + D-148 A.11 key. + D-148 A.5.3/A.6.5 pro. + D-148 A.6.5/A.9 passport. + D-137 P5 follow-on chat.inbound_token. + D-149 P3 reception. + D-148 A.2.1/A.6.5 pair. + D-163 Slice C notifications. + D-145 PA10 follow-on packs. + D-221 Records. + D-315 mail_fact.', () => {
+  it('accounts for every owner-only RPC prefix', () => {
     // D-138 P5 widens the prefix list with `upstream_merge.` so the
     // outbox rpcs stay local-UI only. D-145 PA8 § A.4.4 widens it
     // again with `contact.alias.` + `contact.identity.` so the per-pair
@@ -604,6 +608,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'cli.reachability.',
       // D-322 — broker-backed account activation is an owner operation.
       'collection.calendar.enrollManagedOAuth',
+      // Direct event reads and edits belong to the paired owner UI.
+      'collection.calendar.event.',
       'collection.connection.',
       'collection.contract.',
       'collection.hostname.',
@@ -657,6 +663,7 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // rotations, `key.health` leaks the key inventory + compromise
       // posture).
       'key.',
+      'kitchen.',
       // D-261 — the owner's pre-approval control plane. A model may REQUEST a
       // reviewed future execution through the governed `core.preapproval.request`
       // kernel op and manage its own saved drafts through the `core.mail.draft.*`

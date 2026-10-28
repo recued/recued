@@ -274,6 +274,11 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       return;
     }
     if (action === 'today-task-save') { void controller.submit(); return; }
+    if (action === 'today-task-due-today' || action === 'today-task-due-tomorrow' || action === 'today-task-due-clear') {
+      const shortcut = action === 'today-task-due-today' ? 'today' : action === 'today-task-due-tomorrow' ? 'tomorrow' : 'clear';
+      void controller.applyDueShortcut(target?.getAttribute('data-today-task') ?? '', shortcut);
+      return;
+    }
     if (action === 'today-commitment-fulfill' || action === 'today-commitment-cancel') {
       void controller.closeCommitment(target?.getAttribute('data-today-task') ?? '', action === 'today-commitment-fulfill' ? 'fulfill' : 'cancel');
       return;

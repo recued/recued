@@ -259,6 +259,8 @@ export interface ComposeExecutorConfigDeps {
     getCustomerAccountPaymentReminderService?: () => import('../../customer-account-payment-reminder-service.js').CustomerAccountPaymentReminderService;
     getQuoteCompletionReminderService?: () => import('../../quote-completion-reminder-service.js').QuoteCompletionReminderService;
     mailDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraft'];
+    kitchenDraftImport?: import('../../execute-handler.js').ExecuteHandlerDeps['kitchenDraftImport'];
+    kitchenDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['kitchenDraft'];
     mailDraftSaveToMailbox?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraftSaveToMailbox'];
     preapprovalRequest?: import('../../execute-handler.js').ExecuteHandlerDeps['preapprovalRequest'] } | undefined;
   auditLog: AuditLogStore | undefined;
@@ -2061,6 +2063,16 @@ export const composeExecutorConfig = async (
             },
           }
         : {}),
+      kitchenDraftImport: async (input, meta) => {
+        const importer = deps.getExecuteDeps?.()?.kitchenDraftImport;
+        if (!importer) throw new Error('Kitchen draft imports are unavailable until the owner service is ready.');
+        return importer(input, meta);
+      },
+      kitchenDraft: async (method, input, meta) => {
+        const access = deps.getExecuteDeps?.()?.kitchenDraft;
+        if (!access) throw new Error('Kitchen draft access is unavailable until the owner service is ready.');
+        return access(method, input, meta);
+      },
       mailDraft: async (method, input, meta) => {
         const draft = deps.getExecuteDeps?.()?.mailDraft;
         if (!draft) throw new Error('Saved drafts are unavailable until the owner service is ready.');

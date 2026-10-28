@@ -90,6 +90,14 @@ export interface IngredientInstallArgs {
    *  ABSENT ⇒ fail closed: grant ONLY the authored read/`approval: ask`
    *  defaults; the silent derived read-tier auto-grant is removed. */
   install_scope?: InstallGrantSelection;
+  /** D-333 — the pack this one is a copy of (`<publisher>.<slug>`). Kept with the installed
+   *  copy, so a recipe can be switched between the two with one button. */
+  copy_of?: string;
+}
+
+/** D-333 — the installed copies made in Kitchen, each with the pack it copies. */
+export interface IngredientPackCopiesResult {
+  copies: Array<{ pack_ref: string; copy_of: string }>;
 }
 
 export type IngredientInstallResult =
@@ -199,6 +207,27 @@ export interface IngredientDraft {
   body: unknown;
   created_at: number;
   updated_at: number;
+  /** D-333 — the installed pack this draft changes (see {@link IngredientDraftBasePack}). */
+  base_pack?: IngredientDraftBasePack;
+  /** D-333 — the pack this draft installs as (see {@link IngredientDraftPack}). */
+  pack?: IngredientDraftPack;
+}
+
+/** D-333 — the pack a draft installs as: its manifest fields without contents (`slug`,
+ *  `publisher`, `name`, `description`, `tags`, `pack_kind`, `service_kind`, `dependencies`).
+ *  Kept beside the composition, so reopening a draft does not fall back to a default slug or
+ *  publisher: recipes name a pack by `<publisher>.<slug>`. At most {@link INGREDIENT_DRAFT_PACK_MAX_BYTES}. */
+export type IngredientDraftPack = Record<string, unknown>;
+export const INGREDIENT_DRAFT_PACK_MAX_BYTES = 16_384;
+
+/** D-333 — the installed pack a draft changes. Installing the draft replaces that pack, so the
+ *  draft takes the pack's identity (slug, publisher, name, …) from it rather than from defaults:
+ *  a draft's own body is the composition alone. */
+export interface IngredientDraftBasePack {
+  pack_slug: string;
+  /** The installed pack's manifest without its contents. Absent once that pack is no longer
+   *  the one Kitchen installed (removed, or replaced from the marketplace). */
+  identity?: Record<string, unknown>;
 }
 
 /** Lightweight projection for `ingredient.draft.list` — never carries the
@@ -213,6 +242,8 @@ export interface IngredientDraftSummary {
   operation_count: number;
   created_at: number;
   updated_at: number;
+  /** D-333 — the installed pack this draft changes. */
+  base_pack_slug?: string;
 }
 
 export interface IngredientDraftSaveArgs {
@@ -222,6 +253,8 @@ export interface IngredientDraftSaveArgs {
   title?: string;
   /** The composition body — stored verbatim, may be incomplete. */
   body: unknown;
+  /** D-333 — the pack it installs as. Omitted: an existing draft keeps the one it has. */
+  pack?: IngredientDraftPack;
 }
 
 export type IngredientDraftSaveResult =
@@ -252,6 +285,22 @@ export interface IngredientDraftDeleteArgs {
 export type IngredientDraftDeleteResult =
   | { ok: true; deleted: boolean }
   | { ok: false; code: 'bad_request'; message: string };
+
+/** D-333 — change a pack that was made and installed in Kitchen: open the draft of changes to
+ *  it, or start one from the source it was installed from. One draft per pack. */
+export interface IngredientDraftEditArgs {
+  pack_slug: string;
+}
+
+export type IngredientDraftEditResult =
+  | { ok: true; draft: IngredientDraftSummary }
+  | {
+      ok: false;
+      /** `not_found` — the pack was not made in Kitchen on this server, or the pack installed
+       *  now is not the one Kitchen installed. `limit_reached` — no room for another draft. */
+      code: 'bad_request' | 'not_found' | 'limit_reached';
+      message: string;
+    };
 
 // ────────────────────────────────────────────────────────────────
 // D-170 #2 — draft composition decompose RPC

@@ -23,6 +23,7 @@ interface FakeElement {
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
+  removeAttribute(k: string): void;
   appendChild(el: FakeElement): FakeElement;
   removeChild(el: FakeElement): FakeElement;
 }
@@ -52,6 +53,9 @@ const makeFakeElement = (tag: string): FakeElement => {
     },
     hasAttribute(k) {
       return el.attrs.has(k);
+    },
+    removeAttribute(k) {
+      el.attrs.delete(k);
     },
     appendChild(child) {
       el.children.push(child);
@@ -104,7 +108,7 @@ const tabBysurface = (root: FakeElement, surface: string): FakeElement | undefin
   );
 
 const mount = (
-  active: 'recipe' | 'pack',
+  active: 'recipe' | 'pack' | 'home',
   recipeId?: string,
   recipeHref?: string,
 ) => {
@@ -146,12 +150,13 @@ describe('kitchenTabHref', () => {
     ).toBe('#kitchen/new/form-response/project-intake');
   });
 
-  it('Recipe tab falls back to the #recipes library when no recipe is open', () => {
-    // pack surface — nothing open.
-    expect(kitchenTabHref('recipe', 'pack', undefined)).toBe('#recipes');
-    // edge: recipe surface but somehow no id → still the library, never a
-    // broken `#kitchen/recipe` (which the route treats as the pack editor).
-    expect(kitchenTabHref('recipe', 'recipe', undefined)).toBe('#recipes');
+  it('Recipe tab starts a new recipe when no recipe is open (D-333)', () => {
+    // pack surface and Kitchen home — nothing open.
+    expect(kitchenTabHref('recipe', 'pack', undefined)).toBe('#kitchen/new/recipe');
+    expect(kitchenTabHref('recipe', 'home', undefined)).toBe('#kitchen/new/recipe');
+    // edge: recipe surface but somehow no id → a new recipe, never a broken
+    // `#kitchen/recipe` (which the route treats as the pack editor).
+    expect(kitchenTabHref('recipe', 'recipe', undefined)).toBe('#kitchen/new/recipe');
   });
 });
 
@@ -169,7 +174,7 @@ describe('mountKitchenChrome', () => {
       'recipe',
       'pack',
     ]);
-    expect(tabs.map((t) => t.textContent)).toEqual(['Recipe', 'Ingredient pack']);
+    expect(tabs.map((t) => t.textContent)).toEqual(['Recipe', 'Pack']);
     // The returned contentRoot IS the content-slot element inside the host.
     const content = findByAttr(root, KITCHEN_ROUTE_CONTENT_ATTR)[0]!;
     expect(handle.contentRoot).toBe(content as unknown as HTMLElement);
@@ -202,17 +207,40 @@ describe('mountKitchenChrome', () => {
     );
   });
 
-  it('marks the pack tab active on the pack surface; recipe tab links to #recipes', () => {
+  it('marks the pack tab active on the pack surface; recipe tab starts a new recipe', () => {
     const { root } = mount('pack');
     const recipe = tabBysurface(root, 'recipe')!;
     const pack = tabBysurface(root, 'pack')!;
     expect(pack.getAttribute('aria-current')).toBe('page');
     expect(pack.className).toContain('kitchen-route-tab--active');
     expect(pack.getAttribute('href')).toBe('#kitchen/pack');
-    // No recipe open → the Recipe tab is a doorway to the library, not a dead
-    // `#kitchen/recipe`.
+    // No recipe open → the Recipe tab starts one, not a dead `#kitchen/recipe`.
     expect(recipe.getAttribute('aria-current')).toBeNull();
-    expect(recipe.getAttribute('href')).toBe('#recipes');
+    expect(recipe.getAttribute('href')).toBe('#kitchen/new/recipe');
+    // The Kitchen label is the way home; it is not the current page here.
+    const label = findByAttr(root, KITCHEN_ROUTE_LABEL_ATTR)[0]!;
+    expect(label.getAttribute('href')).toBe('#kitchen');
+    expect(label.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('on Kitchen home marks the label current and no tab; a work item then takes its tab (D-333)', () => {
+    const { root, handle } = mount('home');
+    const label = findByAttr(root, KITCHEN_ROUTE_LABEL_ATTR)[0]!;
+    const recipe = tabBysurface(root, 'recipe')!;
+    const pack = tabBysurface(root, 'pack')!;
+    expect(label.getAttribute('aria-current')).toBe('page');
+    expect(recipe.getAttribute('aria-current')).toBeNull();
+    expect(pack.getAttribute('aria-current')).toBeNull();
+
+    // An item loads as a pack: its tab is current and links to the item itself.
+    handle.setActive('pack', '#kitchen/import/w1');
+    expect(label.getAttribute('aria-current')).toBeNull();
+    expect(pack.getAttribute('aria-current')).toBe('page');
+    expect(pack.className).toContain('kitchen-route-tab--active');
+    expect(pack.getAttribute('href')).toBe('#kitchen/import/w1');
+    expect(recipe.getAttribute('aria-current')).toBeNull();
+    expect(recipe.className).not.toContain('--active');
+    expect(recipe.getAttribute('href')).toBe('#kitchen/new/recipe');
   });
 
   it('injects its styles once (marker-guarded) across remounts', () => {

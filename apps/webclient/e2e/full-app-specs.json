@@ -5,6 +5,7 @@
   "housekeeping-read-recovery.spec.ts",
   "ai-models.spec.ts",
   "data.spec.ts",
+  "calendar-event-editing.spec.ts",
   "universal-search.spec.ts",
   "universal-search-navigation.spec.ts",
   "automation.spec.ts",

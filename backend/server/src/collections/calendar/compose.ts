@@ -59,6 +59,8 @@ import {
   type CalendarCollectionConfig,
 } from './calendar-collection.js';
 import {
+  checkCalendarCreate,
+  checkCalendarUpdate,
   handleCalendarCreate,
   handleCalendarDelete,
   handleCalendarGet,
@@ -144,6 +146,13 @@ export interface CalendarStack {
   listLive(): CalendarCollection[];
   /** Kernel dispatcher slots for the eight calendar-* ingredients. */
   kernelDispatchers: CalendarKernelDispatchers;
+  /** D-329 — what an event create or update checks before it calls its calendar, for a
+   *  chat write's check before the owner is asked. Throws the write's own refusal. Not a
+   *  kernel slot: no recipe step reaches it. */
+  writeChecks: {
+    create(input: { slug: string }): void;
+    update(input: { slug: string; source_id: string; patch: Record<string, unknown> }): void;
+  };
   /** Feed to `collectionDeps.calendarEnroll`. Carries `onEnrolled`/
    *  `onDeleted` hooks that maintain the live-collection map. */
   enrollDeps: CalendarEnrollDeps;
@@ -514,6 +523,10 @@ export const composeCalendarStack = (
     prepareLocalUpdate: input => prepareLocalCalendarUpdate(dispatchDeps, input),
     listLive: () => [...live.values()],
     kernelDispatchers,
+    writeChecks: {
+      create: (input) => { checkCalendarCreate(dispatchDeps, input); },
+      update: (input) => { checkCalendarUpdate(dispatchDeps, input as Parameters<typeof checkCalendarUpdate>[1]); },
+    },
     enrollDeps,
     startAll,
     disposeAll,

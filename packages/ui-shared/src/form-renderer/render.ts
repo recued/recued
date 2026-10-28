@@ -211,12 +211,14 @@ const renderTextarea = (
 ): string => {
   const display = stringValue(value);
   const max = field.max_length !== undefined ? ` maxlength="${field.max_length}"` : '';
+  // HTML ignores the first newline in a textarea; supply one before the value.
   return `<textarea
     id="form-renderer-${e(field.name)}"
     class="form-renderer-textarea"
     data-form-field="${e(field.name)}"
     data-form-type="textarea"${max}${invalidAttrs(field, error)}
-  >${e(display)}</textarea>`;
+  >
+${e(display)}</textarea>`;
 };
 
 const renderNumberInput = (
@@ -829,7 +831,7 @@ const stringValue = (v: unknown): string => {
  *  input back. It used to write UTC digits in and read local digits out, so
  *  every save of an untouched field moved it by the offset.
  *
- *  ⛔ A value at UTC midnight names a DAY (`due-day.ts`) and shows as that day
+ *  ⛔ A stored number at UTC midnight names a DAY (`due-day.ts`) and shows as that day
  *  at midnight — not as the previous evening, which is where its instant falls
  *  west of UTC. A string without a zone is shown as written. Exported so a host
  *  can tell an untouched field from an edited one by comparing the two as
@@ -842,10 +844,10 @@ export const formatTimestampForInput = (v: unknown): string => {
     return day !== null ? `${day}T00:00` : formatDateForInput(new Date(v));
   }
   if (typeof v !== 'string') return '';
-  // A zoned string names an instant: show it as the number it is.
+  // A zoned string explicitly names an instant, including at UTC midnight.
   if (/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(v)) {
     const ms = Date.parse(v);
-    return Number.isFinite(ms) ? formatTimestampForInput(ms) : '';
+    return Number.isFinite(ms) && ms >= 0 ? formatDateForInput(new Date(ms)) : '';
   }
   // Match `YYYY-MM-DDTHH:MM(:SS(.fff)?)?`
   const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2}(?:\.\d+)?)?$/.exec(v);

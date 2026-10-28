@@ -39,10 +39,13 @@
 
 import {
   RAW_OP_TOOL_PREFIX,
+  MCP_INGREDIENT_TOOL_PREFIX,
+  kernelOpBackingSlug,
   mcpToolForKernelOp,
 } from '@recued/contracts';
 
 import { MCP_ACTION_STATUS_TOOL_NAME } from './mcp-action-store.js';
+import { KERNEL_MANIFESTS } from './kernel-manifests.js';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 
@@ -61,6 +64,8 @@ import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.j
  *  ever looks at a label, and a peer's own `recued_actionStatus` is a bare name —
  *  so the peer's stays, and only a relayed one is removed. */
 const ALWAYS_EXPOSED_TOOL_NAMES: readonly string[] = [MCP_ACTION_STATUS_TOOL_NAME];
+const EXPOSED_KERNEL_SLUGS: ReadonlySet<string> = new Set(KERNEL_MANIFESTS
+  .filter(manifest => manifest.author === 'recued' && manifest.mcp_exposed === true).map(manifest => manifest.slug));
 
 /** Narrow reads only — the two `list` verbs, nothing that can write. A wider
  *  surface here would let a future edit grant from the module whose entire job
@@ -94,7 +99,9 @@ export const exposedToolNamesForPeerContract = (
   for (const row of deps.grantEntryStore?.listForContract(contract_id) ?? []) {
     if (!row.granted || isCollectionEntry(row.entry_key)) continue;
     out.add(`${RAW_OP_TOOL_PREFIX}${row.entry_key}`);
-    // A kernel op grant is reached through a STATIC tool, not a raw-op name.
+    // A kernel op grant is reached through its ingredient or static wire tool.
+    const backing = kernelOpBackingSlug(row.entry_key);
+    if (backing !== undefined && EXPOSED_KERNEL_SLUGS.has(backing)) out.add(`${MCP_INGREDIENT_TOOL_PREFIX}${backing}`);
     const staticTool = mcpToolForKernelOp(row.entry_key);
     if (staticTool !== undefined) out.add(staticTool);
   }
@@ -108,6 +115,8 @@ export const exposedToolNamesForPeerContract = (
     for (const [key, granted] of Object.entries(token.grants)) {
       if (!granted) continue;
       if (key.startsWith('recued_')) out.add(key);
+      const backing = kernelOpBackingSlug(key);
+      if (backing !== undefined && EXPOSED_KERNEL_SLUGS.has(backing)) out.add(`${MCP_INGREDIENT_TOOL_PREFIX}${backing}`);
       const staticTool = mcpToolForKernelOp(key);
       if (staticTool !== undefined) out.add(staticTool);
       // ⛔⛔ THE THIRD KIND OF KEY, AND THE HEADER ABOVE CALLS AXIS 2 COMPLETE

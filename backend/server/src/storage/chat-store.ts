@@ -51,6 +51,8 @@ import {
   type ChatSession,
   type ChatSessionContributor,
   type ChatSessionSummary,
+  type ChatSessionListCursor,
+  type ChatSessionListResult,
   type ChatTableName,
   type ChatToolCall,
   type EntityFieldPrivacy,
@@ -130,11 +132,19 @@ export const ensureChatSchema = (db: Database.Database): void => {
       metadata_blob              TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_last_active
-      ON chat_sessions (last_active_at DESC)
-      WHERE archived = 0;
+      ON chat_sessions (last_active_at DESC, session_id DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_archived
       ON chat_sessions (archived, last_active_at DESC);
   `);
+
+  // Replace the old partial recency index, rather than maintaining a third
+  // index on every message. The tie-break key also covers archived histories.
+  const recencyColumns = db.prepare('PRAGMA index_info(idx_chat_sessions_last_active)').all() as { name: string }[];
+  if (recencyColumns.length !== 2 || recencyColumns[1]?.name !== 'session_id') {
+    db.transaction(() => {
+      db.exec('DROP INDEX idx_chat_sessions_last_active; CREATE INDEX idx_chat_sessions_last_active ON chat_sessions(last_active_at DESC, session_id DESC)');
+    })();
+  }
 
   // D-167 chat provider-threading — `model_routing_overridden` distinguishes
   // an explicit per-session model-pref override (1) from inheriting the
@@ -1532,6 +1542,11 @@ export interface ChatStore {
   createSession(input: CreateSessionInput): ChatSession;
   getSession(session_id: string): ChatSession | null;
   listSessions(): ChatSessionSummary[];
+  /** Optional for older adapters. Counts only the batch and one lookahead row. */
+  listSessionsPage?(input: {
+    limit: number; before?: ChatSessionListCursor; query?: string;
+    membership?: { ids: string[]; exclude: boolean };
+  }): ChatSessionListResult;
   setPicker(session_id: string, target: ChatPickerTarget, now?: number): boolean;
   setModelPref(
     session_id: string,
@@ -2409,9 +2424,8 @@ export const createChatStore = (
     return row ? sessionFromRow(row, getDefaultModelPref()) : null;
   };
 
-  const listSessions = (): ChatSessionSummary[] => {
+  const summarizeSessions = (rows: Array<SessionRow & { message_count: number }>): ChatSessionSummary[] => {
     const defaultPref = getDefaultModelPref();
-    const rows = listSessionsStmt.all() as Array<SessionRow & { message_count: number }>;
     return rows.map((row) => {
       const session = sessionFromRow(row, defaultPref);
       const summary: ChatSessionSummary = {
@@ -2448,6 +2462,51 @@ export const createChatStore = (
       };
       return summary;
     });
+  };
+
+  const listSessions = (): ChatSessionSummary[] => summarizeSessions(listSessionsStmt.all() as Array<SessionRow & { message_count: number }>);
+  db.function('chat_history_lower', { deterministic: true }, (value: unknown) => typeof value === 'string' ? value.toLocaleLowerCase() : '');
+  const listSessionsPage: NonNullable<ChatStore['listSessionsPage']> = input => {
+    const predicates: string[] = [];
+    const params: Record<string, string | number> = { limit: input.limit + 1 };
+    if (input.before) {
+      predicates.push('(s.last_active_at, s.session_id) < (@before_time, @before_id)');
+      params.before_time = input.before.last_active_at; params.before_id = input.before.id;
+    }
+    if (input.query) {
+      predicates.push("(instr(chat_history_lower(COALESCE(s.title, 'Chat ' || s.session_id)), @query) > 0 OR instr(chat_history_lower(s.session_id), @query) > 0)");
+      params.query = input.query.trim().toLocaleLowerCase();
+    }
+    if (input.membership) {
+      predicates.push(`s.session_id ${input.membership.exclude ? 'NOT IN' : 'IN'} (SELECT value FROM json_each(@membership))`);
+      params.membership = JSON.stringify(input.membership.ids);
+    }
+    // Small positive member sets should seek known IDs, rather than walking
+    // the entire history to find old chats. Materialize the selected metadata
+    // before counting messages, so sort candidates never amplify body counts.
+    // Broad/exclusion filters retain the bounded recency traversal.
+    const sparse = input.membership && !input.membership.exclude && input.membership.ids.length <= 100;
+    const where = predicates.length ? `WHERE ${predicates.join(' AND ')}` : '';
+    const rows = db.prepare(sparse
+      ? `WITH selected AS MATERIALIZED (SELECT s.* FROM chat_sessions s ${where}
+          ORDER BY s.last_active_at DESC, s.session_id DESC LIMIT @limit)
+        SELECT s.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.session_id) AS message_count
+        FROM selected s ORDER BY s.last_active_at DESC, s.session_id DESC`
+      : `SELECT s.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.session_id) AS message_count
+        FROM chat_sessions s INDEXED BY idx_chat_sessions_last_active ${where}
+        ORDER BY s.last_active_at DESC, s.session_id DESC LIMIT @limit`).all(params) as Array<SessionRow & { message_count: number }>;
+    const visible = rows.slice(0, input.limit);
+    const last = visible.at(-1);
+    const complete = !input.before && !input.query && !input.membership && rows.length <= input.limit;
+    let hasSessions = rows.length > 0; let hasMessages = rows.some(row => row.message_count > 0);
+    if (!complete && (!hasSessions || !hasMessages)) {
+      const existence = db.prepare(`SELECT EXISTS(SELECT 1 FROM chat_sessions) AS has_sessions,
+        EXISTS(SELECT 1 FROM chat_messages) AS has_saved_chats`).get() as { has_sessions: number; has_saved_chats: number };
+      hasSessions = !!existence.has_sessions; hasMessages = !!existence.has_saved_chats;
+    }
+    return { sessions: summarizeSessions(visible), has_sessions: hasSessions, has_saved_chats: hasMessages,
+      ...(rows.length > input.limit && last ? { next_cursor: { last_active_at: last.last_active_at, id: last.session_id } } : {}),
+    };
   };
 
   const setPicker = (
@@ -3497,6 +3556,7 @@ export const createChatStore = (
     },
     getSession,
     listSessions,
+    listSessionsPage,
     setPicker,
     setModelPref,
     clearModelPref,

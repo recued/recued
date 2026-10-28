@@ -74,6 +74,7 @@ import {
   type CalendarListQuery,
   type CalendarCollectionTable,
   type CalendarListRow,
+  type CalendarRowSnapshot,
 } from './calendar-table.js';
 import type {
   CalendarMutationScope,
@@ -371,6 +372,43 @@ const withAllDayDays = <T extends { start_at: number; end_at: number; timezone: 
     ? event
     : { ...event, ...normalizeAllDaySpan(event.start_at, event.end_at, event.timezone) };
 
+/** D-329 — what an event create checks before it calls its calendar: the calendar exists
+ *  and may create events. `handleCalendarCreate` runs it, and so does `calendar.create`'s
+ *  check before the owner is asked, so the two cannot disagree. */
+export const checkCalendarCreate = (
+  deps: CalendarDispatcherDeps,
+  input: { slug: string },
+): { collection: CalendarCollection } => requireWrite(deps, input.slug, 'create_event');
+
+/** D-329 — what an event update checks before it calls its calendar: the calendar may
+ *  update events, the event is on it, and the change leaves it ending after it starts.
+ *  `handleCalendarUpdate` runs it, and so does `calendar.update`'s check before the owner
+ *  is asked. ⛔ A start moved past the old end, with no new end, went to the provider and
+ *  failed only after the owner had approved it. */
+export const checkCalendarUpdate = (
+  deps: CalendarDispatcherDeps,
+  input: { slug: string; source_id: string; patch: Partial<CanonicalEvent> },
+): { collection: CalendarCollection; existing: CalendarRowSnapshot; patch: Partial<CanonicalEvent> } => {
+  const { collection } = requireWrite(deps, input.slug, 'update_event');
+  const existing = collection.table.get(input.source_id);
+  if (!existing) {
+    throw new RpcError(
+      'not_found',
+      `CALENDAR_EVENT_NOT_FOUND: '${input.source_id}' on instance '${input.slug}'`,
+      404,
+    );
+  }
+  const patch = normalizeCalendarMutationPatch(input.patch, existing.event);
+  if ((patch.end_at ?? existing.event.end_at) <= (patch.start_at ?? existing.event.start_at)) {
+    throw new RpcError(
+      'bad_request',
+      'CALENDAR_EVENT_ENDS_BEFORE_IT_STARTS: the event would end before it starts; send end_at with the new start_at',
+      400,
+    );
+  }
+  return { collection, existing, patch };
+};
+
 export const handleCalendarCreate = async (
   deps: CalendarDispatcherDeps,
   input: {
@@ -379,7 +417,7 @@ export const handleCalendarCreate = async (
     event: CreateEventInput;
   },
 ): Promise<{ source_id: string; ical_uid: string }> => {
-  const { collection } = requireWrite(deps, input.slug, 'create_event');
+  const { collection } = checkCalendarCreate(deps, input);
   const event = withAllDayDays(input.event);
   const payload = await callCalendarAdapter(input.slug, 'calendar-create', () =>
     collection.provider.createEvent(input.calendar_id, event),
@@ -430,22 +468,13 @@ export const handleCalendarUpdate = async (
     scope?: CalendarMutationScope;
   },
 ): Promise<{ source_id: string }> => {
-  const { collection } = requireWrite(deps, input.slug, 'update_event');
-  const existing = collection.table.get(input.source_id);
-  if (!existing) {
-    throw new RpcError(
-      'not_found',
-      `CALENDAR_EVENT_NOT_FOUND: '${input.source_id}' on instance '${input.slug}'`,
-      404,
-    );
-  }
+  const { collection, existing, patch } = checkCalendarUpdate(deps, input);
   const guarded = currentResourceReview() ? assertReviewedResource(
     captureCalendarResource(deps, 'calendar-update', input as unknown as Record<string, unknown>)) : undefined;
   const expected_etag = guarded?.precondition.kind === 'etag' ? guarded.precondition.value : undefined;
   const expected_version = guarded?.precondition.kind === 'local_version' ? guarded.precondition.value : undefined;
   const calendar_id = existing.event.calendar_id;
   const scope: CalendarMutationScope = input.scope ?? 'this_instance';
-  const patch = normalizeCalendarMutationPatch(input.patch, existing.event);
 
   if (scope === 'this_and_future') {
     // CalDAV holds the whole series as one ICS file, so its adapter

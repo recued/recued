@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "5e93a1730abdc37e4a7f3910cf0d880e842b6fe0",
-    "tree": "13bcd42964bd80ed082a416193afac25e494df5c",
-    "committed_at": "2026-10-27T09:15:01-07:00"
+    "commit": "1ba3af0ec586831d827fe79355040b9d848e1379",
+    "tree": "3f14bfde715990857489304010855f1269ab664f",
+    "committed_at": "2026-10-28T07:00:49-07:00"
   },
-  "export_manifest_sha256": "4d3473a6312c7d80108ac350b897c393f165cf91c1836a4ec036dbc45e6771ab",
-  "version": "26.10.27",
+  "export_manifest_sha256": "286ff3a4148b1b28a26ee331d3426d1026f04efecc486b76aaa6b7c8e0b50e0b",
+  "version": "26.10.28",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -291,6 +291,7 @@
       "backend/server/src/__tests__/d-325-summary-history-projection.test.ts",
       "backend/server/src/__tests__/d-325-travel-documents.test.ts",
       "backend/server/src/__tests__/d-325-yours.test.ts",
+      "backend/server/src/__tests__/d-333-kitchen-pack-edit.test.ts",
       "backend/server/src/__tests__/dependency-manifest.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
@@ -342,6 +343,7 @@
       "backend/server/src/__tests__/issue-pipeline.test.ts",
       "backend/server/src/__tests__/kernel-manifests.test.ts",
       "backend/server/src/__tests__/keyed-work-entity-creates.test.ts",
+      "backend/server/src/__tests__/kitchen-draft-import.test.ts",
       "backend/server/src/__tests__/ledger-book-business-workflow.test.ts",
       "backend/server/src/__tests__/list-settings-offer-their-choices.ratchet.test.ts",
       "backend/server/src/__tests__/list-settings-typed-in-the-form-are-lists.test.ts",
@@ -445,6 +447,7 @@
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
       "backend/server/src/collections/__tests__/password-repair.test.ts",
       "backend/server/src/collections/mail/__tests__/imap-restart-catch-up.test.ts",
+      "backend/server/src/collections/mail/__tests__/mail-header-injection.test.ts",
       "backend/server/src/collections/mail/__tests__/mail-resync.test.ts",
       "backend/server/src/collections/mail/__tests__/smtp-only.test.ts",
       "backend/server/src/collections/service/__tests__/starter-pack.test.ts",
@@ -868,7 +871,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "9aba1076d61ca784770886feddaa9a6ffc439f8be6de3fc8488db56d1c91cc6d",
+    "sha256": "6f84a65320fef1236f38f6479c1283e963eddfdc80109a1f2b8acbece49ecac3",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -1015,7 +1018,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 7837,
-    "sha256": "a6d0fb41ea002e567270e294776e955fc8ff2a43437f277d5ed2977a21244e18"
+    "file_count": 7890,
+    "sha256": "1ffa7fc138d0ff19426c1400039e4d0d7cbe2954ba1ee04da040ce0a2aea558d"
   }
 }

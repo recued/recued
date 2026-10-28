@@ -210,8 +210,8 @@ export interface McpPortHandlerOptions {
   subscriptions?: McpSubscriptionsPort;
   /** `MCP_SSE_KEEPALIVE_MS` override; tests shorten it. */
   sse_keepalive_ms?: number;
-  /** Body cap. JSON-RPC envelopes are typically tiny; the default
-   *  256 KB is generous. */
+  /** Body cap. Defaults to {@link MCP_MAX_BODY_BYTES}, which is sized for a Kitchen
+   *  import of a source at its limit; most envelopes are tiny. */
   max_body_bytes?: number;
   /** Pre-auth per-source-IP throttle. Consulted BEFORE the bearer
    *  verifier so a token-unknown flood can't drive unbounded Argon2id
@@ -244,7 +244,14 @@ export interface McpPortHandlerOptions {
   now?: () => number;
 }
 
-const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+/** D-332 — the HTTP door's request cap: 1.25 MiB. It was 256 KiB, which refused a Kitchen
+ *  import of 118 of the 1,074 shipped packs (the largest request 589 KB) while Kitchen
+ *  accepts sources of `KITCHEN_DRAFT_SOURCE_MAX_BYTES` (1,000,000). JSON escaping added at
+ *  most 15.7 % over those packs, so a source at the limit is ~1.16 MB plus its envelope.
+ *  ⚠ The body is read only after the bearer is verified and the call admitted (at most
+ *  `MCP_MAX_IN_FLIGHT_PER_TOKEN` per key, `MCP_MAX_IN_FLIGHT_GLOBAL` in all), so the most an
+ *  authenticated caller can make the server buffer is 64 × 1.25 MiB = 80 MiB (was 16 MiB). */
+export const MCP_MAX_BODY_BYTES = 1_310_720;
 
 const readBody = async (req: IncomingMessage, cap: number): Promise<Buffer | null> => {
   return new Promise((resolve) => {
@@ -276,7 +283,7 @@ export const createMcpPortHandler = (
   options: McpPortHandlerOptions,
 ): ((req: IncomingMessage, res: ServerResponse) => Promise<void>) => {
   const { verifier, limiter, dispatch, catalog, subscriptions } = options;
-  const cap = options.max_body_bytes ?? DEFAULT_MAX_BODY_BYTES;
+  const cap = options.max_body_bytes ?? MCP_MAX_BODY_BYTES;
   const trustForwardedFor = options.trust_forwarded_for ?? false;
   // Pre-auth per-IP throttle (default: bounded internal limiter). Bounds
   // the Argon2id amplification surface before the verifier ever runs.

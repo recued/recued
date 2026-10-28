@@ -208,10 +208,10 @@ export const kitchenNewRecipeSeed = (
 
 /** Edit→Kitchen — the draft id a `#kitchen/pack/<draft_id>` hash addresses (the
  *  pack editor opened on that draft), or `null` for `#kitchen/pack` (a fresh
- *  pack editor) and bare `#kitchen`. `pack` is the reserved seg-0 marker for the
- *  pack-editor sibling of `#kitchen/recipe/<id>`. Pure — the bootstrap's kitchen
- *  branch passes this as the builder's `initialDraftId` (self-loads the draft)
- *  and canonicalizes bare `#kitchen` to `#kitchen/pack`. */
+ *  pack editor) and bare `#kitchen` (Kitchen's home, D-333). `pack` is the reserved
+ *  seg-0 marker for the pack-editor sibling of `#kitchen/recipe/<id>`. Pure — the
+ *  bootstrap's kitchen branch passes this as the builder's `initialDraftId`
+ *  (self-loads the draft). */
 export const kitchenPackDraftId = (route: ShellRoute): string | null =>
   route.surface === 'kitchen' && route.segments[0] === 'pack'
     ? route.segments[1] ?? null

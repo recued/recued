@@ -43,6 +43,12 @@ describe('deliberate server-switch continuity', () => {
       .toBe('#settings');
     expect(safeServerSwitchLandingHash('#kitchen/recipe/recipe_1'))
       .toBe('#recipes');
+    // D-333 — an item's id belongs to the source server; Kitchen's home lists the target's.
+    expect(safeServerSwitchLandingHash('#kitchen/import/work_1')).toBe('#kitchen');
+    expect(safeServerSwitchLandingHash('#kitchen/new/form-response/form_1')).toBe('#kitchen');
+    expect(safeServerSwitchLandingHash('#kitchen')).toBe('#kitchen');
+    expect(safeServerSwitchLandingHash('#kitchen/new/recipe')).toBe('#kitchen/new/recipe');
+    expect(safeServerSwitchLandingHash('#kitchen/pack/draft_1')).toBe('#kitchen/pack');
     expect(serverSwitchLandingAreaLabel('#data/files')).toBe('Data · Files');
     expect(serverSwitchLandingAreaLabel('#logs')).toBe('Runs');
   });

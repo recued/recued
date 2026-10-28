@@ -1,8 +1,8 @@
-import type { CollectionRecord, SourceRegistration, WorkEntity } from '@recued/contracts';
+import type { CollectionRecord, SourceRegistration, TaskPriority, WorkEntity } from '@recued/contracts';
 
 const NOW = Date.parse('2026-09-08T12:00:00-07:00');
 const HOUR = 3_600_000;
-const source = (kind: 'task' | 'commitment'): SourceRegistration => ({
+const source = (kind: 'task' | 'commitment' | 'note'): SourceRegistration => ({
   id: `recued.${kind}`, top_tier_kind: kind, source_kind: 'builtin', source_label: 'Recued',
   write_capable: true, registered_at: NOW,
 });
@@ -57,20 +57,51 @@ export const todayEmptyDemoReply = (method: string): { result?: unknown } | null
 export const todayDemoReply = (method: string, raw: unknown): { result?: unknown; error?: { code: string; message: string } } | null => {
   const params = new URLSearchParams(location.search);
   if (params.get('data') !== 'today') return null;
-  const args = raw as { kind?: string; id?: string; done?: boolean; due_at?: number; slug?: string; record_id?: string; offset?: number; limit?: number; calendar_window?: { from: number; before: number }; filters?: { is_all_day?: boolean } };
+  const args = raw as { kind?: string; id?: string; done?: boolean; due_at?: number; clear_due_at?: boolean;
+    title?: string; body?: string; priority?: TaskPriority; blocks_task_ids?: readonly string[];
+    source_id?: string; related_contact_ids?: readonly string[]; related_calendar_event_ids?: readonly string[];
+    related_mail_thread_ids?: readonly string[]; related_project_ids?: readonly string[];
+    slug?: string; record_id?: string; offset?: number; limit?: number; calendar_window?: { from: number; before: number }; filters?: { is_all_day?: boolean } };
   if (method === 'work_entity.source.list') {
     if (params.get('today_source_failure') === '1') return { error: { code: 'UNAVAILABLE', message: 'Task source is unavailable.' } };
     return { result: { sources: [
       { ...source('task'), write_capable: params.get('today_readonly') !== '1' && document.documentElement.dataset.todayReadonly !== '1' },
       source('commitment'),
+      { ...source('note'), write_capable: document.documentElement.dataset.notesReadonly !== '1' },
+      { ...source('note'), id: 'imported.note', source_label: 'Imported notes', write_capable: false },
     ] } };
   }
   const visible = currentEntities().filter(entity => entity.id !== document.documentElement.dataset.todayHideTask);
   if (method === 'work_entity.list') {
-    const rows = visible.filter((entity) => entity._kind === args.kind);
-    return { result: { entities: rows.slice(args.offset ?? 0, (args.offset ?? 0) + 1), total: rows.length } };
+    const rows = visible.filter((entity) => entity._kind === args.kind && (!args.source_id || entity.source_id === args.source_id));
+    return { result: { entities: rows.slice(args.offset ?? 0, (args.offset ?? 0) + (args.kind === 'note' ? args.limit ?? 100 : 1)), total: rows.length } };
   }
   if (method === 'work_entity.get') return { result: { entity: visible.find((entity) => entity.id === args.id) ?? null } };
+  if (method === 'work_entity.upsert' && args.kind === 'note') {
+    const log = JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[];
+    log.push({ method, args }); sessionStorage.setItem('recued-test-today-mutations', JSON.stringify(log));
+    const original = visible.find(entity => entity._kind === 'note' && entity.id === args.id);
+    if (document.documentElement.dataset.todayWriteFailure === '1') return { error: { code: 'unavailable', message: 'Note could not be saved. Try again.' } };
+    if (document.documentElement.dataset.notesReadonly === '1' || original?.source_id === 'imported.note') return { error: { code: 'forbidden', message: 'This source is read-only.' } };
+    if (args.id && original?._kind !== 'note') return { error: { code: 'not_found', message: 'Note is no longer available.' } };
+    if (document.documentElement.dataset.todayVendorWon === '1' && original) return { result: { entity: original } };
+    const starting = original?._kind === 'note' ? original : { ...base,
+      _kind: 'note' as const, id: 'note-created', body: '', source_id: args.source_id ?? 'recued.note',
+      last_user_action_at: NOW, related_contact_ids: [], related_calendar_event_ids: [], related_mail_thread_ids: [], related_project_ids: [] };
+    const updated: Extract<WorkEntity, { _kind: 'note' }> = { ...starting, updated_at: Date.now(), last_user_action_at: Date.now(),
+      ...(args.title !== undefined ? { title: args.title } : {}), ...(args.body !== undefined ? { body: args.body } : {}),
+      ...(args.related_contact_ids !== undefined ? { related_contact_ids: args.related_contact_ids } : {}),
+      ...(args.related_calendar_event_ids !== undefined ? { related_calendar_event_ids: args.related_calendar_event_ids } : {}),
+      ...(args.related_mail_thread_ids !== undefined ? { related_mail_thread_ids: args.related_mail_thread_ids } : {}),
+      ...(args.related_project_ids !== undefined ? { related_project_ids: args.related_project_ids } : {}),
+      ...(document.documentElement.dataset.todayAwaitingVerify === '1' ? { pending_write: {
+        staged_at: Date.now(), operation: 'update' as const, dirty_fields: ['body'], state: 'awaiting_verify' as const,
+      } } : {}),
+    };
+    sessionStorage.setItem(taskStateKey, JSON.stringify(original
+      ? currentEntities().map(entity => entity.id === updated.id ? updated : entity) : [...currentEntities(), updated]));
+    return { result: { entity: updated } };
+  }
   if (method === 'work_entity.commitment.fulfill' || method === 'work_entity.commitment.cancel') {
     const log = JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[];
     log.push({ method, args });
@@ -93,7 +124,13 @@ export const todayDemoReply = (method: string, raw: unknown): { result?: unknown
     if (original?._kind !== 'task') return { error: { code: 'not_found', message: 'Task is no longer available.' } };
     if (document.documentElement.dataset.todayVendorWon === '1') return { result: { entity: original } };
     const updated = { ...original, updated_at: Date.now(),
-      ...(method === 'work_entity.task.mark_done' ? { done: args.done, completed_at: Date.now() } : { due_at: args.due_at }),
+      ...(method === 'work_entity.task.mark_done' ? { done: args.done, completed_at: Date.now() } : {
+        due_at: args.clear_due_at ? undefined : args.due_at ?? original.due_at,
+        ...(args.title !== undefined ? { title: args.title } : {}),
+        ...(args.body !== undefined ? { body: args.body } : {}),
+        ...(args.priority !== undefined ? { priority: args.priority } : {}),
+        ...(args.blocks_task_ids !== undefined ? { blocks_task_ids: args.blocks_task_ids } : {}),
+      }),
       ...(document.documentElement.dataset.todayAwaitingVerify === '1' ? { pending_write: {
         staged_at: Date.now(), operation: method === 'work_entity.task.mark_done' ? 'complete' : 'update',
         dirty_fields: method === 'work_entity.task.mark_done' ? ['done'] : ['due_at'], state: 'awaiting_verify',

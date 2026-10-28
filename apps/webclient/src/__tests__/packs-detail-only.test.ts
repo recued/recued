@@ -26,6 +26,9 @@ import {
   PACKS_DETAIL_RESOLVE_RETRY_ATTR,
   PACKS_DETAIL_RESOLVING_ATTR,
   PACKS_DETAIL_SECTION_ATTR,
+  PACKS_DETAIL_KITCHEN_EDIT_ATTR,
+  PACKS_DETAIL_KITCHEN_COPY_ATTR,
+  PACKS_DETAIL_RECIPE_REFERENCE_ATTR,
   PACKS_DETAIL_TAB_ATTR,
   PACKS_PANEL_STYLES,
   PACKS_ROW_DELETE_BTN_ATTR,
@@ -189,6 +192,8 @@ interface MountArgs {
     installed_versions?: Array<{ slug: string; version: number }>;
   };
   resolve?: PacksResolveCaller;
+  editPackInKitchen?: (packSlug: string) => Promise<void>;
+  copyPackInKitchen?: (manifest: BulkPackManifest) => Promise<void>;
   install?: ReturnType<typeof vi.fn>;
   installBySlug?: ReturnType<typeof vi.fn>;
   uninstall?: ReturnType<typeof vi.fn>;
@@ -228,6 +233,8 @@ const mount = (args: MountArgs) => {
     onSelectSlug: () => undefined,
     ...(args.initialSlug !== undefined ? { initialSlug: args.initialSlug } : {}),
     ...(args.resolve !== undefined ? { runResolvePack: args.resolve } : {}),
+    ...(args.editPackInKitchen !== undefined ? { editPackInKitchen: args.editPackInKitchen } : {}),
+    ...(args.copyPackInKitchen !== undefined ? { copyPackInKitchen: args.copyPackInKitchen } : {}),
     runInstall: runInstall as never,
     runInstallBySlug: runInstallBySlug as never,
     runUninstall: runUninstall as never,
@@ -366,6 +373,20 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     // Backfilled in place, and the loading state is gone — it was a state, not a
     // permanent label.
     expect(text(host)).not.toContain('Loading this Pack’s operations');
+  });
+
+  it('D-333 — says what a recipe writes to use the pack', async () => {
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [] }),
+      resolve: vi.fn<PacksResolveCaller>(async () => ({ manifest: manifest() })),
+    });
+    await m.whenLoaded();
+    await tick();
+    const reference = findByAttr(host, PACKS_DETAIL_RECIPE_REFERENCE_ATTR);
+    expect(reference?.getAttribute(PACKS_DETAIL_RECIPE_REFERENCE_ATTR)).toBe('acme.mkt-pack');
+    expect(text(reference!)).toContain('Recipes use it as');
+    expect(text(reference!)).toContain('acme.mkt-pack');
   });
 
   it('resolves a MARKETPLACE slug absent from the roster + renders its detail', async () => {
@@ -523,6 +544,106 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).not.toBeNull();
     expect(resolve).toHaveBeenCalledTimes(1); // resolved once, not again post-install
     expect(recipeList).toHaveBeenCalledTimes(2); // pre-install roster + refreshed roster
+  });
+
+  it('D-333 — offers Edit in Kitchen on an installed pack made there, and says when it cannot open', async () => {
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({ manifest: manifest(), kitchen_editable: true }));
+    let refuse = true;
+    const edit = vi.fn(async () => {
+      if (refuse) throw new Error('This pack was not made in Kitchen on this server, so there is nothing here to edit.');
+    });
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [], installed_versions: [{ slug: 'mkt-pack', version: 3 }] }),
+      resolve,
+      editPackInKitchen: edit,
+      recipeList: vi.fn(async () => ({ recipes: [] })),
+    });
+    await m.whenLoaded();
+    await tick();
+    const button = () => findByAttrValue(host, PACKS_DETAIL_KITCHEN_EDIT_ATTR, 'mkt-pack');
+    expect(button()?.textContent).toBe('Edit in Kitchen');
+    button()!.click();
+    await tick();
+    expect(edit).toHaveBeenCalledWith('mkt-pack');
+    expect(text(host)).toContain('This pack was not made in Kitchen on this server, so there is nothing here to edit.');
+    refuse = false;
+    button()!.click();
+    await tick();
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(text(host)).not.toContain('nothing here to edit');
+  });
+
+  it('D-333 — offers no Edit in Kitchen for a pack from the marketplace, or one not installed', async () => {
+    const marketplace = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [], installed_versions: [{ slug: 'mkt-pack', version: 3 }] }),
+      resolve: vi.fn<PacksResolveCaller>(async () => ({ manifest: manifest() })),
+      editPackInKitchen: vi.fn(async () => undefined),
+      recipeList: vi.fn(async () => ({ recipes: [] })),
+    });
+    await marketplace.mount.whenLoaded();
+    await tick();
+    expect(findByAttrValue(marketplace.host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).not.toBeNull();
+    expect(findByAttrValue(marketplace.host, PACKS_DETAIL_KITCHEN_EDIT_ATTR, 'mkt-pack')).toBeNull();
+
+    const removed = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [], installed_versions: [] }),
+      resolve: vi.fn<PacksResolveCaller>(async () => ({ manifest: manifest(), kitchen_editable: true })),
+      editPackInKitchen: vi.fn(async () => undefined),
+      recipeList: vi.fn(async () => ({ recipes: [] })),
+    });
+    await removed.mount.whenLoaded();
+    await tick();
+    // The detail did render (its Install), so the missing Edit is not a page that never drew.
+    expect(findByAttrValue(removed.host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).not.toBeNull();
+    expect(findByAttrValue(removed.host, PACKS_DETAIL_KITCHEN_EDIT_ATTR, 'mkt-pack')).toBeNull();
+  });
+
+  it('D-333 — offers a copy of another author\'s pack to edit, as recipes do, and says its recipes stay', async () => {
+    const withComposition = manifest({
+      contents: [
+        { type: 'recipe', slug: 'r-a', version: 1 },
+        { type: 'composition', composition: {
+          schema_version: 1, slug: 'acme', catalog_kind: 'official',
+          ingredients: [{ slug: 'acme', kind: 'http', http: { base: 'https://api.acme.example', connection: 'acme' } }],
+          operations: [{ op: 'deal.read', ingredient: 'acme', risk: 'read', approval: 'never',
+            bind: { kind: 'rest', method: 'GET', path_template: '/v3/deals/{deal_id}' } }],
+        } },
+      ],
+    } as Partial<BulkPackManifest>);
+    const copyPack = vi.fn(async () => undefined);
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [], installed_versions: [] }),
+      resolve: vi.fn<PacksResolveCaller>(async () => ({ manifest: withComposition })),
+      editPackInKitchen: vi.fn(async () => undefined),
+      copyPackInKitchen: copyPack,
+      recipeList: vi.fn(async () => ({ recipes: [] })),
+    });
+    await m.whenLoaded();
+    await tick();
+    expect(findByAttrValue(host, PACKS_DETAIL_KITCHEN_EDIT_ATTR, 'mkt-pack')).toBeNull();
+    const button = findByAttrValue(host, PACKS_DETAIL_KITCHEN_COPY_ATTR, 'mkt-pack');
+    expect(button?.textContent).toBe('Edit a copy in Kitchen');
+    expect(text(host)).toContain('Your copy takes this pack\'s operations and data fields. Its recipes stay with this pack.');
+    button!.click();
+    await tick();
+    expect(copyPack).toHaveBeenCalledWith(withComposition);
+
+    // A pack with no composition has nothing the pack builder can copy.
+    const recipesOnly = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [], installed_versions: [] }),
+      resolve: vi.fn<PacksResolveCaller>(async () => ({ manifest: manifest() })),
+      copyPackInKitchen: vi.fn(async () => undefined),
+      recipeList: vi.fn(async () => ({ recipes: [] })),
+    });
+    await recipesOnly.mount.whenLoaded();
+    await tick();
+    expect(findByAttrValue(recipesOnly.host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).not.toBeNull();
+    expect(findByAttrValue(recipesOnly.host, PACKS_DETAIL_KITCHEN_COPY_ATTR, 'mkt-pack')).toBeNull();
   });
 
   it('discards a stale marketplace review and returns to a refreshable detail error', async () => {

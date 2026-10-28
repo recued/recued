@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { IngredientError } from '@recued/ingredients';
 import { MAIL_RECONCILIATION_ID_HEADER } from '@recued/contracts';
-import { MAIL_AUTOMATIC_REPLY_HEADERS, mimeFilenameParameter, type MailDispatchBoundary, type OutgoingMessage, type SentMessageMeta } from './provider.js';
+import { MAIL_AUTOMATIC_REPLY_HEADERS, mailHeaderText, mimeFilenameParameter, type MailDispatchBoundary, type OutgoingMessage, type SentMessageMeta } from './provider.js';
 
 /** Narrow SMTP transport surface that matches what nodemailer's
  *  `Transporter` exposes for our send path. `raw` carries the
@@ -284,19 +284,19 @@ export const buildSmtpRfc5322 = (
   const headers: string[] = [];
   headers.push('MIME-Version: 1.0');
   headers.push(`Date: ${formatRfc5322Date(meta.sentAt)}`);
-  headers.push(`From: ${meta.from}`);
+  headers.push(`From: ${mailHeaderText(meta.from)}`);
   headers.push(`Message-ID: ${meta.messageId}`);
   if (msg.reconciliation_id) {
     headers.push(`${MAIL_RECONCILIATION_ID_HEADER}: ${msg.reconciliation_id}`);
   }
-  if (msg.to.length > 0) headers.push(`To: ${msg.to.join(', ')}`);
-  if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${msg.cc.join(', ')}`);
-  if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${msg.bcc.join(', ')}`);
-  headers.push(`Subject: ${msg.subject}`);
-  if (msg.reply_to) headers.push(`Reply-To: ${msg.reply_to}`);
-  if (msg.in_reply_to) headers.push(`In-Reply-To: ${msg.in_reply_to}`);
+  if (msg.to.length > 0) headers.push(`To: ${mailHeaderText(msg.to.join(', '))}`);
+  if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${mailHeaderText(msg.cc.join(', '))}`);
+  if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${mailHeaderText(msg.bcc.join(', '))}`);
+  headers.push(`Subject: ${mailHeaderText(msg.subject)}`);
+  if (msg.reply_to) headers.push(`Reply-To: ${mailHeaderText(msg.reply_to)}`);
+  if (msg.in_reply_to) headers.push(`In-Reply-To: ${mailHeaderText(msg.in_reply_to)}`);
   if (msg.references && msg.references.length > 0) {
-    headers.push(`References: ${msg.references.join(' ')}`);
+    headers.push(`References: ${mailHeaderText(msg.references.join(' '))}`);
   }
   if (msg.automatic === true) {
     for (const [name, value] of MAIL_AUTOMATIC_REPLY_HEADERS) headers.push(`${name}: ${value}`);
@@ -321,7 +321,7 @@ export const buildSmtpRfc5322 = (
   for (const att of attachments) {
     segments.push(
       `--${mixed}`,
-      `Content-Type: ${att.mime_type}; ${mimeFilenameParameter('name', att.filename)}`,
+      `Content-Type: ${mailHeaderText(att.mime_type)}; ${mimeFilenameParameter('name', att.filename)}`,
       'Content-Transfer-Encoding: base64',
       `Content-Disposition: attachment; ${mimeFilenameParameter('filename', att.filename)}`,
       '',

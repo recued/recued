@@ -7,6 +7,91 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.28 — 2026-10-28
+
+Kitchen keeps what you are working on: it opens on a page of its own with New recipe, New pack and
+In progress, keeps your work as you type, and lets you change a pack you made, or a copy of someone
+else's, and switch a recipe to your copy with one button. An AI app can hand Kitchen a recipe or a
+pack to carry on with. Search finds your tasks, notes, projects and commitments; notes, tasks and
+projects open to read and edit; and an event on your Recued calendar can be edited. Chat replies
+show lists and code blocks you can copy, and History loads 50 chats at a time. Mail you send no
+longer takes a crafted address or a line break that adds a header, and a crafted address in mail
+you receive can no longer stall the server.
+
+### Added
+
+- **Kitchen keeps your work in progress.** Kitchen opens on a page of its own: **New recipe**,
+  **New pack**, and **In progress**, which lists everything not finished yet (a new recipe, a pack
+  you are building, or source an AI app handed over) with where it started, when you last edited it
+  and whether it is ready to save. A recipe is kept as you type, and changes to a recipe you already
+  saved are kept the same way until you save or discard them. Once saved, it leaves Kitchen.
+  Recipes → **Author in Kitchen** opens this page, and Kitchen no longer says "ingredient".
+- **Change a pack you made, or tailor someone else's.** A pack you made in Kitchen has **Edit in
+  Kitchen** on its page in Packs; installing the changes replaces it. Another author's pack has
+  **Edit a copy in Kitchen**, which opens a copy of its operations and data fields under your own
+  name; the copy installs beside the original, which keeps its updates, and the original's recipes
+  stay with it. A recipe uses your copy when its own source names it, and **Use my copy** (or **Use
+  the original**) switches a recipe between the two with one button; switching another author's
+  recipe makes your own copy of the recipe. Each pack's page shows the name recipes use for it.
+- **An AI app can hand Kitchen a recipe or a pack.** Four tools, each off until you switch it on for
+  a contract, import source into Kitchen and list, read and update what that app handed over. The
+  source is sent as text, unfinished is fine, and nothing is installed, run or published: you carry
+  on in Kitchen, where you can also discard it. Imports and updates wait for your approval like
+  other writes, and an app reaches only the drafts it handed over.
+- **Edit an event on your Recued calendar.** An event's details now show its calendar and status,
+  its start and end in its own time zone, its duration and its location. An event on your Recued
+  calendar that is neither recurring nor cancelled can be edited: its title, location, times and
+  description. A time the clocks skip is refused, a time that happens twice asks which one you mean,
+  and if the event changed somewhere else meanwhile, the save is refused and your draft kept.
+- **Search finds your tasks, notes, projects and commitments.** Data → Search shows them first, five
+  of each, with a button for ten more, and each opens in its own reader or editor. A part of the
+  search that fails is named with a retry and no longer hides the rest.
+- **A project opens to an overview** of its linked tasks and notes, with its task counts, and **New
+  task** and **New note** start with the project filled in.
+- **Import a CSV from a pack's Records page.** A pack whose own spreadsheet import recipe is
+  installed offers **Import CSV** in Data → Records. It runs that recipe with its usual approvals,
+  and **Import** appears only after **Check the file**.
+
+### Changed
+
+- **Chat replies are formatted:** paragraphs, headings, bold, lists, inline code and code blocks, and
+  each code block has **Copy**. Code always shows exactly as written.
+- **History opens with your 50 most recent chats**, and **Load more** adds the next 50. Searching
+  chat names and the filters still cover every saved chat.
+- **A note opens to read in full**, with **Copy**, and **Edit** opens a focused editor. Its text and
+  title are saved exactly as typed.
+- **Today and Tomorrow move a task's due date at once**, keeping its time of day, and **Clear date**
+  removes it. The task editor opens on title, notes, priority and due date. Saving a task or a note
+  sends only what you changed, so a change made elsewhere to another field stays.
+- **An approval names the thing an AI changes** ("Thing: Family car", not "kind: asset"), and a
+  calendar, memory or schedule change that cannot work is refused before you are asked. An AI that
+  may not change a value you set yourself now says why.
+- **Each mail recipient needs its own entry.** A recipe or AI app that put several addresses in one
+  To, Cc, Bcc or Reply-to entry is now refused. A saved email draft from an earlier release with such
+  an entry, or with a recipient that is not an address, can no longer be opened, and while one
+  exists, **Saved drafts** in Mail shows an error instead of the list.
+- **Update Recued before using the hosted web app's new screens.** On an older server, Kitchen's **In
+  progress**, Search's tasks and notes, a project's lists and event editing show the server's
+  refusal, and a search that finds nothing else no longer offers the marketplace.
+
+### Fixed
+
+- **A crafted address can no longer stall the server.** Recued now uses nodemailer 10.0.16 for
+  sending and for the mail it syncs. A received message with a long crafted From, To or Cc held the
+  whole server for seconds, and no sign-in was needed to send one. A recipient longer than 320
+  characters, or holding a line break or another control character, is refused before anything
+  parses it. Every release up to 26.10.27 was affected.
+- **A line break can no longer add a header or a blind copy to mail you send.** Through Gmail or
+  SMTP, a line break in a subject or an address began a header of its own, and through Gmail a
+  subject could add a blind copy. Each such value is now kept on one line. Outlook was not affected.
+- **A value handed to an action arrives as written.** A `{{…}}` inside an AI app's tool arguments, or
+  inside a value a recipe step hands to an action whole, was filled in from the run, including the
+  server's vault store, before the action saw it.
+- **Stop, Cancel and Try again stay pending through refreshes** and keep keyboard focus, and a retry
+  whose reply was lost no longer queues a second run.
+- **A reason you are writing in Approvals survives** list updates and a failed answer.
+- **Saved views keep your keyboard place** after Cancel, Escape and Refresh.
+
 ## 26.10.27 — 2026-10-27
 
 Paperless can keep document dates in Yours up to date: the Paperless pack links a document's date

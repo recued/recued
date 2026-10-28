@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   RECUED_BUILTIN_SOURCE_ID,
@@ -30,6 +30,8 @@ import {
 } from '@recued/warehouse-events';
 
 import type { WsClient } from '../ws-server.js';
+import { handleWorkEntitySearch } from '../work-entity-search.js';
+import { handleWorkEntityProjectItems } from '../work-entity-project-items.js';
 import {
   createWorkEntityStore,
   ensureWorkEntitySchema,
@@ -132,10 +134,13 @@ describe('D-174 work_entity.upsert — create per kind (emits created)', () => {
     expect(eventsFor('commitment', 'created')).toHaveLength(1);
   });
 
-  it('project create round-trips + emits created', async () => {
-    const out = await handleWorkEntityUpsert(deps, { kind: 'project', title: 'Q3 launch' });
+  it('project create and description clearing round-trip through the emitting write path', async () => {
+    const out = await handleWorkEntityUpsert(deps, { kind: 'project', title: 'Q3 launch', description: 'Original brief' });
     expect(out.entity._kind).toBe('project');
     expect(eventsFor('project', 'created')).toHaveLength(1);
+    const cleared = await handleWorkEntityUpsert(deps, { kind: 'project', id: out.entity.id, description: '' });
+    expect(cleared.entity._kind === 'project' && cleared.entity.description).toBe('');
+    expect(eventsFor('project', 'updated')).toHaveLength(1);
   });
 });
 
@@ -532,6 +537,99 @@ describe('D-174 work_entity.list / get', () => {
 
 });
 
+describe('owner project work', () => {
+  it('pages exact project links over the complete visible dataset, with matching task counts', async () => {
+    const project = store.writeProject({ id: 'project-one', source_id: 'recued.project', title: 'Launch' }, NOW);
+    for (let index = 0; index < 1_005; index++) store.writeNote({ source_id: 'recued.note', body: `Unrelated ${index}` }, NOW + index);
+    for (let index = 0; index < 6; index++) {
+      store.writeTask({ id: `linked-${index}`, source_id: 'recued.task', title: `Task ${index}`, parent_project_id: project.id, done: index >= 4 }, NOW);
+      store.writeNote({ id: `linked-${index}`, source_id: 'recued.note', body: `Note ${index}`, related_project_ids: [project.id, project.id],
+        ...(index === 0 ? { sync_state: 'stale_unreachable' as const } : {}) }, NOW - 10);
+    }
+    store.writeNote({ source_id: 'recued.note', body: 'Prefix is not membership', related_project_ids: [`${project.id}-other`] }, NOW);
+    const deleted = store.writeNote({ source_id: 'recued.note', body: 'Deleted link', related_project_ids: [project.id] }, NOW);
+    await handleWorkEntityDelete(deps, { kind: 'note', id: deleted.id });
+    store.writeNote({ source_id: 'recued.note', body: 'Orphan', related_project_ids: [project.id], sync_state: 'orphaned' }, NOW);
+    store.registerSource({ id: 'peer.note', top_tier_kind: 'note', source_kind: 'connection', source_label: 'Peer notes', write_capable: false,
+      registered_at: NOW, sync_posture: 'read_through' });
+    store.writeNote({ source_id: 'peer.note', body: 'Migration residue', related_project_ids: [project.id] }, NOW + 1);
+    const pages = [0, 2, 4].map(offset => handleWorkEntityProjectItems(deps, { project_id: project.id, kind: 'note', limit: 2, offset }));
+    expect(pages.map(page => page.items.map(item => item.id))).toEqual([['linked-0', 'linked-1'], ['linked-2', 'linked-3'], ['linked-4', 'linked-5']]);
+    expect(pages.map(page => page.total)).toEqual([6, 6, 6]);
+    expect(pages[0]).toMatchObject({ provider_only_sources: ['Peer notes'], items: [{ stale: true }, {}] });
+    const tasks = await makeWorkEntityCrudHandlers(deps)!.handlers['work_entity.project.items'](
+      { project_id: project.id, kind: 'task', limit: 2, offset: 2 }, { instance_id: 'owner' } as WsClient);
+    expect(tasks).toMatchObject({ total: 6, open_tasks: 4, offset: 2, items: [{ id: 'linked-2', done: false }, { id: 'linked-3', done: false }] });
+    store.writeTask({ id: 'linked-2', source_id: 'recued.task', title: 'Task 2', parent_project_id: project.id, done: true }, NOW + 1);
+    expect(handleWorkEntityProjectItems(deps, { project_id: project.id, kind: 'task' }).open_tasks).toBe(3);
+  });
+
+  it('rejects unavailable project identities and invalid page scopes before listing children', async () => {
+    const spy = vi.spyOn(deps.resolver, 'listByKind');
+    expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'note' })).toThrow('no longer available');
+    expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'project' as never })).toThrow('either tasks or notes');
+    expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'task', limit: 0 })).toThrow('limit of 1');
+    const project = store.writeProject({ source_id: 'recued.project', title: 'Removed project' }, NOW);
+    await handleWorkEntityDelete(deps, { kind: 'project', id: project.id });
+    expect(() => handleWorkEntityProjectItems(deps, { project_id: project.id, kind: 'task' })).toThrow('no longer available');
+    expect(spy).not.toHaveBeenCalled(); spy.mockRestore();
+  });
+});
+
+describe('indexed owner work search', () => {
+  it('finds all four kinds through the existing index, including notes beyond the loaded-list window', async () => {
+    store.writeNote({ id: 'shared-id', source_id: 'recued.note', body: 'An older needleproof note.' }, NOW - 31_536_000_000);
+    for (let index = 0; index < 1_005; index++) {
+      store.writeNote({ source_id: 'recued.note', body: `Recent unrelated entry ${index}` }, NOW + index);
+    }
+    store.writeTask({ id: 'shared-id', source_id: 'recued.task', title: 'Needleproof task' }, NOW);
+    await handleWorkEntityUpsert(deps, { kind: 'project', title: 'Project', description: 'Needleproof in the description.' });
+    await handleWorkEntityUpsert(deps, { kind: 'commitment', direction: 'outbound', derivation: 'user_declared', statement: 'Needleproof promise' });
+    const groups = handleWorkEntitySearch(deps, { query: 'needleproof' }).groups;
+    expect(groups.map(group => [group.kind, group.matches.length, group.more])).toEqual([
+      ['task', 1, false], ['note', 1, false], ['project', 1, false], ['commitment', 1, false],
+    ]);
+    expect(groups[1]?.matches[0]).toMatchObject({ id: 'shared-id', title: 'Note', excerpt: 'An older needleproof note.',
+      source_label: 'Recued built-in', stale: false, pending_write: false });
+    expect(handleWorkEntitySearch(deps, { query: 'needleproof absentword', kind: 'note' }).groups[0]?.matches).toEqual([]);
+  });
+
+  it('filters invisible and read-through residue before stable paging, and labels stale matches', async () => {
+    for (let index = 0; index < 12; index++) {
+      const note = store.writeNote({ source_id: 'recued.note', body: 'Pageproof deleted' }, NOW + index);
+      await handleWorkEntityDelete(deps, { kind: 'note', id: note.id });
+    }
+    store.writeNote({ source_id: 'recued.note', body: 'Pageproof orphan', sync_state: 'orphaned' }, NOW + 100);
+    store.registerSource({ id: 'peer.note', top_tier_kind: 'note', source_kind: 'connection', source_label: 'Peer',
+      write_capable: false, registered_at: NOW, sync_posture: 'read_through' });
+    store.writeNote({ source_id: 'peer.note', body: 'Pageproof migration residue' }, NOW + 200);
+    for (let index = 0; index < 6; index++) store.writeNote({ id: `page-${index}`, source_id: 'recued.note', body: 'Pageproof visible',
+      ...(index === 0 ? { sync_state: 'stale_unreachable' as const } : {}) }, NOW);
+    const pages = [0, 2, 4].map(offset => handleWorkEntitySearch(deps, { query: 'pageproof', kind: 'note', limit: 2, offset }).groups[0]!);
+    expect(pages.map(page => page.matches.map(match => match.id))).toEqual([['page-0', 'page-1'], ['page-2', 'page-3'], ['page-4', 'page-5']]);
+    expect(pages.map(page => page.more)).toEqual([true, true, false]);
+    expect(pages[0]?.matches[0]?.stale).toBe(true);
+  });
+
+  it('keeps other kinds available on a failed kind and rejects unsupported or invalid pages', () => {
+    store.writeNote({ source_id: 'recued.note', body: 'Survivor match' }, NOW);
+    const search = store.searchPageByText.bind(store);
+    const spy = vi.spyOn(store, 'searchPageByText').mockImplementation((kind, query, options) => {
+      if (kind === 'task') throw new Error('unavailable');
+      return search(kind, query, options);
+    });
+    const groups = handleWorkEntitySearch(deps, { query: 'survivor' }).groups;
+    expect(groups[0]).toMatchObject({ kind: 'task', error: expect.stringContaining('could not be searched') });
+    expect(groups[1]?.matches).toHaveLength(1);
+    expect(groups.slice(1).every(group => group.error === undefined)).toBe(true);
+    spy.mockRestore();
+    expect(() => handleWorkEntitySearch(deps, { query: 'x', kind: 'asset' as 'task' })).toThrow(RpcError);
+    expect(() => handleWorkEntitySearch(deps, { query: 'x', limit: 51 })).toThrow(RpcError);
+    expect(() => handleWorkEntitySearch(deps, { query: 'x', offset: 1 })).toThrow(RpcError);
+    expect(handleWorkEntitySearch(deps, { query: '   ' })).toEqual({ groups: [] });
+  });
+});
+
 describe('D-174 work_entity.* — validation surfaces', () => {
   it('unknown kind → bad_request on every method', async () => {
     const bad = { kind: 'memo' } as unknown as { kind: 'task' };
@@ -702,6 +800,10 @@ describe('D-174 work_entity.* — registered-client gate (slice arrows)', () => 
     await expect(
       slice.handlers['work_entity.get']({ kind: 'task', id: 'x' }, unreg),
     ).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(slice.handlers['work_entity.project.items']({ project_id: 'private', kind: 'task' }, unreg))
+      .rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(slice.handlers['work_entity.search']({ query: 'private' }, unreg))
+      .rejects.toMatchObject({ code: 'unauthorized' });
     await expect(
       slice.handlers['work_entity.upsert']({ kind: 'task', title: 'x' }, unreg),
     ).rejects.toMatchObject({ code: 'unauthorized' });
@@ -729,6 +831,10 @@ describe('D-174 work_entity.* — registered-client gate (slice arrows)', () => 
       ctx('dev-1'),
     );
     expect((out as { entity: { _kind: string } }).entity._kind).toBe('task');
+    const found = await slice.handlers['work_entity.search']({ query: 'real' }, ctx('dev-1'));
+    expect(found).toMatchObject({ groups: expect.arrayContaining([
+      expect.objectContaining({ kind: 'task', matches: expect.arrayContaining([expect.objectContaining({ title: 'real' })]) }),
+    ]) });
   });
 });
 
@@ -741,6 +847,8 @@ describe('D-174 makeWorkEntityCrudHandlers slice', () => {
     const slice = makeWorkEntityCrudHandlers(deps);
     expect(slice).toBeDefined();
     expect(slice!.methods).toEqual([
+      'work_entity.project.items',
+      'work_entity.search',
       'work_entity.list',
       'work_entity.get',
       'work_entity.upsert',

@@ -337,6 +337,8 @@ export {
   type WireFocusTrapOptions,
   type FocusTrapHandle,
 } from './focus-trap.js';
+export { taskDueShortcutDue, renderTaskDueActions, TASK_DUE_STYLES, type TaskDueShortcut } from './task-due.js';
+export { type WorkEntityNoteView } from './work-entity-page/note-reader.js';
 // D-145 PA6 — work-entity page substrate (Source dropdown + list/search view
 // + create/edit dialog). R18 dropped the per-kind nav (the Data route's grouped
 // tabs are the single kind nav).

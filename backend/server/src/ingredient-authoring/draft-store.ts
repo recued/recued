@@ -41,6 +41,8 @@ export interface DraftSaveInput {
   draft_id?: string;
   title?: string;
   body: unknown;
+  /** D-333 — the pack it installs as. Omitted: an existing draft keeps the one it has. */
+  pack?: Record<string, unknown>;
 }
 
 export interface DraftStore {
@@ -56,6 +58,13 @@ export interface DraftStore {
   list(): IngredientDraftSummary[];
   /** Drop a draft by id. Returns true iff a row was removed. */
   delete(draft_id: string): boolean;
+  /** D-333 — the draft of changes to an installed pack: the one already open, or a new one
+   *  from `body`. One per pack. */
+  openForPack(
+    pack_slug: string,
+    body: unknown,
+    title: string,
+  ): IngredientDraft | { error: DraftSaveError };
   /** Current draft count (the `limit_reached` denominator). */
   count(): number;
 }
@@ -82,6 +91,17 @@ export const ensureDraftStoreSchema = (db: Database.Database): void => {
     );
     CREATE INDEX IF NOT EXISTS ingredient_draft_updated_idx ON ${TABLE} (updated_at DESC);
   `);
+  // D-333 — a draft can be changes to an installed pack; one such draft per pack.
+  const columns = db.prepare(`PRAGMA table_info(${TABLE})`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'base_pack_slug')) {
+    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN base_pack_slug TEXT`);
+  }
+  // …and keeps the pack it installs as, so reopening it does not fall back to defaults.
+  if (!columns.some((column) => column.name === 'pack_json')) {
+    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN pack_json TEXT`);
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ingredient_draft_base_pack
+    ON ${TABLE} (base_pack_slug) WHERE base_pack_slug IS NOT NULL`);
 };
 
 interface DraftRow {
@@ -90,6 +110,8 @@ interface DraftRow {
   body_json: string;
   created_at: number;
   updated_at: number;
+  base_pack_slug?: string | null;
+  pack_json?: string | null;
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -136,7 +158,13 @@ const summaryOf = (row: DraftRow): IngredientDraftSummary => {
     operation_count,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    ...(row.base_pack_slug ? { base_pack_slug: row.base_pack_slug } : {}),
   };
+};
+
+const packOf = (row: DraftRow): { pack?: Record<string, unknown> } => {
+  const pack = row.pack_json ? parseBody(row.pack_json) : null;
+  return isPlainObject(pack) ? { pack } : {};
 };
 
 const rowToDraft = (row: DraftRow): IngredientDraft => ({
@@ -145,6 +173,8 @@ const rowToDraft = (row: DraftRow): IngredientDraft => ({
   body: parseBody(row.body_json),
   created_at: row.created_at,
   updated_at: row.updated_at,
+  ...(row.base_pack_slug ? { base_pack: { pack_slug: row.base_pack_slug } } : {}),
+  ...packOf(row),
 });
 
 export const createDraftStore = (
@@ -156,12 +186,17 @@ export const createDraftStore = (
   const newId = options.newId ?? ((): string => crypto.randomUUID());
 
   const getStmt = db.prepare(
-    `SELECT draft_id, title, body_json, created_at, updated_at FROM ${TABLE} WHERE draft_id = ?`,
+    `SELECT draft_id, title, body_json, created_at, updated_at, base_pack_slug, pack_json FROM ${TABLE} WHERE draft_id = ?`,
   );
   const listStmt = db.prepare(
-    `SELECT draft_id, title, body_json, created_at, updated_at FROM ${TABLE}
+    `SELECT draft_id, title, body_json, created_at, updated_at, base_pack_slug, pack_json FROM ${TABLE}
        ORDER BY updated_at DESC, draft_id ASC`,
   );
+  const byPackStmt = db.prepare(
+    `SELECT draft_id, title, body_json, created_at, updated_at, base_pack_slug, pack_json FROM ${TABLE} WHERE base_pack_slug = ?`,
+  );
+  const setIdentityStmt = db.prepare(`UPDATE ${TABLE} SET pack_json = ? WHERE draft_id = ?`);
+  const setPackStmt = db.prepare(`UPDATE ${TABLE} SET base_pack_slug = ? WHERE draft_id = ?`);
   const countStmt = db.prepare(`SELECT COUNT(*) AS n FROM ${TABLE}`);
   const insertStmt = db.prepare(
     `INSERT INTO ${TABLE} (draft_id, title, body_json, created_at, updated_at)
@@ -175,7 +210,7 @@ export const createDraftStore = (
   const deleteStmt = db.prepare(`DELETE FROM ${TABLE} WHERE draft_id = ?`);
   const countOf = (): number => (countStmt.get() as { n: number }).n;
 
-  return {
+  const store: DraftStore = {
     save(input) {
       const bodyJson = JSON.stringify(input.body ?? null);
       // Byte-accurate cap (multi-byte chars count as their UTF-8 length, not
@@ -188,6 +223,7 @@ export const createDraftStore = (
         ? (getStmt.get(input.draft_id) as DraftRow | undefined)
         : undefined;
       const title = typeof input.title === 'string' ? input.title : null;
+      const packJson = input.pack !== undefined ? JSON.stringify(input.pack) : undefined;
 
       if (existing) {
         updateStmt.run({
@@ -196,11 +232,13 @@ export const createDraftStore = (
           body_json: bodyJson,
           updated_at: ts,
         });
+        if (packJson !== undefined) setIdentityStmt.run(packJson, existing.draft_id);
         return rowToDraft({
           ...existing,
           title,
           body_json: bodyJson,
           updated_at: ts,
+          ...(packJson !== undefined ? { pack_json: packJson } : {}),
         });
       }
 
@@ -219,12 +257,14 @@ export const createDraftStore = (
         created_at: ts,
         updated_at: ts,
       });
+      if (packJson !== undefined) setIdentityStmt.run(packJson, draftId);
       return rowToDraft({
         draft_id: draftId,
         title,
         body_json: bodyJson,
         created_at: ts,
         updated_at: ts,
+        ...(packJson !== undefined ? { pack_json: packJson } : {}),
       });
     },
     get(draft_id) {
@@ -240,5 +280,16 @@ export const createDraftStore = (
     count() {
       return countOf();
     },
+    openForPack(pack_slug, body, title) {
+      return db.transaction(() => {
+        const open = byPackStmt.get(pack_slug) as DraftRow | undefined;
+        if (open !== undefined) return rowToDraft(open);
+        const created = store.save({ body, title });
+        if ('error' in created) return created;
+        setPackStmt.run(pack_slug, created.draft_id);
+        return { ...created, base_pack: { pack_slug } };
+      }).immediate();
+    },
   };
+  return store;
 };

@@ -15,6 +15,8 @@
 // a cycle. The label keys line up 1:1 with every code in that union;
 // a test in `@recued/storage` asserts the pairing at runtime.
 type PhaseGActionLabels = {
+  kitchen_draft_imported: string;
+  kitchen_draft_updated: string;
   // Phase 1 core
   install: string;
   uninstall: string;
@@ -113,6 +115,8 @@ type PhaseGActionLabels = {
  *  doesn't know yet) fall through to `resolveActivityLabel` below,
  *  which returns the raw string snake_case-to-Title-Case converted. */
 export const ACTIVITY_LABELS = {
+  kitchen_draft_imported: 'Source imported into Kitchen',
+  kitchen_draft_updated: 'Kitchen draft source updated',
   install: 'Recipe installed',
   uninstall: 'Recipe uninstalled',
   vault_set: 'Vault key set',

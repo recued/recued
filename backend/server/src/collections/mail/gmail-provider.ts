@@ -73,6 +73,7 @@ import {
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
   MAIL_AUTOMATIC_REPLY_HEADERS,
+  mailHeaderText,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailSentReconciliationAttachmentPartFromBytes,
@@ -519,15 +520,15 @@ export const buildGmailRfc5322 = (
   if (msg.reconciliation_id) {
     headers.push(`${MAIL_RECONCILIATION_ID_HEADER}: ${msg.reconciliation_id}`);
   }
-  if (msg.to.length > 0) headers.push(`To: ${msg.to.join(', ')}`);
-  if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${msg.cc.join(', ')}`);
-  if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${msg.bcc.join(', ')}`);
-  headers.push(`Subject: ${msg.subject}`);
-  if (msg.reply_to) headers.push(`Reply-To: ${msg.reply_to}`);
-  if (msg.in_reply_to) headers.push(`In-Reply-To: ${msg.in_reply_to}`);
+  if (msg.to.length > 0) headers.push(`To: ${mailHeaderText(msg.to.join(', '))}`);
+  if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${mailHeaderText(msg.cc.join(', '))}`);
+  if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${mailHeaderText(msg.bcc.join(', '))}`);
+  headers.push(`Subject: ${mailHeaderText(msg.subject)}`);
+  if (msg.reply_to) headers.push(`Reply-To: ${mailHeaderText(msg.reply_to)}`);
+  if (msg.in_reply_to) headers.push(`In-Reply-To: ${mailHeaderText(msg.in_reply_to)}`);
   if (msg.references && msg.references.length > 0) {
     // RFC 5322 §3.6.4 — References is space-separated msg-id list.
-    headers.push(`References: ${msg.references.join(' ')}`);
+    headers.push(`References: ${mailHeaderText(msg.references.join(' '))}`);
   }
   if (msg.automatic === true) {
     for (const [name, value] of MAIL_AUTOMATIC_REPLY_HEADERS) headers.push(`${name}: ${value}`);
@@ -552,7 +553,7 @@ export const buildGmailRfc5322 = (
   for (const att of attachments) {
     segments.push(
       `--${mixed}`,
-      `Content-Type: ${att.mime_type}; ${mimeFilenameParameter('name', att.filename)}`,
+      `Content-Type: ${mailHeaderText(att.mime_type)}; ${mimeFilenameParameter('name', att.filename)}`,
       'Content-Transfer-Encoding: base64',
       `Content-Disposition: attachment; ${mimeFilenameParameter('filename', att.filename)}`,
       '',

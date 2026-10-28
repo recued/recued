@@ -31,6 +31,7 @@ const boot = async (page: Page) => {
 test('two independent webclients retain Messenger identity after renaming and see receive loss with an empty outbox', async ({ browser }) => {
   const pages: Page[] = [];
   const deliveryReads: string[] = [];
+  const reads = { history: 0, status: 0 };
   const fixture = createFixture({ emit: event => { for (const page of pages) void page.evaluate(event => {
     (window as unknown as { queueTestEvent(e: unknown): void }).queueTestEvent?.(event);
   }, { ...event, cursor: Date.now() }).catch(() => {}); } });
@@ -39,6 +40,8 @@ test('two independent webclients retain Messenger identity after renaming and se
     for (const context of contexts) {
       await context.route('**/d265-rpc', async route => {
         const { method, args } = route.request().postDataJSON();
+        if (method === 'chat.sessions.list') reads.history++;
+        if (method === 'chat.messenger.status') reads.status++;
         if (method === 'chat.deliveries.list') deliveryReads.push(args.session_id);
         await route.fulfill({ json: { result: await fixture.rpc(method, args) } });
       });
@@ -54,6 +57,7 @@ test('two independent webclients retain Messenger identity after renaming and se
       await expect(row(page, 'messenger:slack:old-channel')).toContainText('Not set up to deliver here');
       await page.locator('[data-recued-chat-route-input]').fill('Keep this unsent draft');
     }
+    const historyReads = reads.history;
     // No delivery event: the outbox has nothing to send, while the actual
     // receiver disconnects. Only the list's health refresh can surface it.
     fixture.receive('slack', 'retrying');
@@ -63,6 +67,7 @@ test('two independent webclients retain Messenger identity after renaming and se
       await expect(page.locator('[data-recued-chat-route-input]')).toHaveValue('Keep this unsent draft');
       await expect(page.locator('[data-recued-chat-route-input]')).toBeFocused();
     }
+    expect(reads.status).toBeGreaterThan(0); expect(reads.history).toBe(historyReads);
     const page = pages[0]!;
     const search = page.locator('[data-recued-chat-route-history-search]'); await search.fill('Owner');
     fixture.receive('slack', 'active'); await notify(page);
@@ -114,9 +119,9 @@ test('stale and failed list reads cannot revive success, and older server replie
     await page.route('**/d265-rpc', async route => {
       const { method, args } = route.request().postDataJSON();
       const result = await fixture.rpc(method, args);
-      if (method === 'chat.sessions.list') {
+      if (method === 'chat.sessions.list' || method === 'chat.messenger.status') {
         if (fail) { await route.fulfill({ json: { error: 'fixture offline' } }); return; }
-        if (older) {
+        if (older && method === 'chat.sessions.list') {
           const reply = result as MessengerSessionListReply;
           await route.fulfill({ json: { result: { sessions: reply.sessions.map(({ messenger: _messenger, ...session }) => session) } } }); return;
         }

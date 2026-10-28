@@ -169,8 +169,8 @@ describe('work.update — a thing the user owns', () => {
     const f = harness();
     const bike = f.ownersAsset({ name: 'Road bike', attributes: { brand: 'Trek' }, anchors: [{ kind: 'place', name: 'the garage' }] });
     const change = { kind: 'asset', id: bike.id, title: 'Trek Domane', attributes: { brand: 'Specialized', colour: 'blue' }, place: 'the shed' };
-    const says = 'work.update: an AI cannot change its name, where it is kept and `brand` (the user entered them). '
-      + 'The user can, in Yours; leave them out to change the rest';
+    const says = 'work.update: the user set its name, where it is kept and `brand` themselves, so an AI may not change them. '
+      + 'Tell the user why, and that they can change them in Yours. Leave them out to change the rest';
     expect(await checkWorkUpdate(f.deps, change, inChat)).toEqual({ ok: false, reason: 'invalid_args', detail: says });
     expect(await f.update(change, approved)).toEqual({ ok: false, reason: 'invalid_args', detail: says });
     expect(f.store.readAsset(bike.id)).toEqual(bike);
@@ -187,8 +187,9 @@ describe('work.update — a thing the user owns', () => {
     f.store.writeAsset({ id: car.id, source_id: car.source_id, source: { kind: 'confirmed_document', ref: 'file:mot-1' },
       dates: { legal_check_on: '2027-01-31' } }, NOW);
     const res = await checkWorkUpdate(f.deps, { kind: 'asset', id: car.id, title: 'Our car', dates: { legal_check_on: '2027-02-28' } }, inChat);
-    expect(res).toMatchObject({ detail: 'work.update: an AI cannot change its name (the user entered it) or `legal_check_on` '
-      + '(it comes from a document the user confirmed). The user can, in Yours; leave them out to change the rest' });
+    expect(res).toMatchObject({ detail: 'work.update: the user set its name themselves and `legal_check_on` comes from a document '
+      + 'the user confirmed, so an AI may not change them. Tell the user why, and that they can change them in Yours. '
+      + 'Leave them out to change the rest' });
   });
 
   it('records an approved reading as the owner\'s own sample, which replaces one they typed', async () => {
@@ -199,7 +200,7 @@ describe('work.update — a thing the user owns', () => {
     expect(await checkWorkUpdate(f.deps, reading, inChat)).toBeNull();
     // Unapproved, it is the AI's, which never replaces the owner's.
     expect(await f.update(reading, inChat)).toMatchObject({ ok: false,
-      detail: expect.stringContaining('an AI cannot change `odometer` (the user entered it)') });
+      detail: expect.stringContaining('the user set `odometer` themselves, so an AI may not change it') });
     expect(f.store.readAsset(car.id)).toEqual(car);
     expect(await f.update(reading, approved)).toMatchObject({ ok: true, result: { fields: ['readings'] } });
     const after = f.store.readAsset(car.id)!;
@@ -213,8 +214,21 @@ describe('work.update — a thing the user owns', () => {
     const car = f.ownersAsset({ name: 'Family car', class_id: 'vehicle', readings: { odometer: odometer(10_000) } });
     const member = { channel: 'internal_function_call', session_id: 'sess-2', execution_source: {
       channel: 'chat', actor: 'contracted_user', chat_session_id: 'chat-2', user_id: 'member-1', contract_id: 'k-house' } } as never;
+    // ⚠ The AI passes the reason on, so it must be true of the member: the owner set it (2026-10-27).
     expect(await checkWorkUpdate(f.deps, { kind: 'asset', id: car.id, readings: { odometer: { value: 12_400, unit: 'km' } } }, member))
-      .toMatchObject({ detail: expect.stringContaining('an AI cannot change `odometer` (the user entered it)') });
+      .toMatchObject({ detail: 'work.update: the owner set `odometer` themselves, so an AI may not change it. '
+        + 'Tell the user why, and that the owner can change it in Yours. Leave it out to change the rest' });
+  });
+
+  it('tells an AI app that the owner set a value, since its user may not be the owner', async () => {
+    const f = harness();
+    const car = f.ownersAsset({ name: 'Family car', class_id: 'vehicle', anchors: [{ kind: 'place', name: 'the driveway' }] });
+    f.store.writeAsset({ id: car.id, source_id: car.source_id, source: { kind: 'confirmed_document', ref: 'file:mot-1' },
+      dates: { legal_check_on: '2027-01-31' } }, NOW);
+    expect(await f.update({ kind: 'asset', id: car.id, place: 'the street', dates: { legal_check_on: '2027-02-28' } }, overMcp))
+      .toMatchObject({ detail: 'work.update: the owner set where it is kept themselves and `legal_check_on` comes from a '
+        + 'document the owner confirmed, so an AI may not change them. Tell the user why, and that the owner can change them '
+        + 'in Yours. Leave them out to change the rest' });
   });
 
   it('records an AI app\'s approved reading under its own token', async () => {
@@ -276,7 +290,7 @@ describe('work.update — a thing the user owns', () => {
     const bike = f.ownersAsset({ name: 'Road bike' });
     const check = buildChatToolRegistryInputs(f.deps).tier1Checks['work.update']!;
     expect(await check({ kind: 'asset', id: bike.id, title: 'Trek' }, inChat))
-      .toMatchObject({ ok: false, detail: expect.stringContaining('an AI cannot change its name') });
+      .toMatchObject({ ok: false, detail: expect.stringContaining('the user set its name themselves') });
     expect(await check({ kind: 'asset', id: bike.id, attributes: { colour: 'blue' } }, inChat)).toBeNull();
   });
 
@@ -342,7 +356,8 @@ describe('what a thing belongs to', () => {
     const desk = f.ownersAsset({ name: 'Desk' });
     const charger = f.ownersAsset({ name: 'Charger', belongs_to: laptop.id });
     expect(await f.update({ kind: 'asset', id: charger.id, belongs_to: desk.id }, approved)).toMatchObject({
-      detail: 'work.update: an AI cannot change what it belongs to (the user entered it). The user can, in Yours; leave it out to change the rest' });
+      detail: 'work.update: the user set what it belongs to themselves, so an AI may not change it. '
+        + 'Tell the user why, and that they can change it in Yours. Leave it out to change the rest' });
     expect(f.store.readAsset(charger.id)).toEqual(charger);
   });
 

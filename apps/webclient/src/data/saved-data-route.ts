@@ -131,7 +131,8 @@ const STYLES = `
   .saved-data-tools li a { flex:1; min-width:120px; overflow-wrap:anywhere; padding:10px 0; }
   .saved-data-tools button, .saved-data-header button, .saved-data-tools input { min-height:44px; font:inherit; }
   .saved-data-tools button, .saved-data-header button { padding:8px 12px; border:1px solid var(--border); border-radius:6px; color:inherit; background:var(--surface); cursor:pointer; }
-  .saved-data-tools button:disabled, .saved-data-header button:disabled { opacity:.6; cursor:default; }
+  .saved-data-tools button:disabled, .saved-data-header button:disabled,
+  .saved-data-tools button[aria-disabled="true"] { opacity:.6; cursor:default; }
   .saved-data-tools input { max-width:100%; min-width:0; box-sizing:border-box; padding:8px; border:1px solid var(--border); border-radius:6px; color:var(--fg); background:var(--bg); }
   .saved-data-tools label { display:grid; gap:4px; min-width:0; }
   .saved-data-tools [role=alert], .saved-data-tools [role=status] { overflow-wrap:anywhere; }
@@ -203,8 +204,31 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   let conflictView: SavedDataView | null = null;
   let lastDefinition: SavedDataViewDefinition | null = null;
   let pending: Promise<void> = Promise.resolve();
+  type ViewFocus = { action: string; id: string | null; order: string[] };
+  let formOrigin: ViewFocus | null = null;
 
   const focus = (selector: string): void => tools.querySelector?.<HTMLElement>(selector)?.focus();
+  const viewControls = (): HTMLElement[] => Array.from(tools.querySelectorAll?.<HTMLElement>('[data-view-action]') ?? []);
+  const viewOrder = (): string[] => [...new Set(viewControls().flatMap(control => {
+    const id = control.getAttribute('data-view-id');
+    return id !== null && control.closest?.('li') != null ? [id] : [];
+  }))];
+  const restoreViewFocus = (origin: ViewFocus, reveal: boolean): void => {
+    const controls = viewControls().filter(control => !control.hasAttribute?.('disabled') && control.getClientRects?.().length !== 0);
+    let target = controls.find(control => control.getAttribute('data-view-action') === origin.action
+      && control.getAttribute('data-view-id') === origin.id);
+    if (!target && origin.id !== null) {
+      const index = origin.order.indexOf(origin.id);
+      const nearby = [...origin.order.slice(index + 1), ...origin.order.slice(0, Math.max(index, 0)).reverse()];
+      for (const id of nearby) {
+        target = controls.find(control => control.getAttribute('data-view-action') === 'open'
+          && control.getAttribute('data-view-id') === id);
+        if (target) break;
+      }
+    }
+    target ??= tools.querySelector<HTMLElement>('details > summary') ?? tools.querySelector<HTMLElement>('h1') ?? undefined;
+    target?.focus?.(reveal ? undefined : { preventScroll: true });
+  };
   // A completed view write must not pull focus out of a Data action started
   // while it was settling. Native disabled controls may leave focus on body.
   const canFocusCompletion = (): boolean => doc.activeElement == null
@@ -217,13 +241,16 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
    *  `selectedView = null` while its filters stay on screen, and hiding the
    *  button there strands the owner with settings they can see, cannot save,
    *  and lose on the next navigation. Caught by the e2e, not by a unit test. */
-  const render = (): void => {
+  const render = (returnTo?: ViewFocus): void => {
     if (disposed) return;
     const active = doc.activeElement as HTMLInputElement | null;
     const nameFocused = active?.hasAttribute('data-view-name') === true;
     const selection = nameFocused ? [active.selectionStart, active.selectionEnd] : null;
     const action = active?.getAttribute('data-view-action');
     const id = active?.getAttribute('data-view-id');
+    const priorOrder = viewOrder();
+    const formFocused = active?.closest?.('[data-view-editor], .saved-data-confirm') != null;
+    const listFocused = active != null && active === tools.querySelector('details > summary');
     const definition = child?.currentView() ?? null;
     const canSave = !busy && definition !== null;
     const modified = selectedView !== null && lastDefinition !== null
@@ -237,10 +264,10 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     const packViews = views.filter((view) => view.pack !== undefined)
       .sort((a, b) => Number(a.hidden ?? false) - Number(b.hidden ?? false));
     listOpen = tools.querySelector?.('details')?.open ?? listOpen;
-    tools.innerHTML = `
-      <header class="saved-data-header"><h1 class="data-title" data-recued-data-route-heading>${chrome === 'views' ? 'Saved views' : 'Data'}</h1>
+    const html = `
+      <header class="saved-data-header"><h1 class="data-title" data-recued-data-route-heading tabindex="-1">${chrome === 'views' ? 'Saved views' : 'Data'}</h1>
         ${child === null ? '' : `<button type="button" data-view-action="new" ${canSave ? '' : 'disabled'}>${selectedView === null ? 'Save current view' : 'Save as new'}</button>`}
-        ${chrome === 'views' ? `<button type="button" data-view-action="refresh" ${listing || busy ? 'disabled' : ''}>Refresh saved views</button>` : ''}
+        ${chrome === 'views' ? `<button type="button" data-view-action="refresh" aria-label="Refresh saved views" ${listing || busy ? 'aria-disabled="true"' : ''} ${listing ? 'aria-busy="true"' : ''}>${listing ? 'Refreshing…' : 'Refresh saved views'}</button>` : ''}
         ${chrome === 'data' ? `<a class="saved-data-views-link" href="${e(serializeShellRoute('views'))}">Saved views</a>` : ''}</header>
       ${chrome !== 'views' ? '' : `${listing ? '<p role="status">Loading saved views…</p>' : ''}
         ${listError === null ? '' : `<p role="alert">${e(listError)}</p>`}
@@ -290,7 +317,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
         ${lastDefinition === null ? '' : `<p><strong>Your settings:</strong> ${e(settingsSummary(lastDefinition))}</p>`}
         <button type="button" data-view-action="replace" ${canSave ? '' : 'disabled'}>Replace saved settings</button>
       </div>`}
-      ${edit === null ? '' : `<form class="saved-data-editor" data-view-editor>
+      ${edit === null ? '' : `<form class="saved-data-editor" data-view-editor="${e(edit.view?.id ?? 'new')}">
         <label>View name<input data-view-name name="view-name" maxlength="${SAVED_DATA_VIEW_NAME_LIMIT}" value="${e(edit.name)}" required ${busy ? 'disabled' : ''}></label>
         <button type="submit" data-view-action="save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save view'}</button>
         <button type="button" data-view-action="cancel" ${busy ? 'disabled' : ''}>Cancel</button>
@@ -302,15 +329,43 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       </div>`}
       ${actionError === null ? '' : `<p role="alert" tabindex="-1" data-view-error>${e(actionError)}</p>`}
       ${notice === null ? '' : `<p role="status" tabindex="-1" data-view-notice>${e(notice)}</p>`}`;
-    if (nameFocused) {
+    const editor = tools.querySelector<HTMLFormElement>('[data-view-editor]');
+    const editorName = editor?.querySelector<HTMLInputElement>('[data-view-name]');
+    if (edit && editor && editorName && editorName.value === edit.name
+      && editor.getAttribute('data-view-editor') === (edit.view?.id ?? 'new')) {
+      // Keep the current field and its ancestry connected: rebuilding even the
+      // same value discards native Undo/Redo and active composition.
+      const next = doc.createElement('div'); next.innerHTML = html;
+      const nextEditor = next.querySelector('[data-view-editor]');
+      for (const node of Array.from(tools.childNodes)) if (node !== editor) tools.removeChild(node);
+      let following = false;
+      for (const node of Array.from(next.childNodes)) {
+        if (node === nextEditor) { following = true; continue; }
+        tools.insertBefore(node, following ? null : editor);
+      }
+      editorName.disabled = busy;
+      for (const button of Array.from(editor.querySelectorAll<HTMLButtonElement>('button'))) {
+        button.disabled = busy;
+        if (button.getAttribute('data-view-action') === 'save') button.textContent = busy ? 'Saving…' : 'Save view';
+      }
+    } else tools.innerHTML = html;
+    if (returnTo) restoreViewFocus(returnTo, true);
+    else if (listFocused) tools.querySelector<HTMLElement>('details > summary')?.focus({ preventScroll: true });
+    else if (nameFocused) {
       const input = tools.querySelector<HTMLInputElement>('[data-view-name]');
-      input?.focus({ preventScroll: true });
-      if (selection !== null) input?.setSelectionRange(selection[0] ?? 0, selection[1] ?? 0);
+      if (input !== active) {
+        input?.focus({ preventScroll: true });
+        if (selection !== null) input?.setSelectionRange(selection[0] ?? 0, selection[1] ?? 0);
+      }
+      if (!input && formOrigin) restoreViewFocus(formOrigin, false);
     } else if (action !== null && action !== undefined) {
-      const candidates = Array.from(tools.querySelectorAll<HTMLElement>('[data-view-action]'));
-      candidates.find((element) => element.getAttribute('data-view-action') === action
-        && element.getAttribute('data-view-id') === id)?.focus({ preventScroll: true });
+      const target = viewControls().find(element => element.getAttribute('data-view-action') === action
+        && element.getAttribute('data-view-id') === id);
+      if (target) target.focus({ preventScroll: true });
+      else if (formFocused && formOrigin) restoreViewFocus(formOrigin, false);
+      else if (id != null) restoreViewFocus({ action, id, order: priorOrder }, false);
     }
+    if (edit === null && deleting === null) formOrigin = null;
   };
 
   const refreshViews = async (): Promise<void> => {
@@ -631,7 +686,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     if (control === null || control === undefined) return;
     const action = control.getAttribute('data-view-action');
     if (action === 'save') return; // native form submission also supports Enter
-    if (busy) { event.preventDefault(); return; }
+    if (busy || action === 'refresh' && listing) { event.preventDefault(); return; }
     if (action === 'open') {
       if (child !== null && (child.hasInFlightWork() || child.currentView() === null)) {
         event.preventDefault(); actionError = 'Finish or close what you are doing before you open a saved view.'; render();
@@ -645,7 +700,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     notice = null;
     if (action === 'refresh') { pending = refreshViews(); return; }
     if (action === 'update' || action === 'replace') { pending = update(action === 'replace'); return; }
-    if (action === 'cancel') { edit = null; deleting = null; render(); focus('[data-view-action="new"]'); return; }
+    if (action === 'cancel') { const origin = formOrigin; edit = null; deleting = null; render(origin ?? undefined); return; }
     if (action === 'confirm-delete') { pending = remove(); return; }
     if (action === 'retired-apply' || action === 'retired-keep' || action === 'retired-dismiss') {
       const replaced = retired.find((entry) => entry.id === control.getAttribute('data-view-id'));
@@ -666,10 +721,13 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       if (child?.currentView() == null || child.hasInFlightWork()) {
         actionError = 'Go back to a list or a search before you save a view.'; render(); return;
       }
+      formOrigin = { action: 'new', id: null, order: viewOrder() };
       edit = { kind: 'create', view: null, name: '' }; deleting = null;
     } else if (view !== undefined && action === 'rename') {
+      formOrigin = { action, id: view.id, order: viewOrder() };
       edit = { kind: 'rename', view, name: view.name }; deleting = null;
     } else if (view !== undefined && action === 'delete') {
+      formOrigin = { action, id: view.id, order: viewOrder() };
       deleting = view; edit = null;
     }
     render();
@@ -682,8 +740,8 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   const submit = (event: Event): void => { event.preventDefault(); pending = save(); };
   const keydown = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape' || busy || (edit === null && deleting === null)) return;
-    event.preventDefault(); edit = null; deleting = null; actionError = null;
-    render(); focus('[data-view-action="new"]');
+    event.preventDefault(); const origin = formOrigin; edit = null; deleting = null; actionError = null;
+    render(origin ?? undefined);
   };
   const retry = (event: Event): void => {
     if ((event.target as HTMLElement | null)?.hasAttribute('data-view-load-retry')) pending = loadView();

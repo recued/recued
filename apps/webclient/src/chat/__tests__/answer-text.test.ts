@@ -16,11 +16,13 @@ interface FakeNode {
 }
 
 const makeNode = (tagName: string, text = ''): FakeNode => {
+  let ownText = text;
   const node: FakeNode = {
     tagName,
     attributes: new Map(),
     children: [],
-    textContent: text,
+    get textContent() { return ownText + node.children.map(child => child.textContent).join(''); },
+    set textContent(value: string) { ownText = value; node.children = []; },
     get firstChild() { return node.children[0] ?? null; },
     setAttribute: (name, value) => { node.attributes.set(name, value); },
     getAttribute: (name) => node.attributes.get(name) ?? null,
@@ -42,11 +44,12 @@ const paint = (text: string, sources: readonly ChatSourceCitation[] = []): FakeN
 };
 
 /** What a reader sees, and which parts are links. */
-const shape = (host: FakeNode) => host.children.length === 0
-  ? [{ text: host.textContent }]
-  : host.children.map((child) => child.tagName === 'A'
-    ? { link: child.textContent, href: child.getAttribute('href'), children: child.children.length }
-    : { text: child.textContent });
+const shape = (host: FakeNode): Array<{ text: string } | { link: string; href: string | null; children: number }> => {
+  if (host.tagName === 'A') return [{ link: host.textContent, href: host.getAttribute('href'), children: host.children.length }];
+  return host.children.length === 0 ? [{ text: host.textContent }] : host.children.flatMap(shape);
+};
+const descendants = (host: FakeNode, tag: string): FakeNode[] =>
+  host.children.flatMap(child => [...(child.tagName === tag ? [child] : []), ...descendants(child, tag)]);
 
 const record = '#data/mail/record/work/mail%3Aseed%2F%28v2%29';
 
@@ -93,11 +96,11 @@ describe('Chat answer citations', () => {
     expect(shape(host)).toEqual([{ link: label, href: record, children: 0 }]);
   });
 
-  it('leaves an answer without citations exactly as it was painted before', () => {
+  it('keeps unsupported syntax literal inside separate prose paragraphs', () => {
     const text = 'No citation here.\n\n[Draft] (not a link) and #data/mail/record/work/x';
     const host = paint(text);
-    expect(host.children).toEqual([]);
-    expect(host.textContent).toBe(text);
+    expect(descendants(host, 'P').map(node => node.textContent)).toEqual(text.split('\n\n'));
+    expect(descendants(host, 'A')).toEqual([]);
   });
 
   it('replaces what a previous paint left', () => {
@@ -112,17 +115,92 @@ describe('Chat answer citations', () => {
 
 it('renders headings and bold as text-only emphasis beside a safe citation', () => {
   const host = paint(`## Current work\n**Private preparation** and [source](${record}).`);
-  expect(host.children.map(n => n.tagName)).toEqual(['STRONG', '#text', 'STRONG', '#text', 'A', '#text']);
-  expect(host.children[0]?.textContent).toBe('Current work');
-  expect(host.children[2]?.textContent).toBe('Private preparation');
-  expect(host.children[4]?.getAttribute('href')).toBe(record);
+  expect(descendants(host, 'H4').map(node => node.textContent)).toEqual(['Current work']);
+  expect(descendants(host, 'STRONG').map(node => node.textContent)).toEqual(['Private preparation']);
+  expect(descendants(host, 'A')[0]?.getAttribute('href')).toBe(record);
 });
 
 it('never executes HTML inside emphasis and leaves code notation literal', () => {
-  expect(paint('**<img src=x onerror=alert(1)>**').children[0]).toMatchObject({ tagName: 'STRONG', children: [], textContent: '<img src=x onerror=alert(1)>' });
+  const emphasis = paint('**<img src=x onerror=alert(1)>**');
+  expect(descendants(emphasis, 'STRONG')[0]?.textContent).toBe('<img src=x onerror=alert(1)>');
+  expect(descendants(emphasis, 'IMG')).toHaveLength(0);
   const code = '```md\n## Heading\n**bold**\n```';
-  expect(paint(code).textContent).toBe(code);
+  expect(descendants(paint(code), 'CODE').map(node => node.textContent)).toEqual(['## Heading\n**bold**\n']);
   expect(paint('\\**literal**').children.map(n => n.tagName)).not.toContain('STRONG');
+});
+
+it('formats prose around inline code without interpreting its contents', () => {
+  const host = paint(`## Current work\n\n**Run** \`npm test\` then [check](${record}).`);
+  expect(descendants(host, 'H4')).toHaveLength(1);
+  expect(descendants(host, 'STRONG').map(node => node.textContent)).toEqual(['Run']);
+  expect(descendants(host, 'CODE').map(node => node.textContent)).toEqual(['npm test']);
+  expect(descendants(host, 'A')[0]?.getAttribute('href')).toBe(record);
+  const literal = `[example](${record}) **raw** <img src=x onerror=alert(1)>`;
+  const code = paint(`Before \`\`${literal} with a \` tick\`\` **after**.`);
+  expect(descendants(code, 'CODE')[0]?.textContent).toBe(`${literal} with a \` tick`);
+  expect(descendants(code, 'A')).toHaveLength(0);
+  expect(descendants(code, 'IMG')).toHaveLength(0);
+  expect(descendants(code, 'STRONG').map(node => node.textContent)).toEqual(['after']);
+});
+
+it('keeps fenced code literal with exact newlines and a matching-length closing fence', () => {
+  const raw = `[source](${record})\r\n\`\`\`\r\n**raw** <script>no()</script>\r\n`;
+  const host = paint(`\`\`\`\`md\r\n${raw}\`\`\`\`\r\n\n**Outside**`);
+  expect(descendants(host, 'PRE')).toHaveLength(1);
+  expect(descendants(host, 'CODE')[0]?.textContent).toBe(raw);
+  expect(descendants(host, 'A')).toHaveLength(0);
+  expect(descendants(host, 'SCRIPT')).toHaveLength(0);
+  expect(descendants(host, 'STRONG').map(node => node.textContent)).toEqual(['Outside']);
+});
+
+it('keeps a streamed fence literal before closure and formats the following prose when it closes', () => {
+  const host = makeNode('DIV');
+  const prefix = `## Answer\n\n~~~text\n[source](${record})\n**raw**`;
+  renderAnswerText(doc, host as unknown as HTMLElement, prefix);
+  expect(descendants(host, 'CODE')[0]?.textContent).toBe(`[source](${record})\n**raw**`);
+  expect(descendants(host, 'A')).toHaveLength(0);
+  renderAnswerText(doc, host as unknown as HTMLElement, `${prefix}\n~~~\n\n**Ready** [source](${record})`);
+  expect(descendants(host, 'CODE')[0]?.textContent).toBe(`[source](${record})\n**raw**\n`);
+  expect(descendants(host, 'STRONG').map(node => node.textContent)).toEqual(['Ready']);
+  expect(descendants(host, 'A')).toHaveLength(1);
+  renderAnswerText(doc, host as unknown as HTMLElement, 'Replaced with ordinary text.');
+  expect(descendants(host, 'PRE')).toHaveLength(0);
+  expect(host.textContent).toBe('Replaced with ordinary text.');
+});
+
+it('does not activate a source in an unfinished inline code span', () => {
+  const host = paint(`**Before** \`[source](${record}) **still literal**`);
+  expect(descendants(host, 'A')).toHaveLength(0);
+  expect(descendants(host, 'STRONG').map(node => node.textContent)).toEqual(['Before']);
+  expect(host.textContent).toContain(`\`[source](${record}) **still literal**`);
+});
+
+it('keeps unsupported links literal even when their labels and targets contain code or emphasis', () => {
+  const text = '[**offer** `raw`](https://example.com/(v2)/**path**)';
+  const host = paint(text);
+  expect(host.textContent).toBe(text);
+  expect(descendants(host, 'A')).toHaveLength(0);
+  expect(descendants(host, 'STRONG')).toHaveLength(0);
+  expect(descendants(host, 'CODE')).toHaveLength(0);
+});
+
+it('renders ordered and nested unordered lists while preserving explicit item numbers', () => {
+  const host = paint('4. **First**\n6. Next\n\n- Parent\n  - Child with `value`\n- [ ] Still a text task');
+  expect(descendants(host, 'OL')[0]?.getAttribute('start')).toBe('4');
+  expect(descendants(host, 'LI').slice(0, 2).map(node => node.getAttribute('value'))).toEqual(['4', '6']);
+  expect(descendants(host, 'UL')).toHaveLength(2);
+  expect(descendants(host, 'LI').some(node => node.textContent === '[ ] Still a text task')).toBe(true);
+  expect(descendants(host, 'CODE')[0]?.textContent).toBe('value');
+  expect(descendants(host, 'INPUT')).toHaveLength(0);
+});
+
+it('keeps continuation text in its original position between nested lists', () => {
+  const parts = ['Parent', 'Child', 'Parent afterward', 'Another child', 'Finish parent'];
+  const host = paint('- Parent\n  - Child\n  Parent afterward\n  - Another child\n  Finish parent');
+  const positions = parts.map(part => host.textContent.indexOf(part));
+  expect(positions.every(position => position >= 0)).toBe(true);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  expect(descendants(host, 'UL')).toHaveLength(3);
 });
 
 const source: ChatSourceCitation = { kind: 'asset', id: `src_${'a'.repeat(24)}`, asset_id: 'asset:a/with(parenthesis)',

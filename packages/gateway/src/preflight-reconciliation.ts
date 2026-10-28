@@ -57,6 +57,7 @@ import {
   isOperationSpecHash,
   kernelWriteStaysInRecued,
   renderBatchItemsBlock,
+  tier1CallDetails,
   tier1CallTitle,
   tier1WriteStaysInRecued,
   getMessengerVendorDeclaration,
@@ -955,9 +956,14 @@ export const buildPreflightAsk = (args: {
   // A value the owner knows by another name reads that way: a mailbox's name
   // as its address, as the server recorded it when it held the run.
   const valueLabels = checkpoint.preflight_context?.value_labels;
+  // A held AI tool's call lists the record it changes as what it is ("Thing: Family car"),
+  // and leaves its `kind` to the title.
+  const tier1Shown = tier1 === undefined
+    ? undefined
+    : { title: tier1.title, ...tier1CallDetails(tier1.tool, tier1.args, valueLabels) };
   const itemsBlock =
-    tier1 !== undefined
-      ? `\n\n${renderBatchItemsBlock([{ summary: tier1.title, args_preview: tier1.args }], valueLabels)}`
+    tier1Shown !== undefined
+      ? `\n\n${renderBatchItemsBlock([{ summary: tier1Shown.title, args_preview: tier1Shown.args }], tier1Shown.labels)}`
       : batch !== undefined
       ? `\n\n${renderBatchItemsBlock(batch.items, valueLabels)}`
       : cover?.items !== undefined

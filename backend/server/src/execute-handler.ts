@@ -1040,6 +1040,8 @@ export interface ExecuteHandlerDeps {
   preapprovalRuntime?: ReturnType<typeof import('./preapproval-execution.js').createPreapprovalExecutionRuntime>;
   preapprovalDriver?: import('./preapproval-driver.js').PreapprovalDriver;
   mailDraft?: import('@recued/ingredients').KernelDispatchers['mailDraft'];
+  kitchenDraftImport?: import('@recued/ingredients').KernelDispatchers['kitchenDraftImport'];
+  kitchenDraft?: import('@recued/ingredients').KernelDispatchers['kitchenDraft'];
   /** D-264 — `core.mail.draft.save-to-mailbox`. Optional: a server with no mail stack
    *  wired leaves it absent and the kernel case says so. */
   mailDraftSaveToMailbox?: import('@recued/ingredients').KernelDispatchers['mailDraftSaveToMailbox'];

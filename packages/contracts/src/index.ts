@@ -892,6 +892,7 @@ export {
   KERNEL_OP_GUIDE,
   TIER1_TOOL_GUIDE,
   grantSwitchText,
+  tier1CallDetails,
   tier1CallTitle,
   toolsNeedingSwitch,
 } from './grant-switch-guide.js';
@@ -1837,6 +1838,11 @@ export type {
   IngredientDraftListResult,
   IngredientDraftDeleteArgs,
   IngredientDraftDeleteResult,
+  IngredientDraftBasePack,
+  IngredientDraftEditArgs,
+  IngredientDraftEditResult,
+  IngredientDraftPack,
+  IngredientPackCopiesResult,
   CompositionDecomposeArgs,
   CompositionDecomposeResult,
   CompositionDecomposeArtifacts,
@@ -1859,6 +1865,7 @@ export type {
 export {
   INGREDIENT_DRAFT_MAX_BYTES,
   INGREDIENT_DRAFT_MAX_COUNT,
+  INGREDIENT_DRAFT_PACK_MAX_BYTES,
   INGREDIENT_PREVIEW_MAX_OUTPUT_BYTES,
 } from './ingredient-authoring-rpc.js';
 
@@ -3424,6 +3431,8 @@ export {
   CALENDAR_QUOTA_BYTES_DEFAULT,
   CalendarAdapterError,
 } from './calendar.js';
+export { CALENDAR_EVENT_EDIT_LIMITS } from './calendar-event-rpc.js';
+export type { CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest } from './calendar-event-rpc.js';
 export type {
   CanonicalEvent,
   CalendarRecordHotFields,
@@ -3635,6 +3644,10 @@ export {
   // over-cap file is marked before send rather than warned about after.
   MAIL_SEND_ATTACHMENT_MAX_BYTES,
   MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING,
+  // The recipient bound every send checks before anything parses a recipient.
+  MAIL_RECIPIENT_MAX_LENGTH,
+  mailRecipientUnsafeReason,
+  mailRecipientInvalidReason,
   // D-239 — mail write-back. The error class is a runtime value (thrown by
   // the providers, `instanceof`-checked at the dispatcher), so it exports
   // here rather than in the type-only block below.
@@ -4821,6 +4834,9 @@ export type {
   ChatMessageReply,
   ChatEgressPacket,
   ChatSessionSummary,
+  ChatSessionListCursor,
+  ChatSessionListRequest,
+  ChatSessionListResult,
   ChatRpcMethod,
   ChatBroadcastEventKind,
   ChatHistoryCursor,
@@ -5472,7 +5488,17 @@ export type {
 // (work_entity.{list,get,upsert,delete}). The webclient Data route (D11)
 // talks these over the pair-WS-rpc channel; mirrors the `contact.*`
 // warehouse-CRUD family. `data.timeline` reuses TimelineRequest/Response.
+export { WORK_ENTITY_SEARCH_KINDS } from './work-entity-rpc.js';
 export type {
+  WorkEntitySearchKind,
+  WorkEntitySearchMatch,
+  WorkEntitySearchGroup,
+  WorkEntitySearchRpcRequest,
+  WorkEntitySearchRpcResponse,
+  ProjectWorkKind,
+  WorkEntityProjectItem,
+  WorkEntityProjectItemsRpcRequest,
+  WorkEntityProjectItemsRpcResponse,
   WorkEntityListRpcRequest,
   WorkEntityListRpcResponse,
   WorkEntityGetRpcRequest,
@@ -6908,6 +6934,7 @@ export * from './operation-phrase.js';
 export * from './chat-turn-queue.js';
 export * from './file-lifecycle.js';
 export * from './chat-delivery.js';
+export { CHAT_SESSION_BATCH, CHAT_SESSION_REFRESH_LIMIT } from './chat.js';
 export * from './chat-history-filters.js';
 
 export { csvCell, type CsvCellOptions } from './csv.js';
@@ -7103,3 +7130,7 @@ export { formatAssetChatQuestion, parseAssetChatQuestion, type ChatAssetQuestion
 export * from './common-words.js';
 export * from './mail-account-capabilities.js';
 export type { LocalAutomationScope, LocalAutomationReview, LocalAutomationHooks } from './local-automation.js';
+
+export * from './kitchen-drafts.js';
+export * from './pack-copy.js';
+export * from './resolved-input.js';

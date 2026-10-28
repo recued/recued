@@ -2,8 +2,8 @@
  *  get it, an uploader over the same resumable path Data → Files uses, and a
  *  static renderer for the check's own output.
  *
- *  Two hosts open it today — Pack Use operations (`webclient-bootstrap.ts`) and
- *  the Recipes library (`bootstrap-recipes-route.ts`) — in place of the run modal,
+ *  Pack Use operations, the Recipes library and Data's Records workspace open
+ *  this same flow in place of the run modal,
  *  for a recipe whose declaration HOLDS. Every other host keeps the run modal,
  *  which still runs these recipes: the flow is a better door, not the only one.
  */

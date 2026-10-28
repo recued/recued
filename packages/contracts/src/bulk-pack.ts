@@ -1379,6 +1379,9 @@ export interface PacksUnrunnableResult {
  *  on any failure, with `failure` carrying targeted copy for the dialog. */
 export interface PacksResolveResult {
   manifest: BulkPackManifest | null;
+  /** D-333 — the manifest is the source this pack was installed from in Kitchen (it is in
+   *  neither the bundle nor the marketplace), so the owner can edit it there. */
+  kitchen_editable?: true;
   /** SHA-256 of the exact marketplace manifest rendered for consent. The pack
    * detail echoes it to `packs.installBySlug`; an update refuses if the latest
    * artifact no longer matches this review anchor. */

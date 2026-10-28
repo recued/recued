@@ -503,12 +503,12 @@ export const wireSheetImport = (opts: WireSheetImportOptions): SheetImportHandle
         });
       } catch (err) {
         if (destroyed) return;
-        set({ busy: null, runError: errMessage(err) });
+        set({ busy: null, runError: errMessage(err), checkResult: null });
         return;
       }
       if (destroyed) return;
       if (result.success !== true && result.awaiting_approval !== true) {
-        set({ busy: null, runError: runFailureMessage(result) });
+        set({ busy: null, runError: runFailureMessage(result), checkResult: null });
         return;
       }
       let notice: string | null = null;

@@ -1,3 +1,5 @@
+import { makeKitchenDraftHandlers } from './kitchen-draft-handler.js';
+import type { KitchenDraftStore } from './kitchen-draft-store.js';
 import { makeAutomationRehearsalHandlers, type AutomationRehearsalDeps } from './automation-rehearsal-handler.js';
 /** WebSocket server — real-time channel between server and its paired clients.
  *
@@ -1269,6 +1271,7 @@ export interface AttachWebSocketOptions {
    *  slice is un-wired. Channel-isolation: `ingredient.` is in
    *  `MCP_RESERVED_RPC_PREFIXES`. */
   ingredientDraftDeps?: IngredientDraftRpcDeps;
+  kitchenDraftStore?: KitchenDraftStore;
   /** D-169 P0 — `bridge.capabilityProfile.push` rpc deps. Wires the
    *  per-pair `BridgeRegistry` instance that Slice 4's multi-bridge
    *  dispatcher pre-filters against. Absent → the rpc returns
@@ -1621,6 +1624,7 @@ const buildWsBinding = (
     packUninstallDeps,
     ingredientAuthoringDeps,
     ingredientDraftDeps,
+    kitchenDraftStore,
     bridgeCapabilityDeps,
     bridgeRegistry,
     bridgeDispatcherAuditLog,
@@ -1914,6 +1918,7 @@ const buildWsBinding = (
     // `recipeListDeps.store` is the full `recipeStore`).
     makeRecipeSaveHandlers(recipeSaveDeps ?? recipeListDeps),
     makeRecipeSimulationHandlers(),
+    makeKitchenDraftHandlers(kitchenDraftStore),
     regressionHandlers,
     makeRecipeReleaseHandlers(recipeReleaseDeps,regressionHandlers),
     makeAutomationRehearsalHandlers(automationRehearsalDeps),

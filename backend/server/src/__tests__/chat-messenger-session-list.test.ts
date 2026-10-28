@@ -5,7 +5,7 @@ import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createChatMessengerBridge } from '../chat-messenger-bridge.js';
 import { createChatOrchestrator } from '../chat-orchestrator.js';
 import { withQueuedChatTurns } from '../chat-turn-queue.js';
-import { handleMessagesSearch, handleSessionsList, type ChatRpcDeps } from '../chat-handler.js';
+import { handleMessagesSearch, handleMessengerStatus, handleSessionsList, makeChatHandlers, type ChatRpcDeps } from '../chat-handler.js';
 import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-turn.js';
 import { buildConnectionRow, encodePlaintextAuth, stubConnectionStore } from './d-163-remote-channel-test-helpers.js';
 
@@ -29,6 +29,41 @@ const fixture = () => {
 };
 
 describe('Messenger identity and health in chat.sessions.list', () => {
+  it('refreshes only requested statuses, without loading chat history or changing stored rows', async () => {
+    const f = fixture();
+    for (const id of ['bound', 'other', 'web', 'messenger:discord:old']) f.store.createSession({ id, title: 'Private title' });
+    f.bridge.bind('telegram', '42', 'bot', 'bound'); f.bridge.bind('slack', 'C1', 'bot', 'other');
+    await f.add('bound', 'one'); await f.add('bound', 'two');
+    f.db.exec("UPDATE chat_deliveries SET state = 'failed' WHERE message_id = 'one'; UPDATE chat_deliveries SET state = 'skipped' WHERE message_id = 'two'");
+    const full = handleSessionsList(f.deps);
+    expect(full.messenger_status_refresh_available).toBe(true);
+    const list = vi.spyOn(f.store, 'listSessions').mockImplementation(() => { throw new Error('History must not be loaded'); });
+    const get = vi.spyOn(f.store, 'getSession').mockImplementation(() => { throw new Error('Metadata must not be loaded'); });
+    const changes = () => f.db.prepare('SELECT total_changes() AS n').get(); const before = changes();
+    const result = handleMessengerStatus(f.deps, { session_ids: ['bound', 'web', 'messenger:discord:old', 'missing', 'bound'] });
+    expect(result).toEqual({ messenger_status_available: true, sessions: ['bound', 'web', 'messenger:discord:old', 'missing'].map(id => ({ id,
+      ...(full.sessions.find(s => s.id === id)?.messenger ? { messenger: full.sessions.find(s => s.id === id)!.messenger } : {}),
+    })) });
+    expect(result.sessions[0]?.messenger?.delivery).toMatchObject({ pending_count: 1, failed_count: 1, skipped_count: 1 });
+    expect(changes()).toEqual(before); expect(list).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toMatch(/Private title|retained private text|other/);
+    expect(handleMessengerStatus(f.deps, { session_ids: [] })).toEqual({ sessions: [], messenger_status_available: true });
+  });
+
+  it('bounds owner status requests and reports a failed or absent bridge as unavailable', async () => {
+    const f = fixture(); const handlers = makeChatHandlers(f.deps)!.handlers;
+    await expect(handlers['chat.messenger.status']!({ session_ids: ['s'] }, undefined as never)).rejects.toMatchObject({ code: 'unauthorized' });
+    const read = vi.spyOn(f.bridge, 'sessionStatuses');
+    for (const session_ids of [null, 's', [null], [''], [' '], ['x'.repeat(2049)], Array.from({ length: 501 }, () => 's')]) {
+      expect(() => handleMessengerStatus(f.deps, { session_ids } as never)).toThrow();
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(handleMessengerStatus(f.deps, { session_ids: Array.from({ length: 500 }, (_, i) => `s${i}`) }).sessions).toHaveLength(500);
+    read.mockImplementation(() => { throw new Error('Private storage error'); });
+    expect(handleMessengerStatus(f.deps, { session_ids: ['s'] })).toEqual({ sessions: [], messenger_status_available: false });
+    const { messengerBridge: _bridge, ...legacy } = f.deps.orchestrator;
+    expect(handleMessengerStatus({ ...f.deps, orchestrator: legacy }, { session_ids: ['s'] })).toEqual({ sessions: [], messenger_status_available: false });
+  });
   it('uses the production binding and receive projection for filtered message search', async () => {
     const f = fixture();
     f.store.createSession({ id: 'bound-uuid', title: 'Renamed by owner' });

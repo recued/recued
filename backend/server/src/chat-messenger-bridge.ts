@@ -459,14 +459,19 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
   const sessionStatuses = (
     sessionIds: readonly string[],
     receiveStatus: (vendor: string) => ChatMessengerReceiveState = () => 'unknown',
+    options?: { requestedOnly: true },
   ): Map<string, ChatMessengerSessionStatus> => {
+    if (options?.requestedOnly && sessionIds.length === 0) return new Map();
+    // Both grouping keys are unique. The targeted path groups in session-index
+    // order, avoiding a delivery-sized sorting buffer for dense Messenger lists.
     const rows = db.prepare(`SELECT b.*, COUNT(CASE WHEN d.state NOT IN ('sent', 'skipped') THEN 1 END) AS pending_count,
       COUNT(CASE WHEN d.state = 'sending' THEN 1 END) AS sending_count,
       COUNT(CASE WHEN d.state = 'failed' THEN 1 END) AS failed_count,
       COUNT(CASE WHEN d.state = 'unknown' THEN 1 END) AS unknown_count,
       COUNT(CASE WHEN d.state = 'skipped' THEN 1 END) AS skipped_count
       FROM chat_messenger_bindings b LEFT JOIN chat_deliveries d ON d.binding_id = b.binding_id AND d.state != 'sent'
-      GROUP BY b.binding_id`).all() as Array<Binding & NonNullable<ChatMessengerSessionStatus['delivery']>>;
+      ${options?.requestedOnly ? `WHERE b.session_id IN (${sessionIds.map(() => '?').join(',')})` : ''}
+      GROUP BY ${options?.requestedOnly ? 'b.session_id' : 'b.binding_id'}`).all(...(options?.requestedOnly ? sessionIds : [])) as Array<Binding & NonNullable<ChatMessengerSessionStatus['delivery']>>;
     const visible = new Set(sessionIds);
     const out = new Map<string, ChatMessengerSessionStatus>();
     const health = new Map<string, { connection: ReturnType<typeof connectionState>; ingress: ChatMessengerReceiveState }>();
@@ -515,7 +520,12 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
     }
     db.prepare('INSERT INTO chat_delivery_actions VALUES (?, ?, ?)').run(session, submission, fingerprint);
   }).immediate();
-  return { bind, binding, snapshot, sessionStatuses, act,
+  const allSessionStatuses = (receiveStatus?: (vendor: string) => ChatMessengerReceiveState) => {
+    const ids = db.prepare(`SELECT session_id FROM chat_messenger_bindings UNION
+      SELECT session_id FROM chat_sessions WHERE session_id >= 'messenger:' AND session_id < 'messenger;'`).all() as { session_id: string }[];
+    return sessionStatuses(ids.map(row => row.session_id), receiveStatus);
+  };
+  return { bind, binding, snapshot, sessionStatuses, allSessionStatuses, act,
     register(vendor: string, adapter: MessengerDeliveryAdapter) { adapters.set(vendor, adapter); connections.delete(vendor); queueMicrotask(pump); },
     async connect(session: string, vendor: string) {
       const generation = queue.generation(session);

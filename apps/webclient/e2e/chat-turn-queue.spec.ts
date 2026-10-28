@@ -1,9 +1,170 @@
 import { test, expect, type Page } from '@playwright/test';
 import { build } from 'esbuild';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { createQueueFixture as CreateQueueFixture } from './harness/chat-queue-backend.js';
+import type { ChatQueuedTurnStatus } from '@recued/contracts';
+
+test.describe('turn control refresh ownership', () => {
+  let bundle: string;
+  let tokens: string;
+  test.beforeAll(async () => {
+    const result = await build({ entryPoints: ['apps/webclient/e2e/harness/chat-queue-harness.ts'],
+      bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2022',
+      resolveExtensions: ['.ts', '.tsx', '.mjs', '.js', '.json'],
+      tsconfig: 'apps/webclient/tsconfig.json', logLevel: 'silent' });
+    bundle = result.outputFiles[0]!.text;
+    tokens = await readFile('packages/ui-shared/src/theme/tokens.css', 'utf8');
+  });
+
+  const setup = async (page: Page, initial: ChatQueuedTurnStatus) => {
+    let status = initial;
+    let revision = 1;
+    let generation = 'g';
+    let quoteGate: Promise<void> | undefined;
+    let quoteReads = 0;
+    let failAction = false;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const actions: Array<{ method: string; args: Record<string, unknown> }> = [];
+    const session = { id: 's', title: 'A useful conversation', archived: false, created_at: 1, last_active_at: 2,
+      picker_state: { current: 'self' }, model_routing: { current: 'byok', provider: 'local', model_id: 'fixture', overridden: false } };
+    await page.route('**/d265-rpc', async route => {
+      const { method, args } = route.request().postDataJSON();
+      let result: unknown = {};
+      if (method === 'chat.sessions.list') result = { sessions: [{ ...session, message_count: 1 }] };
+      if (method === 'chat.session.get') result = { ...session, plans: [], messages: [{ id: 'message-1', session_id: 's',
+        role: 'assistant', contributor: 'model', content: 'Your last saved answer.', target_server: 'self', ts: 1,
+        picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: 'fixture', instance_id: 'controls' } },
+        model_used: { provider: 'local', model_id: 'fixture' } }] };
+      if (method === 'server.getLLMConfig') result = { config: { slot_1: { provider: 'anthropic', model: 'fixture', has_key: true } } };
+      if (method === 'chat.default_model_pref.get') result = { source_id: null, updated_at: 1 };
+      if (method === 'prefs.get') result = { prefs: {} };
+      if (method === 'chat.session.get' && args?.around_message_id === 'quoted-target') {
+        quoteReads++;
+        await quoteGate;
+      }
+      if (method === 'chat.turns.list') result = { generation, revision, turns: [{ turn_id: 't1', session_id: 's',
+        position: 0, status, message: 'Prepare my next draft', created_at: 1, duplicate_count: 0, withdraw_to_edit_available: true }] };
+      if (method === 'chat.turn.cancel' || method === 'chat.turn.retry' || method === 'chat.turn.withdraw') {
+        actions.push({ method, args });
+        await gate;
+        if (failAction) { await route.fulfill({ json: { error: 'The acknowledgement was lost.' } }); return; }
+        result = method === 'chat.turn.cancel' ? { ok: true } : { turn_id: 't2', disposition: 'accepted' };
+        if (method === 'chat.turn.withdraw') {
+          status = 'withdrawn'; revision++;
+          result = { session_id: 's', turn_id: 't1', message: 'Prepare my next draft', reply_to_message_id: 'quoted-target' };
+        }
+      }
+      await route.fulfill({ json: { result } });
+    });
+    await page.route('**/queue-controls.js', route => route.fulfill({ contentType: 'text/javascript', body: bundle }));
+    await page.route('**/queue-controls.html', route => route.fulfill({ contentType: 'text/html', body:
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>${tokens}
+      body{margin:0}#app{height:100dvh}</style></head><body><main id="app"></main><script type="module" src="/queue-controls.js"></script></body></html>` }));
+    await page.goto('/queue-controls.html');
+    await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+    const refresh = async () => {
+      const previous = await page.locator('[data-recued-chat-turn-queue]').elementHandle();
+      await page.evaluate(() => (window as unknown as { queueTestEvent(event: unknown): void }).queueTestEvent({
+        kind: 'chat.session_changed', field: 'queue', session_id: 's', cursor: Date.now(),
+      }));
+      if (previous) await expect.poll(() => previous.evaluate(element => element.isConnected)).toBe(false);
+    };
+    return { actions, refresh,
+      set: (next: ChatQueuedTurnStatus) => { status = next; revision++; },
+      recreate: () => { generation = 'replacement'; status = 'queued'; revision = 1; },
+      quoteReads: () => quoteReads,
+      holdQuote: (gate: Promise<void>) => { quoteGate = gate; },
+      finish: (fail = false) => { failAction = fail; release(); },
+    };
+  };
+
+  for (const [status, label, progress] of [
+    ['running', 'Stop turn', 'Stopping…'], ['failed', 'Try again', 'Trying again…'],
+  ] as const) {
+    test(`${label} retains pending state and focus through queue and full Chat refreshes`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      const f = await setup(page, status);
+      const input = page.locator('[data-recued-chat-route-input]');
+      try {
+        await input.fill('Keep this unsent draft.');
+        const button = page.getByRole('button', { name: label, exact: true });
+        await button.focus();
+        await f.refresh();
+        await expect(button).toBeFocused({ timeout: 2000 });
+        await button.press('Enter');
+        const pending = page.getByRole('button', { name: progress, exact: true });
+        await expect(pending).toBeDisabled();
+        await expect(pending).toBeFocused();
+        await f.refresh();
+        await page.evaluate(() => (window as unknown as { queueTestRefresh(): Promise<void> }).queueTestRefresh());
+        await expect(pending).toBeDisabled();
+        await expect(pending).toBeFocused();
+        // A synthetic activation also exercises the controller's guard.
+        await pending.dispatchEvent('click');
+        expect(f.actions).toHaveLength(1);
+        await input.focus();
+        await input.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(5, 9));
+        f.finish(true);
+        await expect(page.locator('[data-recued-chat-turn-queue] [role="alert"]')).toContainText(/Could not (cancel|confirm)/);
+        await expect(button).toBeEnabled();
+        await expect(input).toBeFocused();
+        await expect(input).toHaveValue('Keep this unsent draft.');
+        expect(await input.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 9]);
+      } finally { f.finish(); }
+    });
+  }
+
+  test('a settled turn returns queue focus to the composer without disturbing a later focus choice', async ({ page }) => {
+    const f = await setup(page, 'running');
+    const input = page.locator('[data-recued-chat-route-input]');
+    try {
+      await input.fill('Keep writing.');
+      await page.getByRole('button', { name: 'Stop turn', exact: true }).focus();
+      f.set('completed');
+      await f.refresh();
+      await expect(page.locator('[data-recued-chat-turn-queue]')).toHaveCount(0);
+      await expect(input).toBeFocused();
+      await expect(input).toHaveValue('Keep writing.');
+      f.set('running');
+      await page.evaluate(() => (window as unknown as { queueTestEvent(event: unknown): void }).queueTestEvent({
+        kind: 'chat.session_changed', field: 'queue', session_id: 's', cursor: Date.now(),
+      }));
+      await expect(page.getByRole('button', { name: 'Stop turn', exact: true })).toBeVisible();
+      const search = page.locator('[data-recued-chat-route-history-search]');
+      await search.focus();
+      f.set('completed');
+      await f.refresh();
+      await expect(search).toBeFocused();
+    } finally { f.finish(); }
+  });
+
+  test('a generation change during quoted withdrawal cannot restore into the replacement conversation', async ({ page }) => {
+    const f = await setup(page, 'queued');
+    const input = page.locator('[data-recued-chat-route-input]');
+    let releaseQuote!: () => void;
+    f.holdQuote(new Promise<void>(resolve => { releaseQuote = resolve; }));
+    try {
+      await page.getByRole('button', { name: 'Withdraw to edit', exact: true }).click();
+      f.finish();
+      await expect.poll(f.quoteReads).toBe(1);
+      f.recreate();
+      await f.refresh();
+      await expect(page.getByRole('button', { name: 'Withdraw to edit', exact: true })).toBeEnabled();
+      const response = page.waitForResponse(response => {
+        const args = response.request().postDataJSON()?.args;
+        return response.url().endsWith('/d265-rpc') && args?.around_message_id === 'quoted-target';
+      });
+      releaseQuote();
+      await (await response).finished();
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+      await expect(input).toHaveValue('');
+      await expect(page.locator('[data-chat-reply-draft]')).toHaveCount(0);
+    } finally { f.finish(); releaseQuote(); }
+  });
+});
 
 test('both clients recover a blocked attachment and a lost file receipt without reposting its text', async ({ browser }) => {
   const target = resolve('node_modules/.cache/d265-e2e/attachment-backend.mjs');

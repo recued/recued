@@ -58,6 +58,7 @@ import type {
 } from '../saved-data-views.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
 import type { Dish, DishGroup, DishLastRun, DishRunRow, DishWebhookDoorChange } from '../dish.js';
+import type { CalendarEventRef, CalendarEventSnapshot, CalendarEventUpdateRequest } from '../calendar-event-rpc.js';
 import type { CacheEntry } from '../cache.js';
 import type {
   RecipeDefinition,
@@ -91,6 +92,10 @@ import type {
   EngagementsResolverResult,
 } from '../engagement.js';
 import type {
+  WorkEntitySearchRpcRequest,
+  WorkEntitySearchRpcResponse,
+  WorkEntityProjectItemsRpcRequest,
+  WorkEntityProjectItemsRpcResponse,
   WorkEntityListRpcRequest,
   WorkEntityListRpcResponse,
   WorkEntityGetRpcRequest,
@@ -2645,6 +2650,14 @@ export type ServerRpcRegistry = {
 
   /** Owner Kitchen sample test. Executes only transforms and fixture outputs,
    * with no live service calls or persistence. The engine stays on the server. */
+  'kitchen.draft.get': RpcMethodSpec<{ draft_id: string }, import('../kitchen-drafts.js').KitchenImportDraft>;
+  'kitchen.draft.update': RpcMethodSpec<{ draft_id: string; expected_revision: number; source: string }, import('../kitchen-drafts.js').KitchenImportDraft>;
+  /** D-332 — the owner discards an imported draft, checked against its revision. */
+  'kitchen.draft.discard': RpcMethodSpec<{ draft_id: string; expected_revision: number }, import('../kitchen-drafts.js').KitchenDraftDiscardResult>;
+  /** D-333 — Kitchen's In progress list: every origin's work, newest first, without source. */
+  'kitchen.draft.list': RpcMethodSpec<void, import('../kitchen-drafts.js').KitchenWorkItemList>;
+  /** D-333 — the owner starts new work in Kitchen (a new recipe's first autosave). */
+  'kitchen.draft.create': RpcMethodSpec<import('../kitchen-drafts.js').KitchenDraftCreateInput, import('../kitchen-drafts.js').KitchenImportDraft>;
   'recipe.simulate': RpcMethodSpec<RecipeSimulationRequest, RecipeSimulationResult>;
   /** Cancels only a test started on this same paired connection. */
   'recipe.simulate.cancel': RpcMethodSpec<{ simulation_id: string }, { cancelled: boolean }>;
@@ -5992,6 +6005,13 @@ export type ServerRpcRegistry = {
     import('../ingredient-authoring-rpc.js').IngredientUninstallResult
   >;
 
+  /** D-333 — the installed copies made in Kitchen and the packs they copy, so the recipe
+   *  editor can switch a recipe between them. Owner only, like every `ingredient.` method. */
+  'ingredient.copies.list': RpcMethodSpec<
+    void,
+    import('../ingredient-authoring-rpc.js').IngredientPackCopiesResult
+  >;
+
   // D-170 N.4 / N.15 / #2 — the authoring side that precedes install: a
   // per-pair draft store for in-progress compositions + test-before-save
   // preview/decompose.
@@ -6023,6 +6043,13 @@ export type ServerRpcRegistry = {
   'ingredient.draft.delete': RpcMethodSpec<
     import('../ingredient-authoring-rpc.js').IngredientDraftDeleteArgs,
     import('../ingredient-authoring-rpc.js').IngredientDraftDeleteResult
+  >;
+
+  /** D-333 — open the draft of changes to a pack made in Kitchen, starting it from the source
+   *  the pack was installed from. Owner only, like every `ingredient.` method. */
+  'ingredient.draft.edit': RpcMethodSpec<
+    import('../ingredient-authoring-rpc.js').IngredientDraftEditArgs,
+    import('../ingredient-authoring-rpc.js').IngredientDraftEditResult
   >;
 
   /** D-170 #2 — validate + decompose one composition draft and return the
@@ -6088,6 +6115,8 @@ export type ServerRpcRegistry = {
   /** D-174 #22 — list one own-it kind, polymorphic across its Sources
    *  (or scoped via `source_id`). Returns tagged records + a filter-
    *  matched total for pagination. */
+  'work_entity.search': RpcMethodSpec<WorkEntitySearchRpcRequest, WorkEntitySearchRpcResponse>;
+  'work_entity.project.items': RpcMethodSpec<WorkEntityProjectItemsRpcRequest, WorkEntityProjectItemsRpcResponse>;
   'work_entity.list': RpcMethodSpec<
     WorkEntityListRpcRequest,
     WorkEntityListRpcResponse
@@ -6956,6 +6985,9 @@ export type ServerRpcRegistry = {
     void,
     { instances: CollectionInstanceRow[] }
   >;
+  /** Paired owner details and version-bound edits of single local events. */
+  'collection.calendar.event.get': RpcMethodSpec<CalendarEventRef, CalendarEventSnapshot>;
+  'collection.calendar.event.update': RpcMethodSpec<CalendarEventUpdateRequest, CalendarEventSnapshot>;
   /** Patch retention / quota / expansion / poll cadence. `reprobe:
    *  true` re-runs the cap probe + refreshes the cached caps. Does
    *  NOT re-auth (use `reauth` for that). */
@@ -7168,7 +7200,7 @@ export type ServerRpcRegistry = {
   // Per-method shapes use `unknown` for the request body at P1 — the
   // handler-scaffold slice tightens to concrete request/response
   // shapes alongside the handler implementation.
-  'chat.sessions.list': RpcMethodSpec<void, { sessions: unknown[] }>;
+  'chat.sessions.list': RpcMethodSpec<void | import('../chat.js').ChatSessionListRequest, import('../chat.js').ChatSessionListResult>;
   'chat.messages.search': RpcMethodSpec<
     import('../chat.js').ChatMessageSearchRequest,
     import('../chat.js').ChatMessageSearchResult
@@ -7184,6 +7216,7 @@ export type ServerRpcRegistry = {
   'chat.delivery.retry': RpcMethodSpec<{ session_id: string; delivery_id: string; submission_id: string; accept_unknown?: boolean }, { ok: true }>;
   'chat.delivery.skip': RpcMethodSpec<{ session_id: string; delivery_id: string; submission_id: string }, { ok: true }>;
   'chat.messenger.connect': RpcMethodSpec<{ session_id: string; vendor: string }, { session_id: string }>;
+  'chat.messenger.status': RpcMethodSpec<import('../chat-delivery.js').ChatMessengerStatusRequest, import('../chat-delivery.js').ChatMessengerStatusResult>;
   'chat.turns.list': RpcMethodSpec<{ session_id: string }, import('../chat-turn-queue.js').ChatTurnQueueSnapshot>;
   'chat.turn.withdraw': RpcMethodSpec<{ session_id: string; turn_id: string }, import('../chat-turn-queue.js').ChatWithdrawnDraft>;
   'chat.turn.cancel': RpcMethodSpec<{ session_id: string; turn_id: string }, { ok: true }>;
@@ -8585,6 +8618,11 @@ export const SERVER_RPC_METHODS = [
   'recipe.save',
   'recipe.delete',
   'recipe.validate',
+  'kitchen.draft.get',
+  'kitchen.draft.update',
+  'kitchen.draft.discard',
+  'kitchen.draft.list',
+  'kitchen.draft.create',
   'recipe.simulate',
   'recipe.simulate.cancel',
   'recipe.capture.prepare',
@@ -9008,6 +9046,7 @@ export const SERVER_RPC_METHODS = [
   // cannot author / install / uninstall their own capability surface.
   'ingredient.install',
   'ingredient.uninstall',
+  'ingredient.copies.list',
   // D-170 N.4 / N.15 / #2 — authoring-side draft store +
   // test-before-save preview/decompose.
   // Same `ingredient.` reserved-prefix posture (MCP agents cannot author /
@@ -9016,12 +9055,15 @@ export const SERVER_RPC_METHODS = [
   'ingredient.draft.list',
   'ingredient.draft.get',
   'ingredient.draft.delete',
+  'ingredient.draft.edit',
   'ingredient.compose.decompose',
   'ingredient.saveAsNew',
   'ingredient.preview',
   // D-145 PA11 — Settings → Work Entities Source management.
   'work_entity.source.list',
   // D-174 #22 — work-entity warehouse CRUD + timeline read (Data route).
+  'work_entity.search',
+  'work_entity.project.items',
   'work_entity.list',
   'work_entity.get',
   'work_entity.upsert',
@@ -9156,6 +9198,8 @@ export const SERVER_RPC_METHODS = [
   'collection.calendar.enrollBasic',
   'collection.calendar.updateCredentials',
   'collection.calendar.list',
+  'collection.calendar.event.get',
+  'collection.calendar.event.update',
   'collection.calendar.update',
   'collection.calendar.delete',
   'collection.calendar.resync',
@@ -9214,6 +9258,7 @@ export const SERVER_RPC_METHODS = [
   'chat.session.export',
   'chat.egress.get',
   'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
+  'chat.messenger.status',
   'chat.turns.list',
   'chat.turn.withdraw',
   'chat.turn.cancel',

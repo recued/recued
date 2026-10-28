@@ -155,6 +155,28 @@ export interface ForgetOwnEntryResult {
   already?: true;
 }
 
+/** What a forget checks before it marks anything: why it is refused, or the entry it
+ *  would forget (`already` when that entry is out of recall already). */
+export type ForgetOwnEntryCheck =
+  | { ok: false; message: string }
+  | { ok: true; already: true }
+  | { ok: true; already?: undefined; row: UserMemoryRow; forgotten: ReadonlySet<string> };
+
+/** D-329 — the checks of {@link forgetOwnEntry}, which runs them, and so does
+ *  `memory.forget`'s check before the owner is asked: the check and the forget cannot
+ *  disagree. */
+export const checkForgetOwnEntry = async (input: {
+  store: Pick<UserMemoryStore, 'getRow'>;
+  redactions: Collection<MemoryRedactionRecord>;
+  memory_id: string;
+  author: string | undefined;
+}): Promise<ForgetOwnEntryCheck> => {
+  const forgotten = await forgottenIds(input.redactions);
+  const check = await checkOwnEntry(input.store, forgotten, input.memory_id, input.author);
+  if (check.ok) return { ok: true, row: check.row, forgotten };
+  return check.refusal === 'forgotten' ? { ok: true, already: true } : { ok: false, message: check.message };
+};
+
 /** Forget `memory_id` and every earlier version it replaced, for `author`. A
  *  version that is already under the overlay keeps its existing record — the
  *  owner's redaction is never overwritten by an agent's forget. */
@@ -166,25 +188,22 @@ export const forgetOwnEntry = async (input: {
   reason?: string;
   now: number;
 }): Promise<{ ok: true; result: ForgetOwnEntryResult } | { ok: false; message: string }> => {
-  const forgotten = await forgottenIds(input.redactions);
-  const check = await checkOwnEntry(input.store, forgotten, input.memory_id, input.author);
-  if (!check.ok) {
-    if (check.refusal === 'forgotten') {
-      return {
-        ok: true,
-        result: { memory_id: input.memory_id, forgotten: true, versions: 0, already: true },
-      };
-    }
-    return { ok: false, message: check.message };
+  const checked = await checkForgetOwnEntry(input);
+  if (!checked.ok) return { ok: false, message: checked.message };
+  if (checked.already) {
+    return {
+      ok: true,
+      result: { memory_id: input.memory_id, forgotten: true, versions: 0, already: true },
+    };
   }
   let versions = 0;
-  for (const row of await lineageBackFrom(input.store, check.row)) {
-    if (forgotten.has(row.memory_id)) continue;
+  for (const row of await lineageBackFrom(input.store, checked.row)) {
+    if (checked.forgotten.has(row.memory_id)) continue;
     await input.redactions.set(row.memory_id, {
       memory_id: row.memory_id,
       redacted_at: input.now,
       by_contract_id: input.author!,
-      forget_of: check.row.memory_id,
+      forget_of: checked.row.memory_id,
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
     });
     versions += 1;

@@ -97,7 +97,7 @@ test('Kitchen pack data fields keep wide editing inside their scroller', async (
   await page.evaluate(() => window.__app.setHash('#kitchen/pack'));
 
   const builder = page.locator('[data-recued-ingredient-builder-route]');
-  await expect(builder.getByRole('combobox', { name: 'Draft' })).toBeEnabled();
+  await expect(builder.getByRole('combobox', { name: 'In progress' })).toBeEnabled();
   await builder.getByRole('tab', { name: 'Data fields' }).click();
 
   const groups = builder.locator('[data-recued-ingredient-entity-field-table]');
@@ -136,7 +136,7 @@ test('Kitchen pack review keeps its desktop checkbox row full-sized', async ({ p
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const builder = page.locator('[data-recued-ingredient-builder-route]');
-  await expect(builder.getByRole('combobox', { name: 'Draft' })).toBeEnabled();
+  await expect(builder.getByRole('combobox', { name: 'In progress' })).toBeEnabled();
   await builder.getByRole('tab', { name: 'Operations' }).click();
   const reviewed = builder.getByRole('checkbox', {
     name: 'Reviewed for operation untitled',

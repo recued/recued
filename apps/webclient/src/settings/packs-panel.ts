@@ -371,6 +371,7 @@ import {
   findEndpointCandidates,
   getSeededConnectionRequirements,
   isPackServiceKind,
+  packCopyFor,
 } from '@recued/contracts';
 import type { BadgeTone } from '@recued/ui-shared/primitives';
 // D-182 §7.1 / D-196 — the {Access × Audience} install picker. It renders for
@@ -639,6 +640,12 @@ export const PACKS_ROW_COLLISION_ATTR = 'data-recued-packs-row-collision';
 // `about`). The Identity section also carries the author's repo link when the
 // manifest declares one.
 export const PACKS_DETAIL_SECTION_ATTR = 'data-recued-packs-detail-section';
+/** D-333 — Edit in Kitchen, on a pack made there (value = the pack's slug). */
+export const PACKS_DETAIL_KITCHEN_EDIT_ATTR = 'data-recued-packs-detail-kitchen-edit';
+/** D-333 — Edit a copy in Kitchen, on another author's pack (value = the pack's slug). */
+export const PACKS_DETAIL_KITCHEN_COPY_ATTR = 'data-recued-packs-detail-kitchen-copy';
+/** D-333 — the name recipes use for a pack in `depends_on` and `op` (value = that name). */
+export const PACKS_DETAIL_RECIPE_REFERENCE_ATTR = 'data-recued-packs-detail-recipe-reference';
 export const PACKS_DETAIL_REPO_LINK_ATTR = 'data-recued-packs-detail-repo';
 // Detail-only surface — a marketplace pack whose manifest isn't bundled is
 // resolved on open; these mark the transient loading + resolve-failure states.
@@ -1020,6 +1027,12 @@ export interface MountPacksPanelOptions {
    *  WITH {@link runInstallBySlug} ⇒ the section renders. Omitting either hides it
    *  (a read-only / bundled-only host). */
   runResolvePack?: PacksResolveCaller;
+  /** D-333 — open the pack builder on changes to a pack made in Kitchen. Resolves once the
+   *  builder is on its way; rejects with what went wrong. Absent: no Edit in Kitchen. */
+  editPackInKitchen?: (packSlug: string) => Promise<void>;
+  /** D-333 — open the pack builder on a copy of another author's pack: the owner's own,
+   *  installed beside the original. Absent: no copies. */
+  copyPackInKitchen?: (manifest: BulkPackManifest) => Promise<void>;
   /** Add-a-pack (2026-07-01) — install-by-slug seam a resolved (added) pack's
    *  consent dialog commits to (marketplace recipes aren't bundled, so the
    *  by-value `runInstall` can't resolve them). Gated together with
@@ -1739,6 +1752,10 @@ export const mountPacksPanel = (
   // ── Detail-only marketplace resolve sub-state ────────────────────
   /** Slug whose `runResolvePack` is in flight (detail-only, not-in-roster). */
   let detailResolving: string | null = null;
+  /** D-333 — packs whose resolve came from the source they were installed from in Kitchen. */
+  const kitchenEditableSlugs = new Set<string>();
+  let kitchenEditError: { slug: string; message: string } | null = null;
+  let kitchenEditOpening: string | null = null;
   /** A resolve failure for a specific slug — surfaced in the detail, and gates
    *  re-resolve so a failed slug doesn't loop on every render. */
   let detailResolveError: { slug: string; message: string } | null = null;
@@ -1846,6 +1863,8 @@ export const mountPacksPanel = (
       try {
         const result = await resolve(slug);
         if (disposed) return;
+        if (result.kitchen_editable === true) kitchenEditableSlugs.add(slug);
+        else kitchenEditableSlugs.delete(slug);
         if (selectedSlug !== slug) return; // navigated away mid-resolve
         if (result.manifest === null) {
           pendingAddManifestHash = null;
@@ -3431,6 +3450,55 @@ export const mountPacksPanel = (
     region.onkeydown = event => { if (event.key === 'Escape' && !installing) { event.preventDefault(); closeDialog(); } };
     return region;
   };
+  /** D-333 — Kitchen, as for recipes: a pack made there is changed in place; another author's
+   *  is copied, and the copy is the owner's own. */
+  const appendKitchenEditAction = (parent: HTMLElement, pack: PackListEntry): void => {
+    const slug = pack.slug;
+    const installed = pack.installed || pack.installed_any_version === true || rosterInstalledSet.has(slug);
+    const ownEdit = opts.editPackInKitchen;
+    const copyEdit = opts.copyPackInKitchen;
+    const mine = installed && ownEdit !== undefined && kitchenEditableSlugs.has(slug);
+    // A core feature is the server's own, not a pack to tailor.
+    const copy = !mine && copyEdit !== undefined && pack.manifest !== undefined && !pack.pre_install
+      ? packCopyFor(pack.manifest)
+      : null;
+    if (!mine && copy === null) return;
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = 'rx-btn rx-btn-secondary rx-btn-sm';
+    button.setAttribute(mine ? PACKS_DETAIL_KITCHEN_EDIT_ATTR : PACKS_DETAIL_KITCHEN_COPY_ATTR, slug);
+    button.textContent = kitchenEditOpening === slug ? 'Opening…' : mine ? 'Edit in Kitchen' : 'Edit a copy in Kitchen';
+    button.disabled = installing || deleting || kitchenEditOpening === slug;
+    button.addEventListener('click', () => {
+      if (kitchenEditOpening !== null) return;
+      kitchenEditOpening = slug;
+      kitchenEditError = null;
+      render();
+      const opening = mine ? ownEdit!(slug) : copyEdit!(pack.manifest!);
+      void opening.catch((error: unknown) => {
+        if (disposed) return;
+        kitchenEditError = { slug, message: humanizeRpcError(error) };
+      }).finally(() => {
+        if (disposed) return;
+        kitchenEditOpening = null;
+        render();
+      });
+    });
+    parent.appendChild(button);
+    if (copy?.leavesRecipes === true) {
+      const note = doc.createElement('p');
+      note.className = 'packs-detail-note';
+      note.textContent = 'Your copy takes this pack\'s operations and data fields. Its recipes stay with this pack.';
+      parent.appendChild(note);
+    }
+    if (kitchenEditError?.slug === slug) {
+      const note = doc.createElement('p');
+      note.setAttribute('role', 'alert');
+      note.className = 'packs-detail-note';
+      note.textContent = kitchenEditError.message;
+      parent.appendChild(note);
+    }
+  };
   const appendHistoryAction = (parent: HTMLElement, slug: string): void => {
     const history = doc.createElement('button'); history.type = 'button'; history.textContent = 'Release history';
     history.className = 'rx-btn rx-btn-secondary rx-btn-sm'; history.setAttribute('data-pack-release-history',slug);
@@ -4123,6 +4191,17 @@ export const mountPacksPanel = (
     facts.textContent =
       `${pack.slug} · ${COPY.publisher_prefix}${pack.publisher} · v${pack.version}`;
     overview.appendChild(facts);
+    // D-333 — what a recipe writes to use this pack: `depends_on` and each step's `op` name it.
+    const reference = doc.createElement('p');
+    reference.className = 'packs-detail-facts';
+    reference.setAttribute(PACKS_DETAIL_RECIPE_REFERENCE_ATTR, `${pack.publisher}.${pack.slug}`);
+    const referenceName = doc.createElement('code');
+    referenceName.textContent = `${pack.publisher}.${pack.slug}`;
+    const referenceLead = doc.createElement('span');
+    referenceLead.textContent = 'Recipes use it as ';
+    reference.appendChild(referenceLead);
+    reference.appendChild(referenceName);
+    overview.appendChild(reference);
     // Repo link — issues / support route to the author's repo (the
     // marketplace hosts no issue tracking); absent on most bundled packs.
     const repo = pack.repo;
@@ -4142,6 +4221,7 @@ export const mountPacksPanel = (
     if (opts.packUpdateCaller && (pack.installed || pack.installed_any_version)) {
       appendHistoryAction(actions,pack.slug);
     }
+    appendKitchenEditAction(actions, pack);
     identity.appendChild(actions);
     wrapper.appendChild(identity);
     // Inline consent dialog directly under the Install affordance.

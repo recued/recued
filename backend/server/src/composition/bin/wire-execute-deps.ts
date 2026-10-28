@@ -28,6 +28,8 @@
  *      runs persist a durable checkpoint but no user-facing ask fires).
  */
 
+import { createKitchenDraftStore } from '../../kitchen-draft-store.js';
+import { createKitchenDraftImporter, createKitchenDraftAccess } from '../../kitchen-draft-service.js';
 import type Database from 'better-sqlite3';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
 import { createPeerAskOutboxStore } from '../../storage/peer-ask-outbox-store.js';
@@ -959,6 +961,14 @@ export const composeExecuteDeps = (
     : undefined;
 
   const executeDeps: ExecuteHandlerDeps = {
+    ...(deps.db && opAdmissionGate ? { kitchenDraftImport: createKitchenDraftImporter({
+      store: createKitchenDraftStore(deps.db), gate: opAdmissionGate,
+      ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+    }) } : {}),
+    ...(deps.db && opAdmissionGate ? { kitchenDraft: createKitchenDraftAccess({
+      store: createKitchenDraftStore(deps.db), gate: opAdmissionGate,
+      ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+    }) } : {}),
     ...(deps.situationAccess ? { situationAccess: deps.situationAccess } : {}),
     ...(deps.tier1Registry !== undefined ? { tier1Registry: deps.tier1Registry } : {}),
     // D-210 Phase C — the device-fanout branch reads this at each preflight

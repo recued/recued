@@ -21,10 +21,12 @@ import {
   TIER1_CLASSIFICATIONS,
   TIER1_CONCURRENCY_SAFE,
   TIER1_TOOL_DESCRIPTORS,
+  TIER1_TOOL_NAMES,
 } from '@recued/contracts';
 // The orchestrator reaches it the same way (`planApproval as planApprovalModule`).
 import { planApproval } from '@recued/gateway';
-import { buildChatTier1Handlers, calendarAskLabels } from '../chat-tool-handlers.js';
+import { buildChatTier1Handlers, buildChatToolRegistryInputs, calendarAskLabels } from '../chat-tool-handlers.js';
+import { checkCalendarCreate, checkCalendarUpdate, handleCalendarUpdate } from '../collections/calendar/calendar-dispatcher.js';
 import { createCalendarTable } from '../collections/calendar/calendar-table.js';
 import type { ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { createReadGrantChecker } from '../read-grant-checker.js';
@@ -242,5 +244,75 @@ describe('calendar.update — the event its ask names (D-329, 2026-10-25)', () =
     expect(await calendarAskLabels(withCalendar, { source_id: 'evt-1', calendar_id: 'google-work' }, ctx())).toBeUndefined();
     expect(await calendarAskLabels(withCalendar, { source_id: 'evt-9' }, ctx())).toBeUndefined();
     db.close();
+  });
+});
+
+describe('D-329 — a calendar write is checked before the owner is asked', () => {
+  it('⛔ every held Tier-1 write has a check of its own', () => {
+    // A held write with no check is put to the owner and refused only after the yes.
+    const held = TIER1_TOOL_NAMES.filter((name) => TIER1_CLASSIFICATIONS[name] === 'write');
+    expect(Object.keys(buildChatToolRegistryInputs(deps()).tier1Checks).sort()).toEqual([...held].sort());
+  });
+
+  const START = Date.UTC(2026, 9, 27, 14);
+  /** A real calendar table behind the dispatcher's own checks: an instance that may
+   *  create and update events, and one that may only read. */
+  const calendars = () => {
+    const db = new Database(':memory:');
+    const table = createCalendarTable({ db, slug: 'local' });
+    table.upsert({ size_bytes: 0, event: { source_id: 'evt-1', ical_uid: 'uid-1', calendar_id: 'local', summary: 'Dentist',
+      start_at: START, end_at: START + 3_600_000, timezone: 'UTC', is_all_day: false, status: 'confirmed',
+      created_at: START, updated_at: START } } as never);
+    const caps = { local: { create_event: 'yes', update_event: 'yes' }, readonly: { create_event: 'no', update_event: 'no' } };
+    const updateEvent = vi.fn();
+    const deps = {
+      instances: { get: (_platform: string, slug: string) => (slug in caps
+        ? { caps: caps[slug as keyof typeof caps], adapter_type: 'local', auth_state: 'healthy' } : null) },
+      getCollection: (slug: string) => (slug in caps ? { table, provider: { kind: 'local', updateEvent } } : undefined),
+    } as never;
+    return { db, deps, updateEvent };
+  };
+
+  it('the dispatcher refuses an unknown event, a read-only calendar, and an event that would end before it starts', () => {
+    const { db, deps } = calendars();
+    expect(() => checkCalendarUpdate(deps, { slug: 'local', source_id: 'evt-9', patch: { summary: 'x' } })).toThrow('CALENDAR_EVENT_NOT_FOUND');
+    expect(() => checkCalendarUpdate(deps, { slug: 'readonly', source_id: 'evt-1', patch: {} })).toThrow('CALENDAR_CAPABILITY_DENIED');
+    expect(() => checkCalendarCreate(deps, { slug: 'readonly' })).toThrow('CALENDAR_CAPABILITY_DENIED');
+    expect(() => checkCalendarCreate(deps, { slug: 'google-work' })).toThrow('CALENDAR_INSTANCE_NOT_FOUND');
+    // Moved past its old end, with no new end.
+    expect(() => checkCalendarUpdate(deps, { slug: 'local', source_id: 'evt-1', patch: { start_at: START + 7_200_000 } }))
+      .toThrow('CALENDAR_EVENT_ENDS_BEFORE_IT_STARTS');
+    expect(() => checkCalendarUpdate(deps, { slug: 'local', source_id: 'evt-1',
+      patch: { start_at: START + 7_200_000, end_at: START + 10_800_000 } })).not.toThrow();
+    db.close();
+  });
+
+  it('the write runs the same check, so it refuses what the check refuses before calling the calendar', async () => {
+    const { db, deps, updateEvent } = calendars();
+    await expect(handleCalendarUpdate(deps, { slug: 'local', source_id: 'evt-1', patch: { start_at: START + 7_200_000 } }))
+      .rejects.toThrow('CALENDAR_EVENT_ENDS_BEFORE_IT_STARTS');
+    expect(updateEvent).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('the chat\'s check answers with those refusals, and with the arguments\' own, before any write', async () => {
+    const d = deps();
+    const withChecks = { ...d, getCalendarWriteDeps: () => ({
+      calendarCreate: d.__create, calendarUpdate: d.__update,
+      checkCalendarCreate: (input: { slug: string }) => { if (input.slug !== 'local') throw new Error(`CALENDAR_INSTANCE_NOT_FOUND: no calendar instance '${input.slug}'`); },
+      checkCalendarUpdate: (input: { source_id: string }) => { if (input.source_id !== 'evt-1') throw new Error(`CALENDAR_EVENT_NOT_FOUND: '${input.source_id}'`); },
+    }) } as never;
+    const checks = buildChatToolRegistryInputs(withChecks).tier1Checks;
+    const event = { summary: 'Dentist', start_at: START, end_at: START + 3_600_000, timezone: 'Europe/Dublin' };
+    expect(await checks['calendar.create']!(event, ctx())).toBeNull();
+    expect(await checks['calendar.create']!({ ...event, calendar_id: 'google-work' }, ctx()))
+      .toMatchObject({ ok: false, reason: 'invalid_args', detail: expect.stringContaining('CALENDAR_INSTANCE_NOT_FOUND') });
+    expect(await checks['calendar.create']!({ ...event, end_at: START }, ctx()))
+      .toMatchObject({ ok: false, detail: 'calendar.create: end_at must be after start_at' });
+    expect(await checks['calendar.update']!({ source_id: 'evt-1', summary: 'Dentist (moved)' }, ctx())).toBeNull();
+    expect(await checks['calendar.update']!({ source_id: 'evt-9', summary: 'x' }, ctx()))
+      .toMatchObject({ ok: false, detail: expect.stringContaining('CALENDAR_EVENT_NOT_FOUND') });
+    expect(d.__create).not.toHaveBeenCalled();
+    expect(d.__update).not.toHaveBeenCalled();
   });
 });

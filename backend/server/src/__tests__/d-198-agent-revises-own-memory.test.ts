@@ -33,7 +33,7 @@ import {
   type UserMemoryRow,
   type UserMemoryStore,
 } from '../user-memory-store.js';
-import { buildChatTier1Handlers, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
+import { buildChatTier1Handlers, buildChatToolRegistryInputs, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import {
   handleMemoryGet,
   handleMemoryList,
@@ -104,6 +104,7 @@ const ctx = (execution_source: ExecutionSource): ChatDispatchContext => ({
 });
 
 interface Harness {
+  deps: ChatToolHandlerDeps;
   store: UserMemoryStore;
   redactions: Collection<MemoryRedactionRecord>;
   call: (tool: string, args: unknown, source: ExecutionSource) => Promise<ChatDispatchResult>;
@@ -130,6 +131,7 @@ const harness = (store: UserMemoryStore = makePool(), grant = true): Harness => 
     (raw: unknown, c: ChatDispatchContext) => Promise<ChatDispatchResult>
   >;
   return {
+    deps,
     store,
     redactions,
     call: (tool, args, source) => handlers[tool]!(args, ctx(source)),
@@ -294,6 +296,44 @@ describe('memory.forget — an agent drops an entry it saved', () => {
     const h = harness(makePool(), false);
     const r = await h.call('memory.forget', { memory_id: 'umem_1' }, ownerChat);
     expect(r).toMatchObject({ ok: false, reason: 'classification_blocked' });
+  });
+});
+
+// ── the check before asking ─────────────────────────────────────────
+
+describe('D-329 — a memory write is checked before the owner is asked', () => {
+  // ⛔ A held write's own refusal must answer before the ask: the owner would approve it
+  // and then read that it did not run.
+  const check = (h: Harness, tool: 'memory.write' | 'memory.forget', args: unknown, source: ExecutionSource) =>
+    buildChatToolRegistryInputs(h.deps).tier1Checks[tool]!(args, ctx(source));
+
+  it('memory.write: refuses what the write would refuse, replaces included, and writes nothing', async () => {
+    const h = harness();
+    const theirs = okResult<{ memory_id: string }>(await write(h, door('door-a'), 'Door A saved this'));
+    const a = okResult<{ memory_id: string }>(await write(h, ownerChat, 'v1'));
+    const b = okResult<{ memory_id: string }>(await write(h, ownerChat, 'v2', a.memory_id));
+    const before = (await h.store.list()).map((row) => row.memory_id);
+    expect(await check(h, 'memory.write', { summary: 'Mine', replaces: theirs.memory_id }, ownerChat))
+      .toMatchObject({ ok: false, reason: 'invalid_args', detail: expect.stringMatching(/was not saved by you/) });
+    expect(await check(h, 'memory.write', { summary: 'v3', replaces: a.memory_id }, ownerChat))
+      .toMatchObject({ ok: false, detail: expect.stringContaining(`already replaced by '${b.memory_id}'`) });
+    expect(await check(h, 'memory.write', { summary: '  ' }, ownerChat)).toMatchObject({ ok: false, reason: 'invalid_args' });
+    // What would run, runs nothing yet.
+    expect(await check(h, 'memory.write', { summary: 'v3', replaces: b.memory_id }, ownerChat)).toBeNull();
+    expect(await check(h, 'memory.write', { summary: 'A new one' }, ownerChat)).toBeNull();
+    expect((await h.store.list()).map((row) => row.memory_id)).toEqual(before);
+  });
+
+  it('memory.forget: refuses another contract\'s entry, and marks nothing either way', async () => {
+    const h = harness();
+    const mine = okResult<{ memory_id: string }>(await write(h, door('door-a'), 'mine'));
+    const owners = okResult<{ memory_id: string }>(await write(h, ownerChat, 'the owner chat saved this'));
+    expect(await check(h, 'memory.forget', { memory_id: owners.memory_id }, door('door-a')))
+      .toMatchObject({ ok: false, reason: 'invalid_args', detail: expect.stringMatching(/was not saved by you/) });
+    expect(await check(h, 'memory.forget', { memory_id: 'umem_404' }, door('door-a')))
+      .toMatchObject({ ok: false, detail: expect.stringMatching(/no memory with id/) });
+    expect(await check(h, 'memory.forget', { memory_id: mine.memory_id }, door('door-a'))).toBeNull();
+    expect(await h.redactions.list()).toEqual([]);
   });
 });
 

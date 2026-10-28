@@ -36,6 +36,7 @@
  *  whatever their arguments qualify. */
 
 import { getKernelOp, kernelOpForBackingSlug } from './kernel-op-registry.js';
+import { KITCHEN_DRAFT_IMPORT_OP, KITCHEN_DRAFT_UPDATE_OP } from './kitchen-drafts.js';
 import { RECUED_BUILTIN_SOURCE_ID } from './source-primitive.js';
 import { isWorkEntityKind, type WorkEntityKind } from './work-entities.js';
 import { parseQualifiedWorkEntityId } from './work-entity-qualified-id.js';
@@ -104,6 +105,7 @@ export const kernelWriteStaysInRecued = (
 
   if (ALWAYS_LOCAL_ENTITIES.has(entry.entity)) return true;
   if (LOCAL_MAIL_WRITES.has(opId)) return true;
+  if (opId === KITCHEN_DRAFT_IMPORT_OP || opId === KITCHEN_DRAFT_UPDATE_OP) return true;
 
   if (entry.entity === 'work') {
     // `core.work-entity.<kind>.<verb>`; `list` / `get` / `read` name no kind.

@@ -44,7 +44,11 @@ import type {
   Link,
   MailSendAuditDetail,
 } from '@recued/contracts';
-import { MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD, mailAccountCapabilities } from '@recued/contracts';
+import {
+  MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD,
+  mailAccountCapabilities,
+  mailRecipientUnsafeReason,
+} from '@recued/contracts';
 import { icsInviteKey } from '@recued/transforms';
 import {
   MAIL_SEND_ATTACHMENT_MAX_BYTES,
@@ -1809,6 +1813,26 @@ export const createMailCollection = (
   };
 
   const send = async (args: MailSendInput): Promise<MailSendResult> => {
+    // ⛔ FIRST, BEFORE ANYTHING PARSES A RECIPIENT. The self-send guard and the
+    // audit row below run `extractAddress`, and SMTP hands each recipient to
+    // nodemailer's parser: both slow down quadratically on a long crafted string
+    // (`MAIL_RECIPIENT_MAX_LENGTH`). Notification connections, booking notices and
+    // the email chat door call this without `normalizeMailSend`, so the bound is
+    // checked here for every caller; one address per entry stays that input
+    // contract's rule. No audit row: it records the recipients, the very values
+    // refused here.
+    for (const [field, recipients] of [
+      ['to', args.to], ['cc', args.cc ?? []], ['bcc', args.bcc ?? []],
+      ['reply_to', args.reply_to === undefined ? [] : [args.reply_to]],
+    ] as const) {
+      recipients.forEach((recipient, index) => {
+        const problem = mailRecipientUnsafeReason(recipient);
+        if (problem !== null) {
+          throw new IngredientError('BAD_INPUT',
+            `mail-send: ${field === 'reply_to' ? field : `${field}[${index}]`} ${problem}`, { slug, field });
+        }
+      });
+    }
     const assertHandoff = captureProviderHandoffFence();
     const reviewed = currentPreapprovalIo();
     if (typeof args.reconciliation_id === 'string' && args.reconciliation_id.startsWith(PREAPPROVAL_MAIL_PREFIX)) {

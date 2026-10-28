@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { InFlightRegistry } from '../execution/in-flight-registry.js';
 import { LaneSemaphore } from '../execution/lane-semaphore.js';
-import { buildChatTier1Handlers } from '../chat-tool-handlers.js';
+import { buildChatTier1Handlers, buildChatToolRegistryInputs } from '../chat-tool-handlers.js';
 import type { ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import type { ChatDispatchContext, ExecutionSource } from '@recued/contracts';
 
@@ -111,6 +111,14 @@ describe('D-259 § 7.4.3 — recipe.stop reaches the registry from a chat turn',
       const out = await handlers['recipe.stop']!(args, ctx());
       expect(out.ok).toBe(false);
     }
+  });
+
+  it('D-329 — is checked before the owner is asked, and the check stops nothing', async () => {
+    const { reg, abort } = withRun(CHAT_SOURCE);
+    const check = buildChatToolRegistryInputs(deps(reg)).tier1Checks['recipe.stop']!;
+    expect(await check({ recipe_id: 'a', run_id: 'b' }, ctx())).toMatchObject({ ok: false, reason: 'invalid_args' });
+    expect(await check({ recipe_id: 'recued-core/long-thing' }, ctx())).toBeNull();
+    expect(abort).not.toHaveBeenCalled();
   });
 
   it('fails closed when no execution source is on the turn', async () => {

@@ -180,7 +180,7 @@ const splitDescriptionForStorage = async (
  *  snapshot's `hot` set already carries the D-119 display fields (summary /
  *  start_at / end_at / location), so the schema-driven explorer renders it with
  *  no bespoke code. Body follows the same inline-vs-CAS split as mail. */
-const snapshotToCollectionRecord = (snap: CalendarRowSnapshot): CollectionRecord => {
+export const snapshotToCollectionRecord = (snap: CalendarRowSnapshot): CollectionRecord => {
   const record: CollectionRecord = {
     record_id: snap.record_id,
     received_at: snap.received_at,

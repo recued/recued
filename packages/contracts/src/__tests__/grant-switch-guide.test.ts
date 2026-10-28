@@ -19,6 +19,7 @@ import {
   TIER1_TOOL_GUIDE,
   grantSwitchText,
   toolsNeedingSwitch,
+  tier1CallDetails,
   tier1CallTitle,
 } from '../grant-switch-guide.js';
 import { collectionGrantEntry, primitiveGrantEntry } from '../grant-entry.js';
@@ -155,5 +156,31 @@ describe('tier1CallTitle — one call of an AI tool, in the owner\'s words', () 
     expect(tier1CallTitle('calendar.create', { kind: 'task' })).toBe('Add a calendar event');
     expect(tier1CallTitle('mail.send', {})).toBeUndefined();
     expect(tier1CallTitle('toString', {})).toBeUndefined();
+  });
+});
+
+describe('tier1CallDetails — a held call\'s arguments as its approval lists them', () => {
+  it('names the record a call changes as what it is, and leaves a work call\'s kind to its title', () => {
+    // ⛔ Live (2026-10-25): the ask read "kind: asset" and "id: Family car" under "Change a
+    // thing you own".
+    expect(tier1CallDetails('work.update', { kind: 'asset', id: 'a1', readings: { odometer: 1 } }, { id: { a1: 'Family car' } }))
+      .toEqual({ args: { Thing: 'a1', readings: { odometer: 1 } }, labels: { Thing: { a1: 'Family car' } } });
+    expect(tier1CallDetails('work.create', { kind: 'asset', title: 'Lock', belongs_to: 'b1' }, { belongs_to: { b1: 'Road bike' } }))
+      .toEqual({ args: { title: 'Lock', 'Part of': 'b1' }, labels: { 'Part of': { b1: 'Road bike' } } });
+    expect(tier1CallDetails('work.update', { kind: 'task', id: 't1', done: true })).toEqual({ args: { Task: 't1', done: true } });
+    expect(tier1CallDetails('calendar.update', { source_id: 'e1', summary: 'Dentist' }, { source_id: { e1: 'Dentist, 10:00' } }))
+      .toEqual({ args: { Event: 'e1', summary: 'Dentist' }, labels: { Event: { e1: 'Dentist, 10:00' } } });
+  });
+
+  it('leaves what it cannot name as the call has it', () => {
+    // A kind no title names keeps its row.
+    expect(tier1CallDetails('work.update', { kind: 'booking', id: 'b1' })).toEqual({ args: { kind: 'booking', id: 'b1' } });
+    expect(tier1CallDetails('memory.forget', { id: 'm1' }, { id: { m1: 'M' } })).toEqual({ args: { id: 'm1' }, labels: { id: { m1: 'M' } } });
+    // Only a work tool's title says its kind.
+    expect(tier1CallDetails('calendar.create', { kind: 'task', id: 'x' })).toEqual({ args: { kind: 'task', id: 'x' } });
+    // A key the new name would overwrite keeps its own name, so no value is hidden.
+    expect(tier1CallDetails('work.update', { kind: 'asset', id: 'a1', Thing: 'x' }).args).toEqual({ id: 'a1', Thing: 'x' });
+    // Names read off a stored hold that are not a record name nothing.
+    expect(tier1CallDetails('work.update', { kind: 'asset', id: 'a1' }, null as never)).toEqual({ args: { Thing: 'a1' } });
   });
 });

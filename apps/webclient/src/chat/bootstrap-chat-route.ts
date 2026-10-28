@@ -1,4 +1,4 @@
-import { approvalValueLabel, renderResourceReview, tier1CallTitle, type ApprovalValueLabels } from '@recued/contracts';
+import { approvalValueLabel, renderResourceReview, tier1CallDetails, tier1CallTitle, type ApprovalValueLabels } from '@recued/contracts';
 import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
 import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
 import { assetChatHref, assetChatMessage, readAssetChatMessage, type ChatAssetContext } from './asset-context.js';
@@ -21,11 +21,17 @@ import {
   type ListPageRequest,
   type ChatSessionRenameRequest,
   type ChatSessionRenameResult,
+  type ChatMessengerStatusRequest,
+  type ChatMessengerStatusResult,
+  type ChatSessionListRequest,
+  type ChatSessionListResult,
 } from '@recued/contracts';
+import { createHistorySessionPages, type HistorySessionScope } from './history-session-pages.js';
 import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
 import { ANSWER_SOURCES_STYLES, buildAnswerSources } from './source-citations.js';
-import { renderAnswerText } from './answer-text.js';
+import { ANSWER_TEXT_STYLES, renderAnswerText } from './answer-text.js';
+import { createAnswerCodeCopy } from './answer-code-copy.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
 /** D-174 P2 — top-level Chat route.
@@ -479,21 +485,13 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient {
   (method: 'chat.session.brief.clear', payload: { session_id: string }): Promise<{
     ok: true;
   }>;
-  (method: 'chat.sessions.list'): Promise<{
-    sessions: ChatSessionSummary[];
-    messenger_status_available?: boolean;
-    history_filters_available?: boolean;
-    /** Every session running a turn, from any surface. ⛔ PRESENT-BUT-EMPTY
-     *  and ABSENT are different answers: `[]` is "nothing is running", the
-     *  field missing is "this server cannot tell you" — which is what one
-     *  older than the busy registry says by saying nothing. */
-    busy_session_ids?: readonly string[];
-  }>;
+  (method: 'chat.sessions.list', payload?: ChatSessionListRequest): Promise<ChatSessionListResult>;
   (
     method: 'chat.session.get',
     payload: ChatSessionGetRequest,
   ): Promise<ChatThreadSnapshot>;
   (method: 'chat.messages.search', payload: ChatMessageSearchRequest): Promise<ChatMessageSearchResult>;
+  (method: 'chat.messenger.status', payload: ChatMessengerStatusRequest): Promise<ChatMessengerStatusResult>;
   (method: 'chat.session.create'): Promise<{ session_id: string }>;
   (method: 'chat.session.rename', payload: ChatSessionRenameRequest): Promise<ChatSessionRenameResult>;
   (
@@ -2764,6 +2762,7 @@ export const CHAT_ROUTE_STYLES = [
   CHAT_QUOTED_REPLY_STYLES,
   CHAT_INSTALL_OFFERS_STYLES,
   ANSWER_SOURCES_STYLES,
+  ANSWER_TEXT_STYLES,
 ].join('\n');
 
 export interface ChatConnectedSourcePollScheduler {
@@ -2996,6 +2995,7 @@ interface ChatHistoryGroup {
 const groupChatHistory = (
   sessions: ReadonlyArray<ChatSessionSummary>,
   now: number,
+  paged = false,
 ): ReadonlyArray<ChatHistoryGroup> => {
   const rows = new Map<ChatHistoryGroupId, ChatSessionSummary[]>([
     ['today', []],
@@ -3012,7 +3012,7 @@ const groupChatHistory = (
   const sorted = [...sessions].sort((a, b) =>
     b.last_active_at !== a.last_active_at
       ? b.last_active_at - a.last_active_at
-      : a.id.localeCompare(b.id),
+      : paged ? 0 : a.id.localeCompare(b.id),
   );
   for (const session of sorted) {
     const id: ChatHistoryGroupId = session.archived
@@ -3222,6 +3222,7 @@ const planInstantValue = (
 };
 
 const planDetailEntries = (
+  tool: string,
   args: unknown,
   labels?: ApprovalValueLabels,
 ): ReadonlyArray<readonly [label: string, value: string]> => {
@@ -3230,7 +3231,10 @@ const planDetailEntries = (
     && typeof args === 'object'
     && !Array.isArray(args)
   ) {
-    const record = args as Record<string, unknown>;
+    // The record a call changes is named as what it is ("Thing"), and its `kind` is left to
+    // the title, as its ask lists them.
+    const shown = tier1CallDetails(tool, args as Record<string, unknown>, labels);
+    const record = shown.args;
     const entries = Object.entries(record);
     if (entries.length > 0) {
       return entries.map(
@@ -3238,7 +3242,7 @@ const planDetailEntries = (
           planDetailLabel(key),
           // A record the call names by id reads as its name (`value_labels`); the id stays
           // in the technical bits below.
-          approvalValueLabel(labels, key, value) ?? planInstantValue(key, value, record) ?? planDetailValue(value),
+          approvalValueLabel(shown.labels, key, value) ?? planInstantValue(key, value, record) ?? planDetailValue(value),
         ] as const,
       );
     }
@@ -3811,10 +3815,24 @@ export const bootstrapChatRoute = (
     }) : null;
   let historyQuery = '';
   let refreshHistoryFilters = (): void => {};
+  let refreshHistoryResults = (): void => {};
+  let scheduleHistoryRefresh = (): void => {};
+  let historyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let historyRefreshQueued = false;
+  let appliedHistoryScope = '';
+  let pendingHistoryScope = '';
+  let loadedHistoryCount = 50;
+  let nextHistoryFocus: string | undefined;
+  let recentHistorySessions: readonly ChatSessionSummary[] = [];
+  const deletedHistorySessions = new Set<string>();
+  const historyPages = createHistorySessionPages(request => opts.conn('chat.sessions.list', request));
   const historyFilters = createHistoryFilters({ document: doc,
     save: patch => opts.conn('prefs.set', { patch }),
-    changed: () => refreshHistoryFilters(),
+    changed: () => { refreshHistoryFilters(); if (state.phase === 'ready' && historyPages.state().available
+      && appliedHistoryScope !== historyPages.scopeKey(historyScope())) scheduleHistoryRefresh(); },
   });
+  const historyScope = (): HistorySessionScope => ({ ...(historyQuery.trim() ? { query: historyQuery.trim() } : {}),
+    ...(hasChatHistoryFilters(historyFilters.filters()) ? { filters: { ...historyFilters.filters() } } : {}) });
   const historyMessageSearch = createHistoryMessageSearch({
     document: doc,
     sessionTitle: sessionId => state.sessions.find(session => session.id === sessionId)?.title,
@@ -3848,6 +3866,7 @@ export const bootstrapChatRoute = (
         && ((session.title ?? null) === request.expected_title || session.title === result.title) ? { ...session, title: result.title } : session;
       state = { ...state, sessions: state.sessions.map(patch), thread: { ...state.thread,
         session: state.thread.session ? patch(state.thread.session) : null } };
+      recentHistorySessions = recentHistorySessions.map(patch);
       historyAnnouncement = 'Chat renamed.';
     },
     focusRow: sessionId => {
@@ -3975,7 +3994,7 @@ export const bootstrapChatRoute = (
     const session = state.thread.session.id;
     deliveryView.setMessages(session, state.thread.messages.filter(message => message.role === 'user' || message.role === 'assistant').map(message => message.id));
     const focused = doc.activeElement?.getAttribute('data-delivery-control');
-    const focusedWithdrawal = doc.activeElement?.getAttribute('data-chat-withdraw');
+    const queueFocus = queueView.captureFocus(doc, routeRoot);
     const focusedMessage = focused
       ? doc.activeElement?.closest?.('[data-chat-message-delivery]')?.getAttribute('data-chat-message-delivery') : null;
     // ⛔ The panel ITSELF holds focus once a row's Delivery opened it
@@ -4002,10 +4021,9 @@ export const bootstrapChatRoute = (
     }
     if (focused) restoreDeliveryFocus(focused, focusedMessage);
     else if (panelFocused) focusDeliveryPanel(false);
-    if (focusedWithdrawal) Array.from(coordinationHost.querySelectorAll?.<HTMLElement>('[data-chat-withdraw]') ?? [])
-      .find(control => control.getAttribute('data-chat-withdraw') === focusedWithdrawal)?.focus({ preventScroll: true });
+    queueView.restoreFocus(doc, routeRoot, queueFocus, () => focusComposer(true));
   };
-  const queueView = createChatQueueView(opts.conn, renderCoordination, async draft => {
+  const queueView = createChatQueueView(opts.conn, renderCoordination, async (draft, current) => {
     let reply: ChatReplyDraft | null = null;
     if (draft.reply_to_message_id) {
       // Resolve the quote from current retained history, including older pages.
@@ -4019,7 +4037,7 @@ export const bootstrapChatRoute = (
     }
     // Check AFTER every await. Typing, uploading, recording, navigation and a
     // concurrent send all keep ownership of the current composer.
-    if (disposed || state.thread.session?.id !== draft.session_id || openingSessionId !== null
+    if (!current() || disposed || state.thread.session?.id !== draft.session_id || openingSessionId !== null
       || state.sending || composerDraft.length > 0 || composerReply !== null || composerAssetContext !== null
       || composerAttachments.rows().length > 0 || pendingVoiceSend
       || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
@@ -4082,12 +4100,16 @@ export const bootstrapChatRoute = (
   });
   const messengerList = createMessengerSessionList({ document: doc,
     read: () => opts.conn('chat.sessions.list'),
+    readStatus: session_ids => opts.conn('chat.messenger.status', { session_ids }),
+    needsListRefresh: () => historyPages.state().available && hasChatHistoryFilters(historyFilters.filters()),
+    refreshList: () => loadSessions(true),
     openDelivery: id => { void openHistorySession(id, false, 'row', undefined, true); },
     actionsLocked: () => historyActionInFlight(),
     changed: () => refreshHistoryFilters(),
   });
   const historyFilterUnavailable = (): string | undefined => {
     if (!hasChatHistoryFilters(historyFilters.filters())) return undefined;
+    if (historyPages.state().available && appliedHistoryScope !== historyPages.scopeKey(historyScope())) return 'Loading matching chats…';
     if (!messengerList.filtersAvailable()) return 'This server cannot filter chats. Clear the filters to see them all.';
     if (messengerList.statusUnavailable()) return 'Recued cannot tell whether Chat is connected. Reconnect, or clear the filters.';
     return undefined;
@@ -4103,7 +4125,9 @@ export const bootstrapChatRoute = (
       ?? (current && !messengerList.filtersAvailable() ? 'This server cannot narrow the search. Choose All matching chats.' : undefined)
       ?? (current && !state.activeSessionId ? 'Open a chat first, then you can search inside it.' : undefined);
     historyMessageSearch.setScope({
-      ...(filtered ? { filters: historyFilters.filters(), membership: JSON.stringify(state.sessions.filter(matchesHistoryFilters).map(s => s.id).sort()) } : {}),
+      ...(filtered ? { filters: historyFilters.filters(), membership: historyPages.state().available
+        ? historyPages.state().reply?.filter_membership ?? 'pending'
+        : JSON.stringify(state.sessions.filter(matchesHistoryFilters).map(s => s.id).sort()) } : {}),
       ...(current && state.activeSessionId ? { session_id: state.activeSessionId } : {}),
       ...(unavailable ? { unavailable } : {}),
     });
@@ -4619,6 +4643,7 @@ export const bootstrapChatRoute = (
   };
 
   const routeRoot = doc.createElement('div');
+  const answerCodeCopy = createAnswerCodeCopy(doc, routeRoot);
   routeRoot.setAttribute(CHAT_ROUTE_HOST_ATTR, '');
 
   const dismissOpenHistoryActions = (restoreFocus: boolean): void => {
@@ -5282,8 +5307,8 @@ export const bootstrapChatRoute = (
       id => { void openHistorySession(quoteSession, false, 'row', id); }));
     // Live progress stays above the answer; retained successful activity is
     // available below it without interrupting reading.
-    const activityKey = message.turn_id
-      ?? [...completedMessageIdsByTurn].find(([, id]) => id === message.id)?.[0] ?? message.id;
+    const completedTurnId = [...completedMessageIdsByTurn].find(([, id]) => id === message.id)?.[0];
+    const activityKey = message.turn_id ?? completedTurnId ?? message.id;
     if (pendingText !== undefined) renderActivity(row, activity, activityKey, true);
     const content = doc.createElement('div');
     content.className = 'chat-message-content';
@@ -5298,8 +5323,10 @@ export const bootstrapChatRoute = (
       content.setAttribute('aria-live', 'polite');
       content.textContent = pendingText;
     } else if (message.role === 'assistant') {
-      // Record citations become in-app links; everything else stays text.
-      renderAnswerText(doc, content, message.content, message.source_citations);
+      // A turn can contain distinct replies. Reuse its live controls only for
+      // the positively associated final message, not every reply in that turn.
+      renderAnswerText(doc, content, message.content, message.source_citations,
+        JSON.stringify([quoteSession ?? '', completedTurnId ?? message.id]));
     } else {
       const assetHandoff = message.role === 'user' ? readAssetChatMessage(message.content) : null;
       const handoff = message.role === 'user' ? readMailWorkChatPrompt(message.content) : null;
@@ -6384,7 +6411,7 @@ export const bootstrapChatRoute = (
     const detailEntries =
       card.payload_available === false
         ? [['Details', 'Gone after the recovery']] as const
-        : planDetailEntries(card.args, card.value_labels);
+        : planDetailEntries(card.tool, card.args, card.value_labels);
     for (const [label, value] of detailEntries) {
       const row = doc.createElement('div');
       row.className = 'chat-plan-card-detail';
@@ -8862,11 +8889,23 @@ export const bootstrapChatRoute = (
 
   const render = (): void => {
     if (disposed) return;
+    const answerPosition = answerCodeCopy.capture();
+    const queueFocus = queueView.captureFocus(doc, routeRoot);
     const attachmentFocus = captureAttachmentFocus();
     const composerFocus = captureComposerFocus();
+    const historyTop = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_LIST_ATTR}]`)?.scrollTop;
     renderContents();
+    const codeScroller = answerPosition.horizontal.size > 0
+      ? routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_MESSAGES_ATTR}]`) : null;
+    const codePosition = codeScroller && codeScroller.clientHeight > 0
+      ? captureTranscriptPosition(codeScroller, state.thread.has_more_after) : null;
+    answerCodeCopy.restore(answerPosition, () => focusOpenThread());
+    if (codeScroller && codePosition) restoreTranscriptPosition(codeScroller, codePosition);
+    const history = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_LIST_ATTR}]`);
+    if (history && historyTop !== undefined) history.scrollTop = historyTop;
     restoreAttachmentFocus(attachmentFocus);
     restoreComposerFocus(composerFocus);
+    queueView.restoreFocus(doc, routeRoot, queueFocus, () => focusComposer(true));
   };
 
   const renderContents = (): void => {
@@ -9087,7 +9126,7 @@ export const bootstrapChatRoute = (
       unavailable.appendChild(unavailableTitle);
       unavailable.appendChild(unavailableDetail);
       sessions.appendChild(unavailable);
-    } else if (state.sessions.length === 0) {
+    } else if (state.sessions.length === 0 && historyPages.state().reply?.has_sessions !== true) {
       const empty = doc.createElement('div');
       empty.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
       const emptyTitle = doc.createElement('strong');
@@ -9137,13 +9176,22 @@ export const bootstrapChatRoute = (
       const results = doc.createElement('div');
       results.className = 'chat-history-results';
       const renderHistoryResults = (): void => {
+        const focusedMore = doc.activeElement?.hasAttribute?.('data-chat-history-load-more') === true;
+        const historyTop = sessions.scrollTop;
+        const bounds = sessions.getBoundingClientRect?.();
+        const anchor = bounds ? Array.from(results.querySelectorAll?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`) ?? []).find(row => {
+          const box = row.getBoundingClientRect?.(); return box && box.bottom > bounds.top && box.top < bounds.bottom;
+        }) : undefined;
+        const anchorId = anchor?.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR);
+        const anchorTop = anchor?.getBoundingClientRect?.().top;
         messengerList.beginRender();
         clearChildren(results);
         const query = historyQuery.trim().toLocaleLowerCase();
         const editingSession = historyRename.session();
-        const sessions = editingSession && !state.sessions.some(session => session.id === editingSession.id)
-          ? [...state.sessions, editingSession] : state.sessions;
-        const matching = sessions.filter((session) => {
+        const candidates = state.sessions;
+        const visibleSessions = editingSession && !candidates.some(session => session.id === editingSession.id)
+          ? [...candidates, editingSession] : candidates;
+        const matching = visibleSessions.filter((session) => {
           if (session.id === editingSession?.id) return true;
           if (query.length === 0) return true;
           return sessionTitle(session).toLocaleLowerCase().includes(query)
@@ -9152,6 +9200,7 @@ export const bootstrapChatRoute = (
         const count = doc.createElement('p');
         count.className = 'chat-history-result-count';
         count.setAttribute('role', 'status');
+        count.tabIndex = -1;
         results.appendChild(count);
         const empty = doc.createElement('div');
         empty.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
@@ -9160,6 +9209,7 @@ export const bootstrapChatRoute = (
         for (const group of groupChatHistory(
           matching,
           (opts.now ?? Date.now)(),
+          historyPages.state().available,
         )) {
           const section = doc.createElement('section');
           section.setAttribute(CHAT_ROUTE_HISTORY_GROUP_ATTR, group.id);
@@ -9441,22 +9491,52 @@ export const bootstrapChatRoute = (
           for (const section of new Set(rowFilters.map(entry => entry.section))) {
             section.hidden = !rowFilters.some(entry => entry.section === section && !entry.item.hidden);
           }
-          let countText = unavailable ?? (query.length === 0
-            ? `${total} saved chat${total === 1 ? '' : 's'}`
-            : `${total} chat${total === 1 ? '' : 's'} by title or ID`);
+          const page = historyPages.state();
+          let countText = (unavailable ?? page.error) || (page.loading
+            ? (page.operation === 'more' ? `${total} chats shown. Loading more…` : 'Loading matching chats…')
+            : query.length === 0
+            ? `${total} saved chat${total === 1 ? '' : 's'}${page.reply?.next_cursor ? ' shown' : ''}`
+            : `${total} chat${total === 1 ? '' : 's'}${page.reply?.next_cursor ? ' shown' : ''} by title or ID`);
           if (retainedFocus) countText += ' This chat no longer matches. It will disappear when you leave it.';
           // Unchanged polling results must not repeat live announcements.
           if (count.textContent !== countText) count.textContent = countText;
-          empty.hidden = total > 0 || !!unavailable;
+          empty.hidden = total > 0 || !!unavailable || page.loading || !!page.error;
           empty.textContent = query ? 'No chat names match.' : 'No chats match what you picked.';
           updateHistorySearchScope();
         };
+        const page = historyPages.state();
+        if (page.reply?.next_cursor || page.error) {
+          const more = doc.createElement('button'); more.type = 'button'; more.className = 'chat-session-action';
+          more.setAttribute('data-chat-history-load-more', '');
+          more.textContent = page.loading ? 'Loading…' : page.error ? 'Try loading chats again' : 'Load more';
+          more.setAttribute('aria-disabled', String(page.loading || historyActionInFlight()));
+          more.addEventListener('click', () => {
+            if (!page.loading && !historyActionInFlight()) { more.focus({ preventScroll: true }); void loadMoreHistory(); }
+          });
+          results.appendChild(more);
+          if (focusedMore && !nextHistoryFocus) more.focus({ preventScroll: true });
+        }
         refreshHistoryFilters();
+        if (nextHistoryFocus) {
+          const target = Array.from(results.querySelectorAll<HTMLElement>(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`)).find(row => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === nextHistoryFocus);
+          target?.focus({ preventScroll: true }); nextHistoryFocus = undefined;
+        } else if (focusedMore && !results.querySelector('[data-chat-history-load-more]')) {
+          count.focus({ preventScroll: true });
+        }
+        sessions.scrollTop = historyTop;
+        if (anchorId && anchorTop !== undefined) {
+          const next = Array.from(results.querySelectorAll?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`) ?? [])
+            .find(row => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === anchorId);
+          const nextTop = next?.getBoundingClientRect?.().top;
+          if (nextTop !== undefined) sessions.scrollTop += nextTop - anchorTop;
+        }
       };
+      refreshHistoryResults = renderHistoryResults;
       search.addEventListener('input', () => {
         historyQuery = search.value;
         historyMessageSearch.setQuery(historyQuery);
         renderHistoryResults();
+        if (historyPages.state().available) scheduleHistoryRefresh();
       });
       renderHistoryResults();
       const messageResults = doc.createElement('section');
@@ -9508,9 +9588,9 @@ export const bootstrapChatRoute = (
       && connectedSourceHandoffActive
       && connectedSource !== null
       && connectedSourceStatus !== null;
-    const returnableSessions = [...state.sessions]
+    const returnableSessions = [...(recentHistorySessions.length ? recentHistorySessions : state.sessions)]
       .filter(
-        (session) => !session.archived && session.message_count > 0,
+        (session) => !deletedHistorySessions.has(session.id) && !session.archived && session.message_count > 0,
       )
       .sort((a, b) => b.last_active_at - a.last_active_at);
     const showReturningHistory =
@@ -10200,10 +10280,12 @@ export const bootstrapChatRoute = (
           };
 
     const activity = projectInFlightActivity(inflight, state.transparency);
+    const answerPosition = answerCodeCopy.capture();
     if (activity.length === 0) {
       // Text only — the cheap path. Same painter as a completed answer, so a
       // citation is a link while the turn runs too.
-      renderAnswerText(doc, content, inflight.assistant_content);
+      renderAnswerText(doc, content, inflight.assistant_content, undefined,
+        JSON.stringify([state.thread.session?.id ?? '', inflight.turn_id]));
     } else {
       // Structure moved. Build with the SAME renderMessage the full render
       // uses, into a detached host, then move the result into the live row so
@@ -10230,6 +10312,7 @@ export const bootstrapChatRoute = (
       for (const child of children) row.appendChild(child);
     }
 
+    answerCodeCopy.restore(answerPosition, () => focusOpenThread());
     if (before !== null && scroller !== null && scroller !== undefined) {
       // Same rule as a render: follow the answer for a reader at the bottom,
       // hold position for one who has scrolled away.
@@ -10242,10 +10325,11 @@ export const bootstrapChatRoute = (
     return true;
   };
 
-  const renderPreservingHandoffFocus = (): void => {
+  const renderPreservingHandoffFocus = (paint: () => void = render): void => {
     const renameFocus = historyRename.captureFocus();
     const active = doc.activeElement as HTMLElement | null | undefined;
     const latestFocused = active?.hasAttribute?.('data-chat-latest') === true;
+    const historyMoreFocused = active?.hasAttribute?.('data-chat-history-load-more') === true && !nextHistoryFocus;
     const threadTitleFocused = active?.hasAttribute?.(CHAT_ROUTE_THREAD_TITLE_ATTR) === true;
     const filterSummaryFocused = active?.hasAttribute?.('data-chat-history-filter-summary') === true;
     const filterClearFocused = active?.hasAttribute?.('data-chat-history-filter-clear') === true;
@@ -10322,7 +10406,11 @@ export const bootstrapChatRoute = (
           sessionId: activeHistoryActionsSessionId,
           open: activeHistoryActions?.open === true,
           control:
-            active?.getAttribute?.(RENAME_SESSION_ATTR) === activeHistoryActionsSessionId
+            active?.getAttribute?.('data-chat-messenger-connection') === activeHistoryActionsSessionId
+              ? 'messenger-connection' as const
+              : active?.getAttribute?.('data-chat-messenger-delivery') === activeHistoryActionsSessionId
+              ? 'messenger-delivery' as const
+              : active?.getAttribute?.(RENAME_SESSION_ATTR) === activeHistoryActionsSessionId
               ? 'rename' as const
               : active?.getAttribute?.(CHAT_ROUTE_SESSION_EXPORT_ATTR)
               === activeHistoryActionsSessionId
@@ -10351,7 +10439,7 @@ export const bootstrapChatRoute = (
     const historySelectionDirection = historySearchFocused
       ? historySearch.selectionDirection
       : null;
-    render();
+    paint();
     if (renameFocus) {
       historyRename.restoreFocus(renameFocus);
     } else if (inputFocused) {
@@ -10431,11 +10519,15 @@ export const bootstrapChatRoute = (
       }
     } else if (focusedHistoryFilter !== null) {
       routeRoot.querySelector<HTMLElement>(`[${HISTORY_FILTER_ATTR}="${focusedHistoryFilter}"]`)?.focus?.({ preventScroll: true });
+    } else if (historyMoreFocused) {
+      (routeRoot.querySelector<HTMLElement>('[data-chat-history-load-more]')
+        ?? routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`)
+        ?? routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`))?.focus({ preventScroll: true });
     } else if (historySearchFocused) {
       const nextHistorySearch = routeRoot.querySelector?.(
         `[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`,
       ) as HTMLInputElement | null | undefined;
-      nextHistorySearch?.focus?.({ preventScroll: true });
+      if (nextHistorySearch) nextHistorySearch.focus?.({ preventScroll: true }); else focusHistoryHome();
       if (
         nextHistorySearch !== null
         && nextHistorySearch !== undefined
@@ -10520,7 +10612,11 @@ export const bootstrapChatRoute = (
         const summary = nextActions.querySelector('summary') as
           | HTMLElement
           | null;
-        const requested = focusedHistoryActions.control === 'rename'
+        const requested = focusedHistoryActions.control === 'messenger-connection'
+          ? nextActions.querySelector('[data-chat-messenger-connection]') as HTMLElement | null
+          : focusedHistoryActions.control === 'messenger-delivery'
+          ? nextActions.querySelector('[data-chat-messenger-delivery]') as HTMLElement | null
+          : focusedHistoryActions.control === 'rename'
           ? nextActions.querySelector(`[${RENAME_SESSION_ATTR}]`) as HTMLElement | null
           : focusedHistoryActions.control === 'export'
           ? nextActions.querySelector(
@@ -10654,18 +10750,64 @@ export const bootstrapChatRoute = (
   const loadSessions = async (background = false): Promise<void> => {
     const request = ++sessionListRequest;
     sessionListInFlight = true;
+    historyRefreshQueued = false;
+    clearTimeout(historyRefreshTimer);
     messengerList.beginRead();
     if (!background) {
       state = { ...state, phase: 'loading', error: null };
       render();
     }
     try {
-      const { sessions, busy_session_ids: serverBusy, messenger_status_available, history_filters_available } =
-        await opts.conn('chat.sessions.list');
+      const scope = historyScope(); const scopeKey = historyPages.scopeKey(scope);
+      pendingHistoryScope = scopeKey;
+      const previousPage = historyPages.state();
+      const read = historyPages.reload(scope, scopeKey === appliedHistoryScope ? loadedHistoryCount : 50);
+      if (background && scopeKey !== appliedHistoryScope) refreshHistoryFilters();
+      const reply = await read;
       if (disposed || request !== sessionListRequest) return;
+      if (!reply) return;
+      if (!scope.query && !scope.filters) recentHistorySessions = reply.sessions;
+      if (reply.history_paging_available && scopeKey !== historyPages.scopeKey(historyScope())) {
+        await loadSessions(background); return;
+      }
+      const { busy_session_ids: serverBusy, messenger_status_available, history_filters_available, messenger_status_refresh_available } = reply;
+      const pageSessions = reply.sessions.filter(session => !deletedHistorySessions.has(session.id));
+      // A live filter can remove the row whose recovery link the owner is
+      // using. Keep that row until focus leaves, just as local filtering does.
+      const focusedId = doc.activeElement?.closest?.('.chat-session-item')?.querySelector?.(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`)?.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR);
+      const retained = focusedId && !pageSessions.some(s => s.id === focusedId)
+        ? state.sessions.find(s => s.id === focusedId && !deletedHistorySessions.has(s.id)) : undefined;
+      let currentRetained = retained;
+      if (retained) {
+        // A recovered row can leave the attention filter while its recovery
+        // control still owns focus. Refresh just that retained status: the
+        // matching page intentionally omits it, and needs no duplicate poll.
+        const status = await opts.conn('chat.messenger.status', { session_ids: [retained.id] });
+        if (disposed || request !== sessionListRequest) return;
+        const focusedNow = doc.activeElement?.closest?.('.chat-session-item')?.querySelector?.(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`)?.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR);
+        if (focusedNow !== focusedId || scopeKey !== historyPages.scopeKey(historyScope())) {
+          await loadSessions(background); return;
+        }
+        if (status.messenger_status_available !== true || status.sessions.length !== 1 || status.sessions[0]?.id !== retained.id)
+          throw new Error('Recued could not refresh this chat status.');
+        const { messenger: _previous, ...row } = retained;
+        const messenger = status.sessions[0].messenger;
+        currentRetained = { ...row, ...(messenger ? { messenger } : {}) };
+      }
+      const sessions = currentRetained ? [...pageSessions, currentRetained] : pageSessions;
+      const metadata = (rows: readonly ChatSessionSummary[]) => JSON.stringify(rows.map(({ messenger: _status, ...row }) => row));
+      const quiet = background && !previousPage.error && scopeKey === appliedHistoryScope
+        && metadata(state.sessions) === metadata(sessions)
+        && JSON.stringify(previousPage.reply?.next_cursor) === JSON.stringify(reply.next_cursor)
+        && previousPage.reply?.has_saved_chats === reply.has_saved_chats
+        && previousPage.reply?.has_sessions === reply.has_sessions
+        && (serverBusy === undefined || JSON.stringify([...turnsInFlightBySession.keys()].sort()) === JSON.stringify([...serverBusy].sort()));
+      appliedHistoryScope = scopeKey;
+      loadedHistoryCount = reply.sessions.length;
       messengerList.adopt({ sessions, ...(messenger_status_available !== undefined ? { messenger_status_available } : {}),
         ...(history_filters_available !== undefined ? { history_filters_available } : {}),
-      });
+        ...(messenger_status_refresh_available !== undefined ? { messenger_status_refresh_available } : {}),
+      }, retained ? { retain: [retained.id] } : undefined);
       if (serverBusy !== undefined) {
         // 🔑 THE SERVER'S ANSWER IS COMPLETE, so adopt it wholesale rather
         // than merging. This tab's map was only ever a record of ITS OWN
@@ -10675,7 +10817,7 @@ export const bootstrapChatRoute = (
         // tracking could ever know.
         adoptServerBusySet(serverBusy);
       }
-      const hasExistingChat = sessions.some(
+      const hasExistingChat = reply.has_saved_chats ?? sessions.some(
         (session) => session.message_count > 0,
       );
       if (hasExistingChat) {
@@ -10703,7 +10845,7 @@ export const bootstrapChatRoute = (
       } else {
         seedStarterPromptOnLoad = false;
         if (background) {
-          renderPreservingHandoffFocus();
+          if (quiet) refreshHistoryFilters(); else renderPreservingHandoffFocus();
         } else {
           render();
         }
@@ -10713,7 +10855,7 @@ export const bootstrapChatRoute = (
       messengerList.failed();
       state = {
         ...state,
-        phase: background && state.sessions.length > 0 ? 'ready' : 'error',
+        phase: background && (state.sessions.length > 0 || historyPages.state().reply?.has_sessions) ? 'ready' : 'error',
         error: classifyRpcError(err),
       };
       if (background) {
@@ -10722,7 +10864,46 @@ export const bootstrapChatRoute = (
         render();
       }
     } finally {
-      if (request === sessionListRequest) sessionListInFlight = false;
+      if (request === sessionListRequest) {
+        sessionListInFlight = false;
+        if (historyRefreshQueued) scheduleHistoryRefresh();
+      }
+    }
+  };
+
+  scheduleHistoryRefresh = (): void => {
+    historyRefreshQueued = true;
+    clearTimeout(historyRefreshTimer);
+    if (disposed || sessionListInFlight && pendingHistoryScope === historyPages.scopeKey(historyScope())) return;
+    historyRefreshTimer = setTimeout(() => { historyRefreshTimer = undefined; if (!disposed) void loadSessions(true); }, 150);
+  };
+  const loadMoreHistory = async (): Promise<void> => {
+    const page = historyPages.state();
+    if (page.loading || historyActionInFlight()) return;
+    if (appliedHistoryScope !== historyPages.scopeKey(historyScope()) || page.error && page.operation === 'reload') {
+      await loadSessions(true); return;
+    }
+    if (!page.reply?.next_cursor) return;
+    const request = ++sessionListRequest; sessionListInFlight = true;
+    pendingHistoryScope = appliedHistoryScope;
+    clearTimeout(historyRefreshTimer);
+    try {
+      const read = historyPages.more(); renderPreservingHandoffFocus(refreshHistoryResults);
+      const reply = await read;
+      if (disposed || request !== sessionListRequest || !reply) return;
+      const known = new Set(state.sessions.map(session => session.id));
+      const added = reply.sessions.filter(session => !known.has(session.id) && !deletedHistorySessions.has(session.id));
+      loadedHistoryCount += reply.sessions.length;
+      state = { ...state, sessions: [...state.sessions, ...added] };
+      if (!historyQuery.trim() && !hasChatHistoryFilters(historyFilters.filters())) recentHistorySessions = state.sessions;
+      messengerList.adopt({ ...reply, sessions: added }, { append: true });
+      if (doc.activeElement?.hasAttribute?.('data-chat-history-load-more')) nextHistoryFocus = added[0]?.id;
+    } catch { /* The local retry control retains the current rows and cursor. */ }
+    finally {
+      if (!disposed && request === sessionListRequest) {
+        sessionListInFlight = false; renderPreservingHandoffFocus(refreshHistoryResults);
+        if (historyRefreshQueued) scheduleHistoryRefresh();
+      }
     }
   };
 
@@ -11683,6 +11864,7 @@ export const bootstrapChatRoute = (
     try {
       await opts.conn('chat.session.delete', { session_id: session.id });
       if (disposed) return;
+      deletedHistorySessions.add(session.id);
       const remaining = state.sessions.filter(
         (candidate) => candidate.id !== session.id,
       );
@@ -11705,6 +11887,7 @@ export const bootstrapChatRoute = (
       }
       render();
       focusHistoryHome();
+      if (historyPages.state().available) scheduleHistoryRefresh();
     } catch (err) {
       if (disposed) return;
       sessionAction = {
@@ -12419,7 +12602,11 @@ export const bootstrapChatRoute = (
           }
           if (evt.kind === 'chat.session_changed' && ['delivery', 'message', 'queue'].includes(String((event as { field?: unknown }).field))
             && typeof evt.session_id === 'string' && evt.session_id === state.thread.session?.id) void deliveryView.refresh(evt.session_id);
-          if (evt.kind === 'chat.session_changed' && (event as { field?: unknown }).field === 'delivery') messengerList.invalidate();
+          if (evt.kind === 'chat.session_changed' && (event as { field?: unknown }).field === 'delivery') {
+            if (historyPages.state().available && historyFilters.filters().needs_attention
+              || typeof evt.session_id === 'string' && !state.sessions.some(session => session.id === evt.session_id)) scheduleHistoryRefresh();
+            else messengerList.invalidate(typeof evt.session_id === 'string' ? evt.session_id : undefined);
+          }
           if (evt.kind === 'chat.session_changed' && (event as { field?: unknown }).field === 'queue'
             && typeof evt.session_id === 'string') void queueView.refresh(evt.session_id);
           if (
@@ -12465,6 +12652,7 @@ export const bootstrapChatRoute = (
               // metadata current even when the accompanying refresh fails.
               nextState = { ...nextState, sessions: nextState.sessions.map(session => session.id === evt.session_id
                 ? { ...session, title } : session) };
+              recentHistorySessions = recentHistorySessions.map(session => session.id === evt.session_id ? { ...session, title } : session);
               changed = true;
             }
           }
@@ -12981,6 +13169,8 @@ export const bootstrapChatRoute = (
       conversationFiles?.dispose();
       historyMessageSearch.dispose();
       historyRename.dispose();
+      historyPages.dispose(); clearTimeout(historyRefreshTimer);
+      answerCodeCopy.dispose();
       queueView.dispose(); deliveryView.dispose(); messengerList.dispose(); historyFilters.dispose();
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
       // running would keep a socket open against a surface nobody is watching.

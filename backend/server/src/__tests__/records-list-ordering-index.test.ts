@@ -11,9 +11,9 @@
  *
  *  D-230 sized Records at 5 GB, so there is no ceiling holding these small.
  *
- *  ⚠ `data_note` ALREADY had this index (`idx_note_last_user_action`) and was
- *  0.2ms before any change. It is kept here as the control: a harness that
- *  reports every table as improved is measuring itself.
+ *  `data_note` already had a recency index and measured 0.2ms. Its stable
+ *  id tie-breaker now needs the matching second index key too; keep both new
+ *  databases and upgrades from the timestamp-only index covered here.
  *
  *  ⛔ THE OBVIOUS COMPOSITE IS THE WRONG ANSWER, and only measurement says so.
  *  `(sync_state, created_at DESC, id DESC)` — filter column first, textbook —
@@ -150,14 +150,35 @@ describe('Records list ordering indexes', () => {
     });
   }
 
-  it('⛔ data_note is the CONTROL — it already had its index and still seeks', () => {
-    // If this ever needs a new index, the premise of the whole change (that one
-    // of the five was already right) has moved.
+  it('keeps tied note pages indexed on new databases and upgrades the legacy index only once', () => {
     const { db, store, prepared } = world();
-    store.listNotes({});
-    const plan = planOf(db, prepared, /FROM data_note .*ORDER BY last_user_action_at DESC/s);
-    expect(plan).not.toMatch(/TEMP B-TREE/);
-    db.close();
+    try {
+      for (const [id, time] of [['note-c', 3000], ['note-old', 1000], ['note-a', 3000], ['note-middle', 2000], ['note-b', 3000]] as const) {
+        store.writeNote({ id, body: id, source_id: 'recued.note', last_user_action_at: time }, time);
+      }
+      const shape = /FROM data_note .*ORDER BY last_user_action_at DESC, id ASC/s;
+      const expected = ['note-a', 'note-b', 'note-c', 'note-middle', 'note-old'];
+      prepared.length = 0;
+      expect(store.listNotes({}).map(note => note.id)).toEqual(expected);
+      expect(planOf(db, prepared, shape)).not.toMatch(/TEMP B-TREE/);
+
+      db.exec('DROP INDEX idx_note_last_user_action; CREATE INDEX idx_note_last_user_action ON data_note (last_user_action_at DESC)');
+      prepared.length = 0;
+      expect(store.listNotes({}).map(note => note.id)).toEqual(expected);
+      expect(planOf(db, prepared, shape)).toMatch(/TEMP B-TREE/);
+
+      ensureWorkEntitySchema(db);
+      prepared.length = 0;
+      expect(store.listNotes({}).map(note => note.id)).toEqual(expected);
+      expect(planOf(db, prepared, shape)).not.toMatch(/TEMP B-TREE/);
+      expect([0, 2, 4].flatMap(offset => store.listNotes({ limit: 2, offset }).map(note => note.id))).toEqual(expected);
+      expect(store.countNotes({})).toBe(5);
+      const ddl = vi.spyOn(db, 'exec');
+      try {
+        ensureWorkEntitySchema(db);
+        expect(ddl.mock.calls.some(([sql]) => /DROP INDEX.*idx_note_last_user_action/s.test(sql))).toBe(false);
+      } finally { ddl.mockRestore(); }
+    } finally { db.close(); }
   });
 
   it('the lists still return what they returned, in the same order', () => {

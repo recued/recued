@@ -39,6 +39,8 @@ export interface InstalledRecipeScheduleInput {
 
 export type InstalledRecipeScheduler = (
   input: InstalledRecipeScheduleInput,
+  /** `check`: every refusal the schedule would make, with nothing made (`createSchedule`). */
+  options?: { readonly check?: boolean },
 ) => ReturnType<typeof createSchedule>;
 
 export const createInstalledRecipeScheduler = (deps: {
@@ -64,7 +66,7 @@ export const createInstalledRecipeScheduler = (deps: {
         }
       : {}),
   };
-  return (input) => createSchedule(handlerDeps, {
+  return (input, options) => createSchedule(handlerDeps, {
     recipe_id: input.recipe_id,
     publisher_id: input.publisher_id,
     mode: input.mode,
@@ -72,5 +74,5 @@ export const createInstalledRecipeScheduler = (deps: {
     ...(input.cron_expression !== undefined ? { cron_expression: input.cron_expression } : {}),
     ...(input.dish_id !== undefined ? { dish_id: input.dish_id } : {}),
     ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-  });
+  }, options);
 };

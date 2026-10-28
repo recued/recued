@@ -123,7 +123,6 @@ describe('D-145 PA6 — create dialog', () => {
       }),
       sources: buildSourceDropdownOptions('task', [builtinTask()]),
     });
-    expect(html).toContain('class="form-renderer-form"');
     expect(html).toContain('value="pre"');
     expect(html).toContain('Required');
   });
@@ -214,7 +213,7 @@ describe('D-145 PA6 — submit feedback', () => {
       sources: buildSourceDropdownOptions('task', [builtinTask()]),
     });
     const submit = html.match(
-      /<button[\s\S]*?data-action="submit-work-entity-dialog"[\s\S]*?<\/button>/,
+      /<button\b[^>]*data-action="submit-work-entity-dialog"[^>]*>[\s\S]*?<\/button>/,
     )?.[0] ?? '';
     expect(submit).toContain('aria-disabled="true"');
     expect(submit).toContain('aria-busy="true"');

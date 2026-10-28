@@ -41,6 +41,7 @@ import {
   type RecipeDefinition,
   type RecipeTrustState,
   type ServerRpcRegistry,
+  PACK_REF_RE,
 } from '@recued/contracts';
 
 import type { ManifestRegistry } from '../manifest-loader.js';
@@ -50,6 +51,7 @@ import {
   privateByoDropIds,
   removePackInventory,
   removeStandaloneIngredient,
+  installedPackInstalledAt,
 } from '../pack-inventory.js';
 import type { RecipeStore } from '../recipe-store.js';
 import type { ContractStore } from '../storage/contract-store.js';
@@ -64,6 +66,7 @@ import {
   type SellerInstallAudienceStore,
 } from './install-composition.js';
 import type { LocalManifestStore } from './local-manifest-store.js';
+import type { KitchenPackSourceStore } from './kitchen-pack-source-store.js';
 import type { WsClient } from '../ws-server.js';
 
 interface RecipeTrustWriter {
@@ -102,6 +105,9 @@ export interface IngredientAuthoringRpcDeps {
   sellerStore?: SellerInstallAudienceStore;
   /** D-196 customer bearer snapshots updated by explicit audience rollout. */
   inboundTokenStore?: Pick<ChatInboundTokenStore, 'getTokenById' | 'updateTokenGrants'>;
+  /** D-333 — keeps the source a pack was installed from, so Kitchen can edit it again.
+   *  Absent: nothing is kept, and an installed pack cannot be reopened. */
+  kitchenPackSources?: KitchenPackSourceStore;
 }
 
 const INSTALL_SCOPE_ERROR =
@@ -166,6 +172,10 @@ const handleInstall = (
   // a client bug, not a fail-closed-to-headless case — reject loudly so a typo'd
   // Access tier can't silently downgrade to authored-only. Absent ⇒ undefined
   // (the provisioner fails closed: authored read/`ask` defaults only).
+  // D-333 — the pack this one copies, named as recipes name it.
+  if (args.copy_of !== undefined && (typeof args.copy_of !== 'string' || !PACK_REF_RE.test(args.copy_of))) {
+    throw new RpcError('bad_request', 'ingredient.install: copy_of must name a pack as <publisher>.<slug>');
+  }
   const installScope = args.install_scope;
   if (installScope !== undefined && !isInstallGrantSelection(installScope)) {
     throw new RpcError(
@@ -173,7 +183,7 @@ const handleInstall = (
       `ingredient.install: ${INSTALL_SCOPE_ERROR}`,
     );
   }
-  return provisionAuthoredArtifact(
+  const result = provisionAuthoredArtifact(
     {
       localManifestStore: deps.localManifestStore,
       contractStore: deps.contractStore,
@@ -206,6 +216,13 @@ const handleInstall = (
     args.manifest,
     installScope,
   );
+  // D-333 — keep what the pack was installed from, stamped with this install, so it can be
+  // edited in Kitchen for as long as this install is the installed one.
+  if (result.ok && result.installed.kind === 'pack' && deps.kitchenPackSources !== undefined) {
+    const at = installedPackInstalledAt(deps.contractStore, result.installed.pack_slug);
+    if (at !== null) deps.kitchenPackSources.keep(result.installed.pack_slug, args.manifest, at, args.copy_of);
+  }
+  return result;
 };
 
 const uninstallPack = (
@@ -288,6 +305,8 @@ const uninstallPack = (
   // D-192 — the binding is gone → the resolver yields nothing → unregister the
   // formerly-bound connection's work-entity Sources (uninstall symmetry).
   for (const name of reboundConnections) deps.reconcileWorkEntitySources?.(name);
+  // D-333 — tidy only: a source whose install is gone is never offered anyway.
+  deps.kitchenPackSources?.remove(packSlug);
   return {
     ok: true,
     removed_ingredient_ids: preview.droppable,
@@ -363,7 +382,7 @@ const handleUninstall = (
     : uninstallStandalone(deps, (args.ingredient_id as string).trim(), force);
 };
 
-type IngredientAuthoringMethods = 'ingredient.install' | 'ingredient.uninstall';
+type IngredientAuthoringMethods = 'ingredient.install' | 'ingredient.uninstall' | 'ingredient.copies.list';
 
 export const makeIngredientAuthoringHandlers = (
   deps: IngredientAuthoringRpcDeps | undefined,
@@ -371,12 +390,14 @@ export const makeIngredientAuthoringHandlers = (
   if (!deps) return undefined;
   const now = deps.now ?? ((): number => Date.now());
   return {
-    methods: ['ingredient.install', 'ingredient.uninstall'],
+    methods: ['ingredient.install', 'ingredient.uninstall', 'ingredient.copies.list'],
     handlers: {
       'ingredient.install': async (args) =>
         handleInstall(deps, now, args as IngredientInstallArgs),
       'ingredient.uninstall': async (args) =>
         handleUninstall(deps, args as IngredientUninstallArgs),
+      // D-333 — the copies made in Kitchen and what each copies, for the recipe editor's switch.
+      'ingredient.copies.list': async () => ({ copies: deps.kitchenPackSources?.copies() ?? [] }),
     },
   };
 };

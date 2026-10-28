@@ -297,7 +297,7 @@ export const mountExecutionCaseDraftRoute = (
       validateCaller: options.validateCaller,
       simulateCaller: options.simulateCaller,
       saveCaller: options.saveCaller,
-      onSaved: (saved) => {
+      onSaved: (saved, recipe) => {
         // ⛔ RECORD FIRST, then forward. `onSaved` navigates away in the shell,
         // and a call made after that has no reason to survive.
         // ⚠ Swallowed on purpose — see `onAuthored`'s note. The owner's recipe
@@ -309,7 +309,7 @@ export const mountExecutionCaseDraftRoute = (
               ?? (editor?.getRecipe().recipe_id ?? ''),
           });
         } catch { /* annotation only */ }
-        options.onSaved?.(saved as never);
+        options.onSaved?.(saved, recipe);
       },
     });
   } catch (error) {

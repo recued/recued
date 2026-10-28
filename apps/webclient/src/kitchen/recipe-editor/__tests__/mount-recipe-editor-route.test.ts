@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  KitchenImportDraft,
+  KitchenWorkBase,
   RecipeDefinition,
   RecipeEventTrigger,
   ServerRecipeFullEntry,
   ServerRecipeListEntry,
 } from '@recued/contracts';
+import type { RecipeChangesCallers } from '../../recipe-changes.js';
 import {
   validateRecipeContent,
   validateRecipeEventTriggerEntry,
@@ -24,6 +27,7 @@ import {
   MOUNT_RECIPE_EDITOR_STATUS_ATTR,
   mountFormResponseRecipeSeedRoute,
   mountRecipeEditorRoute,
+  RECIPE_CHANGES_ATTR,
 } from '../mount-recipe-editor-route.js';
 import {
   findFormResponseAutomations,
@@ -32,6 +36,9 @@ import {
 import {
   RECIPE_EDITOR_FORM_RESPONSE_READER_ATTR,
   RECIPE_EDITOR_RECIPE_ID_ATTR,
+  RECIPE_EDITOR_RECIPE_NAME_ATTR,
+  RECIPE_EDITOR_FIELD_ATTR,
+  RECIPE_EDITOR_PACK_SWITCH_ATTR,
   RECIPE_EDITOR_ROUTE_ATTR,
   RECIPE_EDITOR_SAVE_ATTR,
   RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR,
@@ -57,6 +64,8 @@ interface FakeElement {
   disabled: boolean;
   selected: boolean;
   className: string;
+  /** D-333 — the changes bar shows and hides itself. */
+  hidden?: boolean;
   parent: FakeElement | null;
   attrs: Map<string, string>;
   children: FakeElement[];
@@ -1156,3 +1165,211 @@ describe('mountRecipeEditorRoute — recipe.get', () => {
     handle.handle.dispose?.();
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// D-333 — changes to a saved recipe are kept in Kitchen as they are typed
+// ────────────────────────────────────────────────────────────────
+describe('mountRecipeEditorRoute — changes kept in Kitchen (D-333)', () => {
+  const base: KitchenWorkBase = { recipe_id: 'daily-brief', version: 1 };
+  const changedSource = JSON.stringify({ ...sampleRecipe(), metadata: { ...sampleRecipe().metadata, name: 'Daily brief, changed' } });
+  const work = (over: Partial<KitchenImportDraft> = {}): KitchenImportDraft => ({
+    draft_id: 'w1', kind: 'recipe', title: 'Daily brief, changed', source: changedSource, source_hash: 'h',
+    revision: 4, created_at: 1, updated_at: 2, validation: { valid: true, issues: [], total_issues: 0 }, base, ...over,
+  });
+  const listing = (found?: KitchenImportDraft) => async () => ({ items: found === undefined ? [] : [{
+    draft_id: found.draft_id, kind: 'recipe' as const, title: found.title, revision: found.revision,
+    created_at: 1, updated_at: 2, from: 'Kitchen', ready: true, problems: 0, ...(found.base ? { base: found.base } : {}),
+  }] });
+  const mountWithChanges = (over: {
+    found?: KitchenImportDraft;
+    list?: RecipeChangesCallers['list'];
+    getCaller?: ReturnType<typeof getCallerFor>;
+    storage?: Map<string, string>;
+  } = {}) => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const callers = {
+      list: vi.fn(over.list ?? listing(over.found)),
+      get: vi.fn(async () => over.found!),
+      create: vi.fn(async (source: string, at: KitchenWorkBase) => work({ draft_id: 'c1', revision: 1, source, base: at })),
+      update: vi.fn(async (draft_id: string, revision: number, source: string) => work({ draft_id, revision: revision + 1, source })),
+      discard: vi.fn(async (draft_id: string) => ({ draft_id, discarded: true as const })),
+    };
+    const storage = over.storage ?? new Map<string, string>();
+    const getCaller = over.getCaller ?? getCallerFor(entryFor(sampleRecipe()));
+    const handle = mountRecipeEditorRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      recipeId: 'daily-brief',
+      listCaller: async () => ({ recipes: [] }),
+      getCaller,
+      validateCaller: okValidate,
+      saveCaller: async (args) => ({ ...(await okSave(args)), version: 2 }),
+      recovery: { key: 'k', storage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => { storage.set(key, value); },
+        removeItem: (key: string) => { storage.delete(key); },
+      } },
+      changes: callers,
+      confirm: () => true,
+    });
+    return { root, handle, callers, storage, getCaller };
+  };
+  const bar = (root: FakeElement) => findAllByAttr(root, RECIPE_CHANGES_ATTR).find((el) => el.getAttribute(RECIPE_CHANGES_ATTR) === '');
+  const barStatus = (root: FakeElement) => findAllByAttr(bar(root)!, 'role')[0]!.textContent;
+  const typeName = (root: FakeElement, name: string) => {
+    const input = findByAttr(root, RECIPE_EDITOR_RECIPE_NAME_ATTR)!;
+    input.value = name;
+    input.dispatch('input');
+  };
+
+  it('opens the changes in progress over the saved recipe, says they are kept, and continues them', async () => {
+    vi.useFakeTimers();
+    try {
+      const { root, handle, callers } = mountWithChanges({ found: work() });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(findByAttr(root, RECIPE_EDITOR_RECIPE_NAME_ATTR)?.value).toBe('Daily brief, changed');
+      expect(bar(root)?.hidden).toBe(false);
+      expect(barStatus(root)).toBe('Kept as you type');
+      expect(handle.hasUnsavedChanges()).toBe(false); // kept, so leaving loses nothing
+      typeName(root, 'Daily brief, changed again');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(callers.update).toHaveBeenCalledWith('w1', 4, expect.stringContaining('Daily brief, changed again'));
+      expect(callers.create).not.toHaveBeenCalled();
+      handle.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps the first change to a saved recipe as changes that name it, instead of this browser\'s copy', async () => {
+    vi.useFakeTimers();
+    try {
+      const { root, handle, callers, storage } = mountWithChanges();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bar(root)?.hidden).toBe(true); // nothing in progress yet
+      typeName(root, 'Daily brief, edited');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(callers.create).toHaveBeenCalledWith(expect.stringContaining('Daily brief, edited'), base);
+      expect(bar(root)?.hidden).toBe(false);
+      expect(storage.size).toBe(0);
+      handle.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('Discard changes removes them and opens the saved recipe again', async () => {
+    vi.useFakeTimers();
+    try {
+      const { root, handle, callers, getCaller } = mountWithChanges({ found: work() });
+      await vi.advanceTimersByTimeAsync(0);
+      callers.list.mockImplementation(listing()); // gone once discarded
+      const discard = bar(root)!.children.find((el) => el.tagName === 'BUTTON')!;
+      expect(discard.textContent).toBe('Discard changes');
+      discard.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callers.discard).toHaveBeenCalledWith('w1', 4);
+      expect(getCaller).toHaveBeenCalledTimes(2);
+      expect(findByAttr(root, RECIPE_EDITOR_RECIPE_NAME_ATTR)?.value).toBe('Daily brief');
+      expect(bar(root)?.hidden).toBe(true);
+      handle.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('saving the recipe ends its changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const { root, handle, callers } = mountWithChanges({ found: work() });
+      await vi.advanceTimersByTimeAsync(0);
+      findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callers.discard).toHaveBeenCalledWith('w1', 4);
+      expect(bar(root)?.hidden).toBe(true);
+      handle.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps this browser\'s copy on a server from before D-333', async () => {
+    vi.useFakeTimers();
+    try {
+      const { root, handle, callers, storage } = mountWithChanges({
+        list: async () => { throw Object.assign(new Error('unknown'), { code: 'unknown_method' }); },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bar(root)).toBeUndefined();
+      typeName(root, 'Daily brief, edited');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(callers.create).not.toHaveBeenCalled();
+      expect(storage.size).toBe(1);
+      expect(handle.hasUnsavedChanges()).toBe(true);
+      handle.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('offers the changes to a recipe that is gone, as work of their own', async () => {
+    const { root, handle } = mountWithChanges({ found: work(), getCaller: vi.fn(async () => ({ recipe: null })) });
+    await tick(16);
+    const open = findByAttrValue(root, RECIPE_CHANGES_ATTR, 'orphaned');
+    expect(open?.getAttribute('href')).toBe('#kitchen/import/w1');
+    expect(open?.textContent).toBe('Open your changes to it');
+    handle.dispose();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// D-333 — a pack the recipe needs switches to its copy (or back) with one button
+// ────────────────────────────────────────────────────────────────
+describe('mountRecipeEditorRoute — switching a pack to its copy (D-333)', () => {
+  const usingFreshdesk = (): RecipeDefinition => ({
+    ...sampleRecipe(),
+    depends_on: ['recued-core.freshdesk'],
+    steps: [{ id: 'ticket', op: 'recued-core.freshdesk.ticket.read' } as unknown as RecipeDefinition['steps'][number]],
+  });
+  const mountSwitch = (publisher: string) => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const handle = mountRecipeEditorRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      recipeId: 'daily-brief',
+      listCaller: async () => ({ recipes: [] }),
+      getCaller: getCallerFor({ ...entryFor(usingFreshdesk()), publisher_id: publisher }),
+      validateCaller: okValidate,
+      saveCaller: okSave,
+      packCopiesCaller: async () => ({ copies: [{ pack_ref: 'local-authoring.freshdesk-copy', copy_of: 'recued-core.freshdesk' }] }),
+    });
+    return { root, handle };
+  };
+  const field = (root: FakeElement, key: string) => findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, key)?.value;
+
+  it('switches another author\'s recipe to your copy as a copy of your own, and offers the way back', async () => {
+    const { root, handle } = mountSwitch('recued-core');
+    await tick(16);
+    const toCopy = findByAttrValue(root, RECIPE_EDITOR_PACK_SWITCH_ATTR, 'recued-core.freshdesk');
+    expect(toCopy?.textContent).toBe('Use my copy');
+    toCopy!.click();
+    await tick();
+    expect(field(root, 'depends_on')).toBe('local-authoring.freshdesk-copy');
+    expect(field(root, 'op')).toBe('local-authoring.freshdesk-copy.ticket.read');
+    // The original stays as it is: this is now your own recipe.
+    expect(findByAttr(root, RECIPE_EDITOR_RECIPE_ID_ATTR)?.value).toBe('daily-brief-copy');
+    expect(findByAttr(root, RECIPE_EDITOR_RECIPE_NAME_ATTR)?.value).toBe('Copy of Daily brief');
+    const back = findByAttrValue(root, RECIPE_EDITOR_PACK_SWITCH_ATTR, 'local-authoring.freshdesk-copy');
+    expect(back?.textContent).toBe('Use the original');
+    back!.click();
+    await tick();
+    expect(field(root, 'depends_on')).toBe('recued-core.freshdesk');
+    expect(field(root, 'op')).toBe('recued-core.freshdesk.ticket.read');
+    // Switching back does not make a copy of the copy.
+    expect(findByAttr(root, RECIPE_EDITOR_RECIPE_ID_ATTR)?.value).toBe('daily-brief-copy');
+    handle.dispose();
+  });
+
+  it('switches your own recipe in place', async () => {
+    const { root, handle } = mountSwitch('kitchen');
+    await tick(16);
+    findByAttrValue(root, RECIPE_EDITOR_PACK_SWITCH_ATTR, 'recued-core.freshdesk')!.click();
+    await tick();
+    expect(field(root, 'op')).toBe('local-authoring.freshdesk-copy.ticket.read');
+    expect(findByAttr(root, RECIPE_EDITOR_RECIPE_ID_ATTR)?.value).toBe('daily-brief');
+    handle.dispose();
+  });
+});
+

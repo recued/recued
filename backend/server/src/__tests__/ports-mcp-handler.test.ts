@@ -5,8 +5,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { LifecycleState } from '@recued/contracts';
 import { Readable } from 'node:stream';
 import { createRateLimiter, type RateLimiter } from '../ports/common/rate-limit.js';
+import { KITCHEN_DRAFT_SOURCE_MAX_BYTES } from '@recued/contracts';
 import {
   createMcpPortHandler,
+  MCP_MAX_BODY_BYTES,
   MCP_LEGACY_SSE_IDLE_AFTER_MS,
   MCP_MAX_CONCURRENT_VERIFICATIONS,
   MCP_MAX_IDLE_LEGACY_SSE_SESSIONS_PER_TOKEN,
@@ -96,6 +98,41 @@ describe('createMcpPortHandler', () => {
     });
     return { handler, advance: (ms: number) => { t += ms; } };
   };
+
+  // D-332 — the request cap, at its edge. It was 256 KiB and refused Kitchen imports of
+  // shipped packs; nothing tested it.
+  it('takes a request of exactly MCP_MAX_BODY_BYTES and refuses one byte more with 413', async () => {
+    const { handler } = buildHandler();
+    const sized = (bytes: number): string => {
+      const shell = (filler: string) => JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call',
+        params: { name: 'recued_ingredient_kitchen-draft-import', arguments: { source: filler } } });
+      return shell('a'.repeat(bytes - Buffer.byteLength(shell(''))));
+    };
+    const fits = new FakeRes();
+    await handler(buildReq({ body: sized(MCP_MAX_BODY_BYTES), headers: { authorization: 'Bearer mcp-1' } }),
+      fits as unknown as ServerResponse);
+    expect(fits.statusCode).toBe(200);
+    const over = new FakeRes();
+    await handler(buildReq({ body: sized(MCP_MAX_BODY_BYTES + 1), headers: { authorization: 'Bearer mcp-1' } }),
+      over as unknown as ServerResponse);
+    expect(over.statusCode).toBe(413);
+    expect(json(over)).toEqual({ error: { code: 'payload_too_large' } });
+  });
+
+  it('carries a Kitchen import of a source at its limit, escaped like the worst shipped pack', () => {
+    // Measured 2026-10-28 over the 1,074 shipped packs: JSON escaping adds at most 15.7 %.
+    // A source at the limit whose quotes make up that share, in a full import call with
+    // the longest request_id and title, must fit, or raising one limit broke the other.
+    const quotes = Math.ceil(KITCHEN_DRAFT_SOURCE_MAX_BYTES * 0.157);
+    const source = '"'.repeat(quotes) + 'a'.repeat(KITCHEN_DRAFT_SOURCE_MAX_BYTES - quotes);
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+      name: 'recued_ingredient_kitchen-draft-import',
+      arguments: { kind: 'pack', source, request_id: 'r'.repeat(128), title: 't'.repeat(200) },
+    } });
+    expect(Buffer.byteLength(source)).toBe(KITCHEN_DRAFT_SOURCE_MAX_BYTES);
+    expect(Buffer.byteLength(body)).toBeGreaterThan(KITCHEN_DRAFT_SOURCE_MAX_BYTES * 1.15);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(MCP_MAX_BODY_BYTES);
+  });
 
   it('returns 200 + JSON-RPC response on a valid call', async () => {
     const { handler } = buildHandler();

@@ -896,6 +896,11 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    (`native_op_in_step`). D-261's pre-approval origin check keeps reading this id
   //    as the scheduling grant, for the owner and for a door alike, as before.
   nativeOp('core.schedule.recipe', 'schedule', 'write', 'schedule'),
+  // ── Kitchen — ordinary kernel authoring operation; creates review drafts.
+  op('core.kitchen.draft.import', 'kitchen', 'kitchen-draft-import', 'write', 'recipe'),
+  op('core.kitchen.draft.list', 'kitchen', 'kitchen-draft-list', 'read', 'recipe'),
+  op('core.kitchen.draft.get', 'kitchen', 'kitchen-draft-get', 'read', 'recipe'),
+  op('core.kitchen.draft.update', 'kitchen', 'kitchen-draft-update', 'write', 'recipe'),
 
   // ── seller — core-owned commerce registry. Recipes can establish and read
   //    fixed-shape offers, but only Seller owns the DB/schema/menu/UI and the

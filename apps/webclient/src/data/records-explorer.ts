@@ -84,6 +84,8 @@ export interface RecordsExplorerState extends RecordsBrowseState {
   deleting: boolean;
   exporting: boolean;
   exportingAction: RecordsExportAction | null;
+  /** The shared importer is uploading, running or refreshing this workspace. */
+  importBusy?: boolean;
   retiringEventId: string | null;
   retiringEventBusy: boolean;
   purgePending: boolean;
@@ -111,7 +113,8 @@ const recordsKindTabId = (kind: string): string =>
   `recued-records-kind-tab-${encodeURIComponent(kind)}`;
 
 const recordsControlsLocked = (state: RecordsExplorerState): boolean =>
-  state.deleting
+  state.importBusy === true
+  || state.deleting
   || state.retiringEventBusy
   || state.purging
   || state.loadingNamespaceKey !== null
@@ -446,14 +449,14 @@ const renderExportButton = (
     ${ownsExport ? 'aria-busy="true"' : ''}>${ownsExport ? 'Exporting…' : label}</button>`;
 };
 
-export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
+export const renderRecordsExplorer = (state: RecordsExplorerState, importPanel = ''): string => {
   const namespace = state.selectedNamespace;
   const browsingLocked = state.loading || recordsControlsLocked(state) || state.exporting || state.outboxRefreshing;
   const pagingLocked = browsingLocked || recordsViewHasDraft(state);
   const policy = state.selectedKind === null ? undefined : state.retention[state.selectedKind];
   return `<section class="records-explorer" data-recued-records-explorer>
     <header class="records-heading"><div><span>Pack-owned storage</span><h2>Records</h2>
-      <p>Friendly, schema-checked records owned by installed packs. Writes stay in pack recipes; this owner surface can inspect, export, and delete.</p></div>
+      <p>Inspect, export, and delete pack-owned records, or import a CSV through a supported pack recipe.</p></div>
       ${namespace && state.canExport ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_PACK_ACTION, 'Export pack JSON')}
         ${renderExportButton(state, RECORDS_EXPORT_PACK_CSV_ACTION, 'Export pack CSV')}</div>` : ''}
     </header>
@@ -462,6 +465,7 @@ export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
     ${state.loading ? '<p aria-live="polite">Loading Records…</p>' : ''}
     <div class="records-layout">${renderNamespaceNav(state)}
       <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(packLabel(namespace))}</h3><p>by ${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p>${renderPurge(state, namespace)}</div>${renderQuota(namespace)}</section>
+        ${importPanel}
         ${renderChanges(state)}
         ${renderOutbox(state)}
         ${renderKindNav(state)}
@@ -488,6 +492,7 @@ export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
 };
 
 export const RECORDS_EXPLORER_STYLES = `
+  .records-import{display:grid;gap:10px;margin:16px 0;padding:16px;border:1px solid var(--border,#d0d5dd);border-radius:8px;min-width:0;overflow-wrap:anywhere}.records-import h4,.records-import p{margin:0}.records-import>section{display:grid;gap:10px;min-width:0}.records-import .records-export-actions{justify-content:flex-start}
   .records-applied-view{display:grid;gap:6px;min-width:0;margin:12px 0;font-size:13px;overflow-wrap:anywhere}.records-applied-view p{margin:0}.records-applied-filters{display:flex;flex-wrap:wrap;gap:6px;min-width:0;margin:0;padding:0;list-style:none}.records-applied-filters li{box-sizing:border-box;min-width:0;max-width:100%;padding:5px 8px;border:1px solid var(--border,#e4e7ec);border-radius:6px;white-space:pre-wrap}.records-empty-state{min-width:0;overflow-wrap:anywhere}
   .records-view-controls{display:grid;gap:10px;margin:16px 0;min-width:0}.records-filter-row,.records-view-actions,.records-pagination{display:flex;align-items:end;gap:8px;flex-wrap:wrap;min-width:0}.records-view-controls label{display:grid;gap:4px;flex:1 1 150px;min-width:0;max-width:100%}.records-view-controls input,.records-view-controls select{width:100%;min-width:0}.records-view-controls select{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}.records-view-controls .records-help{margin:0;overflow-wrap:anywhere}.records-pagination{align-items:center;margin-top:12px}.records-view-controls button:disabled{opacity:.6;cursor:default}
   .records-explorer{display:grid;gap:18px;min-width:0}.records-heading{display:flex;justify-content:space-between;gap:20px;align-items:end}.records-heading>*{min-width:0}.records-heading h2{margin:2px 0}.records-heading p{max-width:760px;margin:6px 0;color:var(--muted,#667085)}

@@ -136,9 +136,15 @@ export const safeServerSwitchLandingHash = (hash: string): string => {
       return serializeShellRoute(route.surface, safeFirst);
     }
     case 'kitchen':
-      return first === 'recipe'
-        ? serializeShellRoute('recipes')
-        : serializeShellRoute('kitchen', 'pack');
+      // Kitchen's ids belong to the source server. A saved recipe lands in Recipes; the pack
+      // builder and a new recipe start blank; anything else, such as an item of work in
+      // progress, lands on Kitchen's home, which lists the target's own (D-333).
+      if (first === 'recipe') return serializeShellRoute('recipes');
+      if (first === 'pack') return serializeShellRoute('kitchen', 'pack');
+      if (first === 'new' && route.segments[1] === 'recipe' && route.segments.length === 2) {
+        return serializeShellRoute('kitchen', 'new', 'recipe');
+      }
+      return serializeShellRoute('kitchen');
     default:
       return serializeShellRoute(route.surface);
   }

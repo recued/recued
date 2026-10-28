@@ -328,11 +328,33 @@ describe('D-329 A — the hold\'s shape and words', () => {
     });
     expect(ask.message.title).toBe('Approve: Change a thing you own');
     expect(ask.message.text.split('\n')[0]).toBe('An AI agent wants to change a thing you own.');
-    expect(ask.message.text).toContain('id: Family car');
+    // Named as what it is, not "id: Family car", and its kind left to the title (2026-10-27).
+    expect(ask.message.text).toContain('\n  Thing: Family car');
+    expect(ask.message.text).not.toMatch(/^ {2}(kind|id): /m);
     expect(ask.message.text).not.toContain('e1a798e8');
     // With no name recorded (an older hold), the id is still shown.
     expect(buildPreflightAsk({ checkpoint: update, context: { raw_op: { op_id: 'work.update' }, tool_slug: 'work.update', risk_tier: 'write' } })
-      .message.text).toContain('e1a798e8');
+      .message.text).toContain('\n  Thing: we1:asset:recued.asset:local:e1a798e8');
+  });
+
+  it('names the thing a part belongs to, and the event a calendar change moves, as the owner knows them', () => {
+    const part = held({ tier1_tool: 'work.create', op_id: 'work.create', operation: 'work.create',
+      op_args: { kind: 'asset', title: 'Bike lock', belongs_to: 'asset-bike' } });
+    const partAsk = buildPreflightAsk({
+      checkpoint: { ...part, preflight_context: { value_labels: { belongs_to: { 'asset-bike': 'Road bike' } } } } as Checkpoint,
+      context: { raw_op: { op_id: 'work.create' }, tool_slug: 'work.create', risk_tier: 'write' },
+    });
+    expect(partAsk.message.title).toBe('Approve: Add a thing you own');
+    expect(partAsk.message.text).toContain('\n  title: Bike lock\n  Part of: Road bike');
+    expect(partAsk.message.text).not.toMatch(/^ {2}(kind|belongs_to): /m);
+    const move = held({ tier1_tool: 'calendar.update', op_id: 'calendar.update', operation: 'calendar.update',
+      op_args: { source_id: 'evt-9', summary: 'Dentist (moved)' } });
+    const moveAsk = buildPreflightAsk({
+      checkpoint: { ...move, preflight_context: { value_labels: { source_id: { 'evt-9': 'Dentist, Tue 10:00' } } } } as Checkpoint,
+      context: { raw_op: { op_id: 'calendar.update' }, tool_slug: 'calendar.update', risk_tier: 'write' },
+    });
+    expect(moveAsk.message.text).toContain('\n  Event: Dentist, Tue 10:00');
+    expect(moveAsk.message.text).not.toContain('source_id');
   });
 
   it('names who proposed it: the owner\'s chat, their messenger or email chat, else an AI agent', () => {

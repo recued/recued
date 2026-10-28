@@ -3302,7 +3302,7 @@ export const bootstrapRecipesRoute = (
           aria-disabled="${String(loading)}" aria-busy="${String(loading)}">
           ${loading ? 'Refreshing…' : 'Refresh'}
         </button>
-        <a class="recipes-inline-link" href="${serializeShellRoute('kitchen', 'pack')}" ${RECIPES_ROUTE_KITCHEN_LINK_ATTR}>Author in Kitchen</a>
+        <a class="recipes-inline-link" href="${serializeShellRoute('kitchen')}" ${RECIPES_ROUTE_KITCHEN_LINK_ATTR}>Author in Kitchen</a>
         <a class="recipes-inline-link" href="#packs">Manage packs</a>
       </div>
       ${loading ? '<p class="recipes-section-copy">Loading recipes...</p>' : ''}

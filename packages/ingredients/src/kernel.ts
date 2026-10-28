@@ -1575,6 +1575,9 @@ export interface KernelDispatchers {
   preapprovalRequest?: (input: PreparePreapproval, meta: StepMeta | undefined) => Promise<PreapprovalResult>;
   mailDraft?: (method: 'create' | 'get' | 'update' | 'delete', input: unknown,
     meta: StepMeta | undefined) => Promise<MailDraft | { deleted: true }>;
+  kitchenDraftImport?: (input: unknown, meta: StepMeta | undefined) => Promise<import('@recued/contracts').KitchenDraftImportReceipt>;
+  kitchenDraft?: (method: 'list' | 'get' | 'update', input: unknown, meta: StepMeta | undefined) =>
+    Promise<import('@recued/contracts').KitchenDraftListResult | import('@recued/contracts').KitchenImportDraft | import('@recued/contracts').KitchenDraftUpdateReceipt>;
 
   /** Core Seller registry. The server owns its DB/schema/menu/UI; recipes can
    *  compose only through these fixed dispatch slots. */
@@ -2193,6 +2196,16 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           throw new IngredientError('BAD_INPUT', 'Customer sign-off release input is invalid.', { slug });
         }
         return dispatchers.quoteSignoffRelease({ signoff_id, expected_plan_hash, summary });
+      }
+      case 'kitchen-draft-import':
+        if (!dispatchers.kitchenDraftImport) throw new IngredientError('SERVER_NOT_REACHABLE', 'Kitchen draft imports are unavailable.', { slug });
+        return dispatchers.kitchenDraftImport(call.input, call.stepMeta);
+      case 'kitchen-draft-list':
+      case 'kitchen-draft-get':
+      case 'kitchen-draft-update': {
+        if (!dispatchers.kitchenDraft) throw new IngredientError('SERVER_NOT_REACHABLE', 'Kitchen draft access is unavailable.', { slug });
+        const method = slug === 'kitchen-draft-list' ? 'list' : slug === 'kitchen-draft-get' ? 'get' : 'update';
+        return dispatchers.kitchenDraft(method, call.input, call.stepMeta);
       }
       case 'mail-draft-create':
       case 'mail-draft-read':

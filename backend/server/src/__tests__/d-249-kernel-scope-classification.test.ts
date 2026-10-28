@@ -186,6 +186,12 @@ describe('D-249 — kernel op scope classification', () => {
       'core.storage.exchange.status',
       'core.seller.order.get',
       'core.seller.customer-access.issue',
+      // D-332 — the whole Kitchen draft family, not only import: the three
+      // added later derived `data.kitchen` and were refused at a fenced door.
+      'core.kitchen.draft.import',
+      'core.kitchen.draft.list',
+      'core.kitchen.draft.get',
+      'core.kitchen.draft.update',
     ]) {
       expect(byOp.get(op), op).toBeNull();
     }

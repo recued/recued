@@ -1,5 +1,6 @@
+import { installProjectOverviewFixture } from './helpers/project-overview-fixture.js';
 import { expect, test, type Page } from '@playwright/test';
-import type { MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView } from '@recued/contracts';
+import type { MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView, WorkEntity } from '@recued/contracts';
 import {
   DATA_DETAIL_HEADING, HARNESS_URL, SHARED_PROVENANCE, SHARED_PROVENANCE_DETAIL,
   SHARED_PROVENANCE_PRIMARY, SHARED_REFERENCE, SHARED_REFERENCE_ID, installFullAppHooks,
@@ -318,6 +319,282 @@ const retryMailSendersRead = async (page: Page): Promise<void> => {
 };
 
 installFullAppHooks();
+
+test.describe('Standalone Notes reader', () => {
+  test.use({ locale: 'en-US', timezoneId: 'America/Los_Angeles' });
+  type ClipboardWindow = Window & { __noteCopies: string[]; __holdNoteCopy: boolean; __releaseNoteCopy?: () => void };
+  const note = (id: string, title: string, body: string, source_id = 'recued.note'): Extract<WorkEntity, { _kind: 'note' }> => ({
+    _kind: 'note', id, title, body, source_id, sync_state: 'live', conflict_policy: 'recued_wins',
+    created_at: Date.parse('2026-09-08T19:00:00Z'), updated_at: Date.parse('2026-09-08T19:00:00Z'),
+    last_seen_at: Date.parse('2026-09-08T19:00:00Z'), last_user_action_at: Date.parse('2026-09-08T19:00:00Z'),
+    related_contact_ids: [], related_calendar_event_ids: [], related_mail_thread_ids: [], related_project_ids: [],
+  });
+  const boot = async (page: Page, notes: Extract<WorkEntity, { _kind: 'note' }>[]) => {
+    await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
+    await page.addInitScript(rows => {
+      sessionStorage.setItem('recued-test-today-entities', JSON.stringify(rows));
+      const state = window as unknown as ClipboardWindow;
+      state.__noteCopies = []; state.__holdNoteCopy = false;
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => {
+        state.__noteCopies.push(text);
+        if (state.__holdNoteCopy) { state.__holdNoteCopy = false; await new Promise<void>(resolve => { state.__releaseNoteCopy = resolve; }); }
+      } } });
+    }, notes);
+    await page.goto(`${HARNESS_URL}?data=today#data/note`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.getByRole('heading', { name: 'Notes', exact: true })).toBeVisible();
+  };
+  const open = (page: Page, id: string) => page.locator(`[data-action="open-edit-work-entity"][data-entity-id="${id}"]`).click();
+  const reader = (page: Page) => page.locator('.work-entity-note-reader');
+  const editor = (page: Page) => page.getByRole('dialog', { name: 'Edit Note', exact: true });
+  const writes = (page: Page) => page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as { args: Record<string, unknown> }[]);
+
+  test('reads and copies a standalone imported note, preserves the list, and ignores late copy feedback', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const body = `  needle — café 🧾\r\n<img src=x onerror="throw new Error('unsafe')">\r\n${'A complete line of saved note text.\r\n'.repeat(120)}  `;
+    await boot(page, [note('imported-note', 'Imported note', body, 'imported.note'), note('other-note', 'Other note', 'Another independent note.')]);
+    const source = page.locator('.work-entity-source-dropdown-select');
+    const search = page.locator('[data-action="search-work-entities"][data-kind="note"]');
+    await source.selectOption('imported.note'); await search.fill('needle'); await open(page, 'imported-note');
+    const view = reader(page);
+    await expect(view.getByRole('heading', { name: 'Imported note', exact: true })).toBeVisible();
+    expect(await view.locator('[data-note-body]').textContent()).toBe(body.replace(/\r\n/g, '\n'));
+    await expect(view.locator('[data-note-body] img, [data-note-body] script')).toHaveCount(0);
+    await expect(view.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+    await expect(view.getByText('Related records', { exact: true })).toHaveCount(0);
+    await expect(view.getByText('Activity timeline', { exact: true })).toHaveCount(0);
+    const content = view.locator('.work-entity-note-content'); await content.evaluate(element => { element.scrollTop = 350; });
+    const position = await content.evaluate(element => element.scrollTop); expect(position).toBeGreaterThan(0);
+    await view.getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(view.locator('[data-note-notice]')).toHaveText('Note text copied.');
+    expect(await page.evaluate(() => (window as unknown as ClipboardWindow).__noteCopies)).toEqual([body]);
+    expect(await content.evaluate(element => element.scrollTop)).toBe(position);
+    await page.evaluate(() => { (window as unknown as ClipboardWindow).__holdNoteCopy = true; });
+    await view.getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(view.getByRole('button', { name: 'Copying…', exact: true })).toBeVisible();
+    await view.getByRole('button', { name: 'Back to notes', exact: true }).click();
+    await expect(view).toHaveCount(0); await expect(source).toHaveValue('imported.note'); await expect(search).toHaveValue('needle');
+    await source.selectOption({ label: 'All Sources' }); await search.fill(''); await open(page, 'other-note');
+    await expect(reader(page).getByRole('heading', { name: 'Other note', exact: true })).toBeVisible();
+    await page.evaluate(async () => {
+      (window as unknown as ClipboardWindow).__releaseNoteCopy?.();
+      for (let index = 0; index < 8; index++) await Promise.resolve();
+    });
+    await expect(reader(page).locator('[data-note-notice]')).toHaveCount(0);
+    expect(await writes(page)).toEqual([]);
+  });
+
+  test('edits title and exact text, keeps optional links, and cancels a draft back to the saved reader', async ({ page }) => {
+    const body = '\n  Original text\r\nSecond line with spaces  \r\n';
+    await boot(page, [{ ...note('editable-note', 'Original\r\n title', body), related_project_ids: ['project-one'] }]);
+    await open(page, 'editable-note');
+    const related = reader(page).locator('details').filter({ has: page.getByText('Related records', { exact: true }) });
+    await related.locator('summary').click();
+    await expect(related.getByRole('button', { name: 'Manage related records', exact: true })).toBeVisible();
+    await reader(page).getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(reader(page).locator('[data-note-notice]')).toHaveText('Note text copied.');
+    await expect(related.getByRole('button', { name: 'Manage related records', exact: true })).toBeVisible();
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(editor(page).getByLabel('Note text')).toHaveValue(body.replace(/\r\n/g, '\n'));
+    await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(reader(page).locator('[data-note-notice]')).toHaveText('No changes to save.');
+    expect(await writes(page)).toEqual([]);
+    const changed = '\n  revised 🧾\nA line with trailing spaces  \n';
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await editor(page).getByLabel('Title', { exact: true }).fill('');
+    await editor(page).getByLabel('Note text').fill(changed);
+    await editor(page).getByRole('button', { name: 'More details', exact: true }).click();
+    await expect(editor(page).getByRole('textbox', { name: 'Related project 1', exact: true })).toHaveValue('project-one');
+    await editor(page).getByRole('button', { name: 'Fewer details', exact: true }).click();
+    await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(reader(page).getByRole('heading', { name: 'Note', exact: true })).toBeVisible();
+    await expect(reader(page).locator('[data-note-notice]')).toHaveText('Note saved.');
+    expect(await reader(page).locator('[data-note-body]').textContent()).toBe(changed);
+    expect((await writes(page))[0]?.args).toEqual({ kind: 'note', id: 'editable-note', title: '', body: changed });
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-today-entities')!)[0].related_project_ids)).toEqual(['project-one']);
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await editor(page).getByLabel('Title', { exact: true }).fill('Unsaved title'); await page.keyboard.press('Escape');
+    const discard = page.getByRole('alertdialog'); await expect(discard).toBeVisible();
+    await discard.getByRole('button', { name: 'Keep editing', exact: true }).click();
+    await expect(editor(page).getByLabel('Title', { exact: true })).toHaveValue('Unsaved title');
+    await editor(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await discard.getByRole('button', { name: 'Discard changes', exact: true }).click();
+    await expect(reader(page).getByRole('heading', { name: 'Note', exact: true })).toBeVisible();
+    expect(await reader(page).locator('[data-note-body]').textContent()).toBe(changed); expect(await writes(page)).toHaveLength(1);
+    await reader(page).getByRole('button', { name: 'Back to notes', exact: true }).click();
+    await expect(page.locator('[data-entity-id="editable-note"] .work-entity-list-row-primary')).toContainText('revised');
+  });
+
+  test('creates a note with optional details and preserves collapsed fields on save', async ({ page }) => {
+    await boot(page, []);
+    await page.getByRole('button', { name: '+ New Note', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'New Note', exact: true });
+    const body = '\n  New note text 🧾\nKeep these spaces.  \n';
+    await dialog.getByLabel('Title', { exact: true }).fill('New note');
+    await dialog.getByLabel('Note text').fill(body);
+    await dialog.getByRole('button', { name: 'More details', exact: true }).click();
+    const addProject = dialog.locator('[data-form-array-add="related_project"]');
+    await expect(addProject).toBeVisible(); await addProject.click();
+    await dialog.getByRole('textbox', { name: 'Related project 1', exact: true }).fill('project-one');
+    await dialog.getByRole('button', { name: 'Fewer details', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await writes(page)).toEqual([{ args: expect.objectContaining({
+      kind: 'note', source_id: 'recued.note', title: 'New note', body, related_project_ids: ['project-one'],
+    }), method: 'work_entity.upsert' }]);
+    await open(page, 'note-created');
+    await expect(reader(page).getByRole('heading', { name: 'New note', exact: true })).toBeVisible();
+    expect(await reader(page).locator('[data-note-body]').textContent()).toBe(body);
+    await reader(page).getByText('Related records', { exact: true }).click();
+    await expect(reader(page).getByText('1 project', { exact: true })).toBeVisible();
+  });
+
+  test('rechecks edit permission and retains a rejected or unconfirmed draft without repeating the write', async ({ page }) => {
+    await boot(page, [note('confirmed-note', 'Confirmed note', 'Original source text')]); await open(page, 'confirmed-note');
+    await page.evaluate(() => { document.documentElement.dataset.notesReadonly = '1'; });
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(reader(page).getByRole('alert')).toContainText('cannot be edited now'); await expect(editor(page)).toHaveCount(0);
+    expect(await writes(page)).toEqual([]);
+    await reader(page).getByRole('button', { name: 'Back to notes', exact: true }).click();
+    await page.evaluate(() => { delete document.documentElement.dataset.notesReadonly; }); await open(page, 'confirmed-note');
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    await editor(page).getByLabel('Note text').fill('Keep this draft');
+    await page.evaluate(() => {
+      const rows = JSON.parse(sessionStorage.getItem('recued-test-today-entities')!); rows[0].title = 'Changed at source';
+      sessionStorage.setItem('recued-test-today-entities', JSON.stringify(rows)); document.documentElement.dataset.todayVendorWon = '1';
+    });
+    await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(editor(page).getByRole('alert')).toContainText('did not confirm your edits');
+    await expect(editor(page).getByLabel('Note text')).toHaveValue('Keep this draft');
+    expect((await writes(page))[0]?.args).toEqual({ kind: 'note', id: 'confirmed-note', body: 'Keep this draft' });
+    await page.evaluate(() => { delete document.documentElement.dataset.todayVendorWon; document.documentElement.dataset.todayAwaitingVerify = '1'; });
+    await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(editor(page).getByRole('alert')).toContainText('source has not confirmed');
+    await expect(editor(page).getByRole('alert')).toBeFocused();
+    await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(editor(page).getByRole('alert')).toContainText('waiting for its source'); expect(await writes(page)).toHaveLength(2);
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-today-entities')!)[0].title)).toBe('Changed at source');
+  });
+});
+
+test.describe('Task editing and due-date shortcuts', () => {
+  test.use({ locale: 'en-US', timezoneId: 'America/Los_Angeles' });
+  const log = (page: Page) => page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as { method: string; args: Record<string, unknown> }[]);
+  const boot = async (page: Page) => {
+    await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
+    await page.goto(`${HARNESS_URL}?data=today#today`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  };
+
+  test('Today moves a timed due and requires source confirmation before clearing it', async ({ page }) => {
+    await boot(page);
+    const row = page.locator('[data-today-item="task:task-today"]');
+    await row.getByRole('button', { name: 'Due tomorrow: Review the brief', exact: true }).click();
+    await expect(page.locator('[data-today-task-notice]')).toContainText('Rescheduled');
+    expect((await log(page))[0]).toEqual({ method: 'work_entity.upsert', args: {
+      kind: 'task', id: 'task-today', due_at: Date.parse('2026-09-09T13:00:00-07:00'),
+    } });
+
+    await page.evaluate(() => { document.documentElement.dataset.todayAwaitingVerify = '1'; });
+    await row.getByRole('button', { name: 'Clear due date: Review the brief', exact: true }).click();
+    await expect(row.locator('[data-today-task-error]')).toContainText('source has not confirmed');
+    await expect(page.locator('[data-today-task-notice]')).toHaveCount(0);
+    await expect(row).toContainText('Review the brief');
+    expect((await log(page))[1]?.args).toEqual({ kind: 'task', id: 'task-today', clear_due_at: true });
+    await row.locator('[data-today-task-editor]').getByRole('button', { name: 'Clear date', exact: true }).click();
+    await expect(row.locator('[data-today-task-error]')).toContainText('waiting for its source');
+    expect(await log(page)).toHaveLength(2);
+  });
+
+  test('Today opens the task editor, preserves collapsed relationships, and saves cleared notes and dates', async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem('recued-test-today-entities', JSON.stringify([{
+      _kind: 'task', id: 'task-edit', title: 'File the return', body: 'Check the receipt', priority: 'low',
+      due_at: Date.parse('2026-09-08T00:00:00Z'), done: false, blocks_task_ids: ['follow-up'],
+      source_id: 'recued.task', sync_state: 'live', conflict_policy: 'recued_wins',
+      last_seen_at: 1, created_at: 1, updated_at: 1,
+    }])));
+    await boot(page);
+    await page.getByRole('link', { name: 'Edit details: File the return', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit Task', exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(page).toHaveURL(/#data\/task\/task-edit$/);
+    await dialog.getByLabel('Title').fill('File the final return');
+    await dialog.getByLabel('Notes', { exact: true }).fill('');
+    await dialog.getByLabel('Priority', { exact: true }).selectOption('high');
+    await dialog.getByRole('button', { name: 'Due tomorrow', exact: true }).click();
+    await dialog.getByRole('button', { name: 'More details', exact: true }).click();
+    await expect(dialog.getByRole('textbox', { name: 'Blocks task 1', exact: true })).toHaveValue('follow-up');
+    await dialog.getByRole('button', { name: 'Fewer details', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    const saved = (await log(page))[0]?.args;
+    expect(saved).toMatchObject({ kind: 'task', id: 'task-edit', title: 'File the final return',
+      body: '', priority: 'high', due_at: Date.parse('2026-09-09T00:00:00Z') });
+    expect(saved).not.toHaveProperty('blocks_task_ids');
+
+    await page.locator('[data-action="open-edit-work-entity"][data-entity-id="task-edit"]').click();
+    await expect(dialog.getByLabel('Notes', { exact: true })).toHaveValue('');
+    await dialog.getByRole('button', { name: 'More details', exact: true }).click();
+    await expect(dialog.getByRole('textbox', { name: 'Blocks task 1', exact: true })).toHaveValue('follow-up');
+    await dialog.getByLabel('Priority', { exact: true }).selectOption('');
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('already has a priority');
+    expect(await log(page)).toHaveLength(1);
+    await dialog.getByLabel('Priority', { exact: true }).selectOption('high');
+    await dialog.getByRole('button', { name: 'Clear due date', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect((await log(page))[1]?.args).toMatchObject({ kind: 'task', id: 'task-edit', clear_due_at: true });
+    expect((await log(page))[1]?.args).not.toHaveProperty('due_at');
+    await page.locator('[data-action="open-edit-work-entity"][data-entity-id="task-edit"]').click();
+    await dialog.getByRole('button', { name: 'More details', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Fewer details', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+  });
+
+  test('task edits retain the draft on mismatched or pending confirmation without replaying untouched fields', async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem('recued-test-today-entities', JSON.stringify([{
+      _kind: 'task', id: 'task-today', title: 'Review the brief', done: false, blocks_task_ids: [],
+      source_id: 'recued.task', sync_state: 'live', conflict_policy: 'source_wins',
+      due_at: Date.parse('2026-09-09T00:00:00.001Z'),
+      created_at: Date.parse('2026-09-08T12:00:00-07:00'), updated_at: Date.now(), last_seen_at: Date.now(),
+    }])));
+    await boot(page);
+    await page.getByRole('link', { name: 'Edit details: Review the brief', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit Task', exact: true });
+    await dialog.getByLabel('Notes', { exact: true }).fill('Keep this draft');
+    await page.evaluate(() => {
+      // A concurrent source update must survive saving only the notes.
+      sessionStorage.setItem('recued-test-today-entities', JSON.stringify([{
+        _kind: 'task', id: 'task-today', title: 'Updated at source', done: false, blocks_task_ids: [],
+        source_id: 'recued.task', sync_state: 'live', conflict_policy: 'source_wins',
+        due_at: Date.parse('2026-09-08T13:00:00-07:00'),
+        created_at: Date.parse('2026-09-08T12:00:00-07:00'), updated_at: Date.now(), last_seen_at: Date.now(),
+      }]));
+      document.documentElement.dataset.todayVendorWon = '1';
+    });
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('did not confirm your edits');
+    await expect(dialog.getByLabel('Notes', { exact: true })).toHaveValue('Keep this draft');
+    await expect(dialog.getByLabel('Due date', { exact: true })).toHaveValue('2026-09-08T17:00');
+    expect((await log(page))[0]?.args).toEqual({ kind: 'task', id: 'task-today', body: 'Keep this draft' });
+    await page.evaluate(() => {
+      delete document.documentElement.dataset.todayVendorWon;
+      document.documentElement.dataset.todayAwaitingVerify = '1';
+    });
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('source has not confirmed');
+    await expect(dialog.getByRole('alert')).toBeFocused();
+    await expect(dialog.getByLabel('Notes', { exact: true })).toHaveValue('Keep this draft');
+    expect((await log(page))[1]?.args).toEqual({ kind: 'task', id: 'task-today', body: 'Keep this draft' });
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('waiting for its source');
+    expect(await log(page)).toHaveLength(2);
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-today-entities')!)[0].title)).toBe('Updated at source');
+  });
+});
 
 test('Data keeps keyboard focus on a collection tab through its repaint', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -1614,9 +1891,10 @@ test('Data contains long work-entity text on a narrow phone', async ({ page }) =
   await row.click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   await expect(dialog.getByLabel('Title')).toHaveValue(longTitle);
-  await expect(dialog.getByLabel('Body')).toHaveValue(longBody);
+  await expect(dialog.getByLabel('Notes')).toHaveValue(longBody);
   await expect(dialog.locator('.work-entity-dialog-source-value'))
     .toHaveText(longSource);
+  await dialog.getByRole('button', { name: 'More details', exact: true }).click();
   await expect(dialog.getByRole('textbox', { name: 'Blocks task 1' }))
     .toHaveValue(longRelationship);
   const dialogGeometry = await dialog.evaluate((surface) => {
@@ -1802,6 +2080,7 @@ test('Data focuses a newly added task relationship without losing the draft', as
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await title.fill('Draft survives repaint');
+  await dialog.getByRole('button', { name: 'More details', exact: true }).click();
   const add = dialog.getByRole('button', { name: 'Add Blocks task' });
   await add.focus();
   await page.keyboard.press('Enter');
@@ -1825,6 +2104,7 @@ test('Data restores task relationship removal focus to a survivor or Add', async
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await title.fill('Removal draft survives');
+  await dialog.getByRole('button', { name: 'More details', exact: true }).click();
   const add = dialog.getByRole('button', { name: 'Add Blocks task' });
   await add.click();
   await dialog.getByRole('textbox', { name: 'Blocks task 1' }).fill('task-a');
@@ -4715,4 +4995,228 @@ test('Data Mail senders retries the read after dismissal without repeating the w
   expect(await page.evaluate(() => window.__mailSendersRecovery.reads)).toBe(3);
   expect(await page.evaluate(() => window.__mailSendersRecovery.writes)).toEqual([{ address: 'news@club.example.test', dismissed: true }]);
   expect(await page.evaluate(() => window.__app.rpcCallCount('mail_fact.senders.dismiss'))).toBe(1);
+});
+
+
+test.describe('Records CSV import', () => {
+  const rows = (page: Page) => page.locator('.records-table tbody tr');
+  const ready = async (page: Page) => {
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.locator('[data-recued-data-route]')).toBeVisible();
+  };
+  const checkCsvImport = async (page: Page) => {
+    await page.getByRole('region', { name: 'Import records', exact: true }).getByRole('button', { name: 'Import CSV', exact: true }).click();
+    const dialog = page.locator('[data-recued-sheet-import]');
+    await dialog.getByRole('combobox').fill('Statement');
+    await page.getByRole('option', { name: /Statement.csv/ }).click();
+    await dialog.getByRole('button', { name: 'Next: match the columns', exact: true }).click();
+    await dialog.locator('[data-var-key="account_label"]').fill('current-account');
+    await expect(dialog.getByRole('button', { name: 'Import', exact: true })).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Check the file', exact: true }).click();
+    await expect(dialog).toContainText('Check only — nothing recorded');
+    return dialog;
+  };
+
+  test('Records imports through its pack recipe only after a check, then shows the receipt and new rows', async ({ page }) => {
+    await page.goto('/full-app-harness.html?data=records-navigation&records_import=1#data/records');
+    await ready(page);
+    const imports = page.getByRole('region', { name: 'Import records', exact: true });
+    await expect(imports.getByRole('button', { name: 'Import CSV', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /Other statement pack/ }).click();
+    await expect(imports).toHaveCount(0);
+    await page.getByRole('button', { name: /Statement import.*recued-core/ }).click();
+    const dialog = await checkCsvImport(page);
+    expect(await page.evaluate(() => sessionStorage.getItem('recued-test-records-imported'))).toBeNull();
+    await dialog.getByRole('button', { name: 'Import', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Last import result' })).toContainText('Import finished');
+    await expect(rows(page)).toContainText('Coffee');
+    const runs = await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-records-import-runs') ?? '[]'));
+    expect(runs.map((run: { config: { check_first: boolean } }) => run.config.check_first)).toEqual([true, false]);
+    expect(runs[1].config).toMatchObject({ file: 'file:statement', account_label: 'current-account',
+      column_date: 'Date', column_description: 'Description', column_amount: 'Amount' });
+    const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-records-import-dishes') ?? '[]'));
+    expect(saved[0]).toMatchObject({ recipe_id: 'import-bank-statement', enabled: false });
+    expect(saved[0].config_overlay).not.toHaveProperty('file');
+    expect(saved[0].config_overlay).not.toHaveProperty('account_label');
+  });
+
+  test('Records keeps the confirmed import receipt when its refresh fails and recovers without importing again', async ({ page }) => {
+    await page.goto('/full-app-harness.html?data=records-navigation&records_import=1#data/records');
+    await ready(page);
+    const dialog = await checkCsvImport(page);
+    await page.evaluate(() => sessionStorage.setItem('recued-test-records-import-refresh-failure', '1'));
+    await dialog.getByRole('button', { name: 'Import', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    const receipt = page.getByRole('region', { name: 'Last import result' });
+    await expect(receipt).toContainText('Import finished');
+    await expect(page.locator('[role="alert"]').first()).toContainText('Records refresh is temporarily unavailable');
+    await page.evaluate(() => sessionStorage.removeItem('recued-test-records-import-refresh-failure'));
+    await page.getByRole('button', { name: /Statement import.*recued-core/ }).click();
+    await expect(rows(page)).toContainText('Coffee');
+    await expect(receipt).toContainText('Import finished');
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-records-import-runs') ?? '[]').length)).toBe(2);
+  });
+});
+
+// Projects assemble only explicit links; the existing editors retain their
+// mutation and draft guards while the overview owns the return navigation.
+test('project overview pages linked work and returns from editing and creating tasks and notes', async ({ page }) => {
+  await installProjectOverviewFixture(page);
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  const overview = page.locator('[data-project-overview="launch"]');
+  const tasks = overview.locator('[data-project-section="task"]');
+  const notes = overview.locator('[data-project-section="note"]');
+  await expect(overview.getByRole('heading', { name: 'Kestrel launch', exact: true })).toBeVisible();
+  await expect(overview).toContainText('12 open · 2 completed tasks');
+  await expect(tasks.locator('[data-project-item-id]')).toHaveCount(10);
+  await expect(notes.locator('[data-project-item-id]')).toHaveCount(10);
+  await expect(overview.getByText('Independent launch note', { exact: true })).toHaveCount(0);
+  await tasks.getByRole('button', { name: 'More tasks', exact: true }).click();
+  await notes.getByRole('button', { name: 'More notes', exact: true }).click();
+  await expect(tasks.locator('[data-project-item-id]')).toHaveCount(14);
+  await expect(notes.locator('[data-project-item-id]')).toHaveCount(12);
+  const lastNote = notes.locator('[data-project-item-id="note-11"]');
+  await lastNote.scrollIntoViewIfNeeded();
+  const scroll = await page.locator('[data-recued-webclient-content]').evaluate(node => node.scrollTop);
+  await lastNote.click();
+  const reader = page.locator('.work-entity-note-reader');
+  await expect(reader.getByRole('heading', { name: 'Launch note 11', exact: true })).toBeVisible();
+  await reader.getByRole('button', { name: 'Back to project', exact: true }).click();
+  await expect(lastNote).toBeFocused();
+  expect(await page.locator('[data-recued-webclient-content]').evaluate(node => node.scrollTop)).toBe(scroll);
+  await expect(notes.locator('[data-project-item-id]')).toHaveCount(12);
+  await tasks.locator('[data-project-item-id="task-00"]').click();
+  const task = page.getByRole('dialog', { name: 'Edit Task', exact: true });
+  await task.getByRole('textbox', { name: /^Title/ }).fill('Revised launch task');
+  await task.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(tasks.locator('[data-project-item-id="task-00"]')).toContainText('Revised launch task');
+  await tasks.locator('[data-project-item-id="task-00"]').click();
+  await task.getByRole('button', { name: 'Complete', exact: true }).click();
+  await expect(task).toContainText('Task completed.');
+  await task.getByRole('button', { name: 'Back to project', exact: true }).click();
+  await expect(overview).toContainText('11 open · 3 completed tasks');
+  await tasks.getByRole('button', { name: 'New task', exact: true }).click();
+  const newTask = page.getByRole('dialog', { name: 'New Task', exact: true });
+  await newTask.getByRole('textbox', { name: /^Title/ }).fill('Another launch task');
+  await newTask.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(overview).toContainText('Another launch task');
+  await notes.getByRole('button', { name: 'New note', exact: true }).click();
+  const newNote = page.getByRole('dialog', { name: 'New Note', exact: true });
+  await newNote.getByRole('textbox', { name: /^Title/ }).fill('Decisions');
+  await newNote.getByRole('textbox', { name: /^Note text/ }).fill('Approved release details.');
+  await newNote.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(overview).toContainText('Decisions');
+  const writes = await page.evaluate(() => window.__projectOverview.writes);
+  expect(writes.find(write => write.title === 'Another launch task')).toMatchObject({ parent_project_id: 'launch' });
+  expect(writes.find(write => write.title === 'Decisions')).toMatchObject({ related_project_ids: ['launch'] });
+  await overview.getByRole('button', { name: 'Edit project', exact: true }).click();
+  const project = page.getByRole('dialog', { name: 'Edit Project', exact: true });
+  await project.getByRole('textbox', { name: /^Title/ }).fill('Revised Kestrel launch');
+  await project.getByRole('textbox', { name: /^Description/ }).fill('Updated project brief.');
+  await project.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(overview).toContainText('Updated project brief.');
+  await overview.getByRole('button', { name: 'Edit project', exact: true }).click();
+  await project.getByRole('textbox', { name: /^Description/ }).fill('');
+  await project.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(overview.getByText('Updated project brief.', { exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__projectOverview.writes.at(-1)?.description)).toBe('');
+  await overview.getByRole('button', { name: 'Back to projects', exact: true }).click();
+  await expect(page.locator('[data-entity-id="launch"]')).toContainText('Revised Kestrel launch');
+  await expect(page.locator('[data-entity-id="other"]')).toBeVisible();
+});
+
+test('project section retry preserves other work and late pages cannot replace another project', async ({ page }) => {
+  await installProjectOverviewFixture(page, true);
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  const overview = page.locator('[data-project-overview="launch"]');
+  const tasks = overview.locator('[data-project-section="task"]');
+  const notes = overview.locator('[data-project-section="note"]');
+  await expect(tasks.locator('[data-project-item-id]')).toHaveCount(10);
+  await expect(notes.getByRole('alert')).toContainText('Notes read interrupted');
+  await page.evaluate(() => window.__projectOverview.failNotes(false));
+  await notes.getByRole('button', { name: 'Try notes again', exact: true }).click();
+  await expect(notes.locator('[data-project-item-id]')).toHaveCount(10);
+  await expect(notes.getByRole('alert')).toHaveCount(0);
+  await page.evaluate(() => window.__projectOverview.holdTaskPage());
+  await tasks.getByRole('button', { name: 'More tasks', exact: true }).focus();
+  await page.evaluate(() => { for (let i = 0; i < 2; i++) document.querySelector<HTMLButtonElement>('[data-action="project-work-more"][data-project-kind="task"]')!.click(); });
+  await expect.poll(() => page.evaluate(() => window.__projectOverview.reads.filter(read => read.kind === 'task' && read.offset === 10).length)).toBe(1);
+  await overview.getByRole('button', { name: 'Back to projects', exact: true }).click();
+  await page.locator('[data-entity-id="other"]').click();
+  const other = page.locator('[data-project-overview="other"]');
+  await expect(other.getByRole('heading', { name: 'Other project', exact: true })).toBeVisible();
+  await expect(other.getByRole('button', { name: 'Edit project', exact: true })).toHaveCount(0);
+  await expect(other).toContainText('Other project task');
+  await expect(other.getByText('May be out of date', { exact: true })).toBeVisible();
+  await page.evaluate(() => window.__projectOverview.releaseTaskPage());
+  await expect(other).toBeVisible();
+  await expect(other.getByText('Launch task 10', { exact: true })).toHaveCount(0);
+});
+
+test('project creation keeps a draft after an unconfirmed link and prevents a duplicate submission', async ({ page }) => {
+  await installProjectOverviewFixture(page);
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  await page.locator('[data-project-overview="launch"]').getByRole('button', { name: 'New task', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New Task', exact: true });
+  await dialog.getByRole('textbox', { name: /^Title/ }).fill('Check project association');
+  await page.evaluate(() => window.__projectOverview.changeNextCreateLink());
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('source did not confirm');
+  await expect(dialog.getByRole('textbox', { name: /^Title/ })).toHaveValue('Check project association');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('source already returned an item');
+  expect(await page.evaluate(() => window.__projectOverview.writes.filter(write => write.method === 'work_entity.upsert').length)).toBe(1);
+});
+
+test('project live refresh preserves focus and drafts, and editing rechecks source permissions', async ({ page }) => {
+  await installProjectOverviewFixture(page);
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  const overview = page.locator('[data-project-overview="launch"]');
+  await expect(overview).toContainText('12 open · 2 completed tasks');
+  const owner = overview.getByRole('button', { name: 'New note', exact: true });
+  await owner.focus();
+  await page.evaluate(() => {
+    window.__projectOverview.updateFromServer('Refreshed launch');
+    window.__app.fireMessage({ type: 'server_event', event: { kind: 'warehouse', collection: 'task', op: 'update', id: 'task-00', cursor: Date.now() + 10_000 } });
+  });
+  await expect(overview.getByRole('heading', { name: 'Refreshed launch', exact: true })).toBeVisible();
+  await expect(overview).toContainText('11 open · 3 completed tasks');
+  await expect(owner).toBeFocused();
+  await overview.locator('[data-project-item-id="note-00"]').click();
+  const reader = page.locator('.work-entity-note-reader');
+  await expect(reader.getByRole('heading', { name: 'Launch note 0', exact: true })).toBeVisible();
+  await page.evaluate(() => window.__projectOverview.updateFromServer('Changed while reading'));
+  await reader.getByRole('button', { name: 'Back to project', exact: true }).click();
+  await expect(overview.getByRole('heading', { name: 'Changed while reading', exact: true })).toBeVisible();
+  await expect(overview.locator('[data-project-section][aria-busy="true"]')).toHaveCount(0);
+  await overview.getByRole('button', { name: 'Edit project', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit Project', exact: true });
+  await editor.getByRole('textbox', { name: /^Description/ }).fill('Unfinished project brief');
+  const before = await page.evaluate(() => window.__app.rpcCallCount('work_entity.list'));
+  await page.evaluate(() => {
+    window.__projectOverview.updateFromServer('Changed elsewhere');
+    window.__app.fireMessage({ type: 'server_event', event: { kind: 'warehouse', collection: 'project', op: 'update', id: 'launch', cursor: Date.now() + 20_000 } });
+  });
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('work_entity.list'))).toBeGreaterThan(before);
+  await expect(editor.getByRole('textbox', { name: /^Description/ })).toHaveValue('Unfinished project brief');
+  await editor.getByRole('button', { name: 'Back to project', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(overview.getByRole('heading', { name: 'Changed elsewhere', exact: true })).toBeVisible();
+  await expect(overview.locator('[data-project-section][aria-busy="true"]')).toHaveCount(0);
+  const beforePermissionRead = await page.evaluate(() => window.__app.rpcCallCount('work_entity.source.list'));
+  await page.evaluate(() => window.__projectOverview.setProjectWritable(false));
+  await overview.getByRole('button', { name: 'Edit project', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('work_entity.source.list'))).toBeGreaterThan(beforePermissionRead);
+  await expect(page.getByRole('dialog', { name: 'Edit Project', exact: true })).toHaveCount(0);
+  await expect(overview.getByRole('button', { name: 'Edit project', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__projectOverview.writes)).toEqual([]);
 });

@@ -405,6 +405,15 @@ const STORED_FILE_PARSE_SLUGS: ReadonlySet<string> = new Set([
 ]);
 
 const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
+  // Kitchen drafts are review drafts, not warehouse collection records, and each
+  // op reaches only the caller's own drafts. The operation grant is sufficient;
+  // there is no data.kitchen grant. ⛔ All four, not only import: list/get/update
+  // left out derived `data.kitchen`, so a door granted a narrow set of
+  // collections was refused them even with each op granted (D-332).
+  'kitchen-draft-import',
+  'kitchen-draft-list',
+  'kitchen-draft-get',
+  'kitchen-draft-update',
   'peer-ask',
   'notification-send',
   'core-notification-send',

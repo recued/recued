@@ -74,6 +74,10 @@ export interface WorkEntityPageProps {
    *  straight through; the page knows nothing about its contents. */
   history_html?: string;
   task_completion?: WorkEntityDialogProps['task_completion'];
+  task_details_open?: boolean;
+  note_details_open?: boolean;
+  note_view?: WorkEntityDialogProps['note_view'];
+  close_label?: string;
   commitment_lifecycle?: WorkEntityDialogProps['commitment_lifecycle'];
 }
 
@@ -134,6 +138,10 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           sources: props.source_options,
           ref_picker: props.ref_picker === true,
           discard_guard: props.discard_guard === true,
+          task_details_open: props.task_details_open === true,
+          note_details_open: props.note_details_open === true,
+          ...(props.note_view ? { note_view: props.note_view } : {}),
+          ...(props.close_label ? { close_label: props.close_label } : {}),
           ...(props.task_completion !== undefined
             ? { task_completion: props.task_completion } : {}),
           ...(props.commitment_lifecycle !== undefined

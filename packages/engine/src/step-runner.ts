@@ -14,6 +14,7 @@ import type {
 } from '@recued/contracts';
 import {
   cliFailureErrorCode,
+  copyResolvedInputFields,
   collectRefs,
   ERR,
   isCanonicalOpStep,
@@ -24,6 +25,7 @@ import {
   isPeerAnswerRequiredSignal,
   isPreflightRequiredSignal,
   isRef,
+  markResolvedInput,
   hashForeachCheckpointSource,
   parseDataEntityRef,
   parsePlatformRecordTargetId,
@@ -796,6 +798,7 @@ export const mergeArgOverrides = (
   overrides: Record<string, unknown>,
 ): Record<string, unknown> => {
   const merged: Record<string, unknown> = { ...input };
+  copyResolvedInputFields(input, merged);
   if (!isCatalogOpInputShape(input)) {
     for (const [key, value] of Object.entries(overrides)) {
       if (!isPrototypeSensitiveKey(key)) merged[key] = value;
@@ -841,7 +844,7 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
   if (typeof rawInput === 'string' && isRef(rawInput)) {
     const resolved = resolveValue(rawInput, ctx.stores);
     input = (resolved && typeof resolved === 'object' && !Array.isArray(resolved))
-      ? (resolved as Record<string, unknown>)
+      ? markResolvedInput(resolved as Record<string, unknown>)
       : {};
   } else {
     input = (rawInput as Record<string, unknown>) ?? {};

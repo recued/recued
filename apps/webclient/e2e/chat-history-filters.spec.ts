@@ -124,6 +124,59 @@ test('attention follows receive loss and recovery with an empty outbox while ret
   } finally { await page.unrouteAll({ behavior: 'wait' }); fixture.close(); }
 });
 
+test('a retained status reply cannot restore a recovery row after focus moves to search', async ({ page }) => {
+  const fixture = createFixture({ emit: () => {} }); let hold = false; let held = false;
+  let release!: () => void; const pending = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await seed(fixture);
+    await page.route('**/d265-rpc', async route => {
+      const { method, args } = route.request().postDataJSON(); const result = await fixture.rpc(method, args);
+      if (hold && method === 'chat.messenger.status' && args.session_ids?.length === 1 && args.session_ids[0] === 'slack-chat') {
+        held = true; await pending;
+      }
+      await route.fulfill({ json: { result } });
+    });
+    await boot(page); await filter(page, 'vendor').selectOption('slack'); await filter(page, 'attention').check();
+    await expect(row(page, 'slack-chat')).toBeHidden();
+    fixture.receive('slack', 'retrying'); await expect(row(page, 'slack-chat')).toBeVisible();
+    await page.locator('[data-recued-chat-route-session-actions="slack-chat"] summary').click();
+    await page.locator('[data-chat-messenger-connection="slack-chat"]').focus();
+    hold = true; fixture.receive('slack', 'active'); await expect.poll(() => held).toBe(true);
+    await search(page).focus(); release();
+    await expect(row(page, 'slack-chat')).toBeHidden(); await expect(search(page)).toBeFocused();
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); fixture.close(); }
+});
+
+test('an obsolete filtered refresh cannot stall outage discovery in the new filter', async ({ page }) => {
+  const fixture = createFixture({ emit: () => {} }); let hold = false; let held = false; let firstFilterReady = false; let newFilterReady = false;
+  let release!: () => void; const pending = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await seed(fixture);
+    await page.clock.install();
+    await page.route('**/d265-rpc', async route => {
+      const { method, args } = route.request().postDataJSON(); const result = await fixture.rpc(method, args);
+      if (hold && method === 'chat.sessions.list' && args.filters?.vendor === 'telegram') { held = true; await pending; }
+      await route.fulfill({ json: { result } });
+      if (method === 'chat.sessions.list' && args.filters?.vendor === 'telegram') firstFilterReady = true;
+      if (method === 'chat.sessions.list' && args.filters?.vendor === 'discord' && args.filters.needs_attention
+        && (result as { sessions: unknown[] }).sessions.length === 0) newFilterReady = true;
+    });
+    await boot(page); await page.clock.pauseAt(new Date(Date.now() + 1000));
+    await filter(page, 'vendor').selectOption('telegram');
+    await expect.poll(async () => { await page.clock.runFor(200); return firstFilterReady; }).toBe(true);
+    await expect(page.locator('.chat-history-filter-note')).not.toContainText('Loading matching chats');
+    await expect(row(page, 'telegram-chat')).toBeVisible();
+    hold = true; await page.clock.fastForward(5_200); await expect.poll(() => held).toBe(true);
+    await filter(page, 'vendor').selectOption('discord'); await filter(page, 'attention').check();
+    await expect.poll(async () => { await page.clock.runFor(200); return newFilterReady; }).toBe(true);
+    await expect(page.locator('.chat-history-filter-note')).not.toContainText('Loading matching chats');
+    await expect(row(page, 'discord-chat')).toBeHidden();
+    fixture.receive('discord', 'retrying'); await page.clock.fastForward(5_200);
+    await expect(row(page, 'discord-chat')).toBeVisible();
+    await expect(row(page, 'discord-chat')).toContainText('Reconnecting');
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); fixture.close(); }
+});
+
 test('late broad responses cannot overwrite a newer vendor scope', async ({ page }) => {
   const fixture = createFixture({ emit: () => {} }); let held = false; let release!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; });
@@ -204,7 +257,7 @@ test('unavailable status clears scoped hits and a failed preference save can be 
       const { method, args } = route.request().postDataJSON();
       if (method === 'prefs.set' && failSave) { await route.fulfill({ json: { error: 'fixture save failed' } }); return; }
       let result = await fixture.rpc(method, args);
-      if (method === 'chat.sessions.list' && unavailable) result = { ...result as MessengerSessionListReply, messenger_status_available: false };
+      if ((method === 'chat.sessions.list' || method === 'chat.messenger.status') && unavailable) result = { ...result as MessengerSessionListReply, messenger_status_available: false };
       await route.fulfill({ json: { result } });
     });
     await boot(page); await filter(page, 'vendor').selectOption('telegram'); await search(page).fill('needle');

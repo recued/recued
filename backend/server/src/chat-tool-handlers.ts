@@ -205,6 +205,7 @@ import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import { createStoreBackedMemoryWriteAdapter } from './memory-write-adapter.js';
 import { authoringContractId } from './grant-governing-contract.js';
 import {
+  checkForgetOwnEntry,
   checkOwnEntry,
   currentVersionOf,
   forgetOwnEntry,
@@ -255,7 +256,7 @@ import {
 } from './raw-op-dispatch.js';
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
 import { missingPacksOfRefusal } from './install-offers/needed-packs.js';
-import type { InstalledRecipeScheduler } from './schedule-installed-recipe.js';
+import type { InstalledRecipeScheduleInput, InstalledRecipeScheduler } from './schedule-installed-recipe.js';
 import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
 import { calendarAddressOf } from './collections/calendar/provider.js';
 import { parseInstantWithOffset } from '@recued/transforms';
@@ -3026,7 +3027,7 @@ const admitMemoryWrite = (
  *  plan-approval (the tool is `classification: 'unknown'` so it bypasses P3;
  *  §3 soft writes). Reversible via the Memory lens redact. */
 const createMemoryWriteHandler =
-  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
     const store = deps.getUserMemoryStore?.();
     if (!store) return executionError('memory store unavailable');
@@ -3089,6 +3090,25 @@ const createMemoryWriteHandler =
         ...(provenance.length > 0 ? { provenance_entity_ids: provenance } : {}),
       });
 
+    /** Why `target` cannot be replaced (D-198 §10), or `undefined` when it can. */
+    const replaceRefusal = async (target: string): Promise<string | undefined> => {
+      const forgotten = await forgottenIds(deps.getMemoryRedactionStore?.());
+      const owned = await checkOwnEntry(store, forgotten, target, author);
+      if (!owned.ok) {
+        return owned.refusal === 'forgotten'
+          ? `${owned.message}, so there is nothing to replace; save a new memory instead`
+          : `${owned.message}. Leave it as it is; if it looks wrong, tell the user`;
+      }
+      const current = await currentVersionOf(store, forgotten, target);
+      return current === target ? undefined
+        : `'${target}' was already replaced by '${current}'; pass '${current}' as replaces instead`;
+    };
+    // D-329 — a check makes the write's own checks, `replaces` included, and stops before
+    // it writes.
+    if (check) {
+      const refused = replaces === undefined ? undefined : await replaceRefusal(replaces);
+      return refused === undefined ? WOULD_RUN : invalidArgs(refused);
+    }
     try {
       if (replaces === undefined) {
         const result = await write(undefined);
@@ -3099,23 +3119,8 @@ const createMemoryWriteHandler =
       // D-198 §10 — check then write under the store's revision lock, so two
       // writes batched into one turn cannot both replace the same entry.
       const outcome = await withRevisionLock(store, async () => {
-        const forgotten = await forgottenIds(deps.getMemoryRedactionStore?.());
-        const check = await checkOwnEntry(store, forgotten, replaces, author);
-        if (!check.ok) {
-          return {
-            ok: false as const,
-            refused: check.refusal === 'forgotten'
-              ? `${check.message}, so there is nothing to replace; save a new memory instead`
-              : `${check.message}. Leave it as it is; if it looks wrong, tell the user`,
-          };
-        }
-        const current = await currentVersionOf(store, forgotten, replaces);
-        if (current !== replaces) {
-          return {
-            ok: false as const,
-            refused: `'${replaces}' was already replaced by '${current}'; pass '${current}' as replaces instead`,
-          };
-        }
+        const refused = await replaceRefusal(replaces);
+        if (refused !== undefined) return { ok: false as const, refused };
         return { ok: true as const, result: await write(replaces) };
       });
       if (!outcome.ok) return invalidArgs(outcome.refused);
@@ -3135,7 +3140,7 @@ const MEMORY_FORGET_REASON_MAX = 200;
  *  contract, so the owner sees who forgot what and can restore it — which is
  *  why it stays `unknown` (no plan approval) like `memory.write`. */
 const createMemoryForgetHandler =
-  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
     const store = deps.getUserMemoryStore?.();
     const redactions = deps.getMemoryRedactionStore?.();
@@ -3157,6 +3162,13 @@ const createMemoryForgetHandler =
       };
     }
     const author = ctx.execution_source ? authoringContractId(ctx.execution_source) : undefined;
+    const refused = (message: string): ChatDispatchResult =>
+      invalidArgs(`${message}. Leave it as it is; if it should go, tell the user`);
+    // D-329 — a check makes the forget's own checks and stops before it marks anything.
+    if (check) {
+      const checked = await checkForgetOwnEntry({ store, redactions, memory_id: memoryId, author });
+      return checked.ok ? WOULD_RUN : refused(checked.message);
+    }
     try {
       const outcome = await withRevisionLock(store, () => forgetOwnEntry({
         store,
@@ -3166,9 +3178,7 @@ const createMemoryForgetHandler =
         ...(reason !== undefined ? { reason } : {}),
         now: (deps.now ?? Date.now)(),
       }));
-      if (!outcome.ok) {
-        return invalidArgs(`${outcome.message}. Leave it as it is; if it should go, tell the user`);
-      }
+      if (!outcome.ok) return refused(outcome.message);
       if (outcome.result.versions > 0) emitMemoryUser(deps.getEventBus?.(), memoryId);
       return { ok: true, result: outcome.result };
     } catch (e) {
@@ -4200,6 +4210,14 @@ export interface CalendarWriteDeps {
     source_id: string;
     patch: Record<string, unknown>;
   }) => Promise<{ source_id: string }>;
+  /** D-329 — what each write checks before it calls the calendar, asked before the owner
+   *  is: it throws that write's own refusal. Absent ⇒ the arguments' checks alone. */
+  readonly checkCalendarCreate?: (input: { slug: string }) => void;
+  readonly checkCalendarUpdate?: (input: {
+    slug: string;
+    source_id: string;
+    patch: Record<string, unknown>;
+  }) => void;
 }
 
 export const WORK_ENTITY_UPDATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
@@ -4392,6 +4410,17 @@ const createWorkUpdateHandler =
 /** The answer a check gets for a `work.create` or `work.update` call that would run. */
 const WOULD_RUN: ChatDispatchResult = Object.freeze({ ok: true, result: { would_run: true } });
 
+/** D-329 — a held write's own check, asked before the owner is: its handler in its check
+ *  mode, which makes every check the write makes and stops just before it writes. `null`
+ *  when it would run. */
+const checkedBy = (
+  handler: (deps: ChatToolHandlerDeps, check: boolean) => Tier1Handler,
+  deps: ChatToolHandlerDeps,
+) => async (raw: unknown, ctx: ChatDispatchContext): Promise<ChatDispatchResult | null> => {
+  const checked = await handler(deps, true)(raw, ctx);
+  return checked === WOULD_RUN ? null : checked;
+};
+
 /** D-329 — what a `work.update` call would be refused for, asked before the owner is
  *  asked to approve it: the handler's own checks, stopped just before the write (for an
  *  asset, its dispatcher's checks too, then rolled back). `null` when it would run. */
@@ -4433,7 +4462,7 @@ const admitWriteOp = (
  *  wiring auto-creates and which declares `create_event: 'yes'` with
  *  `auth: 'none'`, so this works on a machine that has never seen an account. */
 const createCalendarCreateHandler =
-  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
     const cal = deps.getCalendarWriteDeps?.();
     if (!cal) return executionError('calendar write path unavailable');
@@ -4469,6 +4498,13 @@ const createCalendarCreateHandler =
     const slug = typeof args.calendar_id === 'string' && args.calendar_id.trim().length > 0
       ? args.calendar_id.trim()
       : DEFAULT_LOCAL_CALENDAR_SLUG;
+    // D-329 — a check makes the write's own checks, its calendar's included, and stops
+    // before it calls the calendar.
+    if (check) {
+      try { cal.checkCalendarCreate?.({ slug }); }
+      catch (e) { return invalidArgs(`calendar.create: ${e instanceof Error ? e.message : String(e)}`); }
+      return WOULD_RUN;
+    }
     try {
       const { source_id } = await cal.calendarCreate({
         slug,
@@ -4496,7 +4532,7 @@ const createCalendarCreateHandler =
 
 /** Slice 2 — `calendar.update`. PATCH semantics: only the fields sent change. */
 const createCalendarUpdateHandler =
-  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
     const cal = deps.getCalendarWriteDeps?.();
     if (!cal) return executionError('calendar write path unavailable');
@@ -4516,6 +4552,13 @@ const createCalendarUpdateHandler =
       };
     }
 
+    // D-329 — a check makes the write's own checks, its calendar's included: the event is
+    // there, and the change leaves it ending after it starts.
+    if (check) {
+      try { cal.checkCalendarUpdate?.({ slug, source_id: sourceId, patch }); }
+      catch (e) { return invalidArgs(`calendar.update: ${e instanceof Error ? e.message : String(e)}`); }
+      return WOULD_RUN;
+    }
     try {
       const { source_id } = await cal.calendarUpdate({ slug, source_id: sourceId, patch });
       return {
@@ -4881,28 +4924,39 @@ const assetFieldsText = (tool: string, asset: Asset, group: 'dates' | 'readings'
   const kept = Object.keys(asset[group]);
   return `${tool}: \`${asset.name}\` keeps ${kept.length > 0 ? `the ${group} ${listedNames(kept)}` : `no ${group}`}, not ${listedNames(extra)}. The user can add the field in Yours`;
 };
-/** Why an AI may not change a field, by the rank that holds it. */
-const assetHeldReason = (kind: AssetContributionKind, many: boolean): string => {
+/** Who holds fields an AI may not change, as one clause about them. `owner` names the owner
+ *  as the AI knows them: "the user" to the owner, "the owner" to anyone else. */
+const assetHeldClause = (kind: AssetContributionKind, shown: string, many: boolean, owner: string): string => {
   switch (kind) {
-    case 'owner': return `the user entered ${many ? 'them' : 'it'}`;
-    case 'confirmed_document': return `${many ? 'they come' : 'it comes'} from a document the user confirmed`;
-    case 'observation': return `a device or recipe reports ${many ? 'them' : 'it'}`;
-    default: return `${many ? 'they rank' : 'it ranks'} above an AI`;
+    case 'owner': return `${owner} set ${shown} themselves`;
+    case 'confirmed_document': return `${shown} ${many ? 'come' : 'comes'} from a document ${owner} confirmed`;
+    case 'observation': return `a device or recipe reports ${shown}`;
+    default: return `${shown} ${many ? 'rank' : 'ranks'} above an AI`;
   }
 };
 const assetHeldName = (path: string): string => path === 'name' ? 'its name' : path === 'anchors' ? 'where it is kept'
   : path === 'belongs_to' ? 'what it belongs to' : path === 'attributes.note' ? 'its note' : `\`${path.slice(path.indexOf('.') + 1)}\``;
+const andList = (items: readonly string[]): string =>
+  items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 /** ⛔ The owner's ruling of 2026-10-25 ("readings mine, rest AI's"): an AI fills an empty
  *  field or replaces what an AI wrote. Where the owner set the value, or a document they
  *  confirmed or a device did, it is refused, before the owner is asked. Search keywords
- *  are editable retrieval metadata, under the owner's later ruling, not ranked facts. */
-const assetHeldText = (tool: string, held: AssetFieldHeldError['held']): string => {
-  const parts = [...new Set(held.map((entry) => entry.kind))].map((kind) => {
+ *  are editable retrieval metadata, under the owner's later ruling, not ranked facts. The
+ *  reason is in plain clauses with an instruction to pass it on: live, a parenthesised "(the
+ *  user entered it)" was dropped from 2 of 2 answers, which told the owner only to use Yours.
+ *  ⚠ The AI is told to say it, so it must be true of whoever it is talking to: a household
+ *  member did not set the owner's values and has no Yours, and an AI app's user may not be
+ *  the owner either. Only the owner's own chat is told "the user set it". */
+const assetHeldText = (tool: string, held: AssetFieldHeldError['held'], ctx: ChatDispatchContext): string => {
+  const toOwner = ctx.execution_source === undefined || ctx.execution_source.actor === 'user_self';
+  const owner = toOwner ? 'the user' : 'the owner';
+  const clauses = [...new Set(held.map((entry) => entry.kind))].map((kind) => {
     const names = held.filter((entry) => entry.kind === kind).map((entry) => assetHeldName(entry.path));
-    const shown = names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
-    return `${shown} (${assetHeldReason(kind, names.length > 1)})`;
+    return assetHeldClause(kind, andList(names), names.length > 1, owner);
   });
-  return `${tool}: an AI cannot change ${parts.join(' or ')}. The user can, in Yours; leave ${held.length > 1 ? 'them' : 'it'} out to change the rest`;
+  const them = held.length > 1 ? 'them' : 'it';
+  return `${tool}: ${andList(clauses)}, so an AI may not change ${them}. `
+    + `Tell the user why, and that ${toOwner ? 'they' : 'the owner'} can change ${them} in Yours. Leave ${them} out to change the rest`;
 };
 /** How an AI's asset write is ranked (`AssetAiWrite`). A check runs as its write will once
  *  approved, and whose approval that is depends on where the call came from: in a chat under
@@ -4911,9 +4965,9 @@ const assetAiWrite = (ctx: ChatDispatchContext, check: boolean): AssetAiWrite =>
   ? { check: true, owner_approved: ctx.execution_source !== undefined && ownerApprovesCallsOf(ctx.execution_source) }
   : { owner_approved: ctx.owner_approved === true };
 /** An asset write's refusal in its tool's words, or `null` for a failure of another kind. */
-const assetWriteRefusal = (tool: string, error: unknown): ChatDispatchResult | null => {
+const assetWriteRefusal = (tool: string, error: unknown, ctx: ChatDispatchContext): ChatDispatchResult | null => {
   if (error instanceof AssetArgRefusal) return invalidArgs(error.message);
-  if (error instanceof AssetFieldHeldError) return invalidArgs(assetHeldText(tool, error.held));
+  if (error instanceof AssetFieldHeldError) return invalidArgs(assetHeldText(tool, error.held, ctx));
   if (error instanceof AssetTypeError) return invalidArgs(`${tool}: ${assetTypeIssueText(error.type, error.issues, CHAT_ASSET_TYPE_WORDS)}`);
   if (error instanceof AssetValidationError) return invalidArgs(`${tool}: ${error.message}`);
   return null;
@@ -5042,7 +5096,7 @@ const createAssetFromChat = async (
       },
     };
   } catch (e) {
-    return assetWriteRefusal('work.create', e)
+    return assetWriteRefusal('work.create', e, ctx)
       ?? executionError(`work.create failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 };
@@ -5159,7 +5213,7 @@ const updateAssetFromChat = async (
     }
     return { ok: true, result: { updated: true, kind: 'asset', id, fields } };
   } catch (e) {
-    return assetWriteRefusal('work.update', e)
+    return assetWriteRefusal('work.update', e, ctx)
       ?? executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 };
@@ -5572,7 +5626,7 @@ export const wrapCollectionFence = (
  *  Authority is derived, never supplied: the wire carries INTENT (a recipe id)
  *  and the server resolves ownership from the stored source. */
 const createRecipeStopHandler =
-  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
     const registry = deps.getInFlightRegistry?.();
     if (!registry) return executionError('execution registry unavailable');
@@ -5588,6 +5642,9 @@ const createRecipeStopHandler =
     if ((runId === '') === (recipeId === '')) {
       return invalidArgs('pass exactly one of recipe_id or run_id');
     }
+    // D-329 — a check stops here. A run that is not there is told after the yes, as
+    // `not_found`, which is an answer rather than a refusal.
+    if (check) return WOULD_RUN;
     const result = registry.stopOwnRun(
       deriveChannelSessionId(ctx.execution_source),
       runId !== '' ? { run_id: runId } : { recipe_id: recipeId },
@@ -5712,7 +5769,7 @@ const webhookDoorNote = (changes: readonly DishWebhookDoorChange[] | undefined):
  *  (`schedule-installed-recipe.ts`), so its refusals are theirs: a recipe that is
  *  not installed, a pack it needs that is missing, a cron below the floor. */
 const createRecipeScheduleHandler =
-  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
     const args = asObject(raw);
     if (!args) return invalidArgs('args must be an object');
@@ -5756,16 +5813,23 @@ const createRecipeScheduleHandler =
     const publisher_id = store.getStored(recipe_id)?.publisher_id
       ?? store.get(recipe_id)?.metadata?.author
       ?? 'local';
+    const input: InstalledRecipeScheduleInput = {
+      recipe_id,
+      publisher_id,
+      mode,
+      ...(run_at !== undefined ? { run_at } : {}),
+      ...(cron_expression !== undefined ? { cron_expression } : {}),
+      ...(typeof args.dish_id === 'string' ? { dish_id: args.dish_id.trim() } : {}),
+      ...(typeof args.enabled === 'boolean' ? { enabled: args.enabled } : {}),
+    };
     try {
-      const { schedule: made, webhook_doors } = schedule({
-        recipe_id,
-        publisher_id,
-        mode,
-        ...(run_at !== undefined ? { run_at } : {}),
-        ...(cron_expression !== undefined ? { cron_expression } : {}),
-        ...(typeof args.dish_id === 'string' ? { dish_id: args.dish_id.trim() } : {}),
-        ...(typeof args.enabled === 'boolean' ? { enabled: args.enabled } : {}),
-      });
+      // D-329 — a check makes the schedule's own checks and stops before it arms anything
+      // or makes a dish.
+      if (check) {
+        schedule(input, { check: true });
+        return WOULD_RUN;
+      }
+      const { schedule: made, webhook_doors } = schedule(input);
       const note = webhookDoorNote(webhook_doors);
       // The next run in the zone the schedule runs in (its own, else the host's,
       // as the scheduler reads it), with that zone's offset. "…T08:00:00-07:00"
@@ -6272,6 +6336,12 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
   tier1Checks: {
     'work.create': (args: unknown, ctx: ChatDispatchContext) => checkWorkCreate(deps, args, ctx),
     'work.update': (args: unknown, ctx: ChatDispatchContext) => checkWorkUpdate(deps, args, ctx),
+    'calendar.create': checkedBy(createCalendarCreateHandler, deps),
+    'calendar.update': checkedBy(createCalendarUpdateHandler, deps),
+    'memory.write': checkedBy(createMemoryWriteHandler, deps),
+    'memory.forget': checkedBy(createMemoryForgetHandler, deps),
+    'recipe.stop': checkedBy(createRecipeStopHandler, deps),
+    'recipe.schedule': checkedBy(createRecipeScheduleHandler, deps),
   },
   tier1AskLabels: {
     'work.create': (args: unknown) => workAskLabels(deps, args),

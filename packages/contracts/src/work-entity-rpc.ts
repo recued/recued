@@ -45,6 +45,67 @@ import type { WorkEntitySourceFreshness } from './work-entity-sources.js';
 import type { WorkEntityEdgeView } from './work-entity-edges.js';
 import type { TaskListFilter } from './task-data-view.js';
 
+export const WORK_ENTITY_SEARCH_KINDS = ['task', 'note', 'project', 'commitment'] as const;
+export type WorkEntitySearchKind = typeof WORK_ENTITY_SEARCH_KINDS[number];
+
+/** Owner-only, local indexed search. Omitting kind searches all four kinds.
+ *  A single kind may be paged; visibility is applied before limit/offset. */
+export interface WorkEntitySearchRpcRequest {
+  query: string;
+  kind?: WorkEntitySearchKind;
+  limit?: number;
+  offset?: number;
+}
+
+export interface WorkEntitySearchMatch {
+  id: string;
+  title: string;
+  excerpt: string;
+  source_id: string;
+  source_label: string;
+  updated_at: number;
+  stale: boolean;
+  source_incomplete?: true;
+  pending_write: boolean;
+}
+
+export interface WorkEntitySearchGroup {
+  kind: WorkEntitySearchKind;
+  matches: WorkEntitySearchMatch[];
+  offset: number;
+  more: boolean;
+  /** The kind failed independently; other groups remain usable. */
+  error?: string;
+}
+
+export interface WorkEntitySearchRpcResponse {
+  groups: WorkEntitySearchGroup[];
+}
+
+export type ProjectWorkKind = 'task' | 'note';
+export interface WorkEntityProjectItemsRpcRequest {
+  project_id: string;
+  kind: ProjectWorkKind;
+  limit?: number;
+  offset?: number;
+}
+/** A display preview; opening an item still reads its current canonical row. */
+export interface WorkEntityProjectItem extends WorkEntitySearchMatch {
+  done?: boolean;
+  due_at?: number;
+}
+export interface WorkEntityProjectItemsRpcResponse {
+  project_id: string;
+  kind: ProjectWorkKind;
+  items: WorkEntityProjectItem[];
+  total: number;
+  offset: number;
+  /** Present only for tasks, on the same visibility and project scope. */
+  open_tasks?: number;
+  /** Provider-only sources do not contribute local rows or counts. */
+  provider_only_sources?: string[];
+}
+
 /** List one own-it kind, polymorphic across the kind's registered
  *  Sources (or scoped to one via `source_id`). Mirrors the resolver's
  *  `listByKind` default filters: `live` + `stale_unreachable` only.

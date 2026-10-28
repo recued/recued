@@ -4,7 +4,7 @@ import { createChatStore, ensureChatSchema } from '../../../../backend/server/sr
 import { createChatOrchestrator, type ChatBroadcastEmitter } from '../../../../backend/server/src/chat-orchestrator.js';
 import { createChatMessengerBridge } from '../../../../backend/server/src/chat-messenger-bridge.js';
 import { withQueuedChatTurns } from '../../../../backend/server/src/chat-turn-queue.js';
-import { handleChatDelivery, handleChatQueue, handleMessagesSearch, handleSessionGet, handleSessionsList, handleSessionRename } from '../../../../backend/server/src/chat-handler.js';
+import { handleChatDelivery, handleChatQueue, handleMessagesSearch, handleSessionGet, handleSessionsList, handleSessionRename, handleSessionDelete, handleMessengerStatus } from '../../../../backend/server/src/chat-handler.js';
 
 /** Real list, storage, queue and delivery handlers; only vendor I/O is local. */
 export const createMessengerListFixture = (broadcast: ChatBroadcastEmitter) => {
@@ -34,6 +34,7 @@ export const createMessengerListFixture = (broadcast: ChatBroadcastEmitter) => {
   const deps = { store, orchestrator, selfSignature, broadcast, messengerReceiveStatus: (vendor: string) => receive.get(vendor) ?? 'unknown' as const };
   const preferences = new Map<string, InstancePrefs>();
   return {
+    addSession: (id: string, title: string, now = Date.now()) => store.createSession({ id, title, now }),
     addMessage: (session_id: string, id: string, content: string, ts = Date.now()) => store.appendMessage({
       id, session_id, content, ts, role: 'user', target_server: 'self',
       picker_at_send: { display_name: 'Self', signature: selfSignature }, model_used: { provider: 'fixture', model_id: 'fixture' },
@@ -49,9 +50,11 @@ export const createMessengerListFixture = (broadcast: ChatBroadcastEmitter) => {
     },
     close: () => { orchestrator.turnQueue!.close(); bridge.close(); db.close(); },
     async rpc(method: string, args: unknown, client = 'paired'): Promise<unknown> {
-      if (method === 'chat.sessions.list') return handleSessionsList(deps);
+      if (method === 'chat.sessions.list') return handleSessionsList(deps, args as Parameters<typeof handleSessionsList>[1]);
+      if (method === 'chat.messenger.status') return handleMessengerStatus(deps, args as Parameters<typeof handleMessengerStatus>[1]);
       if (method === 'chat.session.get') return handleSessionGet(deps, args as Parameters<typeof handleSessionGet>[1]);
       if (method === 'chat.session.rename') return handleSessionRename(deps, args as Parameters<typeof handleSessionRename>[1]);
+      if (method === 'chat.session.delete') return handleSessionDelete(deps, args as Parameters<typeof handleSessionDelete>[1]);
       if (method === 'chat.deliveries.list') return handleChatDelivery(deps, 'list', args);
       if (method === 'chat.delivery.retry') return handleChatDelivery(deps, 'retry', args);
       if (method === 'chat.delivery.skip') return handleChatDelivery(deps, 'skip', args);

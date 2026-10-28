@@ -58,6 +58,7 @@ import {
 import { serializeShellRoute } from '../shell/route.js';
 import { preapprovalHref, renderPreapprovalAsk } from './preapproval-route.js';
 import { localChangesHref } from './local-change-sets-route.js';
+import { createAskNoteDrafts } from './ask-note-drafts.js';
 
 // ════════════════════════════════════════════════════════════════
 // Style payload + stable attribute hooks
@@ -596,6 +597,7 @@ export const bootstrapApprovalsRoute = (
 
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(APPROVALS_ROUTE_HOST_ATTR, '');
+  const askNoteDrafts = createAskNoteDrafts(doc, routeRoot);
 
   const header = doc.createElement('header');
   header.className = 'approvals-header';
@@ -910,8 +912,9 @@ export const bootstrapApprovalsRoute = (
     }
   };
 
-  const renderAskRow = (ask: ServerPendingAsk): HTMLElement =>
-    renderPreapprovalAsk(doc, ask) ??
+  const renderAskRow = (ask: ServerPendingAsk): HTMLElement => {
+    const previousCard = askNoteDrafts.cardFor(ask.ask_id);
+    return renderPreapprovalAsk(doc, ask) ??
     renderAskCard(
       doc,
       ask,
@@ -927,6 +930,7 @@ export const bootstrapApprovalsRoute = (
           ),
       },
       {
+        ...(previousCard !== undefined ? { previousCard } : {}),
         busy: resolvingAsks.has(ask.ask_id),
         busyOptionId: resolvingAsks.get(ask.ask_id),
         errorMessage: askResolveErrors.get(ask.ask_id) ?? null,
@@ -935,6 +939,7 @@ export const bootstrapApprovalsRoute = (
         showSessionGrantTerms: true,
       },
     );
+  };
 
   const renderPlanCard = (plan: PendingChatPlan): HTMLElement => {
     const ownedAction = actionFocusOwner?.rowId === plan.plan_id
@@ -1096,6 +1101,7 @@ export const bootstrapApprovalsRoute = (
    *  every gate OR ask state transition — both kinds live in one list. */
   const renderDecisions = (): void => {
     if (disposed) return;
+    const noteFocus = askNoteDrafts.capture(askSnapshot.asks);
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const focusedCard = activeElement?.closest?.(
       `[${APPROVALS_ROUTE_FOCUS_ATTR}]`,
@@ -1147,7 +1153,7 @@ export const bootstrapApprovalsRoute = (
             : null;
     requestedApprovalActionFocus = null;
     const decisionRows = mergedRows();
-    clearChildren(list);
+    const nextNodes: HTMLElement[] = [];
     renderPlanResolution();
 
     // Defensive — drop armed flags for gates no longer pending (e.g. resolved
@@ -1186,7 +1192,7 @@ export const bootstrapApprovalsRoute = (
         errorDisplay.connectionCaused ? 'status' : 'alert',
       );
       err.textContent = errorDisplay.text;
-      list.appendChild(err);
+      nextNodes.push(err);
     }
     const chatPlanState = opts.chatPlans?.state?.();
     const chatPlanErrorDisplay = resolveSurfaceErrorDisplay(
@@ -1212,7 +1218,7 @@ export const bootstrapApprovalsRoute = (
         chatPlanErrorDisplay.connectionCaused ? 'status' : 'alert',
       );
       planErr.textContent = chatPlanErrorDisplay.text;
-      list.appendChild(planErr);
+      nextNodes.push(planErr);
     }
     if (askSnapshot.listError !== null) {
       const askErr = doc.createElement('div');
@@ -1220,7 +1226,7 @@ export const bootstrapApprovalsRoute = (
       askErr.setAttribute(APPROVALS_ROUTE_ERROR_ATTR, 'error');
       askErr.setAttribute('role', 'alert');
       askErr.textContent = `Recued could not load the questions: ${askSnapshot.listError}`;
-      list.appendChild(askErr);
+      nextNodes.push(askErr);
     }
 
     const stillLoading =
@@ -1235,7 +1241,8 @@ export const bootstrapApprovalsRoute = (
       loading.className = 'approvals-loading';
       loading.setAttribute(APPROVALS_ROUTE_LOADING_ATTR, '');
       loading.textContent = 'Loading what is waiting for you…';
-      list.appendChild(loading);
+      nextNodes.push(loading);
+      askNoteDrafts.render(list, nextNodes);
       reconcileDecisionFocus(focusedCardId, decisionRows);
       renderChrome();
       return;
@@ -1277,9 +1284,11 @@ export const bootstrapApprovalsRoute = (
       } else if (focusedCardId === row.id) {
         card.setAttribute('tabindex', '-1');
       }
-      list.appendChild(card);
+      nextNodes.push(card);
     }
-    reconcileDecisionFocus(focusedCardId, decisionRows);
+    askNoteDrafts.render(list, nextNodes);
+    const noteFocusRestored = askNoteDrafts.restore(noteFocus);
+    reconcileDecisionFocus(noteFocusRestored ? null : focusedCardId, decisionRows);
     applyFocus();
     restoreDecisionActionFocus(decisionActionFocus);
     renderChrome();
@@ -1666,6 +1675,7 @@ export const bootstrapApprovalsRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      askNoteDrafts.dispose();
       refreshButton.removeEventListener('click', onRefreshClick);
       for (const unsub of unsubscribers) {
         try {

@@ -1,3 +1,4 @@
+import { createKitchenImportFixture } from '../fixtures/kitchen-import.js';
 import { passportSummaryFixture } from './passport-summary-fixture.js';
 import { restoreReadinessFixture, seedRestoreReadinessReceipt } from './restore-readiness-fixture.js';
 /**
@@ -61,6 +62,7 @@ import { ordinaryLocalChatFixture } from './ordinary-local-receipts.js';
 import { localUpdateUndoDemoReply } from './local-update-undo.js';
 import { localChangesDemoReply } from './local-change-sets.js';
 import { recordsBrowseReply } from './records-browse.js';
+import { recordsImportReply } from './records-import.js';
 import { chatHistorySearchReply } from './chat-history-search.js';
 import { todayDemoReply, todayEmptyDemoReply } from './today-view.js';
 import { chatTurnQueueDemoReply } from './chat-turn-queue.js';
@@ -944,6 +946,7 @@ const buildFakeTransport = (
   const states = new Set<(s: WebclientWsState) => void>();
   const messages = new Set<(m: unknown) => void>();
   const rpcCallCounts = new Map<string, number>();
+  const kitchenImportFixture = createKitchenImportFixture(searchParams.get('kitchen_import'));
   const backupWatchdogDrillDemo = searchParams.get('backup_watchdog_drill') === 'ready';
   let backupWatchdogResumingReads = 0;
   let backupWatchdogStatus: import('@recued/contracts').BackupWatchdogStatus = backupWatchdogDrillDemo
@@ -2370,6 +2373,12 @@ const buildFakeTransport = (
                                   }
             : undefined;
         let error: { code: string; message: string; details?: Record<string, unknown> } | undefined;
+        const importedKitchen = await kitchenImportFixture(rpc.method, rpc.args);
+        if (importedKitchen) { result = importedKitchen.result; error = importedKitchen.error; }
+        // D-333 — a saved recipe opens only once Kitchen says whether it has changes in
+        // progress, so unanswered, every Kitchen spec that opens one sat on "Loading recipe…"
+        // (as `recipe.get` did below). Nothing in progress is the plain state.
+        else if (rpc.method === 'kitchen.draft.list') result = { items: [] };
         const chatSearchReply = chatHistorySearchReply(rpc.method, rpc.args);
         if (chatSearchReply !== null) {
           result = chatSearchReply.result;
@@ -2381,6 +2390,12 @@ const buildFakeTransport = (
           error = savedViewsReply.error;
         }
         if (rpc.method === 'collection.searchAll') result = { groups: [] };
+        if (rpc.method === 'work_entity.search') result = { groups: [] };
+        if (rpc.method === 'work_entity.project.items') {
+          const args = rpc.args as { project_id: string; kind: string; offset?: number };
+          result = { project_id: args.project_id, kind: args.kind, offset: args.offset ?? 0, items: [], total: 0,
+            ...(args.kind === 'task' ? { open_tasks: 0 } : {}) };
+        }
         if (rpc.method === 'passport.export') {
           const reply = passportSummaryFixture(searchParams.get('passport_summary'), FIXED_NOW);
           if (reply !== undefined) result = reply;
@@ -5872,6 +5887,16 @@ const buildFakeTransport = (
                   ? verificationCalendarRecord
                   : null,
             };
+          } else if (rpc.method === 'collection.calendar.event.get') {
+            result = {
+              event: { record_id: verificationCalendarRecord.record_id, source_id: verificationCalendarRecord.source_id,
+                calendar_id: 'primary', calendar_name: 'Work', ...verificationCalendarRecord.hot_fields,
+                description: verificationCalendarRecord.body_inline, updated_at: verificationCalendarRecord.modified_at, timezone: 'UTC', is_all_day: false,
+                status: 'confirmed', is_recurring: false },
+              record: structuredClone(verificationCalendarRecord),
+              resource_version: 'verification-event-v1', incarnation: 'verification-calendar', editable: false,
+              read_only_reason: 'Edit this event in its connected calendar.',
+            };
           } else if (rpc.method === 'data.timeline') {
             result = { entries: [] };
           }
@@ -7483,6 +7508,8 @@ const buildFakeTransport = (
         if (upsertReply !== null) { result = upsertReply.result; }
         const simulationReply = recipeSimulationDemoReply(rpc.method, rpc.args);
         if (simulationReply !== null) { result = simulationReply.result; error = undefined; }
+        const importReply = recordsImportReply(rpc.method, rpc.args);
+        if (importReply !== null) { result = importReply.result; error = importReply.error; }
         // ⛔ THE SERVER'S TWO RECIPE DOORS, MIRRORED (`server-recipe-rows.ts`). A
         // real `recipe.list` row carries no step bodies, and handing them out
         // here is how three client readers of those bodies stayed green while

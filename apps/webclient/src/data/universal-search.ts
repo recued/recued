@@ -1,5 +1,5 @@
-/** UNIVERSAL SEARCH — one query across every collection the owner holds,
- *  rendered GROUPED BY COLLECTION.
+/** Universal search over locally available work, collections and installed
+ *  capabilities. Work is grouped by kind, collections by source.
  *
  *  🔑 WHY IT EXISTS: until this, the only way to search across mail / calendar /
  *  files / webhooks was to ASK THE AI. That is an odd shape for a product whose
@@ -27,6 +27,8 @@ import type {
   CollectionSearchDidYouMean,
   CollectionSearchGroup,
   CollectionSearchMatch,
+  WorkEntitySearchGroup,
+  WorkEntitySearchKind,
 } from '@recued/contracts';
 
 /** Click-dispatch contract with the route's `onClick`. */
@@ -37,6 +39,10 @@ export const SEARCH_RECORD_ID_ATTR = 'data-search-record';
 export const SEARCH_GROUP_SLUG_ATTR = 'data-search-slug';
 export const SEARCH_GROUP_PLATFORM_ATTR = 'data-search-platform';
 export const SEARCH_INPUT_ATTR = 'data-recued-universal-search-input';
+export const SEARCH_OPEN_WORK_ACTION = 'universal-search-open-work';
+export const SEARCH_MORE_WORK_ACTION = 'universal-search-more-work';
+export const SEARCH_WORK_KIND_ATTR = 'data-search-work-kind';
+export const SEARCH_WORK_ID_ATTR = 'data-search-work-id';
 export const SEARCH_OPEN_RECIPE_ACTION = 'universal-search-open-recipe';
 export const SEARCH_RECIPE_ID_ATTR = 'data-search-recipe';
 export const SEARCH_OPEN_PACK_ACTION = 'universal-search-open-pack';
@@ -89,8 +95,13 @@ export interface UniversalSearchProps {
   loading?: boolean;
   /** Installed recipes and packs are independent of the record search. */
   capabilitiesLoading?: boolean;
+  capabilitiesError?: string;
   /** `collection.searchAll` groups, server-ordered by hit count. */
   groups?: ReadonlyArray<CollectionSearchGroup>;
+  workGroups?: ReadonlyArray<WorkEntitySearchGroup>;
+  workLoading?: boolean;
+  workLoadingKinds?: ReadonlySet<WorkEntitySearchKind>;
+  workError?: string;
   /** The server's "did you mean": the query with each word NO store holds
    *  replaced by the closest word one does. Offered, never applied — the
    *  groups answer what was typed. */
@@ -192,6 +203,7 @@ const renderRow = (
 ): string => {
   const ex = excerpt(m);
   const ts = when(m, now);
+  const badges = rowBadges(m);
   return `<li class="rq-row">
   <button type="button" class="rq-row-btn"
     ${e(actionAttr)}="${SEARCH_OPEN_RECORD_ACTION}"
@@ -201,7 +213,7 @@ const renderRow = (
     <span class="rq-row-title">${e(rowTitle(m))}</span>
     ${ts ? `<span class="rq-row-when">${e(ts)}</span>` : ''}
     ${ex ? `<span class="rq-row-excerpt">${e(ex)}</span>` : ''}
-    ${rowBadges(m)}
+    ${badges ? `<span class="rq-row-badges">${badges}</span>` : ''}
   </button>
 </li>`;
 };
@@ -222,6 +234,31 @@ const renderGroup = (g: CollectionSearchGroup, actionAttr: string, now: number):
       ${SEARCH_GROUP_PLATFORM_ATTR}="${e(g.platform)}">More in ${e(g.slug)}</button>` : ''}
 </section>`;
 };
+
+const WORK_LABELS: Record<WorkEntitySearchKind, string> = {
+  task: 'Tasks', note: 'Notes', project: 'Projects', commitment: 'Commitments',
+};
+const renderWorkGroup = (group: WorkEntitySearchGroup, actionAttr: string, loading: boolean): string => `
+<section class="rq-group rq-work-group" data-work-search-group="${e(group.kind)}">
+  <h3 class="rq-group-head"><span class="rq-group-name">${WORK_LABELS[group.kind]}</span>
+    <span class="rq-group-count">${group.error && group.matches.length === 0 ? 'Unavailable' : `${group.matches.length}${group.more ? '+' : ''}`}</span></h3>
+  ${group.error ? `<p class="rq-error" role="alert">${e(group.error)}</p>` : ''}
+  <ul class="rq-rows">${group.matches.map(match => `<li class="rq-row">
+    <button type="button" class="rq-row-btn" ${e(actionAttr)}="${SEARCH_OPEN_WORK_ACTION}"
+      ${SEARCH_WORK_KIND_ATTR}="${e(group.kind)}" ${SEARCH_WORK_ID_ATTR}="${e(match.id)}">
+      <span class="rq-row-title">${e(match.title)}</span>
+      <span class="rq-row-when">${e(match.source_label)} · Updated ${e(new Date(match.updated_at).toLocaleDateString())}</span>
+      ${match.excerpt ? `<span class="rq-row-excerpt">${e(match.excerpt)}</span>` : ''}
+      ${match.stale || match.source_incomplete || match.pending_write ? `<span class="rq-row-badges">
+        ${match.stale ? '<span class="rq-badge rq-badge-stale">may be out of date</span>' : ''}
+        ${match.source_incomplete ? '<span class="rq-badge rq-badge-stale">source partly synced</span>' : ''}
+        ${match.pending_write ? '<span class="rq-badge rq-badge-stale">waiting for source confirmation</span>' : ''}
+      </span>` : ''}
+    </button></li>`).join('')}</ul>
+  ${group.more || group.error || loading ? `<button type="button" class="rq-more" ${e(actionAttr)}="${SEARCH_MORE_WORK_ACTION}"
+    ${SEARCH_WORK_KIND_ATTR}="${e(group.kind)}"${loading ? ' aria-disabled="true" aria-busy="true"' : ''}>
+    ${loading ? 'Loading…' : group.error ? `Try ${WORK_LABELS[group.kind]} again` : `More ${WORK_LABELS[group.kind].toLowerCase()}`}</button>` : ''}
+</section>`;
 
 /** ⚠ RENDERED LAST, and that ordering is a judgement worth stating. A search is
  *  usually for a THING the owner has (an email, a file), not for a capability;
@@ -347,7 +384,7 @@ const quotedWords = (words: ReadonlyArray<string>): string => {
  *  record groups: the empty page already says nothing matched, and installed
  *  recipes and packs are matched by a different rule. */
 const renderAbsentWords = (words: ReadonlyArray<string>): string =>
-  `<p class="rq-absent" role="status">No record holds ${quotedWords(words)}, so these results match only your other words.</p>`;
+  `<p class="rq-absent" role="status">No searched mail, calendar or file record holds ${quotedWords(words)}, so those collection results match only your other words.</p>`;
 
 /** The offer, shown only on an empty own-result. ⚠ It NAMES the cloud, because
  *  the owner is about to send their query off this machine and a button reading
@@ -366,41 +403,45 @@ export const renderUniversalSearch = (
 ): string => {
   const q = props.query.trim();
   const box = `<label class="rq-search-label" for="rq-search-input">Search everything</label>
-<input id="rq-search-input" class="rq-search-input" type="search" autocomplete="off"
+<input id="rq-search-input" class="rq-search-input" type="search" autocomplete="off" aria-describedby="rq-search-scope"
   ${SEARCH_INPUT_ATTR} value="${e(props.query)}"
-  placeholder="Search mail, calendar, files…">`;
-
-  if (props.error !== undefined) {
-    return `<div class="rq-search">${box}
-<p class="rq-error" role="alert">${e(props.error)}</p>
-<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_RETRY_ACTION}">Try again</button>
-</div>`;
-  }
+  placeholder="Search your saved data…">
+<p id="rq-search-scope" class="rq-subtle">Tasks, notes, projects, commitments, mail, calendar, files, installed recipes and packs.</p>`;
   if (q === '') {
     return `<div class="rq-search">${box}
-<p class="rq-hint">Type to search across everything on this server.</p></div>`;
+<p class="rq-hint">Type to search saved data on this server.</p></div>`;
   }
   const groups = props.groups ?? [];
+  const workGroups = props.workGroups ?? [];
+  const visibleWork = workGroups.filter(group => group.matches.length > 0 || group.error);
+  const workCount = workGroups.reduce((count, group) => count + group.matches.length, 0);
   const recipes = props.recipes ?? [];
   const packs = props.packs ?? [];
   const market = props.marketplace ?? [];
   const pending = props.loading === true
     ? props.capabilitiesLoading === true ? 'Searching…' : 'Searching records…'
     : props.capabilitiesLoading === true ? 'Searching installed recipes and packs…' : '';
-  const progress = pending ? `<p class="rq-hint" role="status">${pending}</p>` : '';
+  const progress = pending || props.workLoading ? `<p class="rq-hint" role="status">${pending || 'Searching tasks, notes, projects and commitments…'}</p>` : '';
+  const failed = props.error !== undefined || props.workError !== undefined
+    || props.capabilitiesError !== undefined || workGroups.some(group => group.error);
+  const searchErrors = [props.error ? `Mail, calendar and files: ${props.error}` : undefined,
+    props.workError, props.capabilitiesError].filter((error): error is string => error !== undefined);
+  const errors = searchErrors.map(error => `<p class="rq-error" role="alert">${e(error)}</p>`).join('')
+    + (searchErrors.length > 0 ? `<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_RETRY_ACTION}">Try again</button>` : '');
   const didYouMean = props.didYouMean !== undefined
-    ? renderDidYouMean(props.didYouMean, props.actionAttr)
+    && workCount === 0 ? renderDidYouMean(props.didYouMean, props.actionAttr)
     : '';
-  if (groups.length === 0 && recipes.length === 0 && packs.length === 0) {
+  if (groups.length === 0 && workCount === 0 && recipes.length === 0 && packs.length === 0) {
     // An unfinished local read cannot establish an empty result or justify
     // offering a cloud search. Completed groups remain usable while it runs.
-    if (progress) return `<div class="rq-search">${box}${didYouMean}${progress}</div>`;
+    if (progress || failed) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}
+      ${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true)).join('')}</div>`;
     // ⛔ NAMES THE SCOPE IT SEARCHED. "No results" alone cannot be told apart
     // from "the search did not run", and an owner reading the shorter sentence
     // concludes their data is not there when it may simply not be synced.
     return `<div class="rq-search">${box}
 ${didYouMean}
-<p class="rq-empty">Nothing on this server matches “${e(q)}”. Sources still syncing will not appear yet.</p>
+<p class="rq-empty">No matches in the searched sources for “${e(q)}”. Sources still syncing will not appear yet.</p>
 ${props.marketplaceError !== undefined
   ? `<p class="rq-error" role="alert">${e(props.marketplaceError)}</p>`
   : ''}
@@ -410,15 +451,18 @@ ${market.length === 0 && props.marketplaceOffered === true
   : ''}</div>`;
   }
   const total = groups.reduce((n, g) => n + g.matches.length, 0);
-  const places = groups.length + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
+  const places = groups.length + workGroups.filter(group => group.matches.length > 0).length
+    + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
   const absent = groups.length > 0 && props.absentWords !== undefined && props.absentWords.length > 0
     ? renderAbsentWords(props.absentWords)
     : '';
   return `<div class="rq-search">${box}
+${errors}
 ${absent}
 ${didYouMean}
-<p class="rq-summary" role="status">${total + recipes.length + packs.length}${groups.some((g) => g.more) ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
+<p class="rq-summary" role="status">${total + workCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
 ${progress}
+${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true)).join('')}
 ${groups.map((g) => renderGroup(g, props.actionAttr, now)).join('')}
 ${packs.length > 0 ? renderPackGroup(packs, props.actionAttr) : ''}
 ${recipes.length > 0 ? renderRecipeGroup(recipes, props.actionAttr) : ''}
@@ -427,27 +471,41 @@ ${recipes.length > 0 ? renderRecipeGroup(recipes, props.actionAttr) : ''}
 
 export const UNIVERSAL_SEARCH_STYLES = `
 .rq-search { display: flex; flex-direction: column; gap: 0.75rem; }
-.rq-search-label { font-size: 0.8rem; opacity: 0.75; }
-.rq-search-input { padding: 0.5rem 0.65rem; font: inherit; width: 100%; box-sizing: border-box; }
-.rq-hint, .rq-empty { opacity: 0.75; margin: 0.25rem 0; }
-.rq-summary { font-size: 0.85rem; opacity: 0.75; margin: 0; }
-.rq-group { display: flex; flex-direction: column; gap: 0.35rem; }
-.rq-group-head { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.9rem; margin: 0.5rem 0 0; }
-.rq-group-platform { font-size: 0.75rem; opacity: 0.6; }
-.rq-group-count { margin-left: auto; font-variant-numeric: tabular-nums; opacity: 0.7; }
-.rq-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
-.rq-row-btn { display: grid; gap: 0.15rem; width: 100%; text-align: left; padding: 0.5rem; font: inherit; cursor: pointer; }
-.rq-row-title { font-weight: 600; }
-.rq-row-when { font-size: 0.75rem; opacity: 0.6; }
-.rq-row-excerpt { font-size: 0.85rem; opacity: 0.8; }
-.rq-badge { font-size: 0.7rem; padding: 0.05rem 0.35rem; border-radius: 0.6rem; opacity: 0.85; }
+.rq-search-label { font-size: 0.875rem; font-weight: 600; }
+.rq-search-input { padding: 0.625rem 0.75rem; font: inherit; width: 100%; box-sizing: border-box;
+  border: 1px solid var(--border-strong); border-radius: 0.5rem; background: var(--surface); color: var(--fg); }
+.rq-hint, .rq-empty { color: var(--fg-muted); margin: 0.25rem 0; }
+.rq-summary { font-size: 0.85rem; color: var(--fg-muted); margin: 0; }
+.rq-group { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.rq-group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.9rem; margin: 0.75rem 0 0; }
+.rq-group-name { overflow-wrap: anywhere; min-width: 0; }
+.rq-group-platform { font-size: 0.75rem; color: var(--fg-muted); }
+.rq-group-count { margin-left: auto; padding: 0.125rem 0.5rem; border-radius: 1rem; background: var(--surface-sunk);
+  color: var(--fg-muted); font-size: 0.75rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.rq-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.rq-row-btn { display: grid; gap: 0.3rem; width: 100%; min-height: 44px; box-sizing: border-box; text-align: left;
+  padding: 0.75rem; font: inherit; cursor: pointer; border: 1px solid var(--border); border-radius: 0.5rem;
+  background: var(--surface); color: var(--fg); }
+.rq-row-btn:hover { background: var(--surface-sunk); border-color: var(--border-strong); }
+.rq-row-title, .rq-row-excerpt, .rq-row-when { min-width: 0; overflow-wrap: anywhere; }
+.rq-row-title { font-weight: 600; line-height: 1.4; }
+.rq-row-when { font-size: 0.75rem; color: var(--fg-muted); }
+.rq-row-excerpt { font-size: 0.85rem; line-height: 1.5; color: var(--fg-muted); }
+.rq-row-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.15rem; }
+.rq-badge { justify-self: start; width: fit-content; font-size: 0.7rem; padding: 0.125rem 0.4rem;
+  border-radius: 0.6rem; color: var(--fg-muted); }
 .rq-badge-partial { outline: 1px solid currentColor; }
 .rq-badge-thread { outline: 1px dashed currentColor; }
 .rq-badge-trunc, .rq-badge-stale { outline: 1px dotted currentColor; }
 .rq-badge-market { outline: 1px solid currentColor; }
-.rq-market-offer { align-self: flex-start; font: inherit; padding: 0.4rem 0.6rem; cursor: pointer; }
-.rq-subtle { font-size: 0.75rem; opacity: 0.65; margin: 0.15rem 0 0; }
-.rq-more { align-self: flex-start; font: inherit; padding: 0.25rem 0.5rem; cursor: pointer; }
+.rq-market-offer, .rq-more, .rq-retry { align-self: flex-start; min-height: 44px; font: inherit;
+  padding: 0.5rem 0.75rem; cursor: pointer; border: 1px solid var(--border); border-radius: 0.5rem;
+  background: var(--surface); color: var(--fg); }
+.rq-market-offer:hover, .rq-more:hover, .rq-retry:hover { background: var(--surface-sunk); }
+.rq-more[aria-disabled="true"] { cursor: progress; color: var(--fg-muted); }
+.rq-search button:focus-visible, .rq-search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rq-subtle { font-size: 0.75rem; line-height: 1.5; color: var(--fg-muted); margin: 0; }
+.rq-error { margin: 0.25rem 0; font-size: 0.875rem; }
 .rq-did-you-mean { margin: 0.25rem 0; }
 .rq-absent { margin: 0.25rem 0; }
 .rq-did-you-mean-btn { font: inherit; color: inherit; background: none; border: 0; padding: 0;

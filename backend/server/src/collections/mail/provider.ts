@@ -188,6 +188,22 @@ export const mimeFilenameParameter = (parameter: string, filename: string): stri
   return `${quoted(fallback)}; ${parameter}*=UTF-8''${extended}`;
 };
 
+/** A value both RFC 5322 builders write into a header as given, made unable to
+ *  end its line.
+ *
+ *  ⛔ THE SUBJECT, THE ADDRESSES, IN-REPLY-TO, REFERENCES AND AN ATTACHMENT'S
+ *  TYPE WENT IN RAW, so a line break in any of them began a header of its own
+ *  (`Subject: Hi\r\nBcc: eve@…` added a Bcc line to the message) and a blank
+ *  line began the body. A subject from an AI step or another message is enough;
+ *  `TempFileRef.mime_type` is any non-empty string. A folded line (a break
+ *  followed by a space or tab) is unfolded as a reader would, and every other
+ *  control character becomes a space. Recipients are also refused at
+ *  `MailCollection.send`; this covers every value and every path to a builder,
+ *  drafts saved to a mailbox included. */
+export const mailHeaderText = (value: string): string =>
+  // eslint-disable-next-line no-control-regex
+  value.replace(/\r?\n(?=[ \t])/g, '').replace(/[\x00-\x1f\x7f]+/g, ' ');
+
 export const normalizeMailAttachmentMimeType = (raw: string | undefined): string => {
   const mime = String(raw ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
   return mime.length > 0 ? mime : 'application/octet-stream';

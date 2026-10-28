@@ -193,6 +193,21 @@ describe('D-145 PA5 — typed-input renderers', () => {
     expect(new Date(y, m - 1, day, h, min).getTime()).toBe(instant);
   });
 
+  it('keeps the timed clock when minute read-back lands exactly on UTC midnight', () => {
+    const previous = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      const timed = Date.parse('2026-09-09T00:00:00.001Z');
+      const shown = formatTimestampForInput(timed);
+      expect(shown).toBe('2026-09-08T17:00');
+      expect(formatTimestampForInput('2026-09-09T00:00:00.000Z')).toBe(shown);
+      expect(formatTimestampForInput(Date.parse('2026-09-09T00:00:00.000Z'))).toBe('2026-09-09T00:00');
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
   it('enum → <select> with options + first option preselected', () => {
     const html = renderField(
       baseField({ type: 'enum', name: 'priority', enum_values: ['low', 'high'] }),

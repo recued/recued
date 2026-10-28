@@ -124,6 +124,12 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       // owner-default-only, so a write that moves a visitor's state must be at
       // least as closed.
       'core.data.form-response.set-state',
+      // D-332 — every Kitchen draft op, not only import: a wildcard door read the
+      // other three as permissive, with no grant row.
+      'core.kitchen.draft.get',
+      'core.kitchen.draft.import',
+      'core.kitchen.draft.list',
+      'core.kitchen.draft.update',
       // D-198 Slice 4 — collective-memory write/read: owner-on, door-off default.
       'core.memory.read',
       'core.memory.write',

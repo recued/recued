@@ -23,13 +23,17 @@
  *  Spec: D-170 § N.4 (test-before-save), N.15 (rpc surface). */
 
 import {
+  INGREDIENT_DRAFT_PACK_MAX_BYTES,
   type HandlerSlice,
   type CompositionDecomposeArgs,
   type CompositionDecomposeResult,
   type IngredientSaveAsNewArgs,
   type IngredientSaveAsNewResult,
+  type BulkPackManifest,
   type IngredientDraftDeleteArgs,
   type IngredientDraftDeleteResult,
+  type IngredientDraftEditArgs,
+  type IngredientDraftEditResult,
   type IngredientDraftGetArgs,
   type IngredientDraftGetResult,
   type IngredientDraftListResult,
@@ -61,6 +65,9 @@ export interface IngredientDraftRpcDeps {
    *  preview reads degrade to `preview_unavailable`. NEVER invoked for a
    *  mutation (the gate is in `runIngredientPreview`). */
   previewExecute?: IngredientPreviewDeps['execute'];
+  /** D-333 — the source a pack was installed from in Kitchen, while that install is the
+   *  installed one. Absent: no installed pack can be edited. */
+  packSourceFor?: (packSlug: string) => BulkPackManifest | null;
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -73,10 +80,16 @@ const handleSave = (
   if (!isPlainObject(args) || !('body' in args) || !isPlainObject(args.body)) {
     return { ok: false, code: 'bad_request', message: 'ingredient.draft.save: body must be an object' };
   }
+  // D-333 — the pack it installs as: a small object, kept beside the composition.
+  if (args.pack !== undefined && (!isPlainObject(args.pack)
+    || Buffer.byteLength(JSON.stringify(args.pack), 'utf8') > INGREDIENT_DRAFT_PACK_MAX_BYTES)) {
+    return { ok: false, code: 'bad_request', message: 'ingredient.draft.save: pack must be a small object' };
+  }
   const result = store.save({
     ...(typeof args.draft_id === 'string' && args.draft_id !== '' ? { draft_id: args.draft_id } : {}),
     ...(typeof args.title === 'string' ? { title: args.title } : {}),
     body: args.body,
+    ...(args.pack !== undefined ? { pack: args.pack } : {}),
   });
   if ('error' in result) {
     return result.error === 'too_large'
@@ -86,17 +99,60 @@ const handleSave = (
   return { ok: true, draft: result };
 };
 
+/** D-333 — a pack's identity is its manifest without the contents. */
+const packIdentity = (manifest: BulkPackManifest): Record<string, unknown> => {
+  const { contents: _contents, recipes: _recipes, ...identity } = manifest as unknown as Record<string, unknown>;
+  return identity;
+};
+
 const handleGet = (
   store: DraftStore,
   args: IngredientDraftGetArgs,
+  packSourceFor?: (packSlug: string) => BulkPackManifest | null,
 ): IngredientDraftGetResult => {
   if (!isPlainObject(args) || typeof args.draft_id !== 'string' || args.draft_id === '') {
     return { ok: false, code: 'bad_request', message: 'ingredient.draft.get: draft_id is required' };
   }
   const draft = store.get(args.draft_id);
-  return draft
+  if (!draft) return { ok: false, code: 'not_found', message: `no draft '${args.draft_id}'` };
+  // D-333 — changes to an installed pack install as that pack: hand over its identity.
+  const source = draft.base_pack !== undefined ? packSourceFor?.(draft.base_pack.pack_slug) ?? null : null;
+  return source === null
     ? { ok: true, draft }
-    : { ok: false, code: 'not_found', message: `no draft '${args.draft_id}'` };
+    : { ok: true, draft: { ...draft, base_pack: { pack_slug: draft.base_pack!.pack_slug, identity: packIdentity(source) } } };
+};
+
+/** D-333 — the draft of changes to a pack made in Kitchen: the one open, or a new one from
+ *  the composition the pack was installed from. */
+const handleEdit = (
+  store: DraftStore,
+  args: IngredientDraftEditArgs,
+  packSourceFor?: (packSlug: string) => BulkPackManifest | null,
+): IngredientDraftEditResult => {
+  if (!isPlainObject(args) || typeof args.pack_slug !== 'string' || args.pack_slug.trim() === '') {
+    return { ok: false, code: 'bad_request', message: 'ingredient.draft.edit: pack_slug is required' };
+  }
+  const source = packSourceFor?.(args.pack_slug) ?? null;
+  const content = Array.isArray(source?.contents)
+    ? (source!.contents as unknown[]).find((entry) =>
+      isPlainObject(entry) && entry.type === 'composition' && isPlainObject(entry.composition)) as
+        { composition: Record<string, unknown> } | undefined
+    : undefined;
+  if (source === null || content === undefined) {
+    return { ok: false, code: 'not_found',
+      message: 'This pack was not made in Kitchen on this server, so there is nothing here to edit.' };
+  }
+  const title = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : args.pack_slug;
+  const opened = store.openForPack(args.pack_slug, content.composition, title);
+  if ('error' in opened) {
+    return opened.error === 'limit_reached'
+      ? { ok: false, code: 'limit_reached', message: 'Kitchen has no room for another pack in progress. Finish or discard one first.' }
+      : { ok: false, code: 'bad_request', message: 'This pack is too large to edit here.' };
+  }
+  const summary = store.list().find((entry) => entry.draft_id === opened.draft_id);
+  return summary !== undefined
+    ? { ok: true, draft: summary }
+    : { ok: false, code: 'not_found', message: 'This pack was not made in Kitchen on this server, so there is nothing here to edit.' };
 };
 
 const handleDelete = (
@@ -114,6 +170,7 @@ type IngredientDraftMethods =
   | 'ingredient.draft.list'
   | 'ingredient.draft.get'
   | 'ingredient.draft.delete'
+  | 'ingredient.draft.edit'
   | 'ingredient.compose.decompose'
   | 'ingredient.saveAsNew'
   | 'ingredient.preview';
@@ -139,6 +196,7 @@ export const makeIngredientDraftHandlers = (
       'ingredient.draft.list',
       'ingredient.draft.get',
       'ingredient.draft.delete',
+      'ingredient.draft.edit',
       'ingredient.compose.decompose',
       'ingredient.preview',
     ],
@@ -150,9 +208,11 @@ export const makeIngredientDraftHandlers = (
         drafts: store.list(),
       }),
       'ingredient.draft.get': async (args) =>
-        handleGet(store, args as IngredientDraftGetArgs),
+        handleGet(store, args as IngredientDraftGetArgs, deps.packSourceFor),
       'ingredient.draft.delete': async (args) =>
         handleDelete(store, args as IngredientDraftDeleteArgs),
+      'ingredient.draft.edit': async (args) =>
+        handleEdit(store, args as IngredientDraftEditArgs, deps.packSourceFor),
       'ingredient.compose.decompose': async (args): Promise<CompositionDecomposeResult> =>
         handleCompositionDecompose({ draftStore: store }, args as CompositionDecomposeArgs),
       'ingredient.preview': async (args): Promise<IngredientPreviewResult> =>
@@ -168,6 +228,7 @@ export const makeIngredientDraftHandlers = (
       'ingredient.draft.list',
       'ingredient.draft.get',
       'ingredient.draft.delete',
+      'ingredient.draft.edit',
       'ingredient.compose.decompose',
       'ingredient.saveAsNew',
       'ingredient.preview',

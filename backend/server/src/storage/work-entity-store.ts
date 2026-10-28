@@ -408,9 +408,8 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     --   sends it straight back to a temp b-tree. The bare ordering index wins
     --   because the filter is low-selectivity anyway (almost every row is live).
     --
-    -- data_note already had exactly this shape (idx_note_last_user_action) and
-    --   is 0.2ms today -- it is the control proving the difference is the index
-    --   and not the harness.
+    -- data_note's recency index also covers its id tie-breaker, so tied
+    --   timestamps page stably without a temporary sort.
     CREATE INDEX IF NOT EXISTS idx_task_updated_at
       ON ${TASK_TABLE} (updated_at DESC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_task_linked_thread
@@ -460,9 +459,20 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
       ${SOURCE_ROW_IDENTITY_DDL}
     );
     CREATE INDEX IF NOT EXISTS idx_note_last_user_action
-      ON ${NOTE_TABLE} (last_user_action_at DESC);
+      ON ${NOTE_TABLE} (last_user_action_at DESC, id ASC);
     ${sourceRowIdentityIndexes('note', NOTE_TABLE)}
   `);
+
+  // Stable note paging added an id tie-breaker. Upgrade the old timestamp-only
+  // index atomically, checking its shape under the same writer lock as tasks.
+  db.transaction(() => {
+    const keys = (db.prepare('PRAGMA index_xinfo(idx_note_last_user_action)').all() as
+      Array<{ name: string | null; desc: number; key: number }>).filter((column) => column.key === 1);
+    if (keys.length === 2 && keys[0]?.name === 'last_user_action_at' && keys[0].desc === 1
+      && keys[1]?.name === 'id' && keys[1].desc === 0) return;
+    db.exec(`DROP INDEX IF EXISTS idx_note_last_user_action;
+      CREATE INDEX idx_note_last_user_action ON ${NOTE_TABLE} (last_user_action_at DESC, id ASC)`);
+  }).immediate();
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${COMMITMENT_TABLE} (
@@ -516,9 +526,8 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     --   sends it straight back to a temp b-tree. The bare ordering index wins
     --   because the filter is low-selectivity anyway (almost every row is live).
     --
-    -- data_note already had exactly this shape (idx_note_last_user_action) and
-    --   is 0.2ms today -- it is the control proving the difference is the index
-    --   and not the harness.
+    -- data_note's recency index also covers its id tie-breaker, so tied
+    --   timestamps page stably without a temporary sort.
     CREATE INDEX IF NOT EXISTS idx_commitment_state_changed
       ON ${COMMITMENT_TABLE} (state_changed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_commitment_counterparty_currency
@@ -557,9 +566,8 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     --   sends it straight back to a temp b-tree. The bare ordering index wins
     --   because the filter is low-selectivity anyway (almost every row is live).
     --
-    -- data_note already had exactly this shape (idx_note_last_user_action) and
-    --   is 0.2ms today -- it is the control proving the difference is the index
-    --   and not the harness.
+    -- data_note's recency index also covers its id tie-breaker, so tied
+    --   timestamps page stably without a temporary sort.
     CREATE INDEX IF NOT EXISTS idx_project_last_activity
       ON ${PROJECT_TABLE} (last_activity_at DESC);
     CREATE INDEX IF NOT EXISTS idx_project_parent
@@ -637,9 +645,8 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     --   sends it straight back to a temp b-tree. The bare ordering index wins
     --   because the filter is low-selectivity anyway (almost every row is live).
     --
-    -- data_note already had exactly this shape (idx_note_last_user_action) and
-    --   is 0.2ms today -- it is the control proving the difference is the index
-    --   and not the harness.
+    -- data_note's recency index also covers its id tie-breaker, so tied
+    --   timestamps page stably without a temporary sort.
     CREATE INDEX IF NOT EXISTS idx_booking_created
       ON ${BOOKING_TABLE} (created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_booking_counterparty_lifecycle
@@ -1342,6 +1349,8 @@ export interface ProjectWriteInput extends WorkEntitySourceIdentityInput {
 }
 
 export interface WorkEntityListQuery {
+  /** Note-only exact membership, applied before pagination and count. */
+  related_project_id?: string;
   /** Filter on `sync_state`. Default: rows in `live` or
    *  `stale_unreachable` only — tombstoned + orphaned excluded. */
   sync_states?: readonly SyncState[];
@@ -1436,6 +1445,7 @@ const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): Normali
     source_id: q?.source_id ?? '',
     include_deleted: q?.include_deleted ?? false,
     parent_project_id: q?.parent_project_id ?? '',
+    related_project_id: q?.related_project_id ?? '',
     limit,
     offset,
     search,
@@ -1455,9 +1465,17 @@ const buildListWhere = (
   parentProjectFilter = false,
   taskFilters = false,
   commitmentFilters = false,
+  noteFilters = false,
 ): { sql: string; params: unknown[] } => {
   const clauses: string[] = [];
   const params: unknown[] = [];
+  if (q.related_project_id) {
+    if (!noteFilters) throw new WorkEntityValidationError('related_project_id requires notes', 'related_project_id');
+    // Keep membership scalar: an EXISTS-join plan can consume duplicate array
+    // members as OFFSET rows when paging through the recency index.
+    clauses.push('EXISTS (SELECT 1 FROM json_each(related_project_ids) WHERE value = ? LIMIT 1)');
+    params.push(q.related_project_id);
+  }
   if (q.commitment_lifecycle_states.length > 0) {
     if (!commitmentFilters) {
       throw new WorkEntityValidationError('commitment_lifecycle_states requires commitments', 'commitment_lifecycle_states');
@@ -2650,6 +2668,11 @@ export interface WorkEntityStore {
    *  (source, done, tombstones, orphans), so a stale index entry costs a
    *  dropped join row and never a wrong result. */
   searchIdsByText(kind: WorkEntityKind, query: string, limit: number): string[];
+  /** Indexed owner search, newest first with a stable id tie-breaker. Deleted,
+   *  orphaned and read-through residue cannot consume a page. */
+  searchPageByText(kind: WorkEntityKind, query: string, options: {
+    limit: number; offset: number; exclude_source_ids?: readonly string[];
+  }): WorkEntity[];
   /** Current type metadata for text matching with a permission-checked holder name. */
   assetTypeSearchTerms?(classId: string | undefined): readonly string[];
   /** Match arbitrary TEXTS against `query` under the same tokenizer and match
@@ -3803,6 +3826,24 @@ export const createWorkEntityStore = (
     }).map((row) => row.key.slice(kind.length + 1));
   };
 
+  const searchPageByText: WorkEntityStore['searchPageByText'] = (kind, query, options) => {
+    const match = toFtsMatch(query);
+    if (match === null) return [];
+    const table = WORK_ENTITY_FTS_SOURCES.find(([candidate]) => candidate === kind)?.[1];
+    if (!table) throw new WorkEntityValidationError('Unknown search kind', 'kind');
+    const rows = db.prepare(`SELECT entity.id FROM ${WORK_ENTITY_FTS_TABLE}
+      JOIN ${table} AS entity ON ${WORK_ENTITY_FTS_TABLE}.key = ? || entity.id
+      WHERE entity.deleted_at IS NULL AND entity.sync_state IN ('live','stale_unreachable')
+        AND entity.source_id NOT IN (SELECT value FROM json_each(?))
+        AND ${WORK_ENTITY_FTS_TABLE} MATCH ?
+      ORDER BY entity.updated_at DESC, entity.id ASC LIMIT ? OFFSET ?`)
+      .all(`${kind}.`, JSON.stringify(options.exclude_source_ids ?? []), match, options.limit, options.offset) as Array<{ id: string }>;
+    return rows.flatMap(({ id }) => {
+      const entity = readByKind(kind, id);
+      return entity === null ? [] : [entity];
+    });
+  };
+
   const matchTextsByQuery: WorkEntityStore['matchTextsByQuery'] = (texts, query) => {
     if (texts.length === 0) return [];
     const match = toFtsMatch(query);
@@ -4110,11 +4151,11 @@ export const createWorkEntityStore = (
 
   const listNotes: WorkEntityStore['listNotes'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, false, false, false, true);
     const rows = db
       .prepare(
         `SELECT * FROM ${NOTE_TABLE} ${where.sql}
-         ORDER BY last_user_action_at DESC LIMIT ? OFFSET ?`,
+         ORDER BY last_user_action_at DESC, id ASC LIMIT ? OFFSET ?`,
       )
       .all(...where.params, norm.limit, norm.offset) as NoteRow[];
     return rows.map(rowToNote);
@@ -4151,7 +4192,7 @@ export const createWorkEntityStore = (
 
   const countNotes: WorkEntityStore['countNotes'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, false, false, false, true);
     const row = db
       .prepare(`SELECT COUNT(*) AS n FROM ${NOTE_TABLE} ${where.sql}`)
       .get(...where.params) as { n: number };
@@ -4987,6 +5028,7 @@ export const createWorkEntityStore = (
     listByKind,
     listRecordIdentitiesForSource,
     searchIdsByText,
+    searchPageByText,
     assetTypeSearchTerms,
     matchTextsByQuery,
     checkSpelling: (query: string): FtsWordCheck[] =>

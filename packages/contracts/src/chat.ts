@@ -31,6 +31,8 @@ import type { CollectionPlatform } from './collections.js';
 import type { ContactPrivacyMark, ContactRelationship, MailingAddress } from './contact.js';
 import type { IngredientKind } from './ingredient.js';
 import type { OpEntity } from './kernel-op-registry.js';
+import { isGrantableKernelOp, kernelOpForBackingSlug } from './kernel-op-registry.js';
+import { MCP_INGREDIENT_TOOL_PREFIX } from './mcp-tool-catalog.js';
 import type { DependencyReadAdmission } from './work-entity-dependency-admission.js';
 // ⚠ The tool enums below are DERIVED from this list. A hand-copy here is the
 // worst kind of stale: the backend guard is derived, so a new kind WORKS —
@@ -1639,6 +1641,32 @@ export interface ChatEgressPacket {
 
 /** Compact summary shape returned by `chat.sessions.list`. Avoids
  *  loading the per-message blob on every list refresh. */
+export const CHAT_SESSION_BATCH = 50;
+export const CHAT_SESSION_REFRESH_LIMIT = 1000;
+export interface ChatSessionListCursor { last_active_at: number; id: string }
+export interface ChatSessionListRequest {
+  limit: number;
+  before?: ChatSessionListCursor;
+  query?: string;
+  filters?: import('./chat-history-filters.js').ChatHistoryFilters;
+  /** Explicit filtered refresh window; only use after the server advertises it. */
+  refresh_count?: number;
+}
+export interface ChatSessionListResult {
+  sessions: ChatSessionSummary[];
+  busy_session_ids?: readonly string[];
+  messenger_status_available?: boolean;
+  messenger_status_refresh_available?: boolean;
+  history_filters_available?: boolean;
+  history_paging_available?: boolean;
+  history_refresh_available?: boolean;
+  next_cursor?: ChatSessionListCursor;
+  has_saved_chats?: boolean;
+  has_sessions?: boolean;
+  /** Whole-corpus membership, independent of the number of loaded batches. */
+  filter_membership?: string;
+}
+
 export interface ChatSessionSummary {
   id: string;
   title?: string;
@@ -1699,6 +1727,7 @@ export type ChatRpcMethod =
   | 'chat.delivery.retry'
   | 'chat.delivery.skip'
   | 'chat.messenger.connect'
+  | 'chat.messenger.status'
   | 'chat.turns.list'
   | 'chat.turn.withdraw'
   | 'chat.turn.cancel'
@@ -1828,6 +1857,7 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.session.export',
   'chat.egress.get',
   'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
+  'chat.messenger.status',
   'chat.turns.list',
   'chat.turn.withdraw',
   'chat.turn.cancel',
@@ -4145,7 +4175,13 @@ export const isMcpInboundTokenToolAuthorized = (
   now: number,
 ): boolean => {
   if (!isMcpInboundTokenActive(record, now)) return false;
-  return record.grants[tool_name] === true;
+  if (record.grants[tool_name] === true) return true;
+  // Contracts grant the canonical op; discovery, dispatch and approval resume
+  // must read that same grant when the caller names its ingredient wire tool.
+  // Kernel exposure remains a separate manifest fence at the MCP boundary.
+  const op = tool_name.startsWith(MCP_INGREDIENT_TOOL_PREFIX)
+    ? kernelOpForBackingSlug(tool_name.slice(MCP_INGREDIENT_TOOL_PREFIX.length)) : undefined;
+  return op !== undefined && isGrantableKernelOp(op) && record.grants[op] === true;
 };
 
 /** § A.9 — capability summary buckets. Rendered above the per-token

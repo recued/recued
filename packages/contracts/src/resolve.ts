@@ -1,4 +1,5 @@
 import type { Namespace } from './namespaces.js';
+import { isResolvedInputField } from './resolved-input.js';
 import { NS } from './namespaces.js';
 import { tryRewriteVendorEnrichmentAlias } from './connection-vendor-aliases.js';
 import { tryRewriteCrmAlias } from './connection-vendor-crm-aliases.js';
@@ -469,7 +470,7 @@ export const resolveDeep = (
     const out: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
       if (PROTOTYPE_SENSITIVE_KEYS.has(key)) continue;
-      out[key] = resolveDeep(val, stores, opts, _depth + 1);
+      out[key] = isResolvedInputField(obj, key) ? val : resolveDeep(val, stores, opts, _depth + 1);
     }
     return out;
   }

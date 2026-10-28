@@ -139,6 +139,8 @@ const alwaysKernelKeys = [
   'customerInvoiceCredit',
   'preapprovalRequest',
   'mailDraft',
+  'kitchenDraftImport',
+  'kitchenDraft',
   // D-264 — wired unconditionally for the same reason `mailDraft` is: the
   // dispatcher looks the owner service up per call, so there is nothing to gate
   // the WIRING on. A server with no mail stack leaves the underlying

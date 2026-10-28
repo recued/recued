@@ -4,8 +4,9 @@ import type { CollectionInstanceRow, CollectionPlatform, CollectionRecord, Colle
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { bootstrapDataRoute } from '../../src/data/bootstrap-data-route.js';
 import { WEBCLIENT_POLISH_STYLES } from '../../src/shell/webclient-polish-styles.js';
+import { createWorkSearchFixture } from './work-search-fixture.js';
 
-type Kind = 'records' | 'recipes' | 'packs' | 'marketplace' | 'instances' | 'list' | 'get';
+type Kind = 'records' | 'recipes' | 'packs' | 'marketplace' | 'instances' | 'list' | 'get' | 'work' | 'work-page';
 type Outcome = 'empty' | 'match' | 'error';
 const platformParameter = new URLSearchParams(location.search).get('navigation');
 const navigationPlatform: CollectionPlatform | null =
@@ -42,6 +43,10 @@ const read = <T>(kind: Kind, query: string, result: (match: boolean) => T): Prom
   });
 };
 const query = () => document.querySelector<HTMLInputElement>('[data-recued-universal-search-input]')?.value.trim() ?? '';
+const nativeMode = new URLSearchParams(location.search).get('native');
+const nativeWork = createWorkSearchFixture((kind, query, result) => nativeMode === 'manual'
+  ? read(kind, query, () => result())
+  : (calls.push({ kind, query }), Promise.resolve(result())));
 const style = document.createElement('style');
 style.textContent = `${PRIMITIVE_STYLES}\n${WEBCLIENT_POLISH_STYLES}`;
 document.head.appendChild(style);
@@ -55,6 +60,7 @@ const mount = (initialTab: string) => bootstrapDataRoute({
   root: document.querySelector<HTMLElement>('#root')!, document, initialTab,
   universalSearchDebounceMs: 180,
   contactListCaller: async () => ({ contacts: [], total: 0 }),
+  ...(nativeMode ? nativeWork.callers : {}),
   collectionSearchAllCaller: ({ query }) => navigationPlatform !== null
     ? Promise.resolve({ groups: navigationGroups })
     : read('records', query, match => ({
@@ -91,6 +97,7 @@ const mount = (initialTab: string) => bootstrapDataRoute({
 let route = mount('search');
 const controls = {
   ready: false, calls,
+  workRequests: nativeWork.requests, workWrites: nativeWork.writes, failWorkKind: nativeWork.fail,
   release(kind: Kind, index: number, outcome: Outcome = 'empty') {
     const item = pending.filter(item => item.kind === kind)[index];
     if (!item) throw new Error(`Missing fixture response: ${kind} ${index}`);

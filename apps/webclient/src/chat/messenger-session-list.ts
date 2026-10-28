@@ -1,10 +1,11 @@
-import { getMessengerVendorDeclaration, type ChatMessengerSessionStatus, type ChatSessionSummary } from '@recued/contracts';
+import { CHAT_MESSENGER_STATUS_BATCH, getMessengerVendorDeclaration, type ChatMessengerSessionStatus, type ChatSessionSummary, type ChatMessengerStatusResult } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
 
 export interface MessengerSessionListReply {
   sessions: ChatSessionSummary[];
   messenger_status_available?: boolean;
   history_filters_available?: boolean;
+  messenger_status_refresh_available?: boolean;
 }
 const receiveLabels: Record<ChatMessengerSessionStatus['receive'], string> = {
   active: 'Receiving', connecting: 'Connecting', retrying: 'Reconnecting', error: 'Recued could not connect to receive',
@@ -58,6 +59,9 @@ export const CHAT_MESSENGER_LIST_STYLES = `
 export const createMessengerSessionList = (options: {
   document: Pick<Document, 'createElement' | 'visibilityState' | 'addEventListener' | 'removeEventListener'>;
   read(): Promise<MessengerSessionListReply>;
+  readStatus?(sessionIds: string[]): Promise<ChatMessengerStatusResult>;
+  needsListRefresh?(): boolean;
+  refreshList?(): Promise<void>;
   openDelivery(session: string): void;
   actionsLocked(): boolean;
   changed?(): void;
@@ -69,28 +73,32 @@ export const createMessengerSessionList = (options: {
   let disposed = false;
   let externalRead = false;
   let generation = 0;
-  let running = false;
+  let refreshOwner: object | undefined;
   let dirty = false;
   let readUnavailable = false;
   let filtersAvailable = false;
+  let statusOnly = false;
+  let recoverAll = false;
+  const invalidated = new Map<string, number>();
+  let invalidationRevision = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const clearTimer = (): void => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
   const paint = (): void => { for (const mount of mounts.values()) mount.paint(); };
   const unavailable = (): void => { readUnavailable = true; for (const entry of entries.values()) entry.stale = true; paint(); options.changed?.(); };
   const schedule = (delay = options.intervalMs ?? 5_000): void => {
     clearTimer();
-    if (!disposed && !externalRead && (entries.size > 0 || readUnavailable)) {
+    if (!disposed && !externalRead && (entries.size > 0 || readUnavailable || invalidated.size > 0 || recoverAll && known.size > 0 || options.needsListRefresh?.())) {
       timer = setTimeout(() => { timer = undefined; void refresh(); }, delay);
       timer.unref?.();
     }
   };
-  const apply = (reply: MessengerSessionListReply): void => {
+  const apply = (reply: MessengerSessionListReply, partial = false): void => {
     filtersAvailable = reply.history_filters_available === true;
-    readUnavailable = reply.messenger_status_available === false
+    readUnavailable = partial && readUnavailable || reply.messenger_status_available === false
       || reply.sessions.some(session => session.messenger !== undefined && !valid(session.messenger));
-    if (readUnavailable) { unavailable(); return; }
+    if (reply.messenger_status_available === false || reply.sessions.some(session => session.messenger !== undefined && !valid(session.messenger))) { unavailable(); return; }
     const byId = new Map(reply.sessions.map(session => [session.id, session.messenger]));
-    for (const id of known) {
+    for (const id of partial ? byId.keys() : known) {
       const status = byId.get(id);
       if (valid(status)) entries.set(id, { status, stale: false });
       else if (reply.messenger_status_available === true && status === undefined) entries.delete(id);
@@ -99,25 +107,81 @@ export const createMessengerSessionList = (options: {
     paint();
     options.changed?.();
   };
+  const refreshStatus = async (request: number): Promise<void> => {
+    const ids = recoverAll || readUnavailable ? [...known] : [...new Set([...entries.keys(), ...invalidated.keys()])];
+    const batches: string[][] = [];
+    for (let start = 0; start < ids.length; start += CHAT_MESSENGER_STATUS_BATCH) batches.push(ids.slice(start, start + CHAT_MESSENGER_STATUS_BATCH));
+    if (!batches.length) batches.push([]);
+    const results = new Map<string, ChatMessengerSessionStatus | undefined>();
+    let next = 0; let failed = false; let fallback = false;
+    await Promise.all(Array.from({ length: Math.min(4, batches.length) }, async () => {
+      while (!disposed && request === generation && !failed && !fallback) {
+        const batch = batches[next++]; if (!batch) return;
+        try {
+          const reply = await options.readStatus!(batch);
+          if (disposed || request !== generation) return;
+          const wanted = new Set(batch);
+          if (reply?.messenger_status_available !== true || !Array.isArray(reply.sessions) || reply.sessions.length !== wanted.size
+            || reply.sessions.some(row => !row || !wanted.delete(row.id) || row.messenger !== undefined && !valid(row.messenger)) || wanted.size > 0) {
+            failed = true; return;
+          }
+          for (const row of reply.sessions) results.set(row.id, row.messenger);
+        } catch (error) {
+          if (disposed || request !== generation) return;
+          const code = (error as { code?: string } | null)?.code;
+          if (code === 'unknown_method' || code === 'not_configured') { fallback = true; statusOnly = false; }
+          else failed = true;
+        }
+      }
+    }));
+    if (disposed || request !== generation) return;
+    if (fallback) {
+      const reply = await options.read();
+      if (!disposed && request === generation) apply(reply);
+      return;
+    }
+    readUnavailable = failed; recoverAll = false;
+    if (failed) for (const entry of entries.values()) entry.stale = true;
+    for (const [id, status] of results) {
+      if (!known.has(id)) continue;
+      if (status) entries.set(id, { status, stale: false }); else entries.delete(id);
+    }
+    paint(); options.changed?.();
+  };
   const refresh = async (): Promise<void> => {
     if (disposed || externalRead || options.document.visibilityState === 'hidden') { schedule(); return; }
-    if (running) { dirty = true; return; }
-    clearTimer(); running = true;
-    const request = generation;
+    if (refreshOwner) { dirty = true; return; }
+    const owner = {};
+    clearTimer(); refreshOwner = owner;
+    let request = generation;
+    const requestedInvalidations = new Map(invalidated);
     // Keep a stalled request single-flight, but stop presenting its old success
     // as current. Normal connection RPC timeouts/reconnects release the read.
     const deadline = setTimeout(() => { if (!disposed && request === generation) unavailable(); }, 8_000);
     deadline.unref?.();
     try {
-      const reply = await options.read();
-      if (!disposed && request === generation) apply(reply);
+      if (options.needsListRefresh?.() && options.refreshList) {
+        const pending = options.refreshList();
+        request = generation; // beginRead now owns the same pending refresh.
+        await pending;
+      } else if (statusOnly && options.readStatus) await refreshStatus(request);
+      else {
+        const reply = await options.read();
+        if (!disposed && request === generation) { apply(reply); recoverAll = false; }
+      }
     } catch { if (!disposed && request === generation) unavailable(); }
     finally {
-      clearTimeout(deadline); running = false;
-      if (dirty) { dirty = false; schedule(50); } else schedule();
+      clearTimeout(deadline);
+      if (refreshOwner === owner) {
+        refreshOwner = undefined;
+        if (request === generation) for (const [id, revision] of requestedInvalidations) {
+          if (invalidated.get(id) === revision) invalidated.delete(id);
+        }
+        if (dirty || invalidated.size > 0) { dirty = false; schedule(50); } else schedule();
+      }
     }
   };
-  const visibility = (): void => { if (options.document.visibilityState !== 'hidden') { unavailable(); schedule(0); } };
+  const visibility = (): void => { if (options.document.visibilityState !== 'hidden') { generation++; recoverAll = true; unavailable(); schedule(0); } };
   options.document.addEventListener('visibilitychange', visibility);
 
   return {
@@ -127,14 +191,24 @@ export const createMessengerSessionList = (options: {
       const entry = entries.get(session.id);
       return { id: session.id, ...(entry ? { messenger: entry.status } : {}), stale: entry?.stale ?? false };
     },
-    beginRead() { externalRead = true; generation++; clearTimer(); },
-    adopt(reply: MessengerSessionListReply) {
-      generation++; externalRead = false; known = new Set(reply.sessions.map(session => session.id));
+    beginRead() { externalRead = true; generation++; invalidated.clear(); clearTimer(); },
+    adopt(reply: MessengerSessionListReply, mode?: { append?: true; retain?: readonly string[] }) {
+      // A completed newer metadata read supersedes a stalled refresh. Its
+      // timer must not wait for an obsolete RPC, nor be released by that RPC.
+      refreshOwner = undefined; dirty = false;
+      generation++; externalRead = false; known = new Set([...(mode?.append ? known : mode?.retain ?? []), ...reply.sessions.map(session => session.id)]);
+      statusOnly = reply.messenger_status_refresh_available === true && options.readStatus !== undefined;
+      recoverAll = false;
       for (const id of entries.keys()) if (!known.has(id)) entries.delete(id);
-      apply(reply); schedule();
+      for (const id of invalidated.keys()) if (!known.has(id)) invalidated.delete(id);
+      apply(reply, mode?.append || !!mode?.retain?.length); schedule(invalidated.size > 0 ? 50 : undefined);
     },
-    failed() { generation++; externalRead = false; unavailable(); schedule(); },
-    invalidate() { schedule(50); },
+    failed() { refreshOwner = undefined; dirty = false; generation++; externalRead = false; unavailable(); schedule(); },
+    invalidate(sessionId?: string) {
+      if (sessionId && known.has(sessionId)) invalidated.set(sessionId, ++invalidationRevision);
+      else { generation++; recoverAll = true; }
+      schedule(50);
+    },
     beginRender() { mounts.clear(); },
     mount(row: HTMLElement, menu: HTMLElement, session: string) {
       const doc = options.document;

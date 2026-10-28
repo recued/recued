@@ -56,7 +56,7 @@ const setup = async () => {
       }
     });
     await context.addInitScript(() => Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
-      if (!['chat.sessions.list', 'chat.session.get', 'chat.session.rename', 'chat.messages.search', 'chat.deliveries.list', 'chat.turns.list',
+      if (!['chat.sessions.list', 'chat.messenger.status', 'chat.session.get', 'chat.session.rename', 'chat.messages.search', 'chat.deliveries.list', 'chat.turns.list',
         'server.getLLMConfig', 'chat.default_model_pref.get', 'chat.picker.list', 'collection.connection.list', 'recipe.list', 'prefs.get', 'prefs.set'].includes(method)) return undefined;
       return (await fetch('/rename-rpc', { method: 'POST', body: JSON.stringify({ method, args }) })).json();
     } }));

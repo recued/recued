@@ -21,14 +21,15 @@ const taskWith = (due_at: number): Extract<WorkEntity, { _kind: 'task' }> => ({
   last_seen_at: 1, created_at: 1, updated_at: 1, blocks_task_ids: [],
 });
 
-const rig = async (due_at: number) => {
+const rig = async (due_at: number, now = new Date(2026, 8, 8, 9).getTime()) => {
   let stored = taskWith(due_at);
-  const upsert = vi.fn(async (args: { due_at?: number }) => {
-    stored = { ...stored, due_at: args.due_at ?? stored.due_at };
+  const currentSource = { ...source };
+  const upsert = vi.fn(async (args: { due_at?: number; clear_due_at?: boolean }) => {
+    stored = { ...stored, due_at: args.clear_due_at ? undefined : args.due_at ?? stored.due_at };
     return { entity: stored };
   });
   const callers: TodayCallers = {
-    workEntitySourceListCaller: async () => ({ sources: [source] }),
+    workEntitySourceListCaller: async () => ({ sources: [currentSource] }),
     workEntityListCaller: async ({ kind }: { kind: string }) =>
       ({ entities: kind === 'task' ? [stored] : [], total: kind === 'task' ? 1 : 0 }),
     collectionListInstancesCaller: async () => ({ instances: [] }),
@@ -38,7 +39,7 @@ const rig = async (due_at: number) => {
   } as unknown as TodayCallers;
   const controller = createTodayController({
     callers,
-    now: () => new Date(2026, 8, 8, 9).getTime(),
+    now: () => now,
     render: () => {},
     isDisposed: () => false,
     isActive: () => true,
@@ -51,7 +52,7 @@ const rig = async (due_at: number) => {
   await controller.load(() => true);
   const key = controller.snapshot()!.items[0]!.key;
   controller.openEditor(key, 'reschedule');
-  return { controller, upsert };
+  return { controller, upsert, key, currentSource, setStored: (task: typeof stored) => { stored = task; } };
 };
 
 const dayOf = (y: number, m: number, d: number) => Date.UTC(y, m, d);
@@ -86,5 +87,73 @@ describe('Today → Reschedule and a due that names a day', () => {
     await controller.submit();
     const due = (upsert.mock.calls[0]![0] as { due_at: number }).due_at;
     expect(toDatetimeLocal(due)).toBe('2026-09-11T00:00');
+  });
+
+  it('quick Today and Tomorrow keep a whole-day due on the local calendar day', async () => {
+    const { controller, upsert, key } = await rig(dayOf(2026, 8, 6));
+    controller.closeEditor();
+    await controller.applyDueShortcut(key, 'today');
+    expect(upsert).toHaveBeenLastCalledWith({ kind: 'task', id: 't-1', due_at: dayOf(2026, 8, 8) });
+    await controller.applyDueShortcut(key, 'tomorrow');
+    expect(upsert).toHaveBeenLastCalledWith({ kind: 'task', id: 't-1', due_at: dayOf(2026, 8, 9) });
+  });
+
+  it('quick Tomorrow preserves the clock and seconds across the daylight-saving change', async () => {
+    const { controller, upsert, key } = await rig(new Date(2026, 2, 7, 17, 30, 15, 123).getTime(), new Date(2026, 2, 7, 9).getTime());
+    controller.closeEditor();
+    await controller.applyDueShortcut(key, 'tomorrow');
+    expect(upsert).toHaveBeenCalledWith({ kind: 'task', id: 't-1', due_at: new Date(2026, 2, 8, 17, 30, 15, 123).getTime() });
+  });
+
+  it('clears only the due date and removes the confirmed task from Today', async () => {
+    const { controller, upsert, key } = await rig(dayOf(2026, 8, 9));
+    controller.closeEditor();
+    await controller.applyDueShortcut(key, 'clear');
+    expect(upsert).toHaveBeenCalledWith({ kind: 'task', id: 't-1', clear_due_at: true });
+    expect(controller.snapshot()?.items).toEqual([]);
+    expect(controller.notice()).toContain('Cleared the due date');
+  });
+
+  it('refuses a shortcut if the fresh source is no longer writable', async () => {
+    const { controller, upsert, key, currentSource } = await rig(dayOf(2026, 8, 9));
+    controller.closeEditor();
+    currentSource.write_capable = false;
+    await controller.applyDueShortcut(key, 'clear');
+    expect(upsert).not.toHaveBeenCalled();
+    expect(controller.edit()?.error).toContain('cannot be changed');
+    expect(controller.snapshot()?.items).toHaveLength(1);
+  });
+
+  it('does not retry an unconfirmed clear while the fresh task still has a pending write', async () => {
+    const { controller, upsert, key, setStored } = await rig(dayOf(2026, 8, 9));
+    controller.closeEditor();
+    upsert.mockImplementationOnce(async () => {
+      const pending = { ...taskWith(dayOf(2026, 8, 9)), due_at: undefined,
+        pending_write: { staged_at: 1, operation: 'update' as const, dirty_fields: ['due_at'], state: 'awaiting_verify' as const } };
+      setStored(pending);
+      return { entity: pending };
+    });
+    await controller.applyDueShortcut(key, 'clear');
+    expect(controller.edit()?.error).toContain('source has not confirmed');
+    await controller.submit();
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(controller.edit()?.error).toContain('waiting for its source');
+    expect(controller.notice()).toBeNull();
+  });
+
+  it('offers manual picking instead of silently shifting a deadline through a missing DST hour', async () => {
+    const previous = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      const { controller, upsert, key } = await rig(new Date(2026, 2, 7, 2, 30).getTime(), new Date(2026, 2, 7, 9).getTime());
+      controller.closeEditor();
+      await controller.applyDueShortcut(key, 'tomorrow');
+      expect(upsert).not.toHaveBeenCalled();
+      expect(controller.edit()?.error).toContain('time does not exist');
+      expect(controller.edit()?.value).toBe('2026-03-07T02:30');
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
   });
 });

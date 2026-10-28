@@ -12,8 +12,50 @@
  */
 
 import { WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR } from './dialog.js';
+import { TASK_DUE_STYLES } from '../task-due.js';
 
 export const WORK_ENTITY_PAGE_STYLES = `
+${TASK_DUE_STYLES}
+.work-entity-dialog[data-kind="note"] { width:min(760px,100%); overflow:hidden; }
+.work-entity-dialog[data-kind="note"] .work-entity-dialog-header { flex-shrink:0; }
+.work-entity-dialog[data-kind="note"] .work-entity-dialog-title { min-width:0; overflow-wrap:anywhere; }
+.work-entity-dialog[data-kind="note"] .work-entity-dialog-close { flex-shrink:0; min-width:44px; min-height:44px; }
+.work-entity-dialog[data-kind="note"] .work-entity-dialog-form { min-height:0; overflow:hidden; padding:0; gap:0; }
+.work-entity-note-content { flex:1; min-height:0; overflow:auto; padding:20px; display:flex; flex-direction:column; gap:16px; }
+.work-entity-dialog[data-kind="note"] .work-entity-dialog-actions { flex-shrink:0; flex-wrap:wrap; padding:12px 20px; }
+.work-entity-dialog[data-kind="note"] .work-entity-dialog-actions button { min-height:44px; }
+.work-entity-note-meta { display:flex; flex-wrap:wrap; gap:6px 14px; color:var(--rx-muted,var(--fg-muted)); font-size:12px; }
+.work-entity-note-meta > span { min-width:0; overflow-wrap:anywhere; }
+.work-entity-note-body { white-space:pre-wrap; overflow-wrap:anywhere; min-width:0; font-size:15px; line-height:1.65; color:var(--rx-fg,var(--fg)); }
+.work-entity-note-warning, .work-entity-note-notice { margin:0; padding:10px 12px; border:1px solid var(--rx-divider,var(--border)); border-radius:6px; font-size:13px; line-height:1.5; }
+.work-entity-note-notice[role="alert"] { color:var(--danger,var(--fg)); }
+.work-entity-note-reader .work-entity-note-notice { flex-basis:100%; }
+.work-entity-note-reader button[aria-disabled="true"] { opacity:.6; cursor:default; }
+.work-entity-note-secondary { border-top:1px solid var(--rx-divider,var(--border)); padding-top:12px; font-size:13px; }
+.work-entity-note-secondary summary { cursor:pointer; min-height:44px; padding:12px 0; box-sizing:border-box; }
+.work-entity-note-form { display:flex; flex-direction:column; gap:16px; }
+.work-entity-note-form > [data-form-row="title"] input { font-size:17px; font-weight:600; }
+.work-entity-dialog[data-kind="note"] .work-entity-note-form > [data-form-row="body"] textarea { min-height:240px; resize:vertical; }
+.work-entity-note-form > .work-entity-task-details-toggle { align-self:flex-start; }
+.work-entity-note-form[data-note-details-open="false"] > [data-form-row]:not([data-form-row="title"]):not([data-form-row="body"]) { display:none; }
+@media(max-width:540px) { .work-entity-note-content { padding:16px; } .work-entity-dialog[data-kind="note"] .work-entity-dialog-actions { padding:12px 16px; } }
+.work-entity-dialog[data-kind="task"] { overflow:hidden; }
+.work-entity-dialog[data-kind="task"] .work-entity-dialog-header { flex-shrink:0; }
+.work-entity-dialog[data-kind="task"] .work-entity-dialog-form { min-height:0; overflow:hidden; padding:0; gap:0; }
+.work-entity-task-content { min-height:0; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+.work-entity-dialog[data-kind="task"] .work-entity-dialog-actions { flex-shrink:0; padding:12px 16px; }
+.work-entity-task-form { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; }
+.work-entity-task-form > * { grid-column:1 / -1; min-width:0; }
+.work-entity-task-form > [data-form-row="priority"],
+.work-entity-task-form > [data-form-row="due_at"] { grid-column:auto; }
+.work-entity-task-form > [data-form-row="title"] input { font-size:17px; font-weight:600; }
+.work-entity-task-form > [data-form-row="body"] textarea { min-height:112px; resize:vertical; }
+.work-entity-task-form[data-task-details-open="false"] > [data-form-row]:not([data-form-row="title"]):not([data-form-row="body"]):not([data-form-row="priority"]):not([data-form-row="due_at"]) { display:none; }
+.work-entity-task-date-hint { margin:8px 0 0; color:var(--rx-muted, var(--fg-muted)); font-size:12px; line-height:1.5; }
+.work-entity-task-details-toggle { justify-self:start; padding:8px 0; min-height:44px; border:0; background:transparent; color:var(--rx-accent, var(--accent)); font:inherit; font-size:13px; cursor:pointer; }
+.work-entity-task-completion { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border:1px solid var(--rx-divider, var(--border)); border-radius:8px; }
+.work-entity-task-completion p { margin:0; font-size:13px; color:var(--rx-muted, var(--fg-muted)); }
+@media(max-width:540px) { .work-entity-task-form { grid-template-columns:minmax(0,1fr); } }
 .work-entity-page {
   min-width: 0;
   display: flex;

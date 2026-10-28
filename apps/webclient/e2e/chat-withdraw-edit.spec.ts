@@ -151,10 +151,10 @@ test('restores attachment-only input without uploading again and keeps it throug
     await expect(a.locator('[data-chat-reply-draft="question-2"]')).toBeVisible();
     await a.getByRole('button', { name: 'Remove reply', exact: true }).click();
     // Since 04844efda a typed draft stays with the chat it was written in, so switching asks nothing, attachments included.
-    await a.getByRole('button', { name: /Another conversation.*0 messages/ }).click();
+    await a.locator('[data-recued-chat-route-session-row="other"]').click();
     await expect(a.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
     await expect(a.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
-    await a.getByRole('button', { name: /Shared conversation/ }).click();
+    await a.locator('[data-recued-chat-route-session-row="s"]').click();
     await expect(a.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
     await a.evaluate(() => (window as unknown as { queueTestRePair(): Promise<void> }).queueTestRePair());
     await expect(a.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);

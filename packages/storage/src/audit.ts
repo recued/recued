@@ -425,6 +425,8 @@ export interface AuditEntry {
  *  collection codes (sync lifecycle, record churn, retention, webhook
  *  inbound + auth rejection). */
 export type ActivityAction =
+  | 'kitchen_draft_imported'
+  | 'kitchen_draft_updated'
   | 'install' | 'uninstall' | 'vault_set' | 'vault_clear' | 'approval_allow' | 'approval_deny'
   | 'schedule_create' | 'schedule_update' | 'schedule_delete'
   | 'sync_connect' | 'sync_disconnect' | 'sync_push' | 'sync_pull'

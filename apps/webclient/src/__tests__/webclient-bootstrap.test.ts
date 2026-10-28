@@ -398,8 +398,14 @@ const makeFakeElement = (tag: string): FakeElement => {
       child.parentRef = el as FakeElement;
       return child;
     }) as unknown as HTMLElement['appendChild'],
-    append: ((...children: FakeElement[]): void => {
-      for (const child of children) (el as FakeElement).appendChild(child);
+    // Like the DOM, `append` takes strings as text (D-333's Kitchen home does).
+    append: ((...children: Array<FakeElement | string>): void => {
+      for (const child of children) {
+        if (typeof child !== 'string') { (el as FakeElement).appendChild(child); continue; }
+        const text = makeFakeElement('#text');
+        text.textContent = child;
+        (el as FakeElement).appendChild(text);
+      }
     }) as unknown as HTMLElement['append'],
     replaceChildren: ((...children: FakeElement[]): void => {
       for (const child of childList) child.parentRef = null;
@@ -5845,7 +5851,7 @@ describe('leave guard — unsaved route work', () => {
   /** Mount Kitchen and make it dirty via a click-only edit (Add field —
    *  an entity row counts as unsaved content). */
   const mountDirtyKitchen = (fixture: ReturnType<typeof buildOpts>): void => {
-    fixture.hashSource.setHash('#kitchen');
+    fixture.hashSource.setHash('#kitchen/pack');
     const addField = findChildByAttr(
       fixture.root,
       INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR,
@@ -5880,8 +5886,9 @@ describe('leave guard — unsaved route work', () => {
     const { fixture, confirmFn } = buildGuardFixture();
     const handle = await bootstrapWebclient(fixture.opts);
 
-    // Clean Kitchen (blank draft) → no confirm on leave.
+    // Clean Kitchen (home, then a blank pack) → no confirm on leave.
     fixture.hashSource.setHash('#kitchen');
+    fixture.hashSource.setHash('#kitchen/pack');
     fixture.hashSource.setHash('#recipes');
     expect(confirmFn).not.toHaveBeenCalled();
     expect(handle.activeRoute()).toBe('recipes');

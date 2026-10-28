@@ -5,7 +5,7 @@ import type {
   ProactiveToday, SituationBasis, SituationCluster, SituationItem, SituationReason, SituationRef, SituationWindow, Sphere,
 } from '@recued/contracts';
 import { isDateOnlyDue, resolveTaskListFilter } from '@recued/contracts';
-import { e } from '@recued/ui-shared';
+import { e, renderTaskDueActions, TASK_DUE_STYLES } from '@recued/ui-shared';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { BootstrapDataRouteOptions } from './bootstrap-data-route.js';
@@ -53,6 +53,9 @@ export interface TodayTaskEdit {
   allDay?: boolean;
   busy: boolean;
   error: string | null;
+  /** Exact shortcut result; do not round its seconds through the minute input. */
+  dueOverride?: number;
+  clearDue?: boolean;
 }
 export interface TodayTaskActions {
   canComplete: boolean;
@@ -480,6 +483,7 @@ const renderCluster = (cluster: SituationCluster | undefined, summary?: string, 
   ${cluster.omitted ? `<li>${cluster.omitted} more related items</li>` : ''}</ul>`;
 
 export const TODAY_VIEW_STYLES = `
+${TASK_DUE_STYLES}
 .today-view { max-width:960px; margin-top:18px; }
 .today-header { display:flex; justify-content:space-between; align-items:start; gap:16px; }
 .today-header h2 { margin:0 0 6px; font-size:22px; }
@@ -523,6 +527,9 @@ export const TODAY_VIEW_STYLES = `
 .today-task-editor .today-task-primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
 .today-commitment-actions button[aria-disabled=true], .today-task-actions button[aria-disabled=true], .today-task-editor button[aria-disabled=true] { opacity:.6; cursor:default; }
 .today-task-actions button:not([aria-disabled=true]):hover, .today-commitment-actions button:not([disabled]):hover { border-color:var(--accent); }
+.today-task-actions > a { min-height:44px; display:inline-flex; align-items:center; padding:0 4px; font-size:13px; color:var(--accent); }
+.today-task-actions > a[aria-disabled=true] { opacity:.6; }
+@media(max-width:540px) { .today-task-actions > .task-due-actions { flex-basis:100%; } }
 .today-view :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .today-view [data-today-task-notice] { border-inline-start:3px solid var(--accent); padding:10px 12px; background:var(--surface-subtle, var(--surface)); color:var(--fg); overflow-wrap:anywhere; }
 .today-task-editor [role=alert] { color:var(--danger, var(--fg)); }
@@ -553,12 +560,12 @@ const renderTaskEditor = (actions: TodayTaskActions | undefined, actionAttr: str
   if (!edit) return '';
   const locked = edit.busy ? ' aria-disabled="true"' : '';
   return `<div class="today-task-editor" data-today-task-editor id="today-task-editor" role="group" aria-labelledby="today-task-editor-title" aria-busy="${edit.busy}">
-    <p class="today-task-editor-title" id="today-task-editor-title" role="status">${edit.action === 'reschedule' ? 'Reschedule' : edit.busy ? 'Completing' : 'Complete'} “${e(edit.title)}”${edit.busy ? '…' : ''}</p>
-    ${edit.action === 'reschedule' ? `<label>New due date and time
+    <p class="today-task-editor-title" id="today-task-editor-title" role="status">${edit.clearDue ? 'Clear due date for' : edit.action === 'reschedule' ? 'Reschedule' : edit.busy ? 'Completing' : 'Complete'} “${e(edit.title)}”${edit.busy ? '…' : ''}</p>
+    ${edit.action === 'reschedule' && !edit.clearDue ? `<label>New due date and time
       <input type="datetime-local" ${actionAttr}="today-task-due" aria-describedby="today-task-time-help" value="${e(edit.value)}"${edit.busy ? ' disabled' : ''}>
-    </label><p class="today-task-hint" id="today-task-time-help">Changes this task’s due date. Times use your device’s time zone.</p>` : ''}
+    </label><p class="today-task-hint" id="today-task-time-help">Changes this task’s due date. Times use your device’s time zone.</p>` : edit.clearDue ? '<p class="today-task-hint">Remove this task’s due date. The task will remain in Data → Tasks.</p>' : ''}
     ${edit.error ? `<p role="alert" tabindex="-1" data-today-task-error>${e(edit.error)}</p>` : ''}
-    ${edit.action === 'reschedule' || edit.error ? `<button type="button" class="today-task-primary" ${actionAttr}="today-task-save"${locked}>${edit.busy ? 'Saving…' : edit.action === 'reschedule' ? 'Save due date' : 'Try again'}</button>` : ''}
+    ${edit.action === 'reschedule' || edit.error ? `<button type="button" class="today-task-primary" ${actionAttr}="today-task-save"${locked}>${edit.busy ? 'Saving…' : edit.clearDue ? 'Clear date' : edit.action === 'reschedule' ? 'Save due date' : 'Try again'}</button>` : ''}
     <button type="button" ${actionAttr}="today-task-cancel"${locked}>${edit.action === 'reschedule' ? 'Cancel' : 'Close'}</button>
   </div>`;
 };
@@ -619,7 +626,10 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
               </div>${renderCluster(item.cluster, item.cluster ? snapshot.proactive?.summaries?.[item.cluster.id] : undefined,
                 actions?.canDismissSituation ? { actionAttr, busy: actions.commitmentBusy === true } : undefined, people)}${actions && item.taskId !== undefined && !item.unreachable && source?.writeCapable ? `<div class="today-task-actions">
                 ${actions.canComplete ? `<button type="button" ${actionAttr}="today-task-complete" data-today-task="${e(item.key)}" aria-label="Complete ${e(item.title)}"${actions.edit ? ' aria-disabled="true"' : ''}>${actions.edit?.key === item.key && actions.edit.busy && actions.edit.action === 'complete' ? 'Completing…' : 'Complete'}</button>` : ''}
-                ${actions.canReschedule ? `<button type="button" ${actionAttr}="today-task-reschedule" data-today-task="${e(item.key)}" aria-label="Reschedule ${e(item.title)}" aria-expanded="${actions.edit?.key === item.key && actions.edit.action === 'reschedule'}"${actions.edit ? ' aria-disabled="true"' : ''}>Reschedule</button>` : ''}
+                <a ${actions.edit ? 'aria-disabled="true"' : `href="${e(item.href)}"`} aria-label="Edit details: ${e(item.title)}">Edit details</a>
+                ${actions.canReschedule ? renderTaskDueActions({ actionAttr, prefix: 'today-task-due',
+                  taskKey: item.key, title: item.title, hasDue: true, disabled: actions.edit !== null,
+                  pickAction: 'today-task-reschedule', pickExpanded: actions.edit?.key === item.key && actions.edit.action === 'reschedule' }) : ''}
               </div>` : ''}${actions?.canCloseCommitment && item.commitmentId && !item.unreachable && source?.writeCapable ? `<div class="today-commitment-actions">
                 <button type="button" ${actionAttr}="today-commitment-fulfill" data-today-task="${e(item.key)}" aria-label="Done: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Done</button>
                 <button type="button" ${actionAttr}="today-commitment-cancel" data-today-task="${e(item.key)}" aria-label="Cancel: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Cancel</button>

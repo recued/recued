@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { getCalendarEvent, updateCalendarEvent } from './calendar/local-event-handler.js';
 
 import { absentFromAll, applySpellingCorrections, mergeSpellingChecks, type FtsWordCheck } from '@recued/fts';
 
@@ -1085,6 +1086,8 @@ export type CollectionMethods =
   | 'collection.calendar.enrollBasic'
   | 'collection.calendar.updateCredentials'
   | 'collection.calendar.list'
+  | 'collection.calendar.event.get'
+  | 'collection.calendar.event.update'
   | 'collection.calendar.update'
   | 'collection.calendar.delete'
   | 'collection.calendar.resync'
@@ -1152,6 +1155,14 @@ export const makeCollectionHandlers = (
   deps: CollectionHandlerDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, CollectionMethods, WsClient> | undefined => {
   if (!deps) return undefined;
+  const calendarEventDeps = (client: WsClient) => {
+    if (!client.instance_id) throw new RpcError('unauthorized', 'Calendar event editing requires a registered paired client.', 401);
+    return {
+      instances: requireCalendarEnroll(deps).instances,
+      ...(deps.now ? { now: deps.now } : {}),
+      getCollection: (slug: string) => deps.registry.get('calendar', slug) as CalendarCollection | undefined,
+    };
+  };
   return {
     methods: [
       'collection.list',
@@ -1188,6 +1199,8 @@ export const makeCollectionHandlers = (
       'collection.calendar.enrollBasic',
       'collection.calendar.updateCredentials',
       'collection.calendar.list',
+      'collection.calendar.event.get',
+      'collection.calendar.event.update',
       'collection.calendar.update',
       'collection.calendar.delete',
       'collection.calendar.resync',
@@ -1267,6 +1280,8 @@ export const makeCollectionHandlers = (
       'collection.calendar.updateCredentials': async (args) => repairCollectionPasswords('calendar', requireCalendarEnroll(deps), args),
       'collection.calendar.list': async () =>
         handleCalendarEnrollList(requireCalendarEnroll(deps)),
+      'collection.calendar.event.get': async (args, client) => getCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.update': async (args, client) => updateCalendarEvent(calendarEventDeps(client), args),
       'collection.calendar.update': async (args) =>
         handleCalendarEnrollUpdate(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollUpdate>[1]),
       'collection.calendar.delete': async (args) =>

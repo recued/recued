@@ -1,12 +1,12 @@
 /**
- * Kitchen route chrome — the visible `[ Recipe | Ingredient pack ]` tab bar
- * shared by the two `#kitchen` authoring surfaces (recipe editor + ingredient-
- * pack builder).
+ * Kitchen route chrome — the visible `Kitchen  [ Recipe | Pack ]` bar shared by the
+ * Kitchen home and its two authoring surfaces (recipe editor + pack builder). The
+ * "Kitchen" label links home, where work in progress is listed (D-333).
  *
  * The bootstrap's kitchen branch mounts this FIRST (into the shell content
  * slot), then mounts the active surface into the returned `contentRoot`, so the
  * tab bar persists across the editor's loading / not-found / error states and
- * lets the user switch surfaces (or step back to the `#recipes` library).
+ * lets the user switch surfaces or step back to the Kitchen home.
  *
  * Mirrors the reception / connections route-tab pattern: a `nav` of `<a>` links
  * whose href is a shell deep link; a click changes the hash and the shell
@@ -29,10 +29,10 @@ export type KitchenSurface = 'recipe' | 'pack';
 
 export interface MountKitchenChromeOptions {
   root: HTMLElement;
-  /** Which surface is currently mounted — drives the active tab. */
-  active: KitchenSurface;
-  /** The open recipe id (recipe surface only). The Recipe tab points back to
-   *  it; absent on the pack surface, where the Recipe tab links to `#recipes`. */
+  /** Which surface is currently mounted — drives the active tab. `home` marks no tab. */
+  active: KitchenSurface | 'home';
+  /** The open recipe id (recipe surface only). The Recipe tab points back to it;
+   *  elsewhere the Recipe tab starts a new recipe (D-333). */
   recipeId?: string;
   /** Exact self-link for a contextual new-recipe route whose seed needs more
    *  than a recipe id (for example `#kitchen/new/form-response/<id>`). */
@@ -45,12 +45,14 @@ export interface KitchenChromeMount {
   contentRoot: HTMLElement;
   /** Keep the active Recipe tab canonical when a contextual new draft saves. */
   setRecipeHref(href: string): void;
+  /** D-333 — a work item learns its kind once it loads; `href` is then the active tab's self-link. */
+  setActive(active: KitchenSurface | 'home', href?: string): void;
   dispose(): void;
 }
 
 const KITCHEN_TABS: ReadonlyArray<{ id: KitchenSurface; label: string }> = [
   { id: 'recipe', label: 'Recipe' },
-  { id: 'pack', label: 'Ingredient pack' },
+  { id: 'pack', label: 'Pack' },
 ];
 
 const KITCHEN_ROUTE_STYLES = `
@@ -84,6 +86,11 @@ const KITCHEN_ROUTE_STYLES = `
   font-weight: 720;
   letter-spacing: -0.01em;
   white-space: nowrap;
+  text-decoration: none;
+}
+[${KITCHEN_ROUTE_LABEL_ATTR}]:hover:not([aria-current]),
+[${KITCHEN_ROUTE_LABEL_ATTR}]:focus-visible {
+  text-decoration: underline;
 }
 [${KITCHEN_ROUTE_TABS_ATTR}] .kitchen-route-tab {
   appearance: none;
@@ -136,7 +143,7 @@ const KITCHEN_ROUTE_STYLES = `
  *  tested directly. */
 export const kitchenTabHref = (
   tab: KitchenSurface,
-  active: KitchenSurface,
+  active: KitchenSurface | 'home',
   recipeId: string | undefined,
   recipeHref?: string,
 ): string => {
@@ -145,7 +152,8 @@ export const kitchenTabHref = (
   if (active === 'recipe' && recipeId !== undefined) {
     return serializeShellRoute('kitchen', 'recipe', recipeId);
   }
-  return serializeShellRoute('recipes');
+  // D-333 — with no recipe open, the tab starts one; the library is one step away from home.
+  return serializeShellRoute('kitchen', 'new', 'recipe');
 };
 
 export const mountKitchenChrome = (
@@ -171,12 +179,16 @@ export const mountKitchenChrome = (
   tabBar.setAttribute(KITCHEN_ROUTE_TABS_ATTR, '');
   tabBar.setAttribute('aria-label', 'Kitchen pages');
 
-  const kitchenLabel = doc.createElement('span');
+  // D-333 — the label is the way home, where work in progress is listed.
+  const kitchenLabel = doc.createElement('a');
   kitchenLabel.setAttribute(KITCHEN_ROUTE_LABEL_ATTR, '');
+  kitchenLabel.setAttribute('href', serializeShellRoute('kitchen'));
+  if (opts.active === 'home') kitchenLabel.setAttribute('aria-current', 'page');
   kitchenLabel.textContent = 'Kitchen';
   tabBar.appendChild(kitchenLabel);
 
   let recipeTab: HTMLAnchorElement | null = null;
+  const tabLinks = new Map<KitchenSurface, HTMLAnchorElement>();
   for (const tab of KITCHEN_TABS) {
     const isActive = tab.id === opts.active;
     const link = doc.createElement('a');
@@ -189,6 +201,7 @@ export const mountKitchenChrome = (
     link.textContent = tab.label;
     if (isActive) link.setAttribute('aria-current', 'page');
     if (tab.id === 'recipe') recipeTab = link;
+    tabLinks.set(tab.id, link);
     tabBar.appendChild(link);
   }
   host.appendChild(tabBar);
@@ -205,6 +218,17 @@ export const mountKitchenChrome = (
     setRecipeHref(href: string): void {
       if (disposed || recipeTab === null) return;
       recipeTab.setAttribute('href', href);
+    },
+    setActive(active: KitchenSurface | 'home', href?: string): void {
+      if (disposed) return;
+      if (active === 'home') kitchenLabel.setAttribute('aria-current', 'page');
+      else kitchenLabel.removeAttribute('aria-current');
+      for (const [id, link] of tabLinks) {
+        link.className = 'kitchen-route-tab' + (id === active ? ' kitchen-route-tab--active' : '');
+        if (id !== active) { link.removeAttribute('aria-current'); continue; }
+        link.setAttribute('aria-current', 'page');
+        if (href !== undefined) link.setAttribute('href', href);
+      }
     },
     dispose(): void {
       if (disposed) return;

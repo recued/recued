@@ -23,6 +23,7 @@
  *  different op must change the list here: `d-327-tool-needs.test.ts` compares it
  *  with the handlers' own constants. */
 
+import type { ApprovalValueLabels } from './ask-detail-label.js';
 import type { Tier1ToolName } from './chat.js';
 import { COLLECTION_GRANT_PREFIX, PRIMITIVE_GRANT_PREFIX } from './grant-entry.js';
 import type { WorkEntityKind } from './work-entities.js';
@@ -232,6 +233,11 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.storage.ics.read': t('Read a calendar file', 'Reads a calendar file, like an emailed invitation, and saves nothing.'),
   'core.storage.data-file-read': t('Read a received file', 'Reads a file your server received, like an email attachment.'),
 
+  // ── Kitchen
+  'core.kitchen.draft.import': t('Import source into Kitchen', 'Adds recipe or pack source as a draft for you to review. It does not install or run it.'),
+  'core.kitchen.draft.list': t('List Kitchen drafts', 'Lists drafts created through this connection without returning their source.'),
+  'core.kitchen.draft.get': t('Read Kitchen draft source', 'Reads source from a draft created through this connection.'),
+  'core.kitchen.draft.update': t('Update Kitchen draft source', 'Saves edited source to a draft created through this connection, checking its revision. It does not install or run it.'),
   // ── Schedules
   'core.schedule.recipe': t('Schedule recipes', 'Lets your own chat set a recipe to run later or on a timer. An AI app cannot schedule recipes.'),
 
@@ -302,6 +308,42 @@ export const tier1CallTitle = (tool: string, args: unknown): string | undefined 
   if (words !== undefined && tool === 'work.create') return `Add ${words}`;
   if (words !== undefined && tool === 'work.update') return call.done === true ? 'Tick a task off' : `Change ${words}`;
   return TIER1_TOOL_GUIDE[tool as Tier1ToolName].title;
+};
+
+/** What a work tool's call names by its `id`, in the owner's words. */
+const WORK_KIND_NOUNS: Readonly<Partial<Record<WorkEntityKind, string>>> = {
+  task: 'Task', note: 'Note', commitment: 'Commitment', project: 'Project', asset: 'Thing',
+};
+/** D-329 — one call of an AI tool's arguments as an approval lists them: the record it
+ *  changes named as what it is ("Thing: Family car", not "id: Family car"), and its `kind`
+ *  left to the title, which already says it ("Change a thing you own"). The names recorded
+ *  for its values (`value_labels`) move with their keys. Display only: the call itself is
+ *  what runs, and a key the new name would overwrite keeps its own name. */
+export const tier1CallDetails = (
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+  labels?: ApprovalValueLabels,
+): { args: Record<string, unknown>; labels?: ApprovalValueLabels } => {
+  // A key's name on the approval, or `null` for a key the title already says.
+  const shownAs: Record<string, string | null> = {};
+  const noun = typeof args.kind === 'string' && Object.hasOwn(WORK_KIND_NOUNS, args.kind)
+    ? WORK_KIND_NOUNS[args.kind as WorkEntityKind] : undefined;
+  if (noun !== undefined && (tool === 'work.create' || tool === 'work.update')) {
+    Object.assign(shownAs, { kind: null, id: noun, belongs_to: 'Part of' });
+  }
+  if (tool === 'calendar.update') shownAs.source_id = 'Event';
+  // Read off a stored hold, so a malformed value names nothing (`approvalValueLabel`).
+  const known = labels !== null && typeof labels === 'object' && !Array.isArray(labels) ? labels : {};
+  const shown: Record<string, unknown> = {};
+  const named: Record<string, Readonly<Record<string, string>>> = {};
+  for (const [key, value] of Object.entries(args)) {
+    const renamed = Object.hasOwn(shownAs, key) ? shownAs[key] as string | null : key;
+    if (renamed === null) continue;
+    const as = renamed !== key && Object.hasOwn(args, renamed) ? key : renamed;
+    shown[as] = value;
+    if (Object.hasOwn(known, key)) named[as] = known[key]!;
+  }
+  return { args: shown, ...(Object.keys(named).length > 0 ? { labels: named } : {}) };
 };
 
 /** Every AI tool: what it does, and the other switches it checks first. An AI app,

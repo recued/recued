@@ -286,6 +286,7 @@ const emptyDraftStore = (): IngredientDraftRpcDeps['draftStore'] => ({
   list: () => [],
   delete: () => false,
   count: () => 0,
+  openForPack: () => ({ error: 'limit_reached' }),
 });
 
 describe('createServerHandlerSet rpc-deps forwarding', () => {

@@ -2571,6 +2571,21 @@ export const validatePack = (
       });
     }
   }
+  // Structure-only callers still defer recipe semantics to install. Authoring
+  // callers that supply the canonical recipe validator also check inline bodies.
+  const recipeValidator = opts.recipeValidator;
+  if (recipeValidator !== undefined && isPlainObject(pack)) {
+    for (const field of ['recipes', 'contents'] as const) {
+      const rows = pack[field];
+      if (!Array.isArray(rows)) continue;
+      rows.forEach((row, idx) => {
+        if (!isPlainObject(row) || !('recipe' in row) || (field === 'contents' && row.type !== 'recipe')) return;
+        issues.push(...recipeValidator(row.recipe).issues.map(issue => ({
+          ...issue, path: `${field}[${idx}].recipe${issue.path ? `.${issue.path}` : ''}`,
+        })));
+      });
+    }
+  }
   return {
     valid: !issues.some((issue) => issue.severity === 'error'),
     issues,

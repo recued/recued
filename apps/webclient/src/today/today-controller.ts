@@ -20,6 +20,7 @@
  */
 import type { SituationDismissal, WorkEntity, YoursCommand, YoursCommandResult } from '@recued/contracts';
 import { timedDueMs } from '@recued/contracts';
+import { formatTimestampForInput, taskDueShortcutDue, type TaskDueShortcut } from '@recued/ui-shared';
 import {
   loadToday, replaceTodayTask, situationRefHref, writableTodayTask,
   type TodaySnapshot, type TodayTaskEdit,
@@ -120,6 +121,7 @@ export interface TodayController {
   /** Drain the queue after the paint; true when one was pending. */
   takeQueuedLiveRefresh: () => boolean;
   openEditor: (taskKey: string, action: 'complete' | 'reschedule') => void;
+  applyDueShortcut: (taskKey: string, shortcut: TaskDueShortcut) => Promise<void>;
   setEditValue: (value: string) => void;
   closeEditor: () => void;
   submit: () => Promise<void>;
@@ -195,7 +197,7 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
     if (current.action === 'complete'
       ? !host.callers.taskMarkDoneCaller : !host.callers.workEntityUpsertCaller) return;
     const picked = new Date(current.value).getTime();
-    if (current.action === 'reschedule' && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(current.value)
+    if (current.action === 'reschedule' && !current.clearDue && current.dueOverride === undefined && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(current.value)
       || !Number.isFinite(picked) || toDatetimeLocal(picked) !== current.value)) {
       edit = { ...current, error: 'Pick a valid due date and time in your local time zone.' };
       host.render(); host.focusTask(dueSelector); return;
@@ -205,9 +207,9 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
     // which would make it overdue from the day's first minute. Any other pick is
     // a time; `timedDueMs` keeps one that lands on 00:00 UTC from reading as a day.
     const [year, month, day] = current.value.slice(0, 10).split('-').map(Number) as [number, number, number];
-    const due = current.allDay === true && current.value.endsWith('T00:00')
+    const due = current.clearDue ? undefined : current.dueOverride ?? (current.allDay === true && current.value.endsWith('T00:00')
       ? Date.UTC(year, month - 1, day)
-      : timedDueMs(picked);
+      : timedDueMs(picked));
     const mine = ++sequence;
     edit = { ...current, busy: true, error: null };
     host.render();
@@ -222,13 +224,17 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
         ? sources.find((entry) => entry.id === (entity as { source_id?: string }).source_id)
         : undefined;
       if (!entity || entity._kind !== 'task' || entity.deleted_at != null
-        || entity.sync_state !== 'live' || source?.top_tier_kind !== 'task'
+        || entity.id !== current.id || entity.sync_state !== 'live' || source?.top_tier_kind !== 'task'
         || !source.write_capable || source.sync_posture === 'read_through') {
         throw new Error('This task cannot be changed here now. Refresh Today and check its source.');
       }
+      if (entity.pending_write) {
+        throw new Error('This task has a change waiting for its source. Refresh Today to check before trying again.');
+      }
       const result = current.action === 'complete'
         ? await host.callers.taskMarkDoneCaller!({ id: current.id, done: true })
-        : await host.callers.workEntityUpsertCaller!({ kind: 'task', id: current.id, due_at: due });
+        : await host.callers.workEntityUpsertCaller!({ kind: 'task', id: current.id,
+          ...(current.clearDue ? { clear_due_at: true } : { due_at: due! }) });
       if (host.isDisposed() || mine !== sequence) return;
       if ((result.entity as { pending_write?: unknown }).pending_write) {
         throw new Error('Your change is saved in Recued, but the source has not confirmed it yet. Refresh Today to check before trying again.');
@@ -242,7 +248,7 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       const carryFocus = host.ownsFocus();
       if (snapshot) snapshot = replaceTodayTask(snapshot, done);
       edit = null;
-      notice = `${current.action === 'complete' ? 'Completed' : 'Rescheduled'} “${current.title}”.`; undoDismissal = null;
+      notice = `${current.action === 'complete' ? 'Completed' : current.clearDue ? 'Cleared the due date for' : 'Rescheduled'} “${current.title}”.`; undoDismissal = null;
       // Retire any older read before it can restore the pre-write row. Do not
       // hold a successful task change hostage to an unrelated calendar read.
       host.refreshActive();
@@ -255,6 +261,35 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       host.render();
       if (carryFocus) host.focusTask('[data-today-task-error]');
     }
+  };
+
+  const openEditor = (taskKey: string, action: 'complete' | 'reschedule', shortcut?: TaskDueShortcut): boolean => {
+    if (edit?.busy || closingCommitment || !host.isActive()) return false;
+    if (edit) { host.focusTask(`${dueSelector}, [data-today-task-error]`); return false; }
+    const item = writableTodayTask(snapshot, taskKey);
+    if (!item?.taskId || !host.callers.workEntityGetCaller
+      || !host.callers.workEntitySourceListCaller) return false;
+    if (action === 'complete'
+      ? !host.callers.taskMarkDoneCaller : !host.callers.workEntityUpsertCaller) return false;
+    sequence += 1;
+    notice = null; undoDismissal = null;
+    edit = { key: item.key, id: item.taskId, title: item.title, action,
+      value: toDatetimeLocal(item.when),
+      ...(item.allDay === true ? { allDay: true } : {}),
+      busy: false, error: null };
+    if (shortcut !== undefined) {
+      try {
+        const due = taskDueShortcutDue(shortcut, item.allDay ? undefined : item.when, host.now());
+        edit = { ...edit, value: due === undefined ? '' : formatTimestampForInput(due),
+          ...(due === undefined ? { clearDue: true } : { dueOverride: due }) };
+      } catch (error) {
+        edit = { ...edit, error: host.errMessage(error) };
+        host.render(); host.focusTask('[data-today-task-error]');
+        return false;
+      }
+    } else if (action === 'complete') void submit();
+    else { host.render(); host.focusTask(dueSelector); }
+    return true;
   };
 
   return {
@@ -354,24 +389,19 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       liveRefreshQueued = false;
       return true;
     },
-    openEditor: (taskKey, action) => {
-      if (edit?.busy || closingCommitment || !host.isActive()) return;
-      if (edit) { host.focusTask(`${dueSelector}, [data-today-task-error]`); return; }
+    openEditor,
+    applyDueShortcut: async (taskKey, shortcut) => {
+      if (edit || closingCommitment || !host.isActive()) return;
       const item = writableTodayTask(snapshot, taskKey);
-      if (!item?.taskId || !host.callers.workEntityGetCaller
-        || !host.callers.workEntitySourceListCaller) return;
-      if (action === 'complete'
-        ? !host.callers.taskMarkDoneCaller : !host.callers.workEntityUpsertCaller) return;
-      sequence += 1;
-      notice = null; undoDismissal = null;
-      edit = { key: item.key, id: item.taskId, title: item.title, action,
-        value: toDatetimeLocal(item.when),
-        ...(item.allDay === true ? { allDay: true } : {}),
-        busy: false, error: null };
-      if (action === 'complete') void submit();
-      else { host.render(); host.focusTask(dueSelector); }
+      if (!item?.taskId || !host.callers.workEntityUpsertCaller) return;
+      if (openEditor(taskKey, 'reschedule', shortcut)) await submit();
     },
-    setEditValue: (value) => { if (edit && !edit.busy) edit = { ...edit, value }; },
+    setEditValue: (value) => {
+      if (edit && !edit.busy) {
+        const { dueOverride: _due, clearDue: _clear, ...current } = edit;
+        edit = { ...current, value };
+      }
+    },
     closeEditor,
     submit,
     reset: () => { edit = null; notice = null; error = null; undoDismissal = null; sequence += 1; },

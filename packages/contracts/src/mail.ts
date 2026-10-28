@@ -9,6 +9,8 @@
  *  and don't need to live here — they're referenced only inside
  *  `backend/server/`. */
 
+import { parseAddress, splitAddressList } from './contact.js';
+
 /** D-145 PA7 — `mail_message` canonical-schema subject upper bound.
  *  Per spec § A.5.1 (`subject: text (required, max 300)`). RFC 5322
  *  doesn't pin a hard limit; 300 chars is generous for typical subjects
@@ -54,6 +56,55 @@ export const MAIL_MESSAGE_REF_SOURCE = 'source.mail';
  *  privacy-preserving for marketing-style fan-outs that mail to
  *  large user lists. Spec § P1.7 + § Constants. */
 export const MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD = 10;
+
+/** The longest recipient a send takes: one address is at most 254 characters
+ *  (RFC 5321's 256-octet path less its angle brackets), and the rest leaves
+ *  room for a display name (`Ann <ann@example.com>`).
+ *
+ *  ⛔ IT IS ALSO A DENIAL-OF-SERVICE BOUND, SO IT IS CHECKED BEFORE ANY PARSER
+ *  SEES THE STRING. Measured 2026-10-27: nodemailer 9's addressparser
+ *  (GHSA-v53p-9fqp-m79j) took 2.6 s over one 60,000-character recipient on
+ *  Recued's SMTP send, and the mail collection's own `extractAddress` 147 ms
+ *  over 20,000 `<`, each four times as long per doubling, and either one
+ *  blocks the whole server while it runs. */
+export const MAIL_RECIPIENT_MAX_LENGTH = 320;
+
+const MAIL_RECIPIENT_CONTROL_CHARACTER = /[\x00-\x1f\x7f]/;
+
+/** Why a recipient string is unsafe to hand to a parser or a header, or `null`.
+ *  Every send checks this, whatever path it came by: longer than
+ *  `MAIL_RECIPIENT_MAX_LENGTH`, or holding a control character (the SMTP and
+ *  Gmail paths write recipients into the message headers as given, so a line
+ *  break is a header of its own). */
+export const mailRecipientUnsafeReason = (recipient: string): string | null => {
+  if (recipient.length > MAIL_RECIPIENT_MAX_LENGTH) {
+    return `is longer than ${MAIL_RECIPIENT_MAX_LENGTH} characters`;
+  }
+  if (MAIL_RECIPIENT_CONTROL_CHARACTER.test(recipient)) {
+    return 'contains a line break or another control character';
+  }
+  return null;
+};
+
+/** Why a recipient string is not one mail recipient, or `null`: it must be
+ *  safe (`mailRecipientUnsafeReason`), then one address, bare
+ *  (`ann@example.com`), with a display name (`Ann <ann@example.com>`) or with
+ *  a comment (`ann@example.com (Ann)`).
+ *
+ *  ⚠ A LIST IN ONE STRING IS REFUSED. Each `to` / `cc` / `bcc` entry is one
+ *  recipient to the self-send guard and the audit row, while nodemailer splits
+ *  `Ann <a@x.com>, Bob <b@y.com>` into two, so an entry holding a list would
+ *  deliver to an address neither check read. The same goes for whitespace
+ *  inside the address itself (`bob smith@x.com`). */
+export const mailRecipientInvalidReason = (recipient: string): string | null => {
+  const unsafe = mailRecipientUnsafeReason(recipient);
+  if (unsafe !== null) return unsafe;
+  if (splitAddressList(recipient).length > 1) {
+    return 'holds more than one address; give each recipient its own entry';
+  }
+  const parsed = parseAddress(recipient);
+  return parsed === null || /\s/.test(parsed.email) ? 'is not an email address' : null;
+};
 
 /** Optional caller-pinned identity carried through an outbound message and
  * indexed again when that message returns through provider source truth. The

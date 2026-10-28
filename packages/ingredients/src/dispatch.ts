@@ -39,7 +39,7 @@
  *  Tests pass a hand-built `Record<IngredientKind, Adapter>` directly. */
 
 import type { IngredientKind, IngredientManifest, StepMeta } from '@recued/contracts';
-import { isKernelManifest, isLockedInputKey } from '@recued/contracts';
+import { copyResolvedInputFields, isKernelManifest, isLockedInputKey } from '@recued/contracts';
 import { hashStepPiiFields, restoreHashTokens } from '@recued/transforms';
 import { IngredientError, type IngredientExecutor, type ManifestLoader, type ResolvedCall } from './types.js';
 import {
@@ -69,6 +69,7 @@ const filterInputKeys = (
     if (opts.stripLocked && isLockedInputKey(key.trim().toLowerCase())) continue;
     out[key] = value;
   }
+  copyResolvedInputFields(stepInput, out);
   return out;
 };
 
@@ -90,10 +91,15 @@ export const mergeManifestStepInput = (
   manifestInput: Record<string, unknown> | undefined,
   stepInput: Record<string, unknown>,
   opts: { trustedSurfaceDispatch: boolean },
-): Record<string, unknown> => ({
-  ...filterInputKeys(manifestInput ?? {}, { stripLocked: false }),
-  ...filterInputKeys(stepInput, { stripLocked: !opts.trustedSurfaceDispatch }),
-});
+): Record<string, unknown> => {
+  const overrides = filterInputKeys(stepInput, { stripLocked: !opts.trustedSurfaceDispatch });
+  const merged = {
+    ...filterInputKeys(manifestInput ?? {}, { stripLocked: false }),
+    ...overrides,
+  };
+  copyResolvedInputFields(overrides, merged);
+  return merged;
+};
 
 /** ⛔⛔ A manifest's `null` is a PLACEHOLDER, not a value.
  *

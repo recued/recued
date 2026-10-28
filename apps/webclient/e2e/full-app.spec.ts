@@ -33,9 +33,9 @@ import {
  */
 
 // Every IA route + its synchronously-stamped route-root marker (the same markers
-// webclient-bootstrap.test.ts asserts). Kitchen is reached via a deep link
-// (`#kitchen/pack`, the pack builder the bare `#kitchen` canonicalizes into);
-// the rest are their bare surface hash.
+// webclient-bootstrap.test.ts asserts). Kitchen is listed twice: its bare hash is
+// the Kitchen home (D-333) and `#kitchen/pack` is the pack builder; the rest are
+// their bare surface hash.
 const ROUTES: ReadonlyArray<{ hash: string; route: string; marker: string }> = [
   { hash: '#chat', route: 'chat', marker: 'data-recued-chat-route' },
   { hash: '#data', route: 'data', marker: 'data-recued-data-route' },
@@ -48,6 +48,7 @@ const ROUTES: ReadonlyArray<{ hash: string; route: string; marker: string }> = [
   { hash: '#approvals', route: 'approvals', marker: 'data-recued-approvals-route' },
   { hash: '#logs', route: 'logs', marker: 'data-recued-logs-route' },
   { hash: '#settings', route: 'settings', marker: 'data-recued-settings-route' },
+  { hash: '#kitchen', route: 'kitchen', marker: 'data-recued-kitchen-route' },
   { hash: '#kitchen/pack', route: 'kitchen', marker: 'data-recued-kitchen-route' },
 ];
 

@@ -263,6 +263,9 @@ export const createSchedule = (
     config_overlay?: unknown;
     missed_policy?: unknown;
   },
+  /** D-329 — `check`: make every check, then stop before a dish is made or the schedule
+   *  stored. A chat's `recipe.schedule` asks it before the owner is asked. */
+  options: { readonly check?: boolean } = {},
 ): { schedule: Schedule; webhook_doors?: DishWebhookDoorChange[] } => {
   const recipe_id = typeof body.recipe_id === 'string' ? body.recipe_id : null;
   const publisher_id = typeof body.publisher_id === 'string' ? body.publisher_id : 'local';
@@ -390,6 +393,7 @@ export const createSchedule = (
     }
   }
 
+  if (options.check) return { schedule };
   // Post-admission, so a GATE rejection never makes a dish.
   let webhook_doors: DishWebhookDoorChange[] | undefined;
   if (named_dish_id === undefined && deps.mainDish !== undefined) {

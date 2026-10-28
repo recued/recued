@@ -3,6 +3,11 @@ import { expect, test, type Page } from '@playwright/test';
 import { openSavedViewList } from './helpers/saved-data-views.js';
 
 const URL_BASE = `${HARNESS_ORIGIN}/full-app-harness.html`;
+const pageErrors: string[] = [];
+test.beforeEach(({ page }) => {
+  pageErrors.length = 0; page.on('pageerror', error => pageErrors.push(error.message));
+});
+test.afterEach(() => { expect(pageErrors, 'uncaught page errors').toEqual([]); });
 const tools = (page: Page) => page.locator('[data-saved-data-views]');
 const query = (page: Page) => page.locator('[data-recued-data-contact-search]');
 const ready = async (page: Page): Promise<void> => {
@@ -24,6 +29,146 @@ const saveView = async (page: Page, name: string): Promise<void> => {
   await tools(page).getByRole('button', { name: 'Save view', exact: true }).click();
   await expect(tools(page).locator('[data-view-notice]')).toContainText(`Saved “${name}”`);
 };
+
+const openManagedViews = async (page: Page) => {
+  const dialogs: string[] = [], popups: string[] = [];
+  page.on('dialog', dialog => { dialogs.push(dialog.type()); void dialog.dismiss(); });
+  page.on('popup', popup => { popups.push(popup.url()); void popup.close(); });
+  await page.addInitScript(() => {
+    sessionStorage.setItem('recued-test-saved-data-views', JSON.stringify(['First', 'Chosen', 'Last'].map((name, index) => ({
+      id: `view_00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, name,
+      definition: { tab: 'contact', query: name }, revision: 1, created_at: 1, updated_at: 1,
+    }))));
+  });
+  await page.goto(`${URL_BASE}?data=contacts#views`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(tools(page).locator('details [data-view-action="open"]')).toHaveCount(3);
+  return { dialogs, popups };
+};
+
+test('Saved views returns Cancel and Escape to their exact row without dialogs', async ({ page }) => {
+  const f = await openManagedViews(page);
+  for (const [action, escape] of [['rename', true], ['rename', false], ['delete', true], ['delete', false]] as const) {
+    const origin = tools(page).locator(`[data-view-action="${action}"][data-view-id="view_00000000-0000-4000-8000-000000000002"]`);
+    await origin.focus(); await origin.press('Enter');
+    if (action === 'rename') await tools(page).getByLabel('View name', { exact: true }).fill('Unfinished rename');
+    if (escape) await page.keyboard.press('Escape');
+    else {
+      const cancel = tools(page).getByRole('button', { name: 'Cancel', exact: true });
+      await cancel.focus(); await cancel.press('Enter');
+    }
+    await expect(origin).toBeFocused(); await expect(origin).toBeInViewport();
+    await expect(tools(page).locator('[data-view-editor], .saved-data-confirm')).toHaveCount(0);
+  }
+  expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.rename'))).toBe(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.delete'))).toBe(0);
+  expect(f.dialogs).toEqual([]); expect(f.popups).toEqual([]);
+  await expect(page.getByRole('dialog')).toHaveCount(0); await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('Saved views keeps Refresh focused and single-flight until its read settles', async ({ page }) => {
+  const f = await openManagedViews(page);
+  await page.evaluate(() => window.__app.holdRpcResponses?.('data_views.list'));
+  const before = await page.evaluate(() => window.__app.rpcCallCount('data_views.list'));
+  const refresh = tools(page).locator('[data-view-action="refresh"]');
+  await refresh.focus(); await refresh.press('Enter');
+  await expect(refresh).toHaveAttribute('aria-disabled', 'true'); await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  await expect(refresh).not.toHaveAttribute('disabled'); await expect(refresh).toBeFocused();
+  await refresh.dispatchEvent('click'); await refresh.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('data_views.list'))).toBe(before + 1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('data_views.list'))).toBe(1);
+  await expect(refresh).not.toHaveAttribute('aria-busy'); await expect(refresh).toBeFocused();
+  expect(f.dialogs).toEqual([]); expect(f.popups).toEqual([]);
+  await expect(page.getByRole('dialog')).toHaveCount(0); await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('Saved views uses a nearby row or list landmark when the edited view disappears', async ({ page }) => {
+  const f = await openManagedViews(page);
+  const rename = tools(page).getByRole('button', { name: 'Rename Chosen', exact: true });
+  await rename.focus(); await rename.press('Enter');
+  await page.evaluate(() => {
+    const key = 'recued-test-saved-data-views';
+    const views = JSON.parse(sessionStorage.getItem(key)!);
+    sessionStorage.setItem(key, JSON.stringify(views.filter((view: { name: string }) => view.name !== 'Chosen')));
+  });
+  await tools(page).locator('[data-view-action="refresh"]').dispatchEvent('click');
+  await expect(tools(page).getByRole('link', { name: 'Last', exact: true })).toBeFocused();
+  await tools(page).getByRole('button', { name: 'Rename Last', exact: true }).click();
+  await page.evaluate(() => sessionStorage.setItem('recued-test-saved-data-views', '[]'));
+  await tools(page).locator('[data-view-action="refresh"]').dispatchEvent('click');
+  await expect(tools(page).locator('details > summary')).toBeFocused();
+  await expect(tools(page).locator('[data-view-editor]')).toHaveCount(0);
+  expect(f.dialogs).toEqual([]); expect(f.popups).toEqual([]);
+});
+
+test('Saved views keeps a failed Refresh focused for a quiet retry', async ({ page }) => {
+  const f = await openManagedViews(page);
+  await page.evaluate(() => {
+    let fail = true;
+    window.__connectionsFixture = async method => {
+      if (method === 'data_views.list' && fail) {
+        fail = false; return { error: { code: 'unavailable', message: 'Saved views are temporarily unavailable.' } };
+      }
+      return undefined;
+    };
+  });
+  const refresh = tools(page).locator('[data-view-action="refresh"]');
+  await refresh.focus(); await refresh.press('Enter');
+  await expect(tools(page).getByRole('alert')).toContainText('temporarily unavailable'); await expect(refresh).toBeFocused();
+  await refresh.press('Enter'); await expect(tools(page).getByRole('alert')).toHaveCount(0); await expect(refresh).toBeFocused();
+  await expect(tools(page).locator('details [data-view-action="open"]')).toHaveCount(3);
+  expect(f.dialogs).toEqual([]); expect(f.popups).toEqual([]); await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('a completed Saved views refresh keeps a later disclosure focus and collapsed list', async ({ page }) => {
+  const f = await openManagedViews(page);
+  await page.evaluate(() => window.__app.holdRpcResponses?.('data_views.list'));
+  const refresh = tools(page).locator('[data-view-action="refresh"]');
+  await refresh.focus(); await refresh.press('Enter');
+  await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  const summary = tools(page).locator('details > summary'); await summary.focus(); await summary.press('Space');
+  await expect(tools(page).locator('details')).not.toHaveAttribute('open');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('data_views.list'))).toBe(1);
+  await expect(refresh).not.toHaveAttribute('aria-busy'); await expect(summary).toBeFocused();
+  await expect(tools(page).locator('details')).not.toHaveAttribute('open');
+  expect(f.dialogs).toEqual([]); expect(f.popups).toEqual([]);
+});
+
+test('a completed Saved views refresh keeps a later rename draft, caret and native Undo', async ({ page }) => {
+  await openManagedViews(page);
+  const before = await page.evaluate(() => window.__app.rpcCallCount('data_views.list'));
+  await page.evaluate(() => window.__app.holdRpcResponses?.('data_views.list'));
+  const refresh = tools(page).locator('[data-view-action="refresh"]');
+  await refresh.focus(); await refresh.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('data_views.list'))).toBe(before + 1);
+  await tools(page).getByRole('button', { name: 'Rename Chosen', exact: true }).click();
+  const name = tools(page).getByLabel('View name', { exact: true }); await name.fill('Keep this new name');
+  await name.press('End'); await name.pressSequentially('!');
+  await name.press('ControlOrMeta+z');
+  const undone = await name.inputValue(); expect(undone).not.toBe('Keep this new name!');
+  await name.press('ControlOrMeta+Shift+z'); await expect(name).toHaveValue('Keep this new name!');
+  await name.evaluate((input: HTMLInputElement) => input.setSelectionRange(5, 9, 'backward'));
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('data_views.list'))).toBe(1);
+  await expect(refresh).not.toHaveAttribute('aria-busy'); await expect(name).toBeFocused(); await expect(name).toHaveValue('Keep this new name!');
+  expect(await name.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd, input.selectionDirection])).toEqual([5, 9, 'backward']);
+  await name.press('ControlOrMeta+z'); await expect(name).toHaveValue(undone);
+  await name.press('ControlOrMeta+Shift+z'); await expect(name).toHaveValue('Keep this new name!');
+});
+
+test('a pending Saved views refresh adds no navigation blocker and cannot reclaim the next page', async ({ page }) => {
+  const f = await openManagedViews(page);
+  const before = await page.evaluate(() => window.__app.rpcCallCount('data_views.list'));
+  await page.evaluate(() => window.__app.holdRpcResponses?.('data_views.list'));
+  const refresh = tools(page).locator('[data-view-action="refresh"]'); await refresh.focus(); await refresh.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('data_views.list'))).toBe(before + 1);
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  const input = page.locator('[data-recued-chat-route-input]'); await input.fill('Keep this question');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('data_views.list'))).toBe(1);
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  await expect(input).toBeFocused(); await expect(input).toHaveValue('Keep this question');
+  await expect(tools(page)).toHaveCount(0); expect(f.dialogs).toEqual([]); expect(f.popups).toEqual([]);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
 
 test('Saved views persist search settings through reload, rename, Back, and deletion', async ({ page }) => {
   const errors: string[] = [];

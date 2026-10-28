@@ -138,6 +138,10 @@ export interface AskCardHandlers {
  *  during a submit (for example after a live queue event) without losing the
  *  exact option that owns progress or its failure message. */
 export interface AskCardOptions {
+  /** Keep this ask's reason editor connected during a repaint. The host must
+   *  retire the card when the reviewed decision changes and reconcile its
+   *  parent without detaching retained cards. */
+  previousCard?: HTMLElement;
   busy?: boolean;
   busyOptionId?: string;
   errorMessage?: string | null;
@@ -464,8 +468,18 @@ const consequenceRisk = (text: string): 'write' | 'admin' | 'destructive' | null
   return null;
 };
 
-/** Render one pending ask as an interactive card. Returns a detached
- *  `HTMLElement` the host appends into its panel. */
+const keepAskChildren = (host: HTMLElement, nodes: readonly Node[]): void => {
+  const keep = new Set(nodes);
+  for (const child of Array.from(host.childNodes)) if (!keep.has(child)) host.removeChild(child);
+  let cursor = host.firstChild;
+  for (const node of nodes) {
+    if (cursor === node) cursor = cursor.nextSibling;
+    else host.insertBefore(node, cursor);
+  }
+};
+
+/** Render one pending ask as an interactive card. A host can retain the card
+ *  for an unchanged review so its reason editor keeps native editing state. */
 export const renderAskCard = (
   doc: Document,
   model: AskCardModel,
@@ -475,6 +489,12 @@ export const renderAskCard = (
   const card = doc.createElement('div');
   card.className = 'rx-ask-card';
   card.setAttribute(ASK_CARD_ATTR, model.ask_id);
+  const previousCard = options.previousCard?.getAttribute(ASK_CARD_ATTR) === model.ask_id
+    ? options.previousCard : undefined;
+  const previousNote = previousCard?.querySelector<HTMLTextAreaElement>(`[${ASK_CARD_NOTE_ATTR}]`);
+  const retained = model.note_prompt !== undefined && previousCard && previousNote?.parentElement
+    && previousNote.getAttribute(ASK_CARD_NOTE_ATTR) === model.ask_id
+    ? { card: previousCard, field: previousNote, wrap: previousNote.parentElement } : undefined;
   const actionSubject = askActionSubject(model);
 
   const projected = projectGeneratedApprovalAsk(model.text);
@@ -685,7 +705,10 @@ export const renderAskCard = (
   // single-line box silently truncates the reader's attention to a phrase.
   const noteWrap = doc.createElement('div');
   noteWrap.className = 'rx-ask-card-note';
-  const noteEl = doc.createElement('textarea');
+  const noteEl = retained?.field ?? doc.createElement('textarea');
+  // Build around the existing field without moving it into the detached
+  // draft card: even a temporary detach clears Chromium's native Undo stack.
+  const noteSlot = retained ? doc.createTextNode('') : noteEl;
   let noteRequiredError: HTMLElement | null = null;
   if (model.note_prompt !== undefined) {
     const required = model.note_prompt === 'required';
@@ -714,7 +737,7 @@ export const renderAskCard = (
     noteRequiredError.textContent = 'A reason is required before you can answer.';
     noteRequiredError.hidden = true;
     noteWrap.appendChild(label);
-    noteWrap.appendChild(noteEl);
+    noteWrap.appendChild(noteSlot);
     noteWrap.appendChild(noteRequiredError);
   } else {
     noteWrap.hidden = true;
@@ -903,6 +926,11 @@ export const renderAskCard = (
   }
   card.appendChild(actions);
   card.appendChild(errorEl);
+  if (retained) {
+    keepAskChildren(retained.wrap, Array.from(noteWrap.childNodes).map(node => node === noteSlot ? noteEl : node));
+    keepAskChildren(retained.card, Array.from(card.childNodes).map(node => node === noteWrap ? retained.wrap : node));
+    return retained.card;
+  }
   return card;
 };
 

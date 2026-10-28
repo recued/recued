@@ -30,7 +30,7 @@ import {
   type RecipeDefinition,
 } from '@recued/contracts';
 
-import { buildChatTier1Handlers, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
+import { buildChatTier1Handlers, buildChatToolRegistryInputs, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { createOpAdmissionGate, type OpAdmissionGate } from '../op-admission-gate.js';
 import { createRecipeStore, type RecipeStore } from '../recipe-store.js';
 import { createScheduleStore, type ScheduleStore } from '../schedule-store.js';
@@ -131,8 +131,11 @@ const tool = (overrides: {
   if (handler === undefined) throw new Error('recipe.schedule is not in the Tier-1 handler table');
   // `null` = a dispatch carrying no source at all (a default parameter would
   // quietly turn `undefined` into the owner).
-  return (args: unknown, source: ExecutionSource | null = ownerChat): Promise<ChatDispatchResult> =>
-    handler(args, ctx(source ?? undefined));
+  return Object.assign(
+    (args: unknown, source: ExecutionSource | null = ownerChat): Promise<ChatDispatchResult> =>
+      handler(args, ctx(source ?? undefined)),
+    { check: (args: unknown) => buildChatToolRegistryInputs(deps).tier1Checks['recipe.schedule']!(args, ctx(ownerChat)) },
+  );
 };
 
 const refusedWith = (reason: string, detail: RegExp) => expect.objectContaining({ ok: false, reason, detail: expect.stringMatching(detail) });
@@ -220,6 +223,27 @@ describe('recipe.schedule — refused arguments schedule nothing', () => {
   it('with no schedule store wired it says scheduling is unavailable', async () => {
     expect(await tool({ scheduler: false })({ recipe_id: 'daily-digest', mode: 'recurring', cron_expression: '0 8 * * *' }))
       .toEqual(refusedWith('execution_error', /unavailable/));
+  });
+});
+
+describe('D-329 — recipe.schedule is checked before the owner is asked', () => {
+  it('refuses what the schedule would refuse, and a check arms nothing and makes no dish', async () => {
+    recipes.save({ ...recipe('parse-a-pdf'), depends_on: ['recued-core.docling'] } as RecipeDefinition, 'recued-core', 'bundled');
+    let dishes = 0;
+    const t = tool({ scheduleDeps: { mainDish: () => { dishes += 1; return { dish: { dish_id: 'd1' } } as never; } } });
+    expect(await t.check({ recipe_id: 'acme/nightly-report', mode: 'recurring', cron_expression: '0 8 * * *' }))
+      .toEqual(refusedWith('execution_error', /Recipe 'acme\/nightly-report' not found/));
+    expect(await t.check({ recipe_id: 'parse-a-pdf', mode: 'recurring', cron_expression: '0 8 * * *' }))
+      .toMatchObject({ ok: false, missing_packs: ['recued-core.docling'] });
+    expect(await t.check({ recipe_id: 'daily-digest', mode: 'recurring', cron_expression: '* * * * *' }))
+      .toEqual(refusedWith('execution_error', /./));
+    expect(await t.check({ recipe_id: 'daily-digest', mode: 'recurring', cron_expression: '0 8 * * *' })).toBeNull();
+    expect(schedules.list()).toEqual([]);
+    expect(dishes).toBe(0);
+    // The run itself arms it, as before.
+    expect(await t({ recipe_id: 'daily-digest', mode: 'recurring', cron_expression: '0 8 * * *' })).toMatchObject({ ok: true });
+    expect(schedules.list()).toHaveLength(1);
+    expect(dishes).toBe(1);
   });
 });
 

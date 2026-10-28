@@ -695,14 +695,15 @@ const mountRoute = (overrides: {
     }));
   const workEntityUpsertCaller =
     overrides.workEntityUpsertCaller
-    ?? vi.fn<DataWorkEntityUpsertCaller>(async (args) => ({
-      entity: taskEntity({
-        title:
-          typeof (args as { title?: unknown }).title === 'string'
-            ? (args as { title: string }).title
-            : 'Call Sam',
-      }),
-    }));
+    ?? vi.fn<DataWorkEntityUpsertCaller>(async (args) => {
+      if (args.kind === 'task') {
+        const { kind: _kind, ...input } = args;
+        const clearDue = 'clear_due_at' in input && input.clear_due_at === true;
+        if ('clear_due_at' in input) delete input.clear_due_at;
+        return { entity: taskEntity({ ...input, ...(clearDue ? { due_at: undefined } : {}) }) };
+      }
+      return { entity: taskEntity() };
+    });
   const workEntityDeleteCaller =
     overrides.workEntityDeleteCaller
     ?? vi.fn<DataWorkEntityDeleteCaller>(async (args) => ({
@@ -3099,7 +3100,8 @@ describe('D-174 P5 Data route', () => {
         ...rig.route.workEntityState().dialog!.values, title: 'Call Sam today', due_at: minute(original),
       });
       await rig.route.confirmWorkEntityDialog();
-      expect(savedDue(rig)).toBe(original);
+      expect(savedDue(rig)).toBeUndefined();
+      expect(rig.route.workEntityState().dialog).toBeNull();
       rig.route.dispose();
     });
 
@@ -3110,17 +3112,20 @@ describe('D-174 P5 Data route', () => {
       const shownBack = new Date(2026, 9, 2, 0, 0).toISOString();
       rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, due_at: shownBack });
       await rig.route.confirmWorkEntityDialog();
-      expect(savedDue(rig)).toBe(day);
+      expect(rig.workEntityUpsertCaller).not.toHaveBeenCalled();
+      expect(rig.route.workEntityState().dialog).toBeNull();
       rig.route.dispose();
     });
 
-    it('a date picked at midnight means that whole day', async () => {
-      const rig = await editTaskWithDue(Date.parse('2026-10-02T17:30:15.000Z'));
-      rig.route.setWorkEntityDialogValues({
-        ...rig.route.workEntityState().dialog!.values, due_at: new Date(2026, 9, 6, 0, 0).toISOString(),
-      });
+    it.each(['whole-day', 'timed'] as const)('a changed %s due retains its meaning at midnight', async (kind) => {
+      const original = kind === 'whole-day' ? Date.UTC(2026, 9, 2) : new Date(2026, 9, 2, 14).getTime();
+      const rig = await editTaskWithDue(original);
+      const picked = new Date(2026, 9, 6, 0, 0);
+      rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, due_at: picked.toISOString() });
       await rig.route.confirmWorkEntityDialog();
-      expect(savedDue(rig)).toBe(Date.UTC(2026, 9, 6));
+      const expected = picked.getTime();
+      expect(savedDue(rig)).toBe(kind === 'whole-day' ? Date.UTC(2026, 9, 6) : expected + (expected % 86_400_000 === 0 ? 1 : 0));
+      expect(rig.route.workEntityState().dialog).toBeNull();
       rig.route.dispose();
     });
 
@@ -3147,7 +3152,7 @@ describe('D-174 P5 Data route', () => {
       const rig = mountRoute({ workEntityGetCaller });
       await rig.route.whenLoaded();
       await rig.route.selectTab('project');
-      await rig.route.openEditWorkEntityDialog('project', 'project-1');
+      await rig.route.openEditWorkEntityDialog('project', 'project-1', 'edit');
       rig.route.setWorkEntityDialogValues({
         ...rig.route.workEntityState().dialog!.values, target_completion_at: '',
       });
@@ -3603,6 +3608,7 @@ describe('D-174 P5 Data route', () => {
       entity: taskEntity({
         id: (args as { id?: string }).id ?? 'task-hubspot',
         source_id: hubspotTaskSource.id,
+        source_extension_blob: (args as { source_extension_blob?: Record<string, unknown> }).source_extension_blob,
         title:
           typeof (args as { title?: unknown }).title === 'string'
             ? (args as { title: string }).title
@@ -3634,7 +3640,6 @@ describe('D-174 P5 Data route', () => {
       expect.objectContaining({
         kind: 'task',
         id: 'task-hubspot',
-        title: 'Sync HubSpot renewal',
         source_extension_blob: {
           hubspot_owner_id: 'owner-123',
           hubspot_priority: 'HIGH',
@@ -3642,6 +3647,8 @@ describe('D-174 P5 Data route', () => {
         },
       }),
     );
+
+    expect(rig.route.workEntityState().dialog).toBeNull();
 
     rig.route.dispose();
   });
@@ -6763,6 +6770,8 @@ describe('D-174 P5 Data route — work-entity edit dialog robustness', () => {
     await rig.route.selectTab('task');
     await rig.route.openEditWorkEntityDialog('task', 'task-1');
 
+    rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, title: 'Saved task' });
+
     const first = rig.route.confirmWorkEntityDialog();
     const duplicate = rig.route.confirmWorkEntityDialog();
 
@@ -7993,7 +8002,7 @@ describe('Data → Search wiring', () => {
     typeInto(rig, 'Castelanos invoice');
     await new Promise((r) => setTimeout(r, 20));
     expect(rig.root.children[0]!.innerHTML)
-      .toContain('No record holds “Castelanos”, so these results match only your other words.');
+      .toContain('No searched mail, calendar or file record holds “Castelanos”, so those collection results match only your other words.');
     rig.route.dispose();
   });
 

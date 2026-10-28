@@ -1,4 +1,12 @@
 /** Paired-owner delivery status; payloads remain in encrypted Chat storage. */
+export const CHAT_MESSENGER_STATUS_BATCH = 500;
+export interface ChatMessengerStatusRequest { session_ids: string[] }
+/** Complete for the requested IDs only. Unavailable reads never erase retained status. */
+export interface ChatMessengerStatusResult {
+  sessions: Array<{ id: string; messenger?: ChatMessengerSessionStatus }>;
+  messenger_status_available: boolean;
+}
+
 export type ChatDeliveryState = 'pending' | 'sending' | 'sent' | 'failed' | 'unknown' | 'skipped';
 /** Receive health is independent of the outbound journal. A configured
  * webhook is not proof that the provider can currently reach this server. */

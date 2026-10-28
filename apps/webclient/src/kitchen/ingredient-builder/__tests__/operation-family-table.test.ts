@@ -6,6 +6,8 @@ import {
   type CompositionDecomposeResult,
   type CompositionIngredient,
   type CompositionReviewView,
+  type IngredientDraftBasePack,
+  type IngredientDraftDeleteResult,
   type IngredientDraftSummary,
   type IngredientInstallResult,
   type IngredientPreviewResult,
@@ -45,6 +47,7 @@ import {
   INGREDIENT_BUILDER_PACK_DEPENDENCIES_ATTR,
   INGREDIENT_BUILDER_PACK_KIND_ATTR,
   INGREDIENT_BUILDER_PACK_SLUG_ATTR,
+  INGREDIENT_BUILDER_BASE_PACK_ATTR,
   INGREDIENT_BUILDER_PACK_TAGS_ATTR,
   INGREDIENT_BUILDER_PUBLISHER_ATTR,
   INGREDIENT_BUILDER_REMOVE_ROW_ATTR,
@@ -84,6 +87,8 @@ interface FakeElement {
   type: string;
   checked: boolean;
   disabled: boolean;
+  /** D-333 — slug and publisher are fixed on changes to an installed pack. */
+  readOnly?: boolean;
   selected: boolean;
   className: string;
   parent: FakeElement | null;
@@ -303,12 +308,15 @@ const makeConn = (options: {
   draftListError?: Error;
   drafts?: IngredientDraftSummary[];
   draftListResults?: Array<IngredientDraftSummary[] | Promise<IngredientDraftSummary[]>>;
-  draftBodies?: Record<string, { title?: string; body: unknown }>;
+  draftBodies?: Record<string, { title?: string; body: unknown; pack?: Record<string, unknown> }>;
   preview?: IngredientPreviewResult | Promise<IngredientPreviewResult>;
   install?: IngredientInstallResult | Promise<IngredientInstallResult>;
+  draftDelete?: Promise<IngredientDraftDeleteResult>;
+  /** D-333 — the installed pack a draft changes, as `ingredient.draft.get` reports it. */
+  draftBasePacks?: Record<string, IngredientDraftBasePack>;
 } = {}) => {
   const calls: Array<{ method: string; payload: unknown }> = [];
-  const savedDrafts = new Map<string, { title?: string; body: unknown }>();
+  const savedDrafts = new Map<string, { title?: string; body: unknown; pack?: Record<string, unknown> }>();
   for (const [draftId, draft] of Object.entries(options.draftBodies ?? {})) {
     savedDrafts.set(draftId, draft);
   }
@@ -336,6 +344,8 @@ const makeConn = (options: {
           body: stored.body,
           created_at: 1,
           updated_at: 2,
+          ...(options.draftBasePacks?.[draftId] !== undefined ? { base_pack: options.draftBasePacks[draftId] } : {}),
+          ...(stored.pack !== undefined ? { pack: stored.pack } : {}),
         },
       };
     }
@@ -375,6 +385,12 @@ const makeConn = (options: {
         },
       };
     }
+    if (method === 'ingredient.draft.delete') {
+      const draftId = (payload as { draft_id: string }).draft_id;
+      const result = await (options.draftDelete ?? { ok: true as const, deleted: savedDrafts.has(draftId) });
+      if (result.ok) savedDrafts.delete(draftId);
+      return result;
+    }
     if (method === 'ingredient.install') {
       return options.install ?? {
         ok: true,
@@ -392,7 +408,8 @@ const makeConn = (options: {
     const draftId = (payload as { draft_id?: string }).draft_id ?? 'draft-1';
     const title = (payload as { title?: string }).title ?? 'HubSpot local';
     const body = (payload as { body: unknown }).body;
-    savedDrafts.set(draftId, { title, body });
+    const pack = (payload as { pack?: Record<string, unknown> }).pack ?? savedDrafts.get(draftId)?.pack;
+    savedDrafts.set(draftId, { title, body, ...(pack !== undefined ? { pack } : {}) });
     return {
       ok: true,
       draft: {
@@ -484,9 +501,9 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     expect(textOf(root)).toContain('Operation families 0 operations');
     expect(textOf(root)).not.toContain('Ungrouped 1 operation');
     expect(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR)?.getAttribute('aria-label'))
-      .toBe('Draft');
+      .toBe('In progress');
     expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.getAttribute('aria-label'))
-      .toBe('Draft title');
+      .toBe('Title');
     const operationsView = findByAttrValue(
       root,
       INGREDIENT_BUILDER_SECTION_VIEW_ATTR,
@@ -1712,7 +1729,7 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     expect(findByAttr(root, INGREDIENT_BUILDER_SLUG_ATTR)?.value).toBe('hubspot-saved');
     expect(findByAttr(root, INGREDIENT_BUILDER_CONNECTION_ATTR)?.value).toBe('hubspot-main');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
-      .toBe('Draft opened and checked');
+      .toBe('Opened and checked');
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.disabled).toBe(false);
     expect(route.buildDraftBody().ingredients[0]!.entities!.Contact!.fields[0]).toMatchObject({
       field_path: 'properties.email',
@@ -2463,11 +2480,19 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
         ],
       },
     });
+    // D-333 — installed, so its draft leaves Kitchen: the receipt stays where Install
+    // was, and focus moves on to the installed pack (across the list refresh's repaint).
+    await tick();
+    expect(calls.filter((call) => call.method === 'ingredient.draft.delete').map((call) => call.payload))
+      .toEqual([{ draft_id: 'draft-1' }]);
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_STATUS_ATTR)?.textContent)
       .toBe('Installed pack hubspot-local-pack');
-    expect(doc.activeElement).toBe(
-      findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR),
-    );
+    expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)).toBeUndefined();
+    expect(textOf(root)).toContain('It is no longer in progress in Kitchen.');
+    const installedPack = findAllByAttr(root, 'href').find((el) => el.textContent === 'Open it in Packs');
+    expect(installedPack?.getAttribute('href')).toBe('#packs/hubspot-local-pack');
+    expect(doc.activeElement).toBe(installedPack);
+    expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent).toBe('Installed');
   });
 
   it('keeps an in-flight install single-flight across newer metadata and labels its receipt', async () => {
@@ -2525,6 +2550,78 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     expect(route.hasInFlightWork()).toBe(false);
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_STATUS_ATTR)?.textContent)
       .toBe('Installed pack hubspot-local-pack — newer edits pending');
+    // D-333 — the newer edits are not installed, so the work stays in progress.
+    expect(calls.some((call) => call.method === 'ingredient.draft.delete')).toBe(false);
+    expect(route.getState().draftId).toBe('draft-1');
+  });
+
+  it('keeps the work in progress when it changes while the installed draft is being removed (D-333)', async () => {
+    let resolveDelete: (result: IngredientDraftDeleteResult) => void = () => {};
+    const pendingDelete = new Promise<IngredientDraftDeleteResult>((resolve) => {
+      resolveDelete = resolve;
+    });
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn, calls } = makeConn({ draftDelete: pendingDelete });
+    const route = bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+    });
+
+    setValue(findByAttr(root, INGREDIENT_BUILDER_SLUG_ATTR), 'hubspot-local');
+    setValue(findByAttr(root, INGREDIENT_BUILDER_CONNECTION_ATTR), 'hubspot-main');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family'), 'contact');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
+    setChecked(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'), true);
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+    findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
+    await tick();
+    expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_STATUS_ATTR)?.textContent)
+      .toBe('Installed pack hubspot-local-pack');
+    expect(calls.filter((call) => call.method === 'ingredient.draft.delete')).toHaveLength(1);
+
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.search');
+    resolveDelete({ ok: true, deleted: true });
+    await tick();
+
+    // The edit is a new version: it keeps this draft, and saving it keeps it in progress.
+    expect(route.getState().draftId).toBe('draft-1');
+    expect(textOf(root)).not.toContain('It is no longer in progress in Kitchen.');
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+    expect(calls.filter((call) => call.method === 'ingredient.draft.save').at(-1)?.payload)
+      .toMatchObject({ draft_id: 'draft-1' });
+  });
+
+  it('keeps an installed draft in progress when the server does not remove it (D-333)', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn } = makeConn({
+      draftDelete: Promise.resolve({ ok: false, code: 'bad_request', message: 'no' }),
+    });
+    const route = bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+    });
+
+    setValue(findByAttr(root, INGREDIENT_BUILDER_SLUG_ATTR), 'hubspot-local');
+    setValue(findByAttr(root, INGREDIENT_BUILDER_CONNECTION_ATTR), 'hubspot-main');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family'), 'contact');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
+    setChecked(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'), true);
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+    findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
+    await tick();
+    await tick();
+
+    expect(route.getState().draftId).toBe('draft-1');
+    expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_STATUS_ATTR)?.textContent)
+      .toBe('Installed pack hubspot-local-pack');
+    expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)).toBeDefined();
   });
 
   it('drops an install completion after switching drafts', async () => {
@@ -2981,6 +3078,147 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
   });
 });
 
+describe('D-333 — changes to a pack made in Kitchen', () => {
+  const changesBody: CompositionIngredient = {
+    schema_version: 1,
+    slug: 'acme',
+    catalog_kind: 'private_byo',
+    ingredients: [{ slug: 'acme', kind: 'http', http: { base: 'https://api.acme.example', connection: 'acme' } }],
+    operations: [{
+      op: 'deal.read', ingredient: 'acme', risk: 'read', approval: 'never',
+      bind: { kind: 'rest', method: 'GET', path_template: '/v3/deals/{deal_id}' },
+    }],
+  };
+  const identity = { slug: 'acme-crm', publisher: 'dana', name: 'Acme CRM', description: 'Acme deals in Kitchen.',
+    tags: ['crm'], pack_kind: 'app_pack' };
+
+  it('takes the installed pack\'s identity, keeps its slug and publisher, and installs over it', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn, calls } = makeConn({
+      draftBodies: { 'changes-1': { title: 'Acme CRM', body: changesBody } },
+      draftBasePacks: { 'changes-1': { pack_slug: 'acme-crm', identity } },
+    });
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'changes-1',
+    });
+    await tick();
+    await tick();
+
+    const packSlug = findByAttr(root, INGREDIENT_BUILDER_PACK_SLUG_ATTR)!;
+    const publisher = findByAttr(root, INGREDIENT_BUILDER_PUBLISHER_ATTR)!;
+    expect([packSlug.value, packSlug.readOnly]).toEqual(['acme-crm', true]);
+    expect([publisher.value, publisher.readOnly]).toEqual(['dana', true]);
+    expect(findByAttr(root, INGREDIENT_BUILDER_BASE_PACK_ATTR)?.textContent)
+      .toBe('These are changes to Acme CRM, which is installed. Installing them replaces it, so its slug and publisher stay.');
+
+    findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
+    await tick();
+    await tick();
+    const manifest = (calls.find((call) => call.method === 'ingredient.install')?.payload as { manifest: Record<string, unknown> } | undefined)?.manifest;
+    expect(manifest).toMatchObject({ slug: 'acme-crm', publisher: 'dana', description: 'Acme deals in Kitchen.', tags: ['crm'] });
+  });
+
+  it('keeps an installed pack\'s slug and publisher over anything the draft saved, and the rest as saved', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn } = makeConn({
+      draftBodies: { 'changes-1': { title: 'Acme CRM', body: changesBody,
+        pack: { slug: 'acme-renamed', publisher: 'someone', description: 'Edited description.' } } },
+      draftBasePacks: { 'changes-1': { pack_slug: 'acme-crm', identity } },
+    });
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'changes-1',
+    });
+    await tick();
+    await tick();
+    expect(findByAttr(root, INGREDIENT_BUILDER_PACK_SLUG_ATTR)?.value).toBe('acme-crm');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PUBLISHER_ATTR)?.value).toBe('dana');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PACK_DESCRIPTION_ATTR)?.value).toBe('Edited description.');
+  });
+
+  it('keeps what a copy copies through its saves, and tells the install', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn, calls } = makeConn({
+      draftBodies: { 'copy-1': { title: 'Copy of Acme CRM', body: changesBody,
+        pack: { slug: 'acme-crm-copy', publisher: 'local-authoring', copy_of: 'dana.acme-crm' } } },
+    });
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'copy-1',
+    });
+    await tick();
+    await tick();
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'deal.fetch');
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+    const save = calls.filter((call) => call.method === 'ingredient.draft.save').at(-1)?.payload as { pack?: Record<string, unknown> };
+    expect(save.pack).toMatchObject({ copy_of: 'dana.acme-crm' });
+    findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
+    await tick();
+    await tick();
+    expect(calls.find((call) => call.method === 'ingredient.install')?.payload).toMatchObject({ copy_of: 'dana.acme-crm' });
+  });
+
+  it('keeps the pack a draft installs as across a save and a reopen', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn, calls } = makeConn({
+      draftBodies: { 'copy-1': { title: 'Copy of Acme CRM', body: changesBody,
+        pack: { slug: 'acme-crm-copy', publisher: 'local-authoring', description: 'My Acme.', tags: ['crm'] } } },
+    });
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'copy-1',
+    });
+    await tick();
+    await tick();
+    // Not the defaults a composition alone would give (`acme-pack`, a generated description).
+    expect(findByAttr(root, INGREDIENT_BUILDER_PACK_SLUG_ATTR)?.value).toBe('acme-crm-copy');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PUBLISHER_ATTR)?.value).toBe('local-authoring');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PACK_SLUG_ATTR)?.readOnly).not.toBe(true);
+
+    // Saving sends it back, with what the owner changed.
+    setValue(findByAttr(root, INGREDIENT_BUILDER_PACK_SLUG_ATTR), 'acme-mine');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'deal.fetch');
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+    const save = calls.filter((call) => call.method === 'ingredient.draft.save').at(-1)?.payload as { pack?: Record<string, unknown> };
+    expect(save.pack).toMatchObject({ slug: 'acme-mine', publisher: 'local-authoring', description: 'My Acme.', tags: ['crm'] });
+  });
+
+  it('leaves a draft whose pack was replaced from elsewhere as a pack of its own', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn } = makeConn({
+      draftBodies: { 'changes-1': { title: 'Acme CRM', body: changesBody } },
+      // No identity: the pack installed now is not the one Kitchen installed.
+      draftBasePacks: { 'changes-1': { pack_slug: 'acme-crm' } },
+    });
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'changes-1',
+    });
+    await tick();
+    await tick();
+    expect(findByAttr(root, INGREDIENT_BUILDER_PACK_SLUG_ATTR)?.readOnly).not.toBe(true);
+    expect(findByAttr(root, INGREDIENT_BUILDER_BASE_PACK_ATTR)).toBeUndefined();
+  });
+});
+
 describe('Edit→Kitchen — initialDraftId self-load + onDraftChange (deep link)', () => {
   const crmSavedBody = () => ({
     schema_version: 1,
@@ -3244,7 +3482,7 @@ describe('pack editor polish — feedback correctness', () => {
     await tick();
     expect(findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.textContent).toBe('Saved');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent).toBe(
-      'Draft saved and checked',
+      'Saved and checked',
     );
 
     // Clean state: the (always-rendered) dirty cue is empty.
@@ -3305,9 +3543,9 @@ describe('pack editor polish — feedback correctness', () => {
     confirm.click();
 
     expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.value)
-      .toBe('Local ingredient');
+      .toBe('New pack');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
-      .toBe('New draft');
+      .toBe('New pack');
     expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_DRAFT_NEW_ATTR));
   });
 
@@ -3385,7 +3623,7 @@ describe('pack editor polish — feedback correctness', () => {
     await tick();
     expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.value).toBe('Draft B');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
-      .toBe('Draft opened and checked');
+      .toBe('Opened and checked');
     expect(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR)?.value).toBe('draft-b');
     expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR));
   });

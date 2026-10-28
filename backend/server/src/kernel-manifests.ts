@@ -7,6 +7,38 @@
 import type { IngredientManifest } from '@recued/contracts';
 
 const MANIFESTS = [
+  {
+    slug: 'kitchen-draft-list', name: 'List Kitchen drafts', mcp_exposed: true,
+    description: 'List imported Kitchen drafts belonging to this authenticated connection. Returns bounded metadata, not source or another connection\'s drafts. Grant core.kitchen.draft.get separately to read source.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'data' as const,
+    risk_tier: 'read' as const, tags: ['kernel', 'kitchen', 'draft'], input: {}, output: { drafts: 'drafts' },
+  },
+  {
+    slug: 'kitchen-draft-get', name: 'Read Kitchen draft source', mcp_exposed: true,
+    description: 'Read exact recipe or pack source and current revision from an imported Kitchen draft belonging to this authenticated connection. Other connections\' drafts are unavailable. Does not install or run source.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'data' as const,
+    risk_tier: 'read' as const, tags: ['kernel', 'kitchen', 'draft'], input: { draft_id: null },
+    output: { draft_id: 'draft_id', kind: 'kind', title: 'title', source: 'source', source_hash: 'source_hash',
+      revision: 'revision', validation: 'validation', created_at: 'created_at', updated_at: 'updated_at' },
+  },
+  {
+    slug: 'kitchen-draft-update', name: 'Update Kitchen draft source', mcp_exposed: true,
+    description: 'Save exact source to an imported Kitchen draft belonging to this authenticated connection. Requires expected_revision from the last read; conflicts never overwrite newer edits. Incomplete source is retained with canonical diagnostics. Updates remain drafts and never install, publish or run source.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'action' as const,
+    risk_tier: 'write' as const, tags: ['kernel', 'kitchen', 'draft'], input: { draft_id: null, expected_revision: null, source: null },
+    output: { draft_id: 'draft_id', kind: 'kind', title: 'title', source_hash: 'source_hash', installed: 'installed',
+      revision: 'revision', validation: 'validation', created_at: 'created_at', updated_at: 'updated_at' },
+  },
+  {
+    slug: 'kitchen-draft-import', name: 'Import source into Kitchen', mcp_exposed: true,
+    description: 'Import exact recipe or pack JSON source into an editable Kitchen draft for owner review. Send source text, including unsaved edits, rather than a path or URL. Incomplete source is retained with validation diagnostics. Reuse request_id only to retry identical input. Returns a Kitchen path relative to this Recued server. This operation never installs, publishes, runs the imported source, resolves remote dependencies or changes permissions.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'action' as const,
+    risk_tier: 'write' as const, tags: ['kernel', 'kitchen', 'recipe', 'pack', 'draft', 'import'],
+    input: { kind: null, source: null, request_id: null, title: 'Imported source' },
+    output: { draft_id: 'draft_id', kind: 'kind', title: 'title', source_hash: 'source_hash',
+      revision: 'revision', validation: 'validation', replayed: 'replayed', kitchen_path: 'kitchen_path', installed: 'installed',
+      created_at: 'created_at', updated_at: 'updated_at' },
+  },
   { slug: 'customer-account-payment-correct',name: 'Correct a customer account payment',mcp_exposed: false,
     description: 'After fresh owner review, correct or void the original allocations of one recorded account payment. Apply every invoice change and correction history atomically. Keep original payment identity and reject stale ledgers or linked refund entries.',
     author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,

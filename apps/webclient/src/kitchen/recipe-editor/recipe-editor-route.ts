@@ -25,6 +25,7 @@ import {
   parseCondition,
   parseTriggerOn,
   recipeEventTriggerNotes,
+  repointRecipePack,
   UNARY_OPS,
   validateRecipeEventTriggerEntry,
   WEBHOOK_PROFILE_REGISTRY,
@@ -106,6 +107,8 @@ export const RECIPE_EDITOR_VALIDATE_ATTR = 'data-recued-recipe-editor-validate';
 export const RECIPE_EDITOR_SAVE_ATTR = 'data-recued-recipe-editor-save';
 export const RECIPE_EDITOR_RECIPE_ID_ATTR = 'data-recued-recipe-editor-recipe-id';
 export const RECIPE_EDITOR_RECIPE_NAME_ATTR = 'data-recued-recipe-editor-recipe-name';
+/** D-333 — switches a pack the recipe needs to its copy, or back (value = the pack it names now). */
+export const RECIPE_EDITOR_PACK_SWITCH_ATTR = 'data-recued-recipe-editor-pack-switch';
 export const RECIPE_EDITOR_STATUS_ATTR = 'data-recued-recipe-editor-status';
 export const RECIPE_EDITOR_ISSUES_ATTR = 'data-recued-recipe-editor-issues';
 export const RECIPE_EDITOR_ISSUE_ATTR = 'data-recued-recipe-editor-issue';
@@ -258,6 +261,12 @@ export interface BootstrapRecipeEditorRouteOptions {
    *  mail-fact trigger can watch their variables too. Without it the pickers
    *  offer the built-in kinds' alone. */
   mailFactTypesCaller?: () => Promise<{ readonly types: readonly MailFactTypeSpec[] }>;
+  /** D-333 — the packs copied in Kitchen and what each copies, so a pack the recipe needs can
+   *  be switched to its copy (or back) with one button. Without it no switch is offered. */
+  packCopiesCaller?: () => Promise<{ copies: ReadonlyArray<{ pack_ref: string; copy_of: string }> }>;
+  /** D-333 — the recipe is the owner's own (saved from Kitchen). Absent: it is. Switching the
+   *  packs of another author's recipe makes a copy of it instead, as a pack's copy does. */
+  ownRecipe?: boolean;
   /** D-315 §5.2 — the author's own mail templates, so a `mail_template`
    *  setting can bring one as its starter. */
   mailTemplatesCaller?: () => Promise<{ readonly templates: readonly MailTemplate[] }>;
@@ -271,8 +280,12 @@ export interface BootstrapRecipeEditorRouteOptions {
   initialDirty?: boolean;
   /** Post-persist navigation hook. The editor has already recorded the save as
    *  successful before this runs; callers use it to replace a contextual
-   *  `new` URL with the canonical installed-recipe URL. */
-  onSaved?: (result: RecipeSaveResult) => void;
+   *  `new` URL with the canonical installed-recipe URL. `saved` is the recipe as
+   *  saved, at its new version (D-333: edits made meanwhile are not in it). */
+  onSaved?: (result: RecipeSaveResult, saved: RecipeDefinition) => void;
+  /** D-333 — every change to the recipe (an edit, a structural change, undo or redo),
+   *  so Kitchen can keep the work in progress as it is typed. */
+  onChange?: (recipe: RecipeDefinition) => void;
 }
 
 export interface RecipeEditorRoute {
@@ -424,8 +437,9 @@ const CONDITION_LABELS: Record<ConditionField, string> = {
 
 /** Fill the optional list fields the editor reads as if they were required.
  *  ⛔ Only ADDS empty lists — never changes a value the recipe actually
- *  carries, so what the owner saves is what they wrote plus nothing. */
-const adoptRecipe = (
+ *  carries, so what the owner saves is what they wrote plus nothing.
+ *  Exported so Kitchen can compare a recipe with the editor's copy (D-333). */
+export const adoptRecipe = (
   recipe: RecipeDefinition | undefined,
 ): RecipeDefinition | undefined => {
   if (recipe === undefined) return undefined;
@@ -1497,6 +1511,7 @@ export const bootstrapRecipeEditorRoute = (
     }
   };
   const queueDraft = (): void => {
+    options.onChange?.(state.recipe);
     if (!options.recovery) return;
     if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
     recoveryTimer = setTimeout(persistDraft, 250);
@@ -1537,6 +1552,7 @@ export const bootstrapRecipeEditorRoute = (
    *  join the mail-fact pickers. */
   let ownedMailFactKinds: readonly MailFactTypeSpec[] = [];
   let ownedMailFactKindsKnown: OwnedMailFactKinds = options.mailFactTypesCaller === undefined ? 'unread' : 'loading';
+  let packCopies: ReadonlyArray<{ pack_ref: string; copy_of: string }> = [];
   /** D-315 §5.2 — the author's mail templates (null until loaded), the one each
    *  setting copies from when the author picked it, and what a copy refused. */
   let authorTemplates: readonly MailTemplate[] | null = null;
@@ -1677,6 +1693,25 @@ export const bootstrapRecipeEditorRoute = (
     history.record(snapshot(), group);
     queueDraft();
     syncActionLabels();
+  };
+
+  /** D-333 — every place the recipe names `from` names `to` instead: its dependencies, each
+   *  step's op and the text that repeats them. Another author's recipe stays as it is — the
+   *  switch makes a copy of your own, as a pack's copy does (a recipe from a pack cannot be
+   *  saved under its own id anyway). One edit: Undo takes it back. */
+  const switchPack = (from: string, to: string): void => {
+    let next = repointRecipePack(state.recipe, from, to);
+    const becomesCopy = options.ownRecipe === false && next.recipe_id === options.initialRecipe?.recipe_id;
+    if (becomesCopy) {
+      next = { ...next, recipe_id: `${next.recipe_id}-copy`,
+        metadata: { ...next.metadata, name: `Copy of ${next.metadata.name}` } };
+    }
+    mutateAndRerender(next);
+    state.status = becomesCopy
+      ? `Now uses ${to}, as your own copy of this recipe (${next.recipe_id}). Save to keep it.`
+      : `Now uses ${to}. Save to keep it.`;
+    rerender();
+    announce(state.status);
   };
 
   /** Mutate the recipe and rerender (structure changed — add / remove / rename /
@@ -1960,7 +1995,7 @@ export const bootstrapRecipeEditorRoute = (
         revealIssues();
         if (options.onSaved !== undefined) {
           try {
-            options.onSaved(result);
+            options.onSaved(result, savedRecipe);
           } catch (error: unknown) {
             state.status = `${savedNote} — editor link was not updated`;
             state.issues = [
@@ -2460,7 +2495,7 @@ export const bootstrapRecipeEditorRoute = (
   const renderIngredientBody = (
     step: RecipeStep, listKey: 'trigger_steps' | 'prefetch_steps' | 'steps', grid: HTMLElement,
   ): void => {
-    addField(doc, grid, 'Ingredient', makeTextInput(doc, getStepDiscriminator(step), 'ingredient', next => {
+    addField(doc, grid, 'Action', makeTextInput(doc, getStepDiscriminator(step), 'ingredient', next => {
       const list = (state.recipe[listKey] as RecipeStep[]).map(s => s.id === step.id ? { ...s, ingredient: next } : s);
       state.recipe = { ...state.recipe, [listKey]: list } as RecipeDefinition;
       markDirty();
@@ -4543,6 +4578,22 @@ export const bootstrapRecipeEditorRoute = (
         + 'Steps that only use core.* need none.',
     );
     depHint.className = 'recipe-editor-hint span-full';
+    // D-333 — a pack the recipe needs that has a copy (or is one) switches with one button.
+    for (const dep of state.recipe.depends_on ?? []) {
+      const copy = packCopies.find((entry) => entry.copy_of === dep);
+      const original = packCopies.find((entry) => entry.pack_ref === dep);
+      const to = copy?.pack_ref ?? original?.copy_of;
+      if (to === undefined) continue;
+      const row = doc.createElement('div');
+      row.className = 'recipe-editor-hint span-full';
+      appendText(doc, row, 'span', copy !== undefined
+        ? `${dep} has your copy, ${to}. `
+        : `${dep} is your copy of ${to}. `);
+      const swap = makeButton(doc, copy !== undefined ? 'Use my copy' : 'Use the original', 'secondary', 'sm', () => switchPack(dep, to));
+      swap.setAttribute(RECIPE_EDITOR_PACK_SWITCH_ATTR, dep);
+      row.appendChild(swap);
+      depGrid.appendChild(row);
+    }
     section.appendChild(depGrid);
 
     host2.appendChild(section);
@@ -5140,6 +5191,13 @@ export const bootstrapRecipeEditorRoute = (
     if (disposed) return;
     authorTemplates = [];
   });
+  // D-333 — the copies made in Kitchen; the dependency section offers each switch.
+  void options.packCopiesCaller?.().then(({ copies }) => {
+    if (disposed) return;
+    packCopies = copies;
+    const deps = state.recipe.depends_on ?? [];
+    if (copies.some((entry) => deps.includes(entry.copy_of) || deps.includes(entry.pack_ref))) rerender();
+  }, () => { /* no switch is offered */ });
   void options.mailFactTypesCaller?.().then(({ types }) => {
     if (disposed) return;
     ownedMailFactKinds = types;

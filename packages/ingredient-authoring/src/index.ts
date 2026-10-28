@@ -90,3 +90,5 @@ export {
   ingredientOpId,
   type IngredientDescriptor,
 } from './ingredient-op.js';
+export { validateAuthoringSource } from './source-validation.js';
+export type { AuthoringSourceKind, AuthoringSourceValidation, AuthoringRecipeValidator } from './source-validation.js';

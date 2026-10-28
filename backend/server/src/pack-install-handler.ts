@@ -201,6 +201,9 @@ export interface PackInstallBroadcastEmitter {
 }
 
 export interface PackInstallRpcDeps {
+  /** D-333 — the source a pack was installed from in Kitchen, while that install is the
+   *  installed one. Such a pack is in neither the bundle nor the marketplace. */
+  kitchenPackSource?: (packSlug: string) => BulkPackManifest | null;
   /** Late-bound durable reviewed-update gate, also used by dependency preflight. */
   packUpdateStore?: PackUpdateStore;
   /** Paired-client authority supplied by the RPC adapter, never the request. */
@@ -3677,9 +3680,13 @@ export const resolvePackBySlug = async (
     );
   }
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
+  // D-333 — a pack made in Kitchen resolves from the source it was installed from.
+  const kept = bundled === null ? deps.kitchenPackSource?.(args.slug) ?? null : null;
   let manifest: BulkPackManifest | null;
   if (bundled !== null) {
     manifest = bundled;
+  } else if (kept !== null) {
+    manifest = kept;
   } else {
     try {
       // DELIBERATELY UNMARKED. `ensureDetailResolved` calls this on every pack
@@ -3837,6 +3844,7 @@ export const resolvePackBySlug = async (
     : currentPackConnection(deps.contractStore, manifest.slug, deps.isConnectionSetUp);
   return {
     manifest,
+    ...(kept !== null ? { kitchen_editable: true as const } : {}),
     manifest_review_hash: preparedRecords?.review_hash
       ?? marketplaceManifestReviewHash(manifest),
     ...(ownerOperationReview.length > 0
