@@ -1,0 +1,273 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1050" role="img" aria-labelledby="title desc">
+  <title id="title">Recued control-plane diagram</title>
+  <desc id="desc">Recued sits as a local control plane between your own systems, the people who reach you, outside AI agents, and AI providers. The server runs on your machine, encrypted at rest. It holds your data (mail, calendar, files, contacts, tasks, notes, CRM, the things you own, memory and timeline) and runs jobs of its own: a chat you reach in the app, by email, in Slack or Telegram, and recipes that run by hand, on a schedule, or when something happens. Agents, people and Recued's own jobs all pass one gate: a contract holds one key and grants nothing until you choose, unknown callers fail closed, and one master pause halts everything. AI writes ask you first, in the app, by email, Slack or Telegram, one at a time, per batch, or per session, and every call is logged before it runs. Account keys stay on your server or a broker you pick, never in Recued's cloud. AI calls round-trip through an LLM boundary with personal data aliased before it leaves and restored locally. Running work can be watched, killed, or paused.</desc>
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef2f7"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-8%" y="-8%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#0f172a" flood-opacity="0.07"/>
+    </filter>
+    <style>
+      .ink   { fill: #0f172a; }
+      .muted { fill: #475569; }
+      .soft  { fill: #64748b; }
+      .brand { fill: #c1440e; }
+      .accent{ fill: #0e7490; }
+      .ok    { fill: #15803d; }
+      .warn  { fill: #b45309; }
+
+      .panel      { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1.4; }
+      .panel-soft { fill: #f1f5f9; stroke: #e2e8f0; stroke-width: 1.4; }
+      .core       { fill: #ffffff; stroke: #0e7490; stroke-width: 2.4; }
+      .core-soft  { fill: #f0fdfa; stroke: #99f6e4; stroke-width: 1.3; }
+      .guard      { fill: #fff7ed; stroke: #fb923c; stroke-width: 1.6; }
+      .approval   { fill: #fef2f2; stroke: #fca5a5; stroke-width: 1.4; }
+      .chip       { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1.2; }
+      .chip-soft  { fill: #f8fafc; stroke: #e2e8f0; stroke-width: 1.1; }
+
+      .title    { font: 700 32px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .subtitle { font: 400 16.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .core-ttl { font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label    { font: 600 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small    { font: 400 13.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .chiptext { font: 500 13.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .tiny     { font: 500 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .pill     { font: 600 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .eyebrow  { font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 1.4px; }
+
+      .flow-local { fill: none; stroke: #15803d; stroke-width: 2.2; marker-start: url(#aGreen); marker-end: url(#aGreen); }
+      .flow-in    { fill: none; stroke: #0e7490; stroke-width: 2.4; marker-end: url(#aTeal); }
+      .flow-mcp   { fill: none; stroke: #0e7490; stroke-width: 2.4; marker-start: url(#aTeal); marker-end: url(#aTeal); }
+      .flow-ai    { fill: none; stroke: #b45309; stroke-width: 2.2; stroke-dasharray: 6 6; marker-start: url(#aAmber); marker-end: url(#aAmber); }
+    </style>
+    <marker id="aTeal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0e7490"/>
+    </marker>
+    <marker id="aGreen" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#15803d"/>
+    </marker>
+    <marker id="aAmber" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+
+  <rect width="1440" height="1050" fill="url(#bgGrad)"/>
+
+  <!-- Header -->
+  <g transform="translate(64 50)">
+    <text class="brand title" x="0" y="0" dominant-baseline="hanging">Recued holds the boundary</text>
+    <text class="subtitle muted" x="2" y="58">A local control plane between any AI, the people who reach you, and the accounts and data on machines you own.</text>
+  </g>
+
+  <!-- ================= CENTER: Recued server ================= -->
+  <rect class="core" x="470" y="128" width="500" height="738" rx="14" filter="url(#cardShadow)"/>
+  <g transform="translate(470 128)">
+    <text class="accent eyebrow" x="30" y="34">LOCAL CONTROL PLANE</text>
+    <text class="ink core-ttl" x="30" y="64">Recued</text>
+    <text class="soft small" x="30" y="88">Runs on your machine, encrypted at rest. It also does jobs of its own.</text>
+
+    <!-- Your data + its own jobs -->
+    <rect class="core-soft" x="30" y="100" width="210" height="140" rx="10"/>
+    <text class="ink label" x="48" y="130">Your data</text>
+    <text class="muted small" x="48" y="158">Mail · calendar · files</text>
+    <text class="muted small" x="48" y="180">contacts · tasks · notes</text>
+    <text class="muted small" x="48" y="202">CRM · things you own</text>
+    <text class="muted small" x="48" y="224">memory + timeline</text>
+
+    <rect class="core-soft" x="260" y="100" width="210" height="140" rx="10"/>
+    <text class="ink label" x="278" y="130">Chat + recipes</text>
+    <text class="muted small" x="278" y="158">Chat in the app, by email,</text>
+    <text class="muted small" x="278" y="180">Slack or Telegram. Recipes</text>
+    <text class="muted small" x="278" y="202">run by hand, on a schedule,</text>
+    <text class="muted small" x="278" y="224">or when something happens.</text>
+
+    <!-- Gate (the throat) -->
+    <rect class="guard" x="30" y="256" width="440" height="128" rx="10"/>
+    <rect x="30" y="268" width="5" height="104" rx="2.5" fill="#c1440e"/>
+    <text class="ink label" x="52" y="288">Contracts + Gateway</text>
+    <text class="brand tiny" x="452" y="282" text-anchor="end">every call passes here</text>
+    <text class="muted small" x="52" y="318">One boundary for agents, people, and Recued's own jobs.</text>
+    <text class="muted small" x="52" y="342">A contract holds one key and grants nothing until you choose.</text>
+    <text class="muted small" x="52" y="366">Unknown callers fail closed. One master pause halts everything.</text>
+
+    <!-- Approvals + Logs -->
+    <rect class="approval" x="30" y="408" width="210" height="140" rx="10"/>
+    <text class="ink label" x="48" y="438">Approvals</text>
+    <text class="muted small" x="48" y="466">AI writes ask you first.</text>
+    <text class="muted small" x="48" y="488">Answer in the app, email,</text>
+    <text class="muted small" x="48" y="510">Slack or Telegram: one,</text>
+    <text class="muted small" x="48" y="532">a batch, or a session.</text>
+
+    <rect class="panel-soft" x="260" y="408" width="210" height="140" rx="10"/>
+    <text class="ink label" x="278" y="438">Logs — audit trail</text>
+    <text class="muted small" x="278" y="466">Allowed · denied · blocked ·</text>
+    <text class="muted small" x="278" y="488">approved — every call lands,</text>
+    <text class="muted small" x="278" y="510">recorded before it runs</text>
+
+    <!-- Governed-path band -->
+    <rect x="30" y="566" width="440" height="124" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4 4"/>
+    <text class="soft tiny" x="42" y="592">THE GATE RUNS ONCE, IN ORDER</text>
+    <g>
+      <rect class="chip" x="42" y="604" width="92" height="32" rx="8"/>
+      <text class="ink tiny" x="88" y="624" text-anchor="middle">contract</text>
+      <text class="soft tiny" x="142" y="624" text-anchor="middle">›</text>
+      <rect class="chip" x="150" y="604" width="92" height="32" rx="8"/>
+      <text class="ink tiny" x="196" y="624" text-anchor="middle">ask if needed</text>
+      <text class="soft tiny" x="250" y="624" text-anchor="middle">›</text>
+      <rect class="chip" x="258" y="604" width="92" height="32" rx="8"/>
+      <text class="ink tiny" x="304" y="624" text-anchor="middle">record</text>
+      <text class="soft tiny" x="358" y="624" text-anchor="middle">›</text>
+      <rect class="chip" x="366" y="604" width="92" height="32" rx="8"/>
+      <text class="ink tiny" x="412" y="624" text-anchor="middle">run</text>
+    </g>
+    <text class="soft tiny" x="42" y="668">Writes and outward calls wait for approval. Keys decrypt only to run.</text>
+
+    <text class="soft tiny" x="30" y="710">Recued's cloud gives your server a name and a certificate.</text>
+    <text class="soft tiny" x="30" y="728">Your data never passes through it.</text>
+  </g>
+
+  <!-- ================= LEFT-TOP: Your systems ================= -->
+  <rect class="panel" x="56" y="128" width="350" height="412" rx="14" filter="url(#cardShadow)"/>
+  <g transform="translate(56 128)">
+    <circle cx="26" cy="34" r="5" class="ok"/>
+    <text class="ink label" x="40" y="40">Your systems</text>
+    <text class="muted small" x="24" y="70">Reached through Connections and packs —</text>
+    <text class="muted small" x="24" y="90">scoped outbound endpoints.</text>
+
+    <g transform="translate(24 108)">
+      <rect class="chip" x="0"   y="0"   width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="25">API / OAuth</text>
+      <rect class="chip" x="168" y="0"   width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="25">Mail · Calendar</text>
+      <rect class="chip" x="0"   y="50"  width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="75">CRM · Accounting</text>
+      <rect class="chip" x="168" y="50"  width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="75">Payments</text>
+      <rect class="chip" x="0"   y="100" width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="125">Files</text>
+      <rect class="chip" x="168" y="100" width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="125">MCP servers</text>
+      <rect class="chip" x="0"   y="150" width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="175">CLI tools</text>
+      <rect class="chip" x="168" y="150" width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="175">Coding agents</text>
+      <rect class="chip" x="0"   y="200" width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="225">Notifications</text>
+      <rect class="chip" x="168" y="200" width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="225">Webhooks</text>
+    </g>
+
+    <text class="ok tiny" x="24" y="376">Keys stay on your server, or with a broker you pick —</text>
+    <text class="ok tiny" x="24" y="394">never in Recued's cloud.</text>
+  </g>
+
+  <!-- ================= LEFT-BOTTOM: Reception ================= -->
+  <rect class="panel" x="56" y="566" width="350" height="300" rx="14" filter="url(#cardShadow)"/>
+  <g transform="translate(56 566)">
+    <circle cx="26" cy="34" r="5" class="accent"/>
+    <text class="ink label" x="40" y="40">Reception &amp; Messenger</text>
+    <text class="muted small" x="24" y="70">Where people, and you, reach your server.</text>
+
+    <g transform="translate(24 90)">
+      <rect class="chip" x="0"   y="0"   width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="25">Booking · intake</text>
+      <rect class="chip" x="168" y="0"   width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="25">File drop</text>
+      <rect class="chip" x="0"   y="50"  width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="75">Quotes · sign-offs</text>
+      <rect class="chip" x="168" y="50"  width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="75">Approval link</text>
+      <rect class="chip" x="0"   y="100" width="150" height="40" rx="8"/><text class="ink chiptext" x="16" y="125">Slack · Telegram</text>
+      <rect class="chip" x="168" y="100" width="150" height="40" rx="8"/><text class="ink chiptext" x="184" y="125">Email chat</text>
+    </g>
+
+    <text class="soft tiny" x="24" y="250">Requests land in your Reception inbox — writes wait</text>
+    <text class="soft tiny" x="24" y="268">for review. Visitors see declared fields only,</text>
+    <text class="soft tiny" x="24" y="286">never your private data.</text>
+  </g>
+
+  <!-- ================= RIGHT-TOP: External agents ================= -->
+  <rect class="panel" x="1034" y="128" width="350" height="370" rx="14" filter="url(#cardShadow)"/>
+  <g transform="translate(1034 128)">
+    <circle cx="26" cy="34" r="5" class="accent"/>
+    <text class="ink label" x="40" y="40">External agents</text>
+    <text class="muted small" x="24" y="70">Any MCP app reaches your tools, and</text>
+    <text class="muted small" x="24" y="90">chat apps that speak the OpenAI API.</text>
+
+    <rect class="chip" x="24" y="108" width="302" height="44" rx="8"/>
+    <text class="ink chiptext" x="40" y="135">Claude Code · Claude Desktop · Codex</text>
+    <rect class="chip" x="24" y="162" width="302" height="44" rx="8"/>
+    <text class="ink chiptext" x="40" y="189">Cursor · Cline · OpenClaw · your own</text>
+    <rect class="chip" x="24" y="216" width="142" height="44" rx="8"/>
+    <text class="ink chiptext" x="40" y="243">Peer Recued</text>
+    <rect class="chip" x="184" y="216" width="142" height="44" rx="8"/>
+    <text class="ink chiptext" x="200" y="243">Customers</text>
+
+    <text class="soft tiny" x="24" y="290">They receive contracted tools —</text>
+    <text class="soft tiny" x="24" y="308">never your account keys.</text>
+    <text class="soft tiny" x="24" y="334">Sell access in tiers through your own</text>
+    <text class="soft tiny" x="24" y="352">Stripe. Recued takes no cut.</text>
+  </g>
+
+  <!-- ================= RIGHT-BOTTOM: LLM boundary ================= -->
+  <rect class="panel" x="1034" y="520" width="350" height="346" rx="14" filter="url(#cardShadow)"/>
+  <g transform="translate(1034 520)">
+    <circle cx="26" cy="34" r="5" class="warn"/>
+    <text class="ink label" x="40" y="40">LLM boundary</text>
+    <text class="muted small" x="24" y="70">Chat, AI steps and background AI</text>
+    <text class="muted small" x="24" y="90">all route through policy.</text>
+
+    <rect class="guard" x="24" y="106" width="302" height="64" rx="10"/>
+    <text class="ink chiptext" x="42" y="134">PII aliased before egress</text>
+    <text class="soft tiny" x="42" y="156">Person1 · m1@d1.invalid · addresses + links</text>
+
+    <g transform="translate(24 190)">
+      <rect class="chip" x="0"   y="0" width="96" height="44" rx="8"/><text class="ink chiptext" x="48"  y="27" text-anchor="middle">Local model</text>
+      <rect class="chip" x="103" y="0" width="96" height="44" rx="8"/><text class="ink chiptext" x="151" y="27" text-anchor="middle">BYOK slots</text>
+      <rect class="chip" x="206" y="0" width="96" height="44" rx="8"/><text class="ink chiptext" x="254" y="27" text-anchor="middle">Free pool</text>
+    </g>
+
+    <text class="soft tiny" x="24" y="268">The model sees only aliases —</text>
+    <text class="soft tiny" x="24" y="286">Recued restores the real values locally.</text>
+    <text class="soft tiny" x="24" y="312">Facts on file go to the model first, and</text>
+    <text class="soft tiny" x="24" y="330">a plain lookup needs no model at all.</text>
+  </g>
+
+  <!-- ================= FLOWS ================= -->
+  <!-- systems <-> server : local read/write -->
+  <path class="flow-local" d="M 406 300 C 432 300 444 300 470 300"/>
+  <!-- reception -> server : public ingress (into the gate) -->
+  <path class="flow-in"   d="M 406 716 C 448 710 452 482 470 456"/>
+  <!-- agents <-> server : MCP call / result (into the gate) -->
+  <path class="flow-mcp"  d="M 1034 260 C 1000 284 994 432 970 456"/>
+  <!-- server <-> LLM : PII-shielded round trip -->
+  <path class="flow-ai"   d="M 970 610 C 1000 626 1008 646 1034 660"/>
+
+  <!-- flow labels -->
+  <g transform="translate(438 282)">
+    <rect x="-44" y="-13" width="88" height="24" rx="7" fill="#f1f7f3" stroke="#bbf7d0" stroke-width="1"/>
+    <text class="ok pill" x="0" y="4" text-anchor="middle">read / write</text>
+  </g>
+  <g transform="translate(438 606)">
+    <rect x="-52" y="-13" width="104" height="24" rx="7" fill="#ecfeff" stroke="#a5f3fc" stroke-width="1"/>
+    <text class="accent pill" x="0" y="4" text-anchor="middle">public ingress</text>
+  </g>
+  <g transform="translate(1002 354)">
+    <rect x="-38" y="-13" width="76" height="24" rx="7" fill="#ecfeff" stroke="#a5f3fc" stroke-width="1"/>
+    <text class="accent pill" x="0" y="4" text-anchor="middle">MCP call</text>
+  </g>
+  <g transform="translate(1002 632)">
+    <rect x="-46" y="-13" width="92" height="24" rx="7" fill="#fff7ed" stroke="#fed7aa" stroke-width="1"/>
+    <text class="warn pill" x="0" y="4" text-anchor="middle">PII shielded</text>
+  </g>
+
+  <!-- ================= FOOTER: legend + story ================= -->
+  <rect class="panel-soft" x="56" y="896" width="1328" height="128" rx="14" filter="url(#cardShadow)"/>
+  <g transform="translate(80 896)">
+    <!-- legend -->
+    <line x1="0" y1="34" x2="30" y2="34" stroke="#15803d" stroke-width="2.4"/>
+    <text class="soft tiny" x="40" y="38">Local read / write — keys never leave</text>
+
+    <line x1="338" y1="34" x2="368" y2="34" stroke="#0e7490" stroke-width="2.4"/>
+    <text class="soft tiny" x="378" y="38">Inbound ask — agents &amp; people</text>
+
+    <rect x="676" y="28" width="30" height="12" rx="3" fill="#fff7ed" stroke="#fb923c" stroke-width="1.4"/>
+    <text class="soft tiny" x="716" y="38">Contract + approval gate</text>
+
+    <line x1="980" y1="34" x2="1010" y2="34" stroke="#b45309" stroke-width="2.4" stroke-dasharray="6 5"/>
+    <text class="soft tiny" x="1020" y="38">AI round-trip — PII shielded</text>
+
+    <!-- story -->
+    <text class="ink small" x="0" y="80" font-weight="600">The whole story:</text>
+    <text class="muted small" x="124" y="80">Agents and people ask, and Recued does jobs of its own. All of it passes one gate: grants are checked, personal data is shielded,</text>
+    <text class="muted small" x="124" y="104">and writes wait for your yes. Recued acts locally with your keys and records every run. Live work can be watched, killed, or paused.</text>
+  </g>
+</svg>

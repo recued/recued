@@ -1,0 +1,214 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1320" viewBox="0 0 1920 1320" style="display:block;max-width:100%;height:auto" role="img" aria-labelledby="title description">
+  <title id="title">Recued: your answer, with fewer steps</title>
+  <desc id="description">Recued answers supported lookups directly from saved records and prepares relevant facts for questions that need AI. One example answers a contact email lookup locally. Another protects Maya's name as Person 1 and brings together her insurance policy expiry on 18 November and her trip starting on 20 November. AI can answer that the policy expires two days before Maya leaves, without additional lookups when that context is sufficient. If more information is needed, tools supply it before AI continues. The examples and data are fictional.</desc>
+  <defs>
+    <style>
+      text { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; fill: #17252e; }
+      .brand { font-size: 33px; font-weight: 750; letter-spacing: -1px; fill: #c1440e; }
+      .headline { font-size: 70px; font-weight: 740; letter-spacing: -2.9px; }
+      .subhead { font-size: 25px; fill: #52616b; }
+      .eyebrow { font-size: 15px; font-weight: 750; letter-spacing: 2px; }
+      .title { font-size: 27px; font-weight: 700; letter-spacing: -.55px; }
+      .body { font-size: 21px; fill: #52616b; }
+      .small { font-size: 17px; fill: #61727c; }
+      .label { font-size: 18px; font-weight: 650; }
+      .chip { font-size: 16px; font-weight: 600; }
+      .ink-teal { fill: #087f88; }
+      .ink-orange { fill: #bb450f; }
+      .white { fill: #fff; }
+      .card { fill: #fff; stroke: #dce3e6; stroke-width: 1.5; }
+      .line { fill: none; stroke: #8b9ba4; stroke-width: 2.6; stroke-linejoin: round; stroke-linecap: round; }
+      .route { fill: none; stroke: #c1440e; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; marker-end: url(#arrow-orange); }
+      .fast-route { fill: none; stroke: #087f88; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; marker-end: url(#arrow-teal); }
+      .branch { fill: none; stroke: #a9cbd0; stroke-width: 1.6; stroke-linecap: round; }
+      .icon { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+      .proof-link { cursor: pointer; }
+      .link-label { fill: #087f88; text-decoration: underline; text-underline-offset: 4px; }
+      .proof-link:hover .link-label { fill: #055b62; }
+      .proof-link:focus-visible { outline: 3px solid #087f88; outline-offset: 5px; }
+    </style>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 11 6 1 11Z" fill="#c1440e"/></marker>
+    <marker id="arrow-teal" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="11" markerHeight="11" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 11 6 1 11Z" fill="#087f88"/></marker>
+    <filter id="shadow" x="-15%" y="-20%" width="130%" height="150%"><feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#17252e" flood-opacity=".045"/></filter>
+    <symbol id="chat" viewBox="0 0 24 24"><path class="icon" d="M6 4h12a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H9l-6 3V7a3 3 0 0 1 3-3Z"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><circle class="icon" cx="10.5" cy="10.5" r="6.8"/><path class="icon" d="m16 16 5 5M8 10.5h5M10.5 8v5"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="12" r="9"/><path class="icon" d="m7.7 12 2.8 2.8 5.8-6"/></symbol>
+    <symbol id="shield" viewBox="0 0 24 24"><path class="icon" d="m12 2 8 3v6c0 5-4 8.5-8 11-4-2.5-8-6-8-11V5Z"/><path class="icon" d="m8.5 11.5 2.5 2.5 4.8-5"/></symbol>
+    <symbol id="file" viewBox="0 0 24 24"><path class="icon" d="M6 2h8l5 5v15H6ZM14 2v6h5M9 12h7M9 16h7"/></symbol>
+    <symbol id="person" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="7" r="4"/><path class="icon" d="M4 22v-3a8 8 0 0 1 16 0v3"/></symbol>
+    <symbol id="calendar" viewBox="0 0 24 24"><rect class="icon" x="3" y="5" width="18" height="17" rx="2"/><path class="icon" d="M7 2v6M17 2v6M3 11h18M8 16h3"/></symbol>
+    <symbol id="mail" viewBox="0 0 24 24"><rect class="icon" x="2" y="4" width="20" height="16" rx="2"/><path class="icon" d="m3 6 9 7 9-7"/></symbol>
+    <symbol id="spark" viewBox="0 0 24 24"><path class="icon" d="m12 2 2.6 7.4L22 12l-7.4 2.6L12 22l-2.6-7.4L2 12l7.4-2.6ZM20 2v4M18 4h4"/></symbol>
+    <symbol id="tool" viewBox="0 0 24 24"><path class="icon" d="M14 5a6 6 0 0 0-7 7L2 17a3.5 3.5 0 0 0 5 5l5-5a6 6 0 0 0 7-7l-4 4-4-4Z"/></symbol>
+  </defs>
+
+  <rect width="1920" height="1320" fill="#fbfaf7"/>
+
+  <!-- The headline and benefit labels are the visitor's entry point. -->
+  <g id="header">
+    <text class="brand" x="80" y="88">Recued</text>
+    <text class="small" x="1840" y="88" text-anchor="end">demo.recued.com</text>
+    <text class="headline" x="77" y="185">Your answer, with fewer steps.</text>
+    <text class="subhead" x="80" y="238">Quick lookups answered locally. Relevant context ready when AI is needed.</text>
+    <g transform="translate(80 269)">
+      <use href="#check" x="0" y="0" width="21" height="21" color="#087f88"/>
+      <text class="label" x="31" y="17">Less waiting</text>
+      <use href="#check" x="235" y="0" width="21" height="21" color="#087f88"/>
+      <text class="label" x="266" y="17">Less back-and-forth</text>
+      <use href="#shield" x="550" y="0" width="21" height="21" color="#087f88"/>
+      <text class="label" x="581" y="17">Personal details protected</text>
+    </g>
+    <a class="proof-link" href="https://demo.recued.com/app/?example=maya-answers" target="_blank" rel="noopener noreferrer" tabindex="0" aria-label="Replay Maya’s two recorded questions">
+      <title>Replay Maya’s two recorded questions. Opens the same recorded Maya example in Studio. Sample data are fictional; questions and answers are captured.</title>
+      <rect x="1415" y="251" width="425" height="50" rx="12" fill="#eef8f5" stroke="#a9d5cd"/>
+      <text class="label link-label" x="1627.5" y="283" text-anchor="middle">Replay Maya’s questions →</text>
+    </a>
+  </g>
+
+  <!-- Routing first, with the cards placed over the ends of the connectors. -->
+  <g id="routing">
+    <path class="route" d="M300 520H379"/>
+    <path class="fast-route" d="M680 520H769"/>
+    <text class="label ink-teal" x="704" y="492">Yes</text>
+    <path class="route" d="M530 619V809"/>
+    <text class="label ink-orange" x="554" y="719">Needs AI</text>
+    <path class="route" d="M680 949H739"/>
+    <path class="route" d="M1160 949H1219"/>
+    <path class="fast-route" d="M1410 949H1479"/>
+    <text class="small ink-teal" x="1445" y="934" text-anchor="middle">Answer</text>
+    <path class="route" d="M1315 1010V1109"/>
+    <text class="small" x="1334" y="1067">Need more?</text>
+    <path class="fast-route" d="M1210 1158H1188V987H1219"/>
+    <text class="small ink-teal" x="1170" y="1187" text-anchor="end">More information</text>
+  </g>
+
+  <g id="question" filter="url(#shadow)">
+    <rect class="card" x="80" y="450" width="220" height="140" rx="19"/>
+    <use href="#chat" x="106" y="474" width="32" height="32" color="#c1440e"/>
+    <text class="title" x="106" y="543">You ask</text>
+    <text class="small" x="106" y="570">In your own words.</text>
+  </g>
+
+  <g id="local-check" filter="url(#shadow)">
+    <rect class="card" x="380" y="421" width="300" height="198" rx="19"/>
+    <use href="#search" x="408" y="445" width="34" height="34" color="#c1440e"/>
+    <text class="title" x="408" y="518">Can saved facts</text>
+    <text class="title" x="408" y="552">answer this?</text>
+    <text class="small" x="408" y="590">Checks your saved records.</text>
+  </g>
+
+  <!-- Fast path: the question and answer do the explaining. -->
+  <g id="direct-answer-path">
+    <rect x="770" y="363" width="1070" height="305" rx="24" fill="#eef8f5" stroke="#a9d5cd" stroke-width="1.5"/>
+    <text class="eyebrow ink-teal" x="806" y="403">A QUICK LOOKUP</text>
+    <text class="title" x="806" y="443">Your saved facts can answer directly.</text>
+    <rect x="1637" y="388" width="167" height="36" rx="18" fill="#087f88"/>
+    <text class="chip white" x="1720.5" y="412" text-anchor="middle">No AI needed</text>
+
+    <rect x="806" y="471" width="413" height="82" rx="13" fill="#fff" stroke="#d6e8e2"/>
+    <text class="small" x="827" y="500">You ask</text>
+    <text class="label" x="827" y="531">“What is Maya Quinn's email?”</text>
+    <path class="fast-route" d="M1234 512H1289"/>
+    <rect x="1300" y="471" width="504" height="82" rx="13" fill="#fff" stroke="#a9d5cd"/>
+    <use href="#check" x="1322" y="497" width="29" height="29" color="#087f88"/>
+    <text font-size="25" font-weight="650" x="1367" y="521">maya@example.com</text>
+
+    <!-- These are alternative supported lookup families, not sequential steps. -->
+    <path class="branch" d="M1305 564V578M883 578H1711M883 578V589M1086 578V589M1289 578V589M1492 578V589M1711 578V589"/>
+    <g id="direct-lookup-options">
+      <rect x="806" y="589" width="154" height="42" rx="11" fill="#fff" stroke="#d6e8e2"/>
+      <text class="chip" x="883" y="616" text-anchor="middle">Contact details</text>
+      <rect x="982" y="589" width="208" height="42" rx="11" fill="#fff" stroke="#d6e8e2"/>
+      <text class="chip" x="1086" y="616" text-anchor="middle">Contact lists</text>
+      <rect x="1212" y="589" width="154" height="42" rx="11" fill="#fff" stroke="#d6e8e2"/>
+      <text class="chip" x="1289" y="616" text-anchor="middle">Email on file?</text>
+      <rect x="1388" y="589" width="208" height="42" rx="11" fill="#fff" stroke="#d6e8e2"/>
+      <text class="chip" x="1492" y="616" text-anchor="middle">Next meeting</text>
+      <rect x="1618" y="589" width="186" height="42" rx="11" fill="#fff" stroke="#d6e8e2"/>
+      <text class="chip" x="1711" y="616" text-anchor="middle">Email counts</text>
+    </g>
+    <a class="proof-link" href="https://demo.recued.com/app/?example=maya-answers" target="_blank" rel="noopener noreferrer" tabindex="0" aria-label="See Maya’s recorded local answer with zero AI requests">
+      <title>See Maya’s recorded local answer with zero AI requests. Opens the same recorded Maya example in Studio. Sample data are fictional; questions and answers are captured.</title>
+      <text class="small link-label" x="806" y="652">See this recorded local answer →</text>
+    </a>
+  </g>
+
+  <!-- The second path makes the benefit of context preparation visible. -->
+  <g id="ai-path-heading">
+    <text class="eyebrow ink-orange" x="770" y="720">A QUESTION THAT NEEDS AI</text>
+    <text class="title" x="770" y="758">Give AI the facts upfront.</text>
+    <text class="body" x="770" y="792">“Will Maya Quinn's car insurance expire before her trip?”</text>
+  </g>
+
+  <g id="aliasing" filter="url(#shadow)">
+    <rect class="card" x="380" y="810" width="300" height="278" rx="19"/>
+    <use href="#shield" x="408" y="836" width="34" height="34" color="#c1440e"/>
+    <text class="title" x="408" y="912">Protect your</text>
+    <text class="title" x="408" y="947">personal details</text>
+    <rect x="408" y="970" width="244" height="42" rx="9" fill="#fff3e9"/>
+    <text class="label ink-orange" x="530" y="997" text-anchor="middle">Maya Quinn → Person 1</text>
+    <text class="small" x="408" y="1033">Names, emails, phones,</text>
+    <text class="small" x="408" y="1053">addresses, URLs and IDs.</text>
+    <a class="proof-link" href="https://demo.recued.com/app/?example=maya-answers" target="_blank" rel="noopener noreferrer" tabindex="0" aria-label="See Maya’s privacy alias in the recorded AI request">
+      <title>See Maya’s privacy alias in the recorded AI request. Opens the same recorded Maya example in Studio. Sample data are fictional; questions and answers are captured.</title>
+      <text class="small link-label" x="408" y="1077">See the privacy alias →</text>
+    </a>
+  </g>
+
+  <g id="prefetch" filter="url(#shadow)">
+    <rect class="card" x="740" y="831" width="420" height="257" rx="19"/>
+    <use href="#file" x="768" y="856" width="33" height="33" color="#087f88"/>
+    <text class="title" x="817" y="883">Bring relevant facts</text>
+    <text class="small" x="768" y="920">Ready before AI starts answering.</text>
+    <rect x="768" y="935" width="364" height="114" rx="12" fill="#f0f7f8"/>
+    <text class="small" x="788" y="964">Person 1 · Car insurance + trip</text>
+    <text class="label" x="788" y="995">Policy ends: 18 November</text>
+    <text class="label" x="788" y="1028">Trip starts: 20 November</text>
+    <a class="proof-link" href="https://demo.recued.com/app/?example=maya-answers" target="_blank" rel="noopener noreferrer" tabindex="0" aria-label="See Maya’s saved facts supplied before AI answers">
+      <title>See Maya’s saved facts supplied before AI answers. Opens the same recorded Maya example in Studio. Sample data are fictional; questions and answers are captured.</title>
+      <text class="small link-label" x="768" y="1070">See these facts in the recording →</text>
+    </a>
+  </g>
+
+  <!-- The source fan-out explains breadth without dominating the message. -->
+  <g id="context-source-options">
+    <path class="branch" d="M950 1088V1102M788 1102H1115M788 1102V1115M893 1102V1115M998 1102V1115M1115 1102V1115"/>
+    <rect x="740" y="1115" width="96" height="37" rx="10" fill="#f0f7f8" stroke="#d7e6e9"/>
+    <text class="chip" x="788" y="1140" text-anchor="middle">Contacts</text>
+    <rect x="844" y="1115" width="97" height="37" rx="10" fill="#f0f7f8" stroke="#d7e6e9"/>
+    <text class="chip" x="892.5" y="1140" text-anchor="middle">Assets</text>
+    <rect x="949" y="1115" width="98" height="37" rx="10" fill="#f0f7f8" stroke="#d7e6e9"/>
+    <text class="chip" x="998" y="1140" text-anchor="middle">Calendar</text>
+    <rect x="1055" y="1115" width="105" height="37" rx="10" fill="#f0f7f8" stroke="#d7e6e9"/>
+    <text class="chip" x="1107.5" y="1140" text-anchor="middle">Tasks + mail</text>
+  </g>
+
+  <g id="ai" filter="url(#shadow)">
+    <rect class="card" x="1220" y="880" width="190" height="130" rx="19"/>
+    <use href="#spark" x="1250" y="905" width="33" height="33" color="#c1440e"/>
+    <text class="title" x="1250" y="979">AI</text>
+  </g>
+
+  <g id="ai-answer">
+    <rect x="1480" y="855" width="360" height="211" rx="19" fill="#eef8f5" stroke="#a9d5cd" stroke-width="1.5"/>
+    <text class="eyebrow ink-teal" x="1508" y="893">YOUR ANSWER</text>
+    <text class="title" x="1508" y="940">Yes—two days</text>
+    <text class="title" x="1508" y="978">before Maya leaves.</text>
+    <text class="small" x="1508" y="1018">From policy + trip records.</text>
+    <text class="small" x="1508" y="1046">Maya’s name restored locally.</text>
+    <text class="label ink-teal" x="1480" y="1101">Enough context? Skip extra lookups.</text>
+  </g>
+
+  <g id="tool-loop">
+    <rect class="card" x="1210" y="1110" width="324" height="96" rx="16"/>
+    <use href="#tool" x="1233" y="1134" width="29" height="29" color="#c1440e"/>
+    <text class="label" x="1278" y="1147">Look up more</text>
+    <text class="small" x="1233" y="1182">Then return to your question.</text>
+  </g>
+
+  <g id="footer">
+    <path d="M80 1247H1840" stroke="#dce3e6" stroke-width="1"/>
+    <text class="small" x="80" y="1288">Recued takes the steps your question needs.</text>
+    <text class="small" x="1840" y="1288" text-anchor="end">Example questions shown with fictional data.</text>
+  </g>
+</svg>

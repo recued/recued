@@ -2,22 +2,60 @@
 
 # Recued
 
-Recued is a server you run yourself. It sits between AI agents and your
-accounts. Your mail, calendar, files, and CRM records stay on a machine you
-control. An agent gets in over MCP, through a contract that lists exactly what
-it may do. Every action it takes passes one gate. By default, anything that
-writes or deletes waits for your yes. Recued does not replace the AI you use.
-Claude, ChatGPT, Codex, or a local model still does the thinking. Recued is
-where that thinking meets your data and your accounts, on terms you set. That
-is the space it holds, between you and AI.
+Recued is a server you run yourself. It sits between AI and your accounts.
+Your mail, calendar, files, and CRM records stay on a machine you control.
+
+It works two ways. An AI agent you already use gets in over MCP, through a
+contract that lists exactly what it may do. Or Recued does the job itself: you
+ask in its chat, or a recipe runs on a schedule or when something happens.
+Either way, every action passes one gate. By default, anything that writes or
+deletes waits for your yes.
+
+Recued does not replace the AI you use. Claude, ChatGPT, Codex, or a local
+model still does the thinking. Recued is where that thinking meets your data
+and your accounts, on terms you set. That is the space it holds, between you
+and AI.
 
 This repo holds the complete self-hosted **server** and the **webclient**. It
 also holds the workspace packages they are built from.
 
+## Recued as a gateway
+
+[![Recued holds the boundary. Your accounts, the people who reach you, outside AI agents and the AI providers all meet one gate on your own machine, and so do Recued's own jobs. Contracts decide who may call which tool, writes wait for approval, and every call is logged before it runs.](.github/assets/recued-control-plane-diagram.svg)](https://recued.com/docs/guides/connect-to-recued/)
+
+- **One door per agent.** You make a contract for each AI agent: Claude,
+  Codex, OpenClaw, or your own. It lists the tools that agent may use. The
+  agent connects over MCP with the contract's key.
+- **One gate for every call.** The gate checks the contract first, and asks
+  you when a call writes. It logs the call, and only then runs it. An unknown
+  caller is refused. One switch pauses everything.
+- **Your yes for risky actions.** By default, anything that writes, sends,
+  or deletes waits for you. Approve one, a batch, or a whole session.
+- **Keys stay home.** Your account keys stay on your server, or with a
+  broker you pick. Recued's cloud never holds them. An agent gets the tools a
+  contract grants, never the keys behind them.
+
+## Recued does jobs on its own
+
+[![Recued's chat. A quick lookup is answered from your saved records, with no AI. A question that needs AI gets the personal details swapped out and the relevant facts brought along first.](.github/assets/recued-chat-flow.svg)](https://demo.recued.com/app/?example=maya-answers)
+
+- **Ask it.** Recued has its own chat: in the web app, by email, and in Slack
+  and Telegram. It answers from your saved records first. A lookup like "What
+  is Maya's email?" needs no AI at all. When a question does need AI, Recued
+  swaps out the personal details and brings the relevant facts along, so the
+  model has them before it starts. [Replay Maya's questions](https://demo.recued.com/app/?example=maya-answers)
+  in the demo.
+- **Let it run.** A recipe is a job Recued runs by itself, on a schedule or
+  when something happens. Mail about a parcel, a bill, a booking, an order, or
+  a lead can start one. So can a new record. It calls a model only where
+  judgment is really needed.
+- **Same gate.** Its own jobs pass the same gate as an outside agent. By
+  default, a step that writes or deletes still waits for your yes.
+
 ## What Recued is not
 
 - Not a coding agent.
-- Not a general chat app.
+- Not a general chat app. Its chat is for your own records and accounts.
 - Not a runner for `SKILL.md` files. Recued cannot run them.
 - Not built for open-ended questions that take many steps over a long stretch.
 
