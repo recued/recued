@@ -1,4 +1,5 @@
 import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
+import { withMcpToolProgress, type McpProgressSink } from './mcp-tool-progress.js';
 /** MCP server — expose recued-server as tools over stdio.
  *
  *  Any AI agent (Claude Desktop, Cursor, OpenClaw, custom agents) can
@@ -1951,6 +1952,8 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
 };
 
 export interface McpDeps extends ExecuteHandlerDeps {
+  /** Bound to this request's transport; passive progress only. */
+  sendProgress?: McpProgressSink;
   /** D-220 — read a live intake form so `recued_saveRecipe` is gated by the SAME
    *  form-field contract as the `recipe.save` rpc. Absent ⇒ the gate is inert,
    *  which is what shipped: an authenticated MCP caller could arm a
@@ -4391,7 +4394,8 @@ const dispatch = async (
         }
         let result: unknown;
         try {
-          result = await handleToolCall(callParams, deps);
+          result = await withMcpToolProgress(rawParams, deps.sendProgress,
+            () => handleToolCall(callParams, deps));
         } catch (error) {
           deps.customerUsage?.release();
           throw error;
@@ -4485,15 +4489,15 @@ const deriveMcpTokenId = (token: string): string =>
  *  of poisoning the registry guard. */
 export const createMcpHttpDispatch = (
   deps: McpDeps,
-): ((envelope: unknown, token?: string) => Promise<unknown | null>) => {
-  return async (envelope: unknown, token?: string) => {
+): ((envelope: unknown, token?: string, sendProgress?: McpProgressSink) => Promise<unknown | null>) => {
+  return async (envelope: unknown, token?: string, sendProgress?: McpProgressSink) => {
     // `dispatch` validates the envelope shape (Codex P2 #2 fold) so we
     // forward the raw value — non-object envelopes surface as JSON-RPC
     // `-32600 Invalid Request` instead of throwing up the transport.
     const perCallDeps: McpDeps = token && token.length > 0
       ? { ...deps, mcpTokenId: deriveMcpTokenId(token) }
       : deps;
-    return dispatch(envelope, perCallDeps);
+    return dispatch(envelope, { ...perCallDeps, sendProgress });
   };
 };
 
@@ -4509,6 +4513,7 @@ export const startMCPServer = (deps: McpDeps): { close: () => void } => {
     ...deps,
     mcpActionNotifications: true,
     mcpRecipeCallbackNotifications: true,
+    sendProgress: (notification) => send(notification),
   };
 
   const send = (message: JsonRpcResponse | JsonRpcNotification): void => {

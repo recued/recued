@@ -7,7 +7,7 @@ import type { MainDishSettings } from '../recipes/main-dish-settings.js';
 import type { HeldRunFollower } from '../held-run-follow.js';
 import { CONNECTION_NAME_REGEX } from '@recued/contracts';
 import { connectionsFileAuthenticationAddress } from '../connections/connections-navigation.js';
-import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
+import { openFilePreview, readStoredFileDownload, type FilePreviewCallers } from '../files/file-preview.js';
 import { openFileChatPicker, type FileChatCallers } from '../chat/existing-file-picker.js';
 import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug, SAVED_FILES_SLUG, savedFilesInstance } from './cloud-file-explorer.js';
 import type { CloudFileSource } from '@recued/contracts';
@@ -35,10 +35,12 @@ import type {
   ContactFieldProvenance,
   ContactMergeCandidate,
   ContactRecord,
+  ContactAdditionalIdentifiers,
   ContactSource,
   ContactSourceHealth,
   ContactImportCandidate,
   ContactImportFilePlan,
+  ContactImportOccasionSelection,
   EnrichmentMeta,
   EnrichmentScope,
   FieldValidationError,
@@ -241,6 +243,7 @@ import {
   type MailFactCallers,
 } from './mail-facts-surface.js';
 import { createCalendarEventSurface, CALENDAR_EVENT_ACTION_PREFIX, CALENDAR_EVENT_STYLES, type CalendarEventCallers } from './calendar-event-surface.js';
+import { createMailMessageSurface, MAIL_MESSAGE_STYLES, type MailMessageCallers } from './mail-message-surface.js';
 import {
   createRemindersSurface,
   REMINDERS_ACTION_PREFIX,
@@ -306,6 +309,9 @@ import {
   COLLECTION_RETRY_ATTR,
   type CollectionExplorerDetailState,
 } from './collection-explorer.js';
+import { createCalendarAgenda, CALENDAR_AGENDA_STYLES, AGENDA_FOCUS, AGENDA_SOURCE } from './calendar-agenda.js';
+import { REMINDER_CREATE_STYLES } from '../reminders/reminder-create-form.js';
+import { createTaskBulkActions, TASK_BULK_FOCUS, TASK_BULK_STYLES, type TaskBulkActions } from './task-bulk-actions.js';
 import type { PackInstalledListCaller, RosterPack } from '../discover/pack-discovery.js';
 import {
   renderUniversalSearch,
@@ -325,6 +331,9 @@ import {
   SEARCH_MORE_WORK_ACTION,
   SEARCH_WORK_KIND_ATTR,
   SEARCH_WORK_ID_ATTR,
+  SEARCH_OPEN_CONTACT_ACTION,
+  SEARCH_MORE_CONTACTS_ACTION,
+  SEARCH_CONTACT_EMAIL_ATTR,
   SEARCH_RETRY_ACTION,
   SEARCH_DID_YOU_MEAN_ACTION,
   SEARCH_DID_YOU_MEAN_QUERY_ATTR,
@@ -670,6 +679,7 @@ export type DataManageRescheduleLinkCaller = (
 ) => Promise<{ url: string; expires_at: number }>;
 
 export type DataContactListCaller = (args: {
+  query?: string;
   name_contains?: string;
   source?: ContactSource;
   since?: number;
@@ -683,7 +693,7 @@ export type DataContactListCaller = (args: {
 }>;
 export type DataContactGetCaller = (
   args: { email: string },
-) => Promise<{ contact: ContactRecord | null }>;
+) => Promise<{ contact: ContactRecord | null; identifiers?: ContactAdditionalIdentifiers }>;
 /** D-205 merge-review item 3 — every contribution behind a contact's fields, each
  *  stamped by the server with whether it WON its kind. Powers the per-source block
  *  on the detail page: what HubSpot said, what Google said, and which one the ladder
@@ -764,9 +774,11 @@ export type DataContactImportFilePreviewCaller = (args: {
 export type DataContactImportFileApplyCaller = (args: {
   text: string;
   apply_changes: boolean;
+  occasions?: ReadonlyArray<ContactImportOccasionSelection>;
 }) => Promise<{
   added: number;
   changed: number;
+  occasions_saved?: number;
   skipped: number;
   failures: ReadonlyArray<string>;
 }>;
@@ -919,15 +931,8 @@ export type DataUploadDeleteCaller = (
  *  download. Absent → the Files drill-down keeps its metadata-only view with no
  *  download affordance. Owner-trusted `data.file.read` pair-RPC (not the gated
  *  op path); returns the record's bytes for a browser download. */
-export type DataFileReadCaller = (args: {
-  record_id: string;
-}) => Promise<{
-  record_id: string;
-  bytes_b64: string;
-  mime_type: string;
-  filename: string;
-  size_bytes: number;
-}>;
+export type DataFileReadCaller = (args: Parameters<FilePreviewCallers['read']>[0]) =>
+  Promise<Awaited<ReturnType<FilePreviewCallers['read']>> & { size_bytes: number }>;
 
 export interface BootstrapDataRouteOptions {
   /** Resolved by the saved-view host before any collection reads start. */
@@ -997,6 +1002,8 @@ export interface BootstrapDataRouteOptions {
    *  absent caller hides what needs it. */
   reminderCallers?: ReminderCallers;
   calendarEventCallers?: CalendarEventCallers;
+  mailMessageCallers?: MailMessageCallers;
+  mailCompose?: import('../mail/mail-compose-host.js').MailComposeDeps;
   /** Owner-only installed recipe discovery + manual execution for explicitly
    *  continuing one already accepted response. Both must be present for the
    *  detail affordance to render. */
@@ -1132,6 +1139,8 @@ export interface BootstrapDataRouteOptions {
   bookingSearchDebounceMs?: number;
   /** Clock for relative-time copy and task date windows. */
   now?: () => number;
+  /** Server clock for creating reminders and filtering calendar dates. */
+  serverTimeZone?: () => string | undefined;
   /** Task search debounce, independently configurable by embedded hosts. */
   taskSearchDebounceMs?: number;
 }
@@ -1208,6 +1217,8 @@ interface TimelineSnapshot {
  *  renders the part it has, because they answer different questions and none is a
  *  precondition for another. */
 interface ContactDetailState {
+  from_search?: boolean;
+  identifiers?: ContactAdditionalIdentifiers;
   email: string;
   contact: ContactRecord | null;
   response: TimelineResponse | null;
@@ -1307,6 +1318,8 @@ export interface DataRoute {
   unsavedChangesPrompt(): string | null;
   refresh(): void;
   whenLoaded(): Promise<void>;
+  /** Keep an owned search return in the current route on native Back. */
+  navigateDeepLink?(hash: string): boolean;
   selectTab(tab: DataTabId): Promise<void>;
   openCreateWorkEntityDialog(): void;
   openEditWorkEntityDialog(kind: WorkEntityKind, id: string, intent?: 'read' | 'edit' | 'details'): Promise<void>;
@@ -1562,6 +1575,21 @@ const DATA_ROUTE_STYLES = `
   gap: 8px;
   margin: 10px 0;
 }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasion { flex: 1; min-inline-size: 0; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasions { list-style: none; padding: 0; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasion legend { font-weight: 600; overflow-wrap: anywhere; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasion label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasion select { min-width: 0; width: 100%; max-width: 100%; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-actions { display: flex; flex: 1; flex-wrap: wrap; justify-content: flex-end; gap: 8px; min-width: 0; }
+[${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] {
+  flex-basis: 100%; box-sizing: border-box; min-width: 0; border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px; background: var(--surface); font-size: 13px; line-height: 1.5;
+}
+[${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] h3 { margin: 0 0 8px; font-size: 14px; }
+[${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] p,
+[${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] ul { margin: 0 0 10px; overflow-wrap: anywhere; }
+[${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] button { margin: 0 6px 6px 0; }
+[${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] [role="alert"] { color: var(--danger); }
 [${DATA_ROUTE_HOST_ATTR}] .data-input {
   min-width: min(280px, 100%);
   border: 1px solid var(--border);
@@ -3481,7 +3509,7 @@ const renderContactDetailView = (
     <section ${DATA_ROUTE_CONTACT_DETAIL_ATTR}="${e(state.email)}">
       <div class="data-contact-toolbar">
         <button type="button" class="data-button"
-          ${DATA_ROUTE_ACTION_ATTR}="close-contact-detail">← Back to contacts</button>
+          ${DATA_ROUTE_ACTION_ATTR}="close-contact-detail">${state.from_search ? '← Back to search' : '← Back to contacts'}</button>
         <button type="button" class="data-button"
           ${DATA_ROUTE_ACTION_ATTR}="open-edit-contact"
           ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(state.email)}"${openingEditor
@@ -3501,11 +3529,15 @@ const renderContactDetailView = (
         </span>
       </header>
       ${identity}
+      ${state.identifiers ? `<section aria-label="Additional contact details"><dl class="data-contact-fields">
+        ${state.identifiers.emails.length ? `<div class="data-contact-field"><dt class="data-label">Other email addresses</dt><dd>${state.identifiers.emails.map(value => e(value)).join('<br />')}</dd></div>` : ''}
+        ${state.identifiers.phones.length ? `<div class="data-contact-field"><dt class="data-label">Other phone numbers</dt><dd>${state.identifiers.phones.map(value => e(value)).join('<br />')}</dd></div>` : ''}
+      </dl></section>` : ''}
       <h3 class="data-subsection-title">Activity</h3>
       ${timeline}
       ${state.history !== undefined ? `<section data-contact-proactive-history><h3 class="data-subsection-title">Occasions and recorded episodes</h3>
         ${state.history_failed ? '<p role="status">This history could not be read. Reopen the contact to retry.</p>' : state.history === null ? '<p>Loading recorded history…</p>'
-          : `<ul>${state.history.occasions.map(row => `<li><a href="#yours/occasions/occasion/${e(encodeURIComponent(row.id))}">${e(row.title)}</a> · ${e(row.month_day)}</li>`).join('')}
+          : `<ul>${state.history.occasions.map(row => `<li><a href="#yours/occasions/occasion/${e(encodeURIComponent(row.id))}">${e(row.title)}</a> · ${e(row.source_next_on ?? row.month_day)}</li>`).join('')}
             ${state.history.episodes.map(row => `<li data-contact-episode="${e(row.id)}"><a href="#yours/episodes/episode/${e(encodeURIComponent(row.id))}">${e(row.title)}</a> · ${e(new Date(row.when.from).toLocaleDateString())}
               <a href="#yours/episodes/episode/${e(encodeURIComponent(row.id))}/correct" aria-label="Correct ${e(row.title)}">Correct</a>
               ${state.history_can_hide ? `<button type="button" ${DATA_ROUTE_ACTION_ATTR}="hide-contact-episode" data-episode-id="${e(row.id)}" aria-label="Hide ${e(row.title)}">Hide</button>` : ''}</li>`).join('')}</ul>
@@ -3703,8 +3735,9 @@ interface ContactImportState {
     name: string;
     plan: ContactImportFilePlan | null;
     apply_changes: boolean;
+    occasions: Record<string, ContactImportOccasionSelection & { selected: boolean }>;
     busy: boolean;
-    result: { added: number; changed: number; skipped: number } | null;
+    result: { added: number; changed: number; skipped: number; occasions_saved?: number; failures: ReadonlyArray<string> } | null;
   } | null;
 }
 
@@ -3776,12 +3809,13 @@ const renderFileImportPanel = (state: ContactImportState): string => {
   const f = state.file;
   const plan = f?.plan ?? null;
   const applying = f?.busy === true && plan !== null;
+  const selectedDates = Object.values(f?.occasions ?? {}).filter(date => date.selected).length;
 
   return `
   <section class="data-file-import">
     <h3 class="data-section-title">From a file</h3>
     <p class="data-row-subtle">A vCard (.vcf) or CSV export. Whatever it says becomes
-      <em>your</em> value for that field — the same as typing it in.</p>
+      <em>your</em> value for that field — the same as typing it in. Review changes before applying them.</p>
     <input type="file" class="data-input" accept=".vcf,.csv,text/vcard,text/csv"
       ${DATA_ROUTE_ACTION_ATTR}="contact-import-file-pick"
       aria-label="Choose a vCard or CSV file" ${applying ? 'disabled' : ''} />
@@ -3797,12 +3831,15 @@ const renderFileImportPanel = (state: ContactImportState): string => {
         } change${plan.changes.length === 1 ? '' : 's'} · ${plan.unchanged} already up to date`,
       )}</p>
 
+      ${(plan.additional_emails ?? 0) + (plan.additional_phones ?? 0) > 0
+        ? `<p class="data-row-subtle">Also keeps ${e([plan.additional_emails ? `${plan.additional_emails} additional email address${plan.additional_emails === 1 ? '' : 'es'}` : '', plan.additional_phones ? `${plan.additional_phones} additional phone number${plan.additional_phones === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and '))}. Existing primary emails stay the same.</p>` : ''}
+
       ${plan.errors.length === 0
         ? ''
         // ⚠ NEVER silently dropped. A row that vanishes is a person missing from the
         // graph, and the user would have no way to know.
         : `<details class="data-file-import-errors">
-             <summary>${e(`${plan.errors.length} row${plan.errors.length === 1 ? '' : 's'} could not be read`)}</summary>
+             <summary>${e(`${plan.errors.length} ${plan.errors.length === 1 ? 'entry' : 'entries'} could not be imported`)}</summary>
              <ul role="list">${plan.errors.map((x) => `<li>${e(x)}</li>`).join('')}</ul>
            </details>`}
 
@@ -3840,22 +3877,52 @@ const renderFileImportPanel = (state: ContactImportState): string => {
             .join('')}
         </ul>`}
 
+      ${(plan.occasions ?? []).length ? `
+        <h4 class="data-section-title">Significant dates</h4>
+        <p class="data-row-subtle">Choose dates to keep in Yours → Occasions, linked to each contact. Birthdays and anniversaries already use their contact reminders. Existing titles, mute settings and reminder rules are kept.</p>
+        <div class="data-contact-toolbar">
+          <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="contact-import-dates-select-all" ${applying || !plan.occasions!.some(date => !date.unavailable) ? 'disabled' : ''}>Select all dates</button>
+          <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="contact-import-dates-clear" ${applying ? 'disabled' : ''}>Clear dates</button>
+          <span class="data-row-subtle">${selectedDates} selected</span>
+        </div>
+        <ul class="data-list data-file-import-occasions" role="list">${plan.occasions!.map(date => {
+          const choice = f!.occasions[date.key];
+          return `<li class="data-row"><fieldset class="data-file-import-occasion" ${applying || date.unavailable ? 'disabled' : ''}>
+            <legend>${e(`${date.name} · ${date.label}`)}</legend>
+            <label class="data-file-import-changes-toggle"><input type="checkbox" data-contact-import-date="${e(date.key)}" data-contact-import-date-field="selected" ${choice?.selected ? 'checked' : ''} />
+              ${date.existing ? 'Update this occasion' : 'Add this occasion'}</label>
+            <p class="data-row-subtle">${e(date.existing ? `Current: ${date.existing.title} · ${date.existing.date} (${date.existing.recurrence === 'once' ? 'one time' : 'yearly'}). From file: ${date.date}.` : `From file: ${date.date}`)}</p>
+            ${date.unavailable ? `<p class="data-row-subtle">${e(date.unavailable)}</p>` : `
+            <div class="data-contact-toolbar">
+              <label>Repeat <select class="data-input" aria-label="Repeat ${e(date.label)} for ${e(date.name)}" data-contact-import-date="${e(date.key)}" data-contact-import-date-field="recurrence">
+                <option value="yearly" ${choice?.recurrence !== 'once' ? 'selected' : ''}>Every year</option>
+                <option value="once" ${choice?.recurrence === 'once' ? 'selected' : ''} ${date.date.startsWith('--') ? 'disabled' : ''}>One time</option>
+              </select></label>
+              ${date.existing ? '<span class="data-row-subtle">Current reminder rules will be kept.</span>' : `<label>Remind <select class="data-input" aria-label="Remind ${e(date.label)} for ${e(date.name)}" data-contact-import-date="${e(date.key)}" data-contact-import-date-field="reminder_days">
+                ${[['7', 'One week before and on the day'], ['1', 'One day before and on the day'], ['30', '30 days before and on the day'], ['0', 'On the day'], ['none', 'No reminder']].map(([value, label]) => `<option value="${value}" ${String(choice?.reminder_days ?? (choice?.reminder_days === null ? 'none' : 7)) === value ? 'selected' : ''}>${label}</option>`).join('')}
+              </select></label>`}
+            </div>`}
+          </fieldset></li>`;
+        }).join('')}</ul>` : ''}
+
       <div class="data-contact-toolbar">
         <button type="button" class="data-button data-button--primary"
           ${DATA_ROUTE_ACTION_ATTR}="contact-import-file-apply"
           ${applying
             ? 'aria-disabled="true" aria-busy="true"'
-            : plan.adds === 0 && !(f!.apply_changes && plan.changes.length > 0)
+            : plan.adds === 0 && !(f!.apply_changes && plan.changes.length > 0) && selectedDates === 0
               ? 'disabled'
               : ''}>
           ${e(
             f!.busy
               ? 'Importing…'
-              : `Import ${plan.adds} new${
+              : plan.adds === 0 && !(f!.apply_changes && plan.changes.length) && selectedDates > 0
+                ? `Import ${selectedDates} occasion${selectedDates === 1 ? '' : 's'}`
+                : `Import ${plan.adds} new${
                   f!.apply_changes && plan.changes.length > 0
                     ? ` and ${plan.changes.length} change${plan.changes.length === 1 ? '' : 's'}`
                     : ''
-                }`,
+                }${selectedDates ? ` · ${selectedDates} occasion${selectedDates === 1 ? '' : 's'}` : ''}`,
           )}
         </button>
         <button type="button" class="data-button"
@@ -3867,10 +3934,10 @@ const renderFileImportPanel = (state: ContactImportState): string => {
       ? ''
       : `<p class="data-row-subtle" role="status" tabindex="-1"
           ${DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR}>${e(
-          `${f.result.added} added · ${f.result.changed} changed${
+          `${f.result.added} added · ${f.result.changed} changed${f.result.occasions_saved ? ` · ${f.result.occasions_saved} occasion${f.result.occasions_saved === 1 ? '' : 's'} saved` : ''}${
             f.result.skipped > 0 ? ` · ${f.result.skipped} left as they were` : ''
           }`,
-        )}</p>`}
+        )}</p>${f.result.failures.length ? `<ul role="alert">${f.result.failures.map(failure => `<li>${e(failure)}</li>`).join('')}</ul>` : ''}`}
   </section>`;
 };
 
@@ -4291,7 +4358,7 @@ const renderContactSurface = (
         class="data-input"
         ${DATA_ROUTE_CONTACT_SEARCH_ATTR}
         value="${e(search)}"
-        placeholder="Search contacts"
+        placeholder="Name, email, phone, company or alias"
         aria-label="Search contacts"
       />
       ${canReviewMerges
@@ -5016,6 +5083,7 @@ const renderWorkEntitySurface = (
   noteView?: WorkEntityNoteView,
   closeLabel?: string,
   projectView?: ProjectOverviewProps,
+  taskBulk?: { html: string; selection: ReturnType<TaskBulkActions['selection']> },
 ): string => {
   const options = [...sourceOptionsForKind(sources, state.kind)];
   if (state.selected_source_id !== null && !options.some((option) => option.id === state.selected_source_id)) {
@@ -5114,6 +5182,7 @@ const renderWorkEntitySurface = (
     // wires them after each render via `mountWorkEntityRefPickers`.
     ref_picker: true,
     ...(state.kind === 'task' ? { task_filters: taskViewFilters } : {}),
+    ...(taskBulk ? { task_selection: taskBulk.selection, list_toolbar_html: taskBulk.html } : {}),
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: bookingLifecycleFilter }
       : {}),
@@ -5218,7 +5287,9 @@ export const bootstrapDataRoute = (
     style.textContent = [
       DATA_ROUTE_STYLES,
       FORM_RENDERER_STYLES,
+      MAIL_MESSAGE_STYLES,
       WORK_ENTITY_PAGE_STYLES,
+      TASK_BULK_STYLES,
       PROJECT_OVERVIEW_STYLES,
       // The mirror drill-down renders the ui-shared entity-detail panel;
       // bundle its CSS so the `.memory-*` classes paint (mirrors the
@@ -5237,6 +5308,8 @@ export const bootstrapDataRoute = (
       MEMORY_LENS_STYLES,
       // D-198 Slice 5 — the mail / calendar / files collection explorer.
       COLLECTION_EXPLORER_STYLES,
+      CALENDAR_AGENDA_STYLES,
+      REMINDER_CREATE_STYLES,
       // 2026-08-28 — universal search across every collection.
       UNIVERSAL_SEARCH_STYLES,
       // D-221 — full-ref, schema-driven pack Records owner explorer.
@@ -5263,6 +5336,7 @@ export const bootstrapDataRoute = (
 
   let disposed = false;
   let filePreviewAbort: AbortController | null = null;
+  let fileDownloadAbort: AbortController | null = null;
   let filePreviewRecord: { id: string; slug: string | null } | null = null;
   let fileChatAbort: AbortController | null = null;
   let fileChatRecord: { id: string; slug: string | null } | null = null;
@@ -5354,18 +5428,50 @@ export const bootstrapDataRoute = (
   // D-324 — Data → Owned → Reminders keeps its own state, as Mail facts does.
   const remindersSurface = createRemindersSurface({
     callers: opts.reminderCallers ?? {},
+    ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
   });
+  const calendarAgenda = createCalendarAgenda({
+    ...(opts.collectionListInstancesCaller ? { listInstances: opts.collectionListInstancesCaller } : {}),
+    ...(opts.collectionListCaller ? { list: opts.collectionListCaller } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
+    initialSource: opts.savedView?.definition.tab === 'calendar' ? opts.savedView.definition.collection_slug
+      : opts.initialTab === 'calendar' ? opts.initialCollectionSlug ?? null : null,
+    actionAttr: DATA_ROUTE_ACTION_ATTR,
+    render: () => { if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null) render(); },
+    onSources: (sources) => { explorerInstances = sources; },
+    onViewChange: () => { syncDataHash(); opts.onViewChange?.(currentView()); },
+  });
+  let calendarInitialAddress = activeTab === 'calendar' && typeof opts.initialEntityId === 'string';
+  let calendarAgendaReturn: { key: string; scrollTop: number; hash: string; sourcesOpen: boolean } | null = null;
+  let pendingCalendarAgendaRestore: { key: string; scrollTop: number; sourcesOpen?: boolean } | null = null;
   const calendarEventSurface = createCalendarEventSurface({
     callers: opts.calendarEventCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
+    onRemoved: (recordId) => {
+      explorerRecords = explorerRecords.filter(record => record.record_id !== recordId);
+      if (explorerSelectedSlug) calendarAgenda.remove(explorerSelectedSlug, recordId);
+      explorerLiveRefreshPending = true;
+    },
     onSaved: (snapshot) => {
       const event = snapshot.event;
+      if (explorerSelectedSlug) calendarAgenda.replace(explorerSelectedSlug, snapshot.record);
       explorerRecords = explorerRecords.map(record => record.record_id === event.record_id ? snapshot.record : record);
       if (explorerDetail?.record?.record_id === event.record_id) explorerDetail = { ...explorerDetail, record: snapshot.record };
       explorerLiveRefreshPending = true;
     },
+  });
+  const mailMessageSurface = createMailMessageSurface({
+    document: doc, callers: opts.mailMessageCallers ?? {},
+    ...(opts.mailCompose ? { compose: opts.mailCompose } : {}),
+    onSelectedRecord: (slug, record) => {
+      if (activeTab === 'mail' && explorerSelectedSlug === slug && explorerDetail) {
+        explorerDetail = { ...explorerDetail, record_id: record.record_id, record };
+      }
+    },
+    actionAttr: DATA_ROUTE_ACTION_ATTR, render: () => render(),
   });
   if (activeTab === 'mail_fact' && opts.initialEntityId !== undefined) {
     mailFacts.openAddress([opts.initialEntityId, ...(opts.initialDetailId !== undefined ? [opts.initialDetailId] : [])]);
@@ -5487,6 +5593,24 @@ export const bootstrapDataRoute = (
     ? opts.savedView.definition.task_filters ?? DEFAULT_TASK_VIEW_FILTERS : DEFAULT_TASK_VIEW_FILTERS;
   let taskListFilter = resolveTaskListFilter(taskViewFilters, (opts.now ?? Date.now)());
   let taskListSearch = workEntityState.kind === 'task' ? workEntityState.search_query.trim() : '';
+  const retireTaskListReads = (): void => {
+    taskSearchRefresh.cancel(); loadGeneration += 1;
+    loading = false; loadingMoreWorkEntities = false;
+  };
+  const taskBulk = createTaskBulkActions({
+    rows: () => activeLens === 'data' && activeTab === 'task'
+      ? workEntities.filter(row => facetIncludes({ collection: row._kind, id: row.id })) : [],
+    sources: () => sources,
+    ready: () => !loading && taskListSearch === workEntityState.search_query.trim(),
+    get: opts.workEntityGetCaller, listSources: opts.workEntitySourceListCaller,
+    complete: opts.taskMarkDoneCaller, update: opts.workEntityUpsertCaller,
+    render: () => render(),
+    selectionStarted: retireTaskListReads,
+    begin: retireTaskListReads,
+    confirmed: task => { workEntities = workEntities.map(row => row._kind === 'task' && row.id === task.id ? task : row); },
+    settled: () => { if (!disposed && activeLens === 'data' && activeTab === 'task') pendingLoadPromise = refreshActive(true); },
+  });
+  const focusTaskBatch = (): void => { routeRoot.querySelector<HTMLElement>('[data-task-bulk-focus="results"]')?.focus(); };
   let bookingDetailId: string | null = null;
   let bookingDetail: WorkEntityGetRpcResponse | null = null;
   let bookingDetailError: string | null = null;
@@ -5655,7 +5779,7 @@ export const bootstrapDataRoute = (
   const contactRefSearch: RefPicker.RefPickerSearchCaller = async (query) => {
     if (opts.contactListCaller === undefined) return [];
     const { contacts: results } = await opts.contactListCaller({
-      name_contains: query,
+      query,
       limit: 20,
     });
     return results.map((c) => ({
@@ -5736,8 +5860,20 @@ export const bootstrapDataRoute = (
   let universalSearchQuery = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.query : '';
   let universalSearchGroups: CollectionSearchGroup[] | undefined;
   let universalSearchWorkGroups: WorkEntitySearchGroup[] | undefined;
+  let universalSearchContacts: ContactRecord[] = [];
+  let universalSearchContactTotal = 0;
+  let universalSearchContactOffset = 0;
+  let universalSearchContactMore = false;
+  let universalSearchContactLoading = false;
+  let universalSearchContactError: string | undefined;
+  let universalSearchContactUnsupported = false;
+  let universalSearchContactPageSeq = 0;
+  let contactSearchReturn: { sequence: number; query: string; email: string; scrollTop: number; hash: string } | null = null;
+  let pendingContactSearchRestore: { email: string; scrollTop: number } | null = null;
   let universalSearchWorkLoading = false;
   let universalSearchWorkError: string | undefined;
+  /** Kept across searches, so the box's scope does not flicker; a work search that answers clears it. */
+  let universalSearchWorkUnsupported = false;
   const universalSearchWorkLoadingKinds = new Set<WorkEntitySearchKind>();
   const universalSearchWorkOffsets = new Map<WorkEntitySearchKind, number>();
   const universalSearchWorkPageSeq = new Map<WorkEntitySearchKind, number>();
@@ -5824,7 +5960,10 @@ export const bootstrapDataRoute = (
       : null;
 
   const resetExplorerState = (): void => {
+    calendarAgenda.cancel();
+    calendarAgendaReturn = null; pendingCalendarAgendaRestore = null;
     calendarEventSurface.reset();
+    mailMessageSurface.reset();
     cloudSources = []; cloudSourcesError = ''; cloudFileCursor = undefined;
     cloudFileQuery = cloudFileQueryInput = ''; cloudLoadingMore = false; cloudBrowseError = '';
     cloudFilePage = 1;
@@ -6269,6 +6408,8 @@ export const bootstrapDataRoute = (
   // bar (when the read caller is wired — the explorer renders it only in the
   // detail view).
   const renderExplorerTab = (tab: DataTabId): string => {
+    if (tab === 'calendar' && explorerDetail === null
+      && (explorerError === undefined || pendingExplorerVerificationRecordId === null)) return calendarAgenda.render();
     const downloadControl =
       tab === 'files' && opts.fileReadCaller !== undefined
         ? `<button type="button" class="data-button" ${DATA_ROUTE_DOWNLOAD_FILE_ATTR}
@@ -6329,8 +6470,9 @@ export const bootstrapDataRoute = (
         : '';
     const lifecycleControl = tab === 'files' && detail && /^file:[0-9a-f]{32}$/.test(detail.record_id)
       && opts.fileUsageCaller && opts.fileMutateCaller
-      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-usage">File usage and deletion</button>`
-        + (fileLifecycle?.fileId === detail.record_id ? renderFileLifecyclePanel(fileLifecycle, DATA_ROUTE_ACTION_ATTR) : '') : '';
+      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-usage">Manage file</button>` : '';
+    const lifecyclePanel = lifecycleControl !== '' && fileLifecycle && detail && fileLifecycle.fileId === detail.record_id
+      ? renderFileLifecyclePanel(fileLifecycle, DATA_ROUTE_ACTION_ATTR) : '';
     // A connected source's file, or one in a folder Recued watches, goes into
     // Chat as a copy: it is imported first.
     const importChatFile = (detail?.record_id.startsWith('file:remote:') || detail?.record_id.startsWith('file:local:'))
@@ -6353,7 +6495,9 @@ export const bootstrapDataRoute = (
           : ''}`;
     const followWork = collectionName === 'mail' && detail?.record != null && explorerSelectedSlug !== null
       ? `<a class="data-button" href="${e(mailWorkFollowHref({ slug: explorerSelectedSlug, record_id: detail.record_id }))}">Follow this work</a>` : '';
-    const detailActions = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls + followWork;
+    const detailControls = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls + followWork;
+    const detailActions = tab === 'files' && detailControls !== ''
+      ? `<div class="data-file-actions">${detailControls}</div>${lifecyclePanel}` : detailControls;
     const explorer = renderCollectionExplorer({
       collection: collectionName,
       instances: explorerInstances,
@@ -6383,6 +6527,10 @@ export const bootstrapDataRoute = (
         ? { ...(calendarEventSurface.hasSnapshot() ? { detailBodyHtml: calendarEventSurface.render() } : {}),
             detailTimelineHtml: (calendarEventSurface.hasSnapshot() ? '' : calendarEventSurface.render()) + detailTimelineHtml }
         : detailTimelineHtml !== '' ? { detailTimelineHtml } : {}),
+      ...(collectionName === 'mail' && detail?.record != null
+        ? { ...(mailMessageSurface.hasSnapshot() ? { detailBodyHtml: mailMessageSurface.render() } : {}),
+            detailTimelineHtml: (mailMessageSurface.hasSnapshot() ? '' : mailMessageSurface.render()) + detailTimelineHtml }
+        : {}),
       // Provenance collections (annotation / link) are single global collections
       // — no instances, no "connected" empty state.
       ...(isSingleCollectionTab(tab) ? { singleCollection: true } : {}),
@@ -6407,7 +6555,7 @@ export const bootstrapDataRoute = (
       ${cloudSourcesError ? `<p role="alert">${e(cloudSourcesError)}
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-refresh">Reload file sources</button></p>` : ''}
       ${opts.fileUsageCaller && explorerSelectedSlug === 'received' ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-toggle-archived" aria-pressed="${showArchivedFiles}">${showArchivedFiles ? 'Show current files' : 'Show archived files'}</button>` : ''}
-      ${fileLifecycleNotice ? `<p role="status">${e(fileLifecycleNotice)}</p>` : ''}
+      ${fileLifecycleNotice ? `<p role="status" data-file-lifecycle-notice tabindex="-1">${e(fileLifecycleNotice)}</p>` : ''}
       ${uploadShell}
       ${renderFileSourceCta()}
       ${cloudBrowse}
@@ -6513,6 +6661,10 @@ export const bootstrapDataRoute = (
       || contactImport !== null || contactScan !== null || currentDeepLinkEntity() !== undefined) return null;
     if (activeTab === 'contact') return { tab: activeTab, query: contactSearch };
     if (activeTab === 'search') return { tab: activeTab, query: universalSearchQuery };
+    if (activeTab === 'calendar') {
+      const slug = calendarAgenda.selectedSource();
+      return calendarAgenda.isToday() && slug !== undefined ? { tab: activeTab, collection_slug: slug } : null;
+    }
     if (isWorkEntityTab(activeTab)) return {
       tab: activeTab, query: workEntityState.search_query, source_id: workEntityState.selected_source_id,
       booking_lifecycle: activeTab === 'booking' ? bookingLifecycleFilter : 'all',
@@ -6520,7 +6672,7 @@ export const bootstrapDataRoute = (
         || taskViewFilters.due !== 'all' || taskViewFilters.sort !== 'default')
         ? { task_filters: taskViewFilters } : {}),
     };
-    if (activeTab === 'mail' || activeTab === 'calendar' || activeTab === 'files') {
+    if (activeTab === 'mail' || activeTab === 'files') {
       return { tab: activeTab, collection_slug: explorerSelectedSlug
         ?? savedExplorerScopes.get(activeTab) ?? null };
     }
@@ -6536,12 +6688,23 @@ export const bootstrapDataRoute = (
 
   const render = (): void => {
     let searchFocusFallback = false;
+    let agendaFocusFallback = false;
+    const agendaVisible = activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null;
+    const agendaFocus = agendaVisible ? (doc.activeElement as HTMLElement | null)?.getAttribute?.(AGENDA_FOCUS) : null;
+    const agendaSourcesOpen = agendaVisible
+      ? routeRoot.querySelector?.<HTMLDetailsElement>('details[data-calendar-agenda-sources]')?.open : undefined;
+    const agendaScroll = agendaVisible ? pendingCalendarAgendaRestore?.scrollTop
+      ?? (renderedActiveTab === 'calendar' && routeRoot.querySelector?.('[data-calendar-agenda]') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
+    const mailScrollTop = activeLens === 'data' && activeTab === 'mail' && renderedActiveTab === 'mail'
+      && routeRoot.querySelector?.('.data-mail-conversation') ? workSearchScrollHost()?.scrollTop : undefined;
+    const mailIndexScroll = activeLens === 'data' && activeTab === 'mail' && renderedActiveTab === 'mail'
+      ? mailMessageSurface.captureScroll(routeRoot) : null;
     const projectRead = activeTab === 'project' && projectWork !== null && !projectEditing;
     const projectFocus = projectRead ? pendingProjectRestore?.key
       ?? doc.activeElement?.closest?.('[data-project-focus]')?.getAttribute('data-project-focus') : undefined;
     const projectScroll = projectRead ? pendingProjectRestore?.scrollTop
       ?? (routeRoot.querySelector?.('.project-overview') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
-    const searchScrollTop = activeTab === 'search' ? pendingWorkSearchRestore?.scrollTop
+    const searchScrollTop = activeTab === 'search' ? pendingContactSearchRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
       ?? (renderedActiveTab === 'search' && routeRoot.querySelector?.('.rq-search') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
     const oldNoteReader = routeRoot.querySelector?.<HTMLElement>('.work-entity-note-reader');
     const oldNoteFocus = oldNoteReader?.contains(doc.activeElement) ? doc.activeElement : null;
@@ -6592,16 +6755,24 @@ export const bootstrapDataRoute = (
     const focusedSearchControl = activeTab === 'search' && activeElement?.tagName === 'BUTTON'
       && activeElement.closest?.('.rq-search') ? [DATA_ROUTE_ACTION_ATTR, SEARCH_WORK_KIND_ATTR, SEARCH_WORK_ID_ATTR,
         SEARCH_GROUP_PLATFORM_ATTR, SEARCH_GROUP_SLUG_ATTR, SEARCH_RECORD_ID_ATTR, SEARCH_RECIPE_ID_ATTR,
-        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
+        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR, SEARCH_CONTACT_EMAIL_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
     // D-315 — Mail facts keys each focusable control; restored after the repaint.
     const focusedMailFactsKey = renderedActiveTab === 'mail_fact'
       ? mailFacts.captureFocus(activeElement)
       : null;
     const focusedCalendarEvent = renderedActiveTab === 'calendar' ? calendarEventSurface.captureFocus(activeElement) : null;
+    const focusedMailMessage = renderedActiveTab === 'mail' ? mailMessageSurface.captureFocus(activeElement) : null;
     // D-324 — so does the Reminders tab.
+    const focusedTaskBulk = renderedActiveTab === 'task' ? activeElement?.getAttribute?.(TASK_BULK_FOCUS) ?? null : null;
     const focusedRemindersKey = renderedActiveTab === 'reminder'
       ? remindersSurface.captureFocus(activeElement)
       : null;
+    const fileAction = activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR);
+    const focusedFileLifecycleKey = renderedActiveTab !== 'files' ? null
+      : activeElement?.getAttribute?.('data-file-lifecycle') === '' ? 'panel'
+      : activeElement?.getAttribute?.('data-file-lifecycle-notice') === '' ? 'notice'
+      : fileAction && ['file-usage', 'file-archive', 'file-restore', 'file-delete', 'file-delete-confirm', 'file-delete-cancel', 'file-toggle-archived'].includes(fileAction)
+        ? fileAction : null;
     const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
       ? null
       : activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan'
@@ -6914,12 +7085,15 @@ export const bootstrapDataRoute = (
           === pendingContactDetailFocusEmail
         && activeElement.getAttribute(DATA_ROUTE_ACTION_ATTR)
           === 'open-contact-detail';
+      const stillOwnedBySearchResult =
+        activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_CONTACT_ACTION
+        && activeElement.getAttribute(SEARCH_CONTACT_EMAIL_ATTR) === pendingContactDetailFocusEmail;
       const liveOwnerMovedElsewhere =
         activeElement !== null
         && activeElement !== undefined
         && activeElement !== doc.body
         && activeElement.isConnected !== false;
-      if (!stillOwnedByRow && liveOwnerMovedElsewhere) {
+      if (!stillOwnedByRow && !stillOwnedBySearchResult && liveOwnerMovedElsewhere) {
         pendingContactDetailFocusEmail = null;
       }
     }
@@ -7205,14 +7379,21 @@ export const bootstrapDataRoute = (
             })(),
             projectChildReturn ? 'Back to project' : workSearchReturn ? 'Back to search' : undefined,
             projectOverviewProps(),
+            activeTab === 'task' && !workEntityState.dialog && taskBulk.enabled()
+              ? { selection: taskBulk.selection(), html: taskBulk.render() } : undefined,
           )
         : activeTab === 'search'
           ? renderUniversalSearch({
               query: universalSearchQuery,
+              ...(opts.contactListCaller ? { contactSearch: { contacts: universalSearchContacts,
+                total: universalSearchContactTotal, loading: universalSearchContactLoading, more: universalSearchContactMore,
+                ...(universalSearchContactError ? { error: universalSearchContactError } : {}),
+                ...(universalSearchContactUnsupported ? { unsupported: true } : {}) } } : {}),
               ...(universalSearchWorkGroups !== undefined ? { workGroups: universalSearchWorkGroups } : {}),
               workLoading: universalSearchWorkLoading,
               workLoadingKinds: universalSearchWorkLoadingKinds,
               ...(universalSearchWorkError !== undefined ? { workError: universalSearchWorkError } : {}),
+              ...(universalSearchWorkUnsupported ? { workUnsupported: true } : {}),
               ...(universalSearchLoading ? { loading: true } : {}),
               ...(universalSearchCapabilitiesLoading ? { capabilitiesLoading: true } : {}),
               ...(universalSearchCapabilitiesError !== undefined ? { capabilitiesError: universalSearchCapabilitiesError } : {}),
@@ -7407,7 +7588,7 @@ export const bootstrapDataRoute = (
               || formResponseDiscardGuardOpen
               || hasRecordsInFlightWork(),
           )}
-      ${loading && activeLens !== 'memory' ? '<p class="data-loading">Loading data...</p>' : ''}
+      ${loading && activeLens !== 'memory' && activeTab !== 'calendar' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(errors)}
       ${canFacet && (facetHasRecords || dataSphere !== 'all') ? `<label>Sphere (loaded records) <select data-data-sphere aria-label="Data sphere" style="min-height:44px">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([value, title]) => `<option value="${value}"${value === dataSphere ? ' selected' : ''}>${title}</option>`).join('')}</select></label>
         ${dataSphere === 'all' ? '' : '<p>This filter applies to loaded records. Load more to find further matches.</p>'}
@@ -7481,15 +7662,30 @@ export const bootstrapDataRoute = (
       }
     }
     renderedActiveTab = activeTab;
-    if (activeTab === 'search' && (focusedSearchControl || pendingWorkSearchRestore)) {
+    if (agendaVisible) {
+      const disclosure = routeRoot.querySelector?.<HTMLDetailsElement>('details[data-calendar-agenda-sources]');
+      if (disclosure) disclosure.open = pendingCalendarAgendaRestore?.sourcesOpen ?? agendaSourcesOpen ?? false;
+      const key = pendingCalendarAgendaRestore?.key ?? agendaFocus;
+      if (key) {
+        const controls = [...routeRoot.querySelectorAll<HTMLElement>(`[${AGENDA_FOCUS}]`)];
+        const target = controls.find(control => control.getAttribute(AGENDA_FOCUS) === key);
+        agendaFocusFallback = target === undefined;
+        (target ?? controls.find(control => control.getAttribute(AGENDA_FOCUS) === 'date'))?.focus({ preventScroll: !agendaFocusFallback });
+      }
+      pendingCalendarAgendaRestore = null;
+    }
+    if (activeTab === 'search' && (focusedSearchControl || pendingWorkSearchRestore || pendingContactSearchRestore)) {
       const origin = pendingWorkSearchRestore;
-      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('.rq-search button')).find(element => origin
+      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('.rq-search button')).find(element => pendingContactSearchRestore
+        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_CONTACT_ACTION
+          && element.getAttribute(SEARCH_CONTACT_EMAIL_ATTR) === pendingContactSearchRestore.email
+        : origin
         ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_WORK_ACTION
           && element.getAttribute(SEARCH_WORK_KIND_ATTR) === origin.kind && element.getAttribute(SEARCH_WORK_ID_ATTR) === origin.id
         : focusedSearchControl?.every(([attribute, value]) => element.getAttribute(attribute) === value));
       (target ?? routeRoot.querySelector<HTMLElement>(`[${SEARCH_INPUT_ATTR}]`))?.focus({ preventScroll: true });
       searchFocusFallback = target === undefined;
-      pendingWorkSearchRestore = null;
+      pendingWorkSearchRestore = null; pendingContactSearchRestore = null;
     }
     if (activeElement?.hasAttribute?.('data-data-sphere')) routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus();
     if (opts.savedView !== undefined && currentView() !== null
@@ -8067,6 +8263,7 @@ export const bootstrapDataRoute = (
         pendingLoadedFormResponseIds = [];
       }
     }
+    if (activeLens === 'data' && activeTab === 'task') taskBulk.restoreFocus(routeRoot, focusedTaskBulk);
     if (activeLens === 'data' && activeTab === 'mail_fact') {
       mailFacts.restoreFocus(routeRoot, focusedMailFactsKey);
     }
@@ -8074,6 +8271,18 @@ export const bootstrapDataRoute = (
       remindersSurface.restoreFocus(routeRoot, focusedRemindersKey);
     }
     if (activeLens === 'data' && activeTab === 'calendar') calendarEventSurface.restoreFocus(routeRoot, focusedCalendarEvent);
+    if (activeLens === 'data' && activeTab === 'mail') {
+      mailMessageSurface.restoreScroll(routeRoot, mailIndexScroll);
+      mailMessageSurface.restoreFocus(routeRoot, focusedMailMessage);
+    }
+    if (activeLens === 'data' && activeTab === 'files' && focusedFileLifecycleKey !== null) {
+      const panel = routeRoot.querySelector<HTMLElement>('[data-file-lifecycle]');
+      const notice = routeRoot.querySelector<HTMLElement>('[data-file-lifecycle-notice]');
+      const target = focusedFileLifecycleKey === 'panel' || focusedFileLifecycleKey === 'file-usage' ? panel ?? notice
+        : focusedFileLifecycleKey === 'notice' ? notice
+        : routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${focusedFileLifecycleKey}"]:not(:disabled)`) ?? panel ?? notice;
+      target?.focus({ preventScroll: focusedFileLifecycleKey !== 'file-usage' && !(target === notice && focusedFileLifecycleKey !== 'notice') });
+    }
     // Attach live pickers to any `data.contact` ref shells the work-entity
     // dialog just painted (no-op otherwise).
     mountWorkEntityRefPickers();
@@ -8112,6 +8321,10 @@ export const bootstrapDataRoute = (
       const owner = doc.activeElement as HTMLElement | null;
       if ((owner?.tagName === 'BUTTON' || searchFocusFallback) && owner?.closest?.('.rq-search')) owner.scrollIntoView?.({ block: 'nearest' });
     }
+    if (agendaVisible && agendaScroll !== undefined && !agendaFocusFallback) {
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = agendaScroll;
+    }
     if (projectRead) {
       const target = projectFocus ? Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-project-focus]')).find(node => node.getAttribute('data-project-focus') === projectFocus)
         ?? routeRoot.querySelector<HTMLElement>('[data-project-focus="heading"]') : undefined;
@@ -8120,6 +8333,10 @@ export const bootstrapDataRoute = (
       if (host && projectScroll !== undefined) host.scrollTop = projectScroll;
       if (target) target.scrollIntoView?.({ block: 'nearest' });
       pendingProjectRestore = null;
+    }
+    if (activeLens === 'data' && activeTab === 'mail' && mailScrollTop !== undefined) {
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = mailScrollTop;
     }
     opts.onViewChange?.(currentView());
   };
@@ -8281,7 +8498,7 @@ export const bootstrapDataRoute = (
     const request: Parameters<DataContactListCaller>[0] = { limit: DEFAULT_LIMIT };
     if (offset > 0) request.offset = offset;
     if (contactSearch.trim().length > 0) {
-      request.name_contains = contactSearch.trim();
+      request.query = contactSearch.trim();
     }
     return request;
   };
@@ -8508,6 +8725,34 @@ export const bootstrapDataRoute = (
   };
 
   // ── D-198 Slice 5 — collection explorer (mail / calendar) ─────────────────
+
+  const refreshCalendarAgenda = async (silent: boolean, slug?: string, sourcesOnly = false): Promise<void> => {
+    const seq = ++explorerSeq;
+    explorerCollection = 'calendar';
+    if (slug !== undefined) calendarAgenda.selectSource(slug);
+    await calendarAgenda.refresh({ silent, sourcesOnly });
+    if (disposed || seq !== explorerSeq) return;
+    explorerInstances = calendarAgenda.snapshot().sources.map(source => source.instance);
+    const selected = slug ?? initialExplorerSlug ?? (calendarAgenda.selectedSource() || null);
+    initialExplorerSlug = null;
+    if (pendingExplorerVerificationTab === 'calendar' && pendingExplorerVerificationRecordId !== null
+      && !selected && explorerInstances.length > 1) {
+      const resolution = await resolveExplorerVerification('calendar', explorerInstances, pendingExplorerVerificationRecordId);
+      if (disposed || seq !== explorerSeq) return;
+      explorerSelectedSlug = resolution.kind === 'match' ? resolution.slug : null;
+      explorerError = resolution.kind === 'match' ? undefined : resolution.message;
+      explorerRecords = [];
+      explorerLoading = false;
+      return;
+    }
+    explorerSelectedSlug = selected && calendarAgenda.snapshot().error ? selected
+      : selected && explorerInstances.some(source => source.slug === selected) ? selected
+      : selected ? null : explorerInstances.length === 1 ? explorerInstances[0]!.slug : null;
+    explorerRecords = calendarAgenda.snapshot().sources.find(source => source.instance.slug === explorerSelectedSlug)?.records ?? [];
+    explorerLoading = false;
+    if (selected && explorerSelectedSlug === null && !calendarAgenda.snapshot().error) explorerError = 'The source this record came from is gone.';
+    else explorerError = undefined;
+  };
 
   /** Fetch `(platform, slug)` records into `explorerRecords`. Guarded on
    *  `explorerSeq` (the caller bumps it) so a stale response is dropped. */
@@ -8850,8 +9095,10 @@ export const bootstrapDataRoute = (
   const selectExplorerInstance = async (slug: string): Promise<void> => {
     const platform = EXPLORER_TAB_PLATFORM[activeTab];
     if (platform === undefined || slug === explorerSelectedSlug) return;
+    if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
     calendarEventSurface.reset();
+    mailMessageSurface.reset();
     cloudFileQuery = cloudFileQueryInput = ''; cloudFileCursor = undefined; cloudBrowseError = '';
     explorerSelectedSlug = slug;
     if (opts.savedView !== undefined) savedExplorerScopes.set(activeTab, slug);
@@ -8939,6 +9186,7 @@ export const bootstrapDataRoute = (
       explorerDetailRetrying = false;
       loadedRecord = record;
       if (platform === 'calendar' && record !== null) void calendarEventSurface.open({ slug, source_id: record.source_id }, record.record_id);
+      if (platform === 'mail' && record !== null) void mailMessageSurface.open({ slug, record_id: record.record_id });
       // The verification handoff has found its exact item. From here on,
       // switching accounts is ordinary browsing rather than repeatedly forcing
       // this record id onto every source. A null result stays pending so the
@@ -8983,9 +9231,24 @@ export const bootstrapDataRoute = (
   };
 
   /** Open one record's detail (lazy `collection.get`). */
+  const openCalendarAgendaEvent = async (slug: string, recordId: string, key: string): Promise<void> => {
+    if (activeLens !== 'data' || activeTab !== 'calendar' || !calendarAgenda.record(slug, recordId)) return;
+    loadGeneration += 1; loading = false;
+    calendarAgenda.cancel();
+    calendarAgendaReturn = { key, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash,
+      sourcesOpen: routeRoot.querySelector<HTMLDetailsElement>('details[data-calendar-agenda-sources]')?.open ?? false };
+    explorerCollection = 'calendar';
+    explorerInstances = calendarAgenda.snapshot().sources.map(source => source.instance);
+    explorerSelectedSlug = slug;
+    explorerRecords = calendarAgenda.snapshot().sources.find(source => source.instance.slug === slug)?.records ?? [];
+    await openExplorerRecord(recordId);
+  };
+
   const openExplorerRecord = async (record_id: string): Promise<void> => {
+    if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
     calendarEventSurface.reset();
+    mailMessageSurface.reset();
     fileLifecycle = undefined; fileLifecycleGeneration++; fileLifecycleNotice = '';
     retireRunVerificationForDifferentItem(activeTab, record_id);
     pendingRescheduleOpenFocusId = null;
@@ -9068,9 +9331,11 @@ export const bootstrapDataRoute = (
     await readExplorerRecord(tab, platform, slug, recordId, seq, caller);
   };
 
-  const closeExplorerDetail = (): void => {
-    if (!calendarEventSurface.beforeLeave(closeExplorerDetail)) return;
+  const closeExplorerDetail = (alreadyNavigated = false): void => {
+    if (!mailMessageSurface.beforeLeave()) return;
+    if (!calendarEventSurface.beforeLeave(() => closeExplorerDetail(alreadyNavigated))) return;
     calendarEventSurface.reset();
+    mailMessageSurface.reset();
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const returnRecordId =
       activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
@@ -9090,6 +9355,17 @@ export const bootstrapDataRoute = (
     // `seq === explorerSeq` guard still passes and reinstates the detail view
     // (+ the Files download button) after the user navigated Back.
     explorerSeq += 1;
+    if (activeTab === 'calendar') {
+      const origin = calendarAgendaReturn;
+      calendarAgendaReturn = null;
+      pendingCalendarAgendaRestore = origin ?? { key: 'date', scrollTop: 0 };
+      explorerSelectedSlug = null; explorerRecords = []; explorerLoading = false; loading = false;
+      if (alreadyNavigated && origin) dataHistory.adopt(dataAddress(origin.hash, undefined));
+      else syncDataHash();
+      explorerLiveRefreshPending = false;
+      pendingLoadPromise = calendarAgenda.refresh({ silent: true });
+      return;
+    }
     render();
     if (returnRecordId !== null) {
       const row = Array.from(
@@ -10047,6 +10323,16 @@ export const bootstrapDataRoute = (
       }
     } else if (activeTab === 'search') {
       await runUniversalSearch();
+    } else if (activeTab === 'calendar') {
+      const addressPending = calendarInitialAddress;
+      calendarInitialAddress = false;
+      if (explorerDetail !== null && explorerSelectedSlug !== null && opts.collectionGetCaller) {
+        await readExplorerRecord('calendar', 'calendar', explorerSelectedSlug, explorerDetail.record_id,
+          ++explorerSeq, opts.collectionGetCaller);
+      } else {
+        await refreshCalendarAgenda(silent, explorerScope?.tab === 'calendar' ? explorerScope.slug : undefined,
+          addressPending);
+      }
     } else if (activeTab === 'records') {
       await loadRecords();
     } else if (activeTab === 'mail_fact') {
@@ -10069,8 +10355,11 @@ export const bootstrapDataRoute = (
   };
 
   const startRefresh = (): void => {
+    if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(startRefresh)) return;
     calendarEventSurface.reset();
+    mailMessageSurface.reset();
     pendingLoadPromise = refreshActive();
   };
 
@@ -10154,6 +10443,9 @@ export const bootstrapDataRoute = (
     if (universalSearchTimer !== null) clearTimeout(universalSearchTimer);
     universalSearchTimer = null;
     universalSearchGroups = undefined;
+    universalSearchContacts = []; universalSearchContactTotal = 0; universalSearchContactOffset = 0;
+    universalSearchContactMore = false; universalSearchContactLoading = false; universalSearchContactError = undefined;
+    universalSearchContactPageSeq += 1;
     universalSearchWorkGroups = undefined;
     universalSearchWorkLoading = false;
     universalSearchWorkError = undefined;
@@ -10187,7 +10479,7 @@ export const bootstrapDataRoute = (
     universalSearchNavigation = navigationGeneration;
     const isCurrent = (): boolean => !disposed
       && seq === universalSearchSeq && universalSearchNavigation === navigationGeneration
-      && activeLens === 'data' && (activeTab === 'search' || workSearchReturn?.sequence === seq)
+      && activeLens === 'data' && (activeTab === 'search' || workSearchReturn?.sequence === seq || contactSearchReturn?.sequence === seq)
       && query === universalSearchQuery.trim();
     universalSearchLoading = true;
     universalSearchCapabilitiesLoading = true;
@@ -10198,6 +10490,9 @@ export const bootstrapDataRoute = (
     universalSearchRecipes = [];
     universalSearchPacks = [];
     universalSearchError = undefined;
+    universalSearchContacts = []; universalSearchContactTotal = 0; universalSearchContactOffset = 0;
+    universalSearchContactMore = false; universalSearchContactLoading = false; universalSearchContactError = undefined;
+    universalSearchContactPageSeq += 1;
     universalSearchWorkGroups = undefined;
     universalSearchWorkLoading = opts.workEntitySearchCaller !== undefined;
     universalSearchWorkError = undefined;
@@ -10241,11 +10536,15 @@ export const bootstrapDataRoute = (
       try {
         const result = await opts.workEntitySearchCaller({ query });
         if (!isCurrent()) return;
+        universalSearchWorkUnsupported = false;
         universalSearchWorkGroups = result.groups;
         for (const group of result.groups) universalSearchWorkOffsets.set(group.kind, group.offset + group.matches.length);
       } catch (error) {
         if (!isCurrent()) return;
-        universalSearchWorkError = `Tasks, notes, projects and commitments could not be searched. ${humanizeRpcError(error)}`;
+        // A server before 26.10.28 cannot search these kinds. Retrying cannot help, so it is not a
+        // failure: the box says to update the server, and the rest completes the search.
+        if (classifyRpcError(error).code === 'unknown_method') universalSearchWorkUnsupported = true;
+        else universalSearchWorkError = `Tasks, notes, projects and commitments could not be searched. ${humanizeRpcError(error)}`;
       } finally {
         if (isCurrent()) {
           universalSearchWorkLoading = false;
@@ -10334,7 +10633,51 @@ export const bootstrapDataRoute = (
       universalSearchCapabilitiesError = capabilityErrors.length > 0 ? capabilityErrors.join(' ') : undefined;
       if (activeTab === 'search') render();
     })();
-    await Promise.all([recordSearch, workSearch, capabilitySearch]);
+    await Promise.all([recordSearch, workSearch, capabilitySearch, loadUniversalContactSearch(true)]);
+  };
+
+  const loadUniversalContactSearch = async (replace = false): Promise<void> => {
+    const caller = opts.contactListCaller;
+    if (!caller || universalSearchContactLoading) return;
+    const sequence = universalSearchSeq, page = ++universalSearchContactPageSeq;
+    const query = universalSearchQuery.trim();
+    if (!query) return;
+    const current = () => !disposed && sequence === universalSearchSeq && page === universalSearchContactPageSeq
+      && query === universalSearchQuery.trim() && universalSearchNavigation === navigationGeneration
+      && (activeTab === 'search' || workSearchReturn?.sequence === sequence || contactSearchReturn?.sequence === sequence);
+    const previous = universalSearchContacts;
+    let offset = replace ? 0 : universalSearchContactOffset;
+    const goal = replace ? Math.max(5, previous.length) : offset + 10;
+    const matches: ContactRecord[] = replace ? [] : [...previous];
+    let total = universalSearchContactTotal;
+    universalSearchContactLoading = true; universalSearchContactError = undefined;
+    if (activeTab === 'search') render();
+    try {
+      do {
+        const result = await caller({ query, offset, limit: Math.min(100, goal - offset) });
+        if (!current()) return;
+        if (!Array.isArray(result.contacts) || !Number.isSafeInteger(result.total) || result.total < 0
+          || result.total > offset && result.contacts.length === 0) throw new Error('The contact search page could not be confirmed. Try again.');
+        const known = new Set(matches.map(contact => contact.email));
+        matches.push(...result.contacts.filter(contact => !known.has(contact.email)));
+        offset += result.contacts.length; total = result.total;
+      } while (offset < total && offset < goal);
+      universalSearchContacts = matches; universalSearchContactTotal = total;
+      universalSearchContactOffset = offset; universalSearchContactMore = offset < total;
+      universalSearchContactUnsupported = false;
+      const owner = doc.activeElement;
+      if (activeTab === 'search' && owner?.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_MORE_CONTACTS_ACTION) {
+        const known = new Set(previous.map(contact => contact.email));
+        const next = matches.find(contact => !known.has(contact.email)) ?? matches.at(-1);
+        if (next) pendingContactSearchRestore = { email: next.email, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+      }
+    } catch (error) {
+      if (!current()) return;
+      universalSearchContactUnsupported = classifyRpcError(error).code === 'unknown_method';
+      universalSearchContactError = universalSearchContactUnsupported ? undefined : humanizeRpcError(error);
+    } finally {
+      if (current()) { universalSearchContactLoading = false; if (activeTab === 'search') render(); }
+    }
   };
 
   const loadMoreWorkSearch = async (kind: WorkEntitySearchKind, replace = false): Promise<void> => {
@@ -10348,7 +10691,7 @@ export const bootstrapDataRoute = (
     const current = () => !disposed && sequence === universalSearchSeq
       && pageSequence === universalSearchWorkPageSeq.get(kind) && query === universalSearchQuery.trim()
       && universalSearchNavigation === navigationGeneration
-      && (activeTab === 'search' || workSearchReturn?.sequence === sequence);
+      && (activeTab === 'search' || workSearchReturn?.sequence === sequence || contactSearchReturn?.sequence === sequence);
     universalSearchWorkLoadingKinds.add(kind);
     if (activeTab === 'search') render();
     let offset = replace ? 0 : universalSearchWorkOffsets.get(kind) ?? group.matches.length;
@@ -10623,7 +10966,11 @@ export const bootstrapDataRoute = (
                   : {}),
               })
             : serializeShellRoute('data', activeTab, deepLinkEntity);
-    dataHistory.navigate(dataAddress(hash, deepLinkEntity));
+    const fromSearch = activeTab === 'contact' && contactSearchReturn
+      && deepLinkEntity === contactSearchReturn.email && dataHistory.current().hash === contactSearchReturn.hash;
+    const fromAgenda = activeTab === 'calendar' && calendarAgendaReturn
+      && explorerDetail !== null && dataHistory.current().hash === calendarAgendaReturn.hash;
+    dataHistory.navigate(dataAddress(hash, deepLinkEntity), fromSearch || fromAgenda ? { intent: 'push' } : undefined);
   };
 
   const cancelContactEditOpen = (): void => {
@@ -10639,7 +10986,10 @@ export const bootstrapDataRoute = (
     preserveWorkSearch = false,
   ): Promise<void> => {
     if (activeTab === tab && sourceSlug === undefined) return;
+    if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch); })) return;
+    if (activeTab === 'reminder' && !remindersSurface.beforeLeave()) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
       return;
@@ -10660,10 +11010,11 @@ export const bootstrapDataRoute = (
       showFormResponseDiscardGuard(tab);
       return;
     }
+    if (tab === 'search' && activeTab === 'contact' && contactSearchReturn && !preserveWorkSearch) { returnToContactSearch(); return; }
     if (focusActivatedTab) pendingCollectionTabFocus = tab;
     if (activeTab === 'search' && !preserveWorkSearch) retireUniversalSearch();
     if (!preserveWorkSearch) {
-      workSearchReturn = null;
+      workSearchReturn = null; contactSearchReturn = null; pendingContactSearchRestore = null;
       projectWork?.dispose(); projectWork = null; projectChildReturn = null; pendingProjectRestore = null;
     }
     navigationGeneration += 1;
@@ -10676,6 +11027,7 @@ export const bootstrapDataRoute = (
     workEntityDialogReturnFocus = null;
     loadingWorkEntityDetail = false;
     cancelContactEditOpen();
+    taskBulk.reset();
     activeTab = tab;
     contactDialog = null;
     contactDialogReturnFocus = null;
@@ -10711,9 +11063,17 @@ export const bootstrapDataRoute = (
     // leave focus on that control so the owner can keep changing collections.
     // Claiming the search box there ejected a keyboard user from navigation.
     if (tab === 'search' && !focusActivatedTab) pendingUniversalSearchFocus = true;
-    syncDataHash();
-    const scope = sourceSlug === undefined ? undefined : { tab, slug: sourceSlug };
-    pendingLoadPromise = refreshActive(false, scope);
+    if (tab === 'contact' && preserveWorkSearch && contactSearchReturn) {
+      // A search hit already addresses the profile. The list and Source-health
+      // reads behind it are independent and must not delay opening it.
+      loadGeneration += 1;
+      loading = false;
+      pendingLoadPromise = openContactDetail(contactSearchReturn.email, true);
+    } else {
+      syncDataHash();
+      const scope = sourceSlug === undefined ? undefined : { tab, slug: sourceSlug };
+      pendingLoadPromise = refreshActive(false, scope);
+    }
     await pendingLoadPromise;
   };
 
@@ -10727,6 +11087,31 @@ export const bootstrapDataRoute = (
       node = node.parentElement;
     }
     return doc.scrollingElement;
+  };
+
+  const returnToContactSearch = (alreadyNavigated = false): void => {
+    const origin = contactSearchReturn;
+    if (!origin || disposed) return;
+    contactSearchReturn = null; contactDetail = null; loadingContactDetail = false;
+    cancelContactEditOpen(); pendingContactDetailFocusEmail = null;
+    loadGeneration += 1; navigationGeneration += 1; universalSearchNavigation = navigationGeneration;
+    activeTab = 'search'; loading = false; errors = {}; universalSearchQuery = origin.query;
+    pendingContactSearchRestore = origin;
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, undefined));
+    else syncDataHash();
+    render();
+    void loadUniversalContactSearch(true);
+  };
+
+  const openContactSearchResult = async (email: string): Promise<void> => {
+    if (activeTab !== 'search' || !universalSearchContacts.some(contact => contact.email === email)) return;
+    const sequence = universalSearchSeq;
+    contactSearchReturn = { sequence, query: universalSearchQuery, email,
+      scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash };
+    const previousNavigation = navigationGeneration;
+    const opening = selectTab('contact', false, undefined, true);
+    if (navigationGeneration === previousNavigation) contactSearchReturn = null;
+    await opening;
   };
 
   const returnToWorkSearch = (): void => {
@@ -10775,6 +11160,7 @@ export const bootstrapDataRoute = (
   ): Promise<void> => {
     if (disposed || activeLens !== 'data') return;
     const previousNavigation = navigationGeneration;
+    if (tab === 'calendar') calendarInitialAddress = recordId !== undefined;
     const opening = selectTab(tab, true, slug);
     const navigation = navigationGeneration;
     const explorerGeneration = explorerSeq;
@@ -10792,7 +11178,10 @@ export const bootstrapDataRoute = (
   // D-198 Slice 1b — switch the Data | Memory lens. Orthogonal to the tab; the
   // Data lens preserves its active tab + open detail when you come back.
   const selectLens = async (lens: 'data' | 'memory'): Promise<void> => {
+    if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (lens !== activeLens && !mailMessageSurface.beforeLeave()) return;
     if (lens !== activeLens && !calendarEventSurface.beforeLeave(() => { void selectLens(lens); })) return;
+    if (lens !== activeLens && activeTab === 'reminder' && !remindersSurface.beforeLeave()) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
       return;
@@ -10836,7 +11225,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (activeTab === 'search') retireUniversalSearch();
-    workSearchReturn = null;
+    workSearchReturn = null; contactSearchReturn = null; pendingContactSearchRestore = null;
     projectWork?.dispose(); projectWork = null; projectChildReturn = null; pendingProjectRestore = null;
     pendingWorkSearchRestore = null;
     navigationGeneration += 1;
@@ -10847,6 +11236,7 @@ export const bootstrapDataRoute = (
     loadingWorkEntityDetail = false;
     cancelContactEditOpen();
     if (lens === 'memory') closeFormResponseRunModal();
+    taskBulk.reset();
     activeLens = lens;
     syncDataHash();
     pendingLoadPromise = refreshActive();
@@ -11935,6 +12325,8 @@ export const bootstrapDataRoute = (
   };
 
   const openCreateWorkEntityDialog = (sourceOverride?: string): void => {
+    if (taskBulk.busy()) { focusTaskBatch(); return; }
+    taskBulk.reset();
     workEntityDialogOriginal = {};
     workEntityDialogEntity = null;
     noteMode = 'edit'; noteDetailsOpen = false; noteNotice = undefined;
@@ -12092,6 +12484,8 @@ export const bootstrapDataRoute = (
     noteIntent: 'read' | 'edit' | 'details' = 'read',
     preserveFocus = false,
   ): Promise<void> => {
+    if (taskBulk.busy()) { focusTaskBatch(); return; }
+    taskBulk.reset();
     if (kind === 'asset') {
       const view = doc.defaultView;
       if (view) view.location.hash = `#yours/asset/${encodeURIComponent(id)}`;
@@ -13790,13 +14184,13 @@ export const bootstrapDataRoute = (
   // screen — that block is the reason the page exists, and it is exactly the case
   // where a user is most likely to be asking "where did this value come from?".
   // So both are settled, not raced, and each failure is reported in its own slot.
-  const openContactDetail = async (email: string): Promise<void> => {
+  const openContactDetail = async (email: string, focusHeading = false): Promise<void> => {
     const trimmed = email.trim();
     if (trimmed.length === 0) return;
     cancelContactEditOpen();
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     pendingContactDetailFocusEmail =
-      renderedActiveTab === 'contact'
+      focusHeading || renderedActiveTab === 'contact'
       && activeTab === 'contact'
       && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
         === 'open-contact-detail'
@@ -13807,13 +14201,16 @@ export const bootstrapDataRoute = (
     // Mutually exclusive with the scan page — see `openContactScan`.
     contactScan = null;
     contactScanSeq += 1;
-    contactDetail = {
+    const navigation = navigationGeneration;
+    const pendingDetail: ContactDetailState = {
       email: trimmed,
+      from_search: contactSearchReturn?.email === trimmed,
       contact: null,
       response: null,
       contributions: [],
       contributions_failed: false,
     };
+    contactDetail = pendingDetail;
     syncDataHash();
     loadingContactDetail = true;
     // Clear only THIS page's two slots. `errors.contacts` belongs to the list
@@ -13831,7 +14228,7 @@ export const bootstrapDataRoute = (
     // `contact.get` — the list record carries the projection (and its
     // provenance) too, since both come off the same `rowToRecord` mapper.
     const fetchContact = async (): Promise<
-      { ok: true; contact: ContactRecord | null } | { ok: false; message: string }
+      { ok: true; contact: ContactRecord | null; identifiers?: ContactAdditionalIdentifiers } | { ok: false; message: string }
     > => {
       if (opts.contactGetCaller === undefined) {
         return {
@@ -13840,8 +14237,8 @@ export const bootstrapDataRoute = (
         };
       }
       try {
-        const { contact } = await opts.contactGetCaller({ email: trimmed });
-        return { ok: true, contact };
+        const result = await opts.contactGetCaller({ email: trimmed });
+        return { ok: true, ...result };
       } catch (err) {
         return { ok: false, message: errMessage(err) };
       }
@@ -13887,8 +14284,8 @@ export const bootstrapDataRoute = (
       fetchTimeline(),
       fetchContributions(),
     ]);
-    // Drop all three if the user navigated away / opened another contact in flight.
-    if (disposed || contactDetail?.email !== trimmed) return;
+    // A reopened profile for the same identity is a newer read as well.
+    if (disposed || navigation !== navigationGeneration || contactDetail !== pendingDetail) return;
     // D-325 — a reference by contact id (Today, an occasion) opens the same page
     // by the contact's email, so its timeline and address are the usual ones.
     const byId = contactResult.ok ? contactResult.contact : null;
@@ -13900,7 +14297,9 @@ export const bootstrapDataRoute = (
     if (!contributionsResult.ok) nextErrors.contact_contributions = contributionsResult.message;
     contactDetail = {
       email: trimmed,
+      from_search: contactSearchReturn?.email === trimmed,
       contact: contactResult.ok ? contactResult.contact : null,
+      ...(contactResult.ok && contactResult.identifiers ? { identifiers: contactResult.identifiers } : {}),
       response: timelineResult.ok ? timelineResult.response : null,
       contributions: contributionsResult.ok ? contributionsResult.contributions : [],
       contributions_failed: !contributionsResult.ok,
@@ -13950,7 +14349,7 @@ export const bootstrapDataRoute = (
   // Guarded on the `window` blob/URL APIs (absent in the test fake DOM →
   // no-op, the caller assertion still holds).
   const triggerFileDownload = (file: {
-    bytes_b64: string;
+    bytes: Uint8Array;
     mime_type: string;
     filename: string;
   }): void => {
@@ -13959,11 +14358,8 @@ export const bootstrapDataRoute = (
       Blob?: typeof Blob;
       URL?: { createObjectURL(b: Blob): string; revokeObjectURL(u: string): void };
     } | null | undefined;
-    if (!view?.atob || !view.Blob || !view.URL) return;
-    const binary = view.atob(file.bytes_b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    const blob = new view.Blob([bytes], {
+    if (!view?.Blob || !view.URL) return;
+    const blob = new view.Blob([new Uint8Array(file.bytes)], {
       type: file.mime_type || 'application/octet-stream',
     });
     const url = view.URL.createObjectURL(blob);
@@ -13971,7 +14367,7 @@ export const bootstrapDataRoute = (
     anchor.href = url;
     anchor.download = file.filename || 'download';
     anchor.click();
-    view.URL.revokeObjectURL(url);
+    setTimeout(() => view.URL!.revokeObjectURL(url), 1000);
   };
 
   const loadFileUsage = async (error?: string): Promise<void> => {
@@ -13988,28 +14384,42 @@ export const bootstrapDataRoute = (
       fileLifecycle = { fileId, busy: false, error: errMessage(failure) };
     }
     render();
-    routeRoot.querySelector<HTMLElement>('[data-file-lifecycle]')?.focus();
   };
-  const mutateFile = async (action: 'archive' | 'delete'): Promise<void> => {
+  const finishFileMutation = async (current: FileLifecyclePanelState, action: FileLifecycleMutation['action'], notice?: string): Promise<void> => {
+    explorerRecords = explorerRecords.filter(record => record.record_id !== current.fileId && record.record_id !== current.preview?.record_id);
+    fileLifecycle = undefined; explorerDetail = null;
+    fileLifecycleNotice = notice ?? (action === 'archive' ? 'File put away. You can still find it under archived files, and in your conversations.'
+      : action === 'restore' ? 'File restored to your library.' : 'File deleted for good. The messages about it are still there.');
+    // Show the confirmed change even when the following list read is slow.
+    render();
+    await loadExplorer('files', explorerSelectedSlug ?? undefined);
+    if (!disposed && activeTab === 'files') render();
+  };
+  const mutateFile = async (action: FileLifecycleMutation['action']): Promise<void> => {
     const current = fileLifecycle;
     if (!current?.preview || current.busy || (action === 'delete' && current.preview.in_use) || !opts.fileMutateCaller
       || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId
+      || (action === 'restore' && current.preview.can_restore !== true)
       || (action === 'delete' && !current.confirmDelete)) return;
     const generation = ++fileLifecycleGeneration;
-    fileLifecycle = { ...current, busy: true }; render();
+    fileLifecycle = { ...current, busy: true, operation: action }; render();
     try {
-      await opts.fileMutateCaller({ record_id: current.preview.record_id, action, revision: current.preview.revision });
+      opaqueMutationsInFlight += 1;
+      try {
+        await opts.fileMutateCaller({ record_id: current.preview.record_id, action, revision: current.preview.revision });
+      } finally { opaqueMutationsInFlight -= 1; }
       if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId) return;
-      fileLifecycle = undefined; explorerDetail = null;
-      fileLifecycleNotice = action === 'archive' ? 'File put away. You can still find it under archived files, and in your conversations.'
-        : 'File deleted for good. The messages about it are still there.';
-      await loadExplorer('files');
-      if (!disposed) render();
+      await finishFileMutation(current, action);
     } catch (error) {
       if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId) return;
-      // Never retry a destructive action automatically. Refresh its complete
-      // impact and require a fresh confirmation after a race or lost response.
+      // Check state after a race or lost response without repeating the write.
       await loadFileUsage(errMessage(error));
+      if (action === 'restore' && !disposed && fileLifecycleGeneration === generation + 1
+        && activeTab === 'files' && explorerDetail?.record_id === current.fileId
+        && fileLifecycle?.fileId === current.fileId && fileLifecycle.preview
+        && !fileLifecycle.preview.archived && !fileLifecycle.preview.deleted) {
+        await finishFileMutation(current, action, 'The file is in your library.');
+      }
     }
   };
 
@@ -14026,13 +14436,14 @@ export const bootstrapDataRoute = (
     const recordId = (explorerDetail?.record_id ?? '').trim();
     if (recordId.length === 0) return;
     downloadingFile = true;
+    const abort = new AbortController(); fileDownloadAbort = abort;
     const cleared = { ...errors };
     delete cleared.timeline;
     errors = cleared;
     render();
     try {
-      const file = await opts.fileReadCaller({ record_id: recordId });
-      if (disposed) return;
+      const file = await readStoredFileDownload({ record_id: recordId }, { read: opts.fileReadCaller }, abort.signal);
+      if (disposed || !file) return;
       triggerFileDownload(file);
     } catch (err) {
       if (disposed) return;
@@ -14136,6 +14547,7 @@ export const bootstrapDataRoute = (
 
   const closeContactDetail = (): void => {
     if (contactDetail === null) return;
+    if (contactSearchReturn) { returnToContactSearch(); return; }
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const returnEmail =
       activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
@@ -14357,6 +14769,7 @@ export const bootstrapDataRoute = (
         // values landing at the TOP of the ladder, where the user's live CRM could
         // never correct them. Opting IN is the whole point of the review.
         apply_changes: false,
+        occasions: {},
         busy: true,
         result: null,
       },
@@ -14372,7 +14785,7 @@ export const bootstrapDataRoute = (
       ) return;
       contactImport = {
         ...contactImport,
-        file: { ...contactImport.file, text, plan, busy: false },
+        file: { ...contactImport.file, text, plan, busy: false, occasions: Object.fromEntries((plan.occasions ?? []).map(date => [date.key, { key: date.key, selected: false, recurrence: date.existing?.recurrence ?? 'yearly', reminder_days: 7, ...(date.existing ? { expected_version: date.existing.version } : {}) }])) },
       };
     } catch (err) {
       if (
@@ -14404,7 +14817,8 @@ export const bootstrapDataRoute = (
     contactImport = { ...contactImport, file: applyingFile };
     render();
     try {
-      const res = await caller({ text, apply_changes });
+      const occasions = Object.values(currentFile.occasions).filter(date => date.selected).map(({ selected: _selected, ...choice }) => choice);
+      const res = await caller({ text, apply_changes, ...(occasions.length ? { occasions } : {}) });
       if (disposed || contactImport?.file !== applyingFile) return;
       contactImport = {
         ...contactImport,
@@ -14750,8 +15164,16 @@ export const bootstrapDataRoute = (
       target.getAttribute(DATA_ROUTE_ACTION_ATTR)
       ?? target.getAttribute(SHARED_ACTION_ATTR)
       ?? '';
+    if (activeLens === 'data' && activeTab === 'task' && taskBulk.handleAction(action)) return;
+    if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null
+      && calendarAgenda.handleAction(action, target)) return;
     if (action.startsWith(CALENDAR_EVENT_ACTION_PREFIX)) {
       if (activeLens === 'data' && activeTab === 'calendar') calendarEventSurface.handleAction(action);
+      return;
+    }
+    if (action.startsWith('mail-message-')) {
+      if (activeLens === 'data' && activeTab === 'mail') mailMessageSurface.handleAction(action, target);
       return;
     }
     if (action.startsWith(MAIL_FACTS_ACTION_PREFIX)) {
@@ -15141,7 +15563,10 @@ export const bootstrapDataRoute = (
     }
     if (action === COLLECTION_OPEN_RECORD_ACTION) {
       const recordId = target.getAttribute(COLLECTION_RECORD_ID_ATTR);
-      if (recordId !== null && recordId.length > 0) void openExplorerRecord(recordId);
+      const agendaSource = target.getAttribute(AGENDA_SOURCE), agendaKey = target.getAttribute(AGENDA_FOCUS);
+      if (activeTab === 'calendar' && explorerDetail === null && agendaSource && agendaKey && recordId) {
+        void openCalendarAgendaEvent(agendaSource, recordId, agendaKey);
+      } else if (recordId !== null && recordId.length > 0) void openExplorerRecord(recordId);
       return;
     }
     if (action === COLLECTION_DETAIL_CLOSE_ACTION) {
@@ -15152,6 +15577,15 @@ export const bootstrapDataRoute = (
     if (action === 'return-project-overview') { returnToProjectOverview(); return; }
     if (action === 'return-work-search') {
       if (workEntityState.dialog) closeWorkEntityDialog(); else returnToWorkSearch();
+      return;
+    }
+    if (action === SEARCH_OPEN_CONTACT_ACTION) {
+      const email = target.getAttribute(SEARCH_CONTACT_EMAIL_ATTR);
+      if (email) void openContactSearchResult(email);
+      return;
+    }
+    if (action === SEARCH_MORE_CONTACTS_ACTION) {
+      if (!universalSearchContactLoading) void loadUniversalContactSearch(!!universalSearchContactError);
       return;
     }
     if (action === SEARCH_OPEN_WORK_ACTION || action === SEARCH_MORE_WORK_ACTION) {
@@ -15379,6 +15813,17 @@ export const bootstrapDataRoute = (
       return;
     }
     // ── D-205 #5c — the file upload ──────────────────────────────────────
+    if (action === 'contact-import-dates-select-all' || action === 'contact-import-dates-clear') {
+      const file = contactImport?.file;
+      if (!contactImport || !file?.plan || contactImportFileApplyPending()) return;
+      const available = new Set((file.plan.occasions ?? []).filter(date => !date.unavailable).map(date => date.key));
+      const occasions = Object.fromEntries(Object.entries(file.occasions).map(([key, choice]) => [key,
+        { ...choice, selected: action === 'contact-import-dates-select-all' && available.has(key) }]));
+      contactImport = { ...contactImport, file: { ...file, occasions } };
+      render();
+      routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${action}"]`)?.focus();
+      return;
+    }
     if (action === 'contact-import-file-toggle-changes') {
       if (contactImport?.file == null || contactImportFileApplyPending()) return;
       contactImport = {
@@ -15527,8 +15972,8 @@ export const bootstrapDataRoute = (
         routeRoot.querySelector<HTMLElement>('[data-file-lifecycle]')?.focus(); }
       return;
     }
-    if (action === 'file-archive' || action === 'file-delete-confirm') {
-      pendingLoadPromise = mutateFile(action === 'file-archive' ? 'archive' : 'delete'); return;
+    if (action === 'file-archive' || action === 'file-restore' || action === 'file-delete-confirm') {
+      pendingLoadPromise = mutateFile(action === 'file-archive' ? 'archive' : action === 'file-restore' ? 'restore' : 'delete'); return;
     }
     if (action === 'download-file') {
       // Begin synchronously so the state guard owns a second click/Enter before
@@ -15696,12 +16141,13 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
+    if (activeTab === 'calendar' && typeof target.getAttribute === 'function' && calendarAgenda.handleInput(target)) return;
     if (activeTab === 'calendar' && calendarEventSurface.handleInput(target as HTMLElement)) return;
     // D-315 — the Mail facts editor's text fields keep their draft without a repaint.
     if (activeTab === 'mail_fact' && typeof target.getAttribute === 'function'
       && target.getAttribute(MAIL_FACTS_FIELD_ATTR) !== null
       && mailFacts.handleInput(target as HTMLElement)) return;
-    // D-324 — the Reminders tab's new-time field keeps what is typed without a repaint.
+    // Reminder wording and time keep their draft without repainting while typing.
     if (activeTab === 'reminder' && typeof target.getAttribute === 'function'
       && target.getAttribute(REMINDERS_FIELD_ATTR) !== null
       && remindersSurface.handleInput(target as HTMLElement)) return;
@@ -15805,7 +16251,10 @@ export const bootstrapDataRoute = (
     }
     if (typeof target.getAttribute === 'function') {
       const action = target.getAttribute(SHARED_ACTION_ATTR);
+      if (activeTab === 'task' && action === 'task-bulk-date') { taskBulk.setDate(target.value); return; }
       if (action === 'search-work-entities') {
+        if (activeTab === 'task' && taskBulk.busy()) { target.value = workEntityState.search_query; return; }
+        if (activeTab === 'task') taskBulk.reset();
         const kind = target.getAttribute('data-kind');
         if (isWorkEntityTab(activeTab) && kind === workEntityState.kind) {
           workEntityState = applySearchTransition(workEntityState, target.value);
@@ -15890,8 +16339,26 @@ export const bootstrapDataRoute = (
   };
 
   const onChange = (ev: Event): void => {
-    const target = ev.target as HTMLSelectElement | null;
+    const target = ev.target as HTMLInputElement | HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (activeTab === 'calendar' && calendarAgenda.handleChange(target)) return;
+    const importDateKey = target.getAttribute('data-contact-import-date');
+    const importDateField = target.getAttribute('data-contact-import-date-field');
+    if (importDateKey && importDateField && contactImport?.file && !contactImportFileApplyPending()) {
+      const current = contactImport.file.occasions[importDateKey];
+      if (!current) return;
+      const next = { ...current };
+      if (importDateField === 'selected') next.selected = (target as unknown as HTMLInputElement).checked;
+      else if (importDateField === 'recurrence' && (target.value === 'once' || target.value === 'yearly')) next.recurrence = target.value;
+      else if (importDateField === 'reminder_days') {
+        if (target.value === 'none') next.reminder_days = null;
+        else if (['0', '1', '7', '30'].includes(target.value)) next.reminder_days = Number(target.value) as 0 | 1 | 7 | 30;
+      }
+      contactImport = { ...contactImport, file: { ...contactImport.file, occasions: { ...contactImport.file.occasions, [importDateKey]: next } } };
+      render();
+      [...routeRoot.querySelectorAll<HTMLElement>('[data-contact-import-date]')].find(node => node.getAttribute('data-contact-import-date') === importDateKey && node.getAttribute('data-contact-import-date-field') === importDateField)?.focus();
+      return;
+    }
     if (target.getAttribute('data-data-sphere') !== null && ['all', 'personal', 'professional', 'unsorted'].includes(target.value)) {
       dataSphere = target.value as typeof dataSphere; facetKey = ''; render(); routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus(); return;
     }
@@ -15937,7 +16404,11 @@ export const bootstrapDataRoute = (
       if (email !== null) setMergeSurvivor(email);
       return;
     }
+    if (action === 'task-bulk-toggle' && activeTab === 'task') { taskBulk.toggle(target.getAttribute('data-task-id') ?? '', (target as HTMLInputElement).checked); return; }
+    if (action === 'task-bulk-date' && activeTab === 'task') { taskBulk.setDate(target.value); return; }
+    if (taskBulk.busy()) { render(); focusTaskBatch(); return; }
     if (action === 'select-source') {
+      taskBulk.reset();
       const options = sourceOptionsForKind(sources, workEntityState.kind);
       const valid = new Set(options.map((option) => option.id));
       workEntityState = selectSourceTransition(workEntityState, target.value, valid);
@@ -15956,6 +16427,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (activeTab === 'task' && action?.startsWith('filter-task-')) {
+      taskBulk.reset();
       const field = action.slice('filter-task-'.length);
       if (field !== 'completion' && field !== 'due' && field !== 'sort') return;
       const next = parseTaskViewFilters({ ...taskViewFilters, [field]: target.value });
@@ -16264,6 +16736,7 @@ export const bootstrapDataRoute = (
     // Broadcasts must not replace a page walk or an editor the owner is using.
     // Refresh results explicitly starts a fresh read; idle first pages stay live.
     // D-315 — the same for Mail facts: a later page, or a load under way.
+    if (activeLens === 'data' && activeTab === 'task' && taskBulk.holdsList()) return;
     if (activeLens === 'data' && activeTab === 'mail_fact' && mailFacts.isBusy()) return;
     // D-324 — nor a time being changed or a cancel waiting for its answer.
     if (activeLens === 'data' && activeTab === 'reminder' && remindersSurface.isBusy()) return;
@@ -16379,7 +16852,7 @@ export const bootstrapDataRoute = (
     );
   }
 
-  const hasDataInFlightWork = (): boolean => opaqueMutationsInFlight > 0
+  const hasDataInFlightWork = (): boolean => taskBulk.busy() || opaqueMutationsInFlight > 0
     || workEntityState.dialog?.submitting === true
     || contactDialog?.submitting === true
     || savingFormResponse
@@ -16403,7 +16876,8 @@ export const bootstrapDataRoute = (
     || mailFacts.hasInFlightWork()
     // D-324 — a reminder being moved or cancelled.
     || remindersSurface.hasInFlightWork()
-    || calendarEventSurface.hasInFlightWork();
+    || calendarEventSurface.hasInFlightWork()
+    || mailMessageSurface.hasInFlightWork();
 
   return {
     currentView,
@@ -16459,13 +16933,14 @@ export const bootstrapDataRoute = (
     timeline: () => timeline,
     getLoadErrors: () => errors,
     hasInFlightWork: hasDataInFlightWork,
-    hasUnsavedChanges: () => calendarEventSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
-    unsavedChangesPrompt: () => (calendarEventSurface.hasUnsavedChanges()
+    hasUnsavedChanges: () => mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
+    unsavedChangesPrompt: () => (mailMessageSurface.hasUnsavedChanges()
+      ? 'Leave Data? Your email draft is not saved.' : calendarEventSurface.hasUnsavedChanges()
       ? 'Leave Data? Your event changes are not saved.' : recordsImport.hasUnsavedChanges()
       ? 'Leave Data? Your spreadsheet import is still open.' : mailFacts.hasUnsavedChanges()
       ? 'Leave Data? Your changes to a mail-fact template or kind of email are not saved.'
       : remindersSurface.hasUnsavedChanges()
-        ? 'Leave Data? The new time you typed for a reminder is not saved.'
+        ? 'Leave Data? Your reminder changes are not saved.'
         : null),
     inFlightWorkPrompt: () => hasRecordsInFlightWork()
       ? 'Something is still happening in Records. Leave Data anyway?'
@@ -16473,7 +16948,24 @@ export const bootstrapDataRoute = (
         ? 'Something is still happening. Leave Data anyway?'
         : null,
     refresh: startRefresh,
-    whenLoaded: () => pendingLoadPromise,
+    whenLoaded: async () => {
+      await taskBulk.whenSettled();
+      await pendingLoadPromise;
+      if (activeTab === 'calendar' && explorerDetail === null) await calendarAgenda.whenLoaded();
+      if (activeTab === 'reminder') await remindersSurface.whenLoaded();
+    },
+    navigateDeepLink: (hash) => {
+      if (!disposed && activeLens === 'data' && activeTab === 'calendar' && explorerDetail !== null
+        && calendarAgendaReturn?.hash === hash && !hasDataInFlightWork() && !calendarEventSurface.hasUnsavedChanges()) {
+        closeExplorerDetail(true);
+        return true;
+      }
+      if (disposed || activeLens !== 'data' || activeTab !== 'contact' || !contactSearchReturn
+        || hash !== contactSearchReturn.hash || contactDialog !== null || openingContactEditEmail !== null
+        || hasDataInFlightWork()) return false;
+      returnToContactSearch(true);
+      return true;
+    },
     selectTab,
     openCreateWorkEntityDialog,
     openEditWorkEntityDialog,
@@ -16531,9 +17023,12 @@ export const bootstrapDataRoute = (
       disposed = true;
       retireUniversalSearch();
       remindersSurface.dispose();
+      taskBulk.dispose();
+      calendarAgenda.dispose();
       calendarEventSurface.dispose();
+      mailMessageSurface.dispose();
       projectWork?.dispose();
-      fileChatAbort?.abort(); filePreviewAbort?.abort();
+      fileChatAbort?.abort(); filePreviewAbort?.abort(); fileDownloadAbort?.abort();
       contactSearchRefresh.cancel();
       bookingSearchRefresh.cancel();
       taskSearchRefresh.cancel();

@@ -86,7 +86,10 @@ export const resolveOwnerRecallCorpusScope = (
   definitionStore: ContractDefinitionStore,
   now: () => number = Date.now,
 ): OwnerRecallCorpusScope | null => {
-  if (!isExecutionSource(source) || source.channel !== 'chat') return null;
+  if (!isExecutionSource(source)) return null;
+  // Host-created prompt conversations share the owner's history. Ordinary
+  // scheduled recipes and messenger callers still cannot enter this corpus.
+  if (source.channel !== 'chat' && !(source.channel === 'schedule' && source.prompt_schedule !== undefined)) return null;
   if (
     resolveGrantGoverningContractId(
       source as ExecutionSource,

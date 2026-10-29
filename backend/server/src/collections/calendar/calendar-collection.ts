@@ -147,8 +147,9 @@ export interface CalendarCollection extends Collection {
   /** Apply a verified upsert to the warehouse — runs the same body-
    *  split (inline vs CAS) as the sync tick. The dispatcher uses this
    *  on `create`/`update`/`rsvp` to keep "remote-wins, verified-then-
-   *  reflected" intact. */
-  applyVerifiedUpsert(payload: ProviderEventPayload, expected_version?: string): Promise<void>;
+   *  reflected" intact. The optional host fence is rechecked after async body
+   *  storage and at commit, so a retired connection cannot mirror its reply. */
+  applyVerifiedUpsert(payload: ProviderEventPayload, expected_version?: string, shouldContinue?: () => boolean): Promise<void>;
   /** Apply a verified delete — drops the row + emits warehouse
    *  events. Used by the dispatcher on `delete`. */
   applyVerifiedDelete(source_id: string, expected_version?: string): void;
@@ -686,8 +687,8 @@ export const createCalendarCollection = (
 
   const runRetention = async (): Promise<CollectionPruneResult> => retention.run();
 
-  const applyVerifiedUpsert = async (payload: ProviderEventPayload, expected_version?: string): Promise<void> => {
-    await upsertPayload(payload, undefined, expected_version);
+  const applyVerifiedUpsert = async (payload: ProviderEventPayload, expected_version?: string, shouldContinue?: () => boolean): Promise<void> => {
+    await upsertPayload(payload, shouldContinue ? () => !closed && shouldContinue() : undefined, expected_version);
   };
   const applyVerifiedDelete = (source_id: string, expected_version?: string): void => {
     deleteSource(source_id, expected_version);

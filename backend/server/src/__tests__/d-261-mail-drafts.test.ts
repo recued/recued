@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createMailDraftStore, type MailDraftPrincipal } from '../storage/mail-drafts.js';
 import { createPreapprovalCodec } from '../storage/preapproval-codec.js';
+import { preapprovalHash } from '../preapproval-invocations.js';
 
 const databases: Database.Database[] = []; const directories: string[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -20,6 +21,27 @@ const fixture = () => {
 };
 
 describe('D-261 encrypted governed draft storage', () => {
+  it('opens, lists and deletes a draft saved before one address per entry, and saves it once each recipient has an entry', async () => {
+    const f = fixture();
+    // What a server before the rule stored: two addresses in one entry, sealed and hashed as any save is.
+    const legacy = { ...content, to: ['ann@example.test, bob@example.test'] };
+    const stored = async (key: string) => {
+      const saved = await f.store.create({ idempotency_key: key, content }, owner);
+      f.db.prepare('UPDATE mail_drafts SET ciphertext=?, content_hash=? WHERE draft_id=?')
+        .run(await f.codec.seal(legacy), preapprovalHash(legacy), saved.draft_id);
+      return saved;
+    };
+    const kept = await stored('keep'); const dropped = await stored('drop');
+    await expect(f.store.get({ draft_id: kept.draft_id }, owner)).resolves.toMatchObject({ content: legacy });
+    expect((await f.store.list({}, owner)).drafts.map(draft => draft.draft_id).sort())
+      .toEqual([kept.draft_id, dropped.draft_id].sort());
+    expect(f.store.delete({ draft_id: dropped.draft_id, expected_revision: dropped.revision }, owner)).toEqual({ deleted: true });
+    await expect(f.store.update({ draft_id: kept.draft_id, expected_revision: kept.revision, content: legacy }, owner))
+      .rejects.toThrow('mail-send: to[0] holds more than one address; give each recipient its own entry');
+    const fixed = await f.store.update({ draft_id: kept.draft_id, expected_revision: kept.revision,
+      content: { ...legacy, to: ['ann@example.test', 'bob@example.test'] } }, owner);
+    expect(fixed.content.to).toEqual(['ann@example.test', 'bob@example.test']);
+  });
   it('preserves ownership, excludes plaintext at rest and converges concurrent save requests across connections', async () => {
     const f = fixture(); const other = createMailDraftStore(f.open(), f.codec);
     const request = { idempotency_key: 'same-save', content };

@@ -1,3 +1,4 @@
+import type { FileLifecycleMutation } from '@recued/contracts';
 import { createConnectionStore } from '../../../../backend/server/src/storage/connection-store.js';
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../../../../backend/server/src/storage/work-entity-store.js';
 import { createFileMetaStore, ensureFileMetaSchema, buildFileMetaSnapshot } from '../../../../backend/server/src/storage/file-meta-store.js';
@@ -9,8 +10,8 @@ import { makeFileReadRpcHandlers } from '../../../../backend/server/src/file-rea
 import type { WsClient } from '../../../../backend/server/src/ws-server.js';
 import { createQueueFixture } from './chat-queue-backend.js';
 
-export const createFileLifecycleFixture = async (broadcast: ChatBroadcastEmitter, messenger = false, cloud = false) => {
-  const f = createQueueFixture(broadcast, messenger, true);
+export const createFileLifecycleFixture = async (broadcast: ChatBroadcastEmitter, messenger = false, cloud = false, options: Parameters<typeof createQueueFixture>[3] = {}) => {
+  const f = createQueueFixture(broadcast, messenger, true, options);
   await f.addBlockedAttachment(); f.allowAttachment();
   const registry = createCollectionRegistry(); registry.register(f.files!);
   const cloudSource = cloud ? (() => {
@@ -74,10 +75,10 @@ export const createFileLifecycleFixture = async (broadcast: ChatBroadcastEmitter
       if (method === 'data.file.attachments.list') return handlers[method](args, client);
       if (method === 'data.file.attachments.conversation') return handlers[method]({ ...args, session_id: String(args.session_id) }, client);
       if (method === 'data.file.attachments.get') return handlers[method]({ record_id: String(args.record_id) }, client);
-      if (method === 'data.file.read') return handlers[method](args as Parameters<typeof handlers[typeof method]>[0], client);
+      if (method === 'data.file.read') return handlers[method]({ ...args, record_id: String(args.record_id) }, client);
       if (method === 'data.file.usage') return handlers[method](args as Parameters<typeof handlers[typeof method]>[0], client);
       if (method === 'data.file.mutate') return handlers[method]({ record_id: String(args.record_id), revision: String(args.revision),
-        action: args.action as 'archive' | 'delete' }, client);
+        action: args.action as FileLifecycleMutation['action'] }, client);
       if (method === 'collection.listInstances') return { instances: [{ platform: 'file', slug: 'received', adapter_type: 'received',
         auth_state: 'healthy', last_synced_at: Date.now(), caps: { read: 'yes', write: 'no', delete: 'no', watch: 'none', mirror: 'full', auth: 'none', path_style: 'posix' } }] };
       if (method === 'collection.list') return { records: f.files!.list({ platform: 'file', slug: 'received', limit: 100,

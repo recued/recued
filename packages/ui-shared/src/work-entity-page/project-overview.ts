@@ -8,6 +8,8 @@ export interface ProjectWorkSection {
   loading: boolean;
   more?: boolean;
   error?: string;
+  /** The server cannot list a project's work (one before 26.10.28). Not an error: a retry cannot help. */
+  unsupported?: true;
   provider_only_sources?: readonly string[];
 }
 export interface ProjectOverviewProps {
@@ -32,6 +34,7 @@ const section = (kind: ProjectWorkKind, state: ProjectWorkSection, canCreate: bo
       ${state.total !== undefined ? `<span class="project-work-count">${state.total}</span>` : ''}
       ${canCreate ? `<button type="button" data-action="project-work-new" data-project-kind="${kind}" data-project-focus="new-${kind}">New ${kind}</button>` : ''}</header>
     ${state.provider_only_sources?.length ? `<p class="project-work-hint">Provider-only ${label.toLowerCase()} are not included: ${e(state.provider_only_sources.join(', '))}.</p>` : ''}
+    ${state.unsupported ? `<p class="project-work-hint">Update your Recued server to list this project's ${label.toLowerCase()}.</p>` : ''}
     ${state.error ? `<p role="alert" class="project-work-error">${e(state.error)}${state.items.length ? ' Previously loaded items remain below.' : ''}</p>` : ''}
     ${state.loading ? `<p role="status" class="${state.total === undefined ? 'project-work-hint' : 'project-work-refreshing'}">${state.total === undefined ? 'Loading' : 'Refreshing'} ${label.toLowerCase()}…</p>` : ''}
     ${state.total === 0 && !state.loading && !state.error ? `<p class="project-work-hint">No saved ${label.toLowerCase()} are linked to this project.</p>` : ''}

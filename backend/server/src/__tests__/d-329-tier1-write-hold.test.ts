@@ -1,3 +1,4 @@
+import { holdTier1Call } from '../raw-op-dispatch.js';
 /** D-329 slice A — an AI app's Tier-1 write is held for the owner, and approving runs it.
  *
  *  The owner: "keep our story consistent". Over MCP no Tier-1 tool was held: a `write` tool
@@ -211,6 +212,20 @@ describe('D-329 A — the ask names the records a call names', () => {
 });
 
 describe('D-329 A — approving runs it', () => {
+  it('resumes an approved scheduled prompt write with the same system source and conversation', async () => {
+    const h = harness();
+    const source: ExecutionSource = { channel: 'schedule', actor: 'system', cron: 'one_shot', schedule_id: 'ps',
+      chat_session_id: 'scheduled-chat', turn_id: 'scheduled-turn',
+      prompt_schedule: { schedule_id: 'ps', occurrence_id: 'ps:1:1', revision: 1, due_at: 1, cron: 'one_shot' } };
+    await holdTier1Call(h.deps as unknown as Parameters<typeof holdTier1Call>[0],
+      { tool: 'calendar.create', args: EVENT, executionSource: source, sessionId: 'scheduled-chat' });
+    const [checkpoint] = [...h.checkpoints.values()];
+    expect(isCheckpoint(checkpoint)).toBe(true); expect(h.calls).toHaveLength(0);
+    await h.resumer.resumeRun(checkpoint!, {});
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.ctx).toMatchObject({ execution_source: source, session_id: 'scheduled-chat', turn_id: 'scheduled-turn', owner_approved: true });
+  });
+
   it('runs the held call once, with its stored arguments, and completes the app\'s action', async () => {
     const h = harness();
     const res = await h.call('calendar.create', EVENT);

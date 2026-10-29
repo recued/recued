@@ -3,7 +3,7 @@
  * IDs remain the root for impact previews. No byte access authority is added. */
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { RpcError, type ChatMessageAttachment, type FileLifecyclePreview, type FileUsage,
+import { RpcError, type ChatMessageAttachment, type FileLifecycleMutation, type FileLifecyclePreview, type FileUsage,
   type FileAttachmentSelection, type FileAttachmentListRequest, type FileAttachmentListResult, type ConversationFileListRequest } from '@recued/contracts';
 import type { DataFileRecord } from '../collections/file/inbound-file-collection.js';
 import { listConversationFiles } from './conversation-files.js';
@@ -128,6 +128,7 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
     }
     const found = version(attachment.file_id);
     if (found) {
+      if (attachment.content_hash !== undefined && attachment.content_hash !== found.content_hash) throw new RpcError('bad_request', 'The output file changed before delivery.', 409);
       if (found.state !== 'retained' && !legacy) throw new RpcError('file_not_found', 'The attached file was deleted. Remove it before sending.', 409);
       return { attachment: { file_id: found.version_id, media_class: attachment.media_class, ...(legacy || attachment.legacy_capture ? { legacy_capture: true } : {}) }, version: found, existing: true };
     }
@@ -138,6 +139,7 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
         size: 0, content_hash: '', origin: 'webclient_upload', media_class: attachment.media_class, scan_status: 'unscanned' },
       storage_ref: { kind: 'cas', blob_hash: '' } } as DataFileRecord;
     const hot = snapshot.hot_fields;
+    if (attachment.content_hash !== undefined && attachment.content_hash !== hot.content_hash) throw new RpcError('bad_request', 'The output file changed before delivery.', 409);
     if (record && (record.storage_ref.kind !== 'cas' || hot.content_hash !== record.storage_ref.blob_hash)) throw new RpcError('bad_request', 'Attachment content identity is inconsistent.', 409);
     const identity = JSON.stringify([attachment.file_id, snapshot.received_at, hot.content_hash, hot.filename, hot.mime_type, hot.size]);
     const version_id = `file:${hash(`attachment-version:${identity}`).slice(0, 32)}`;
@@ -180,7 +182,7 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
     const v = version(attachment.file_id); if (!v) return attachment;
     const record = JSON.parse(v.record_json) as DataFileRecord;
     return { ...attachment, filename: record.hot_fields.filename, mime_type: record.hot_fields.mime_type,
-      size: record.hot_fields.size, source_file_id: v.source_id,
+      size: record.hot_fields.size, source_file_id: v.source_id, content_hash: v.content_hash,
       availability: v.state === 'retained' ? 'available' : v.state, ...(v.legacy ? { legacy_capture: true } : {}) };
   };
   const migrateMessages = (sessionId?: string): void => {
@@ -262,6 +264,7 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
     return { record_id: source, filename: snapshot?.hot_fields.filename ?? 'File', revision,
       ...(snapshot?.hot_fields.cloud_capture ? { cloud_capture: snapshot.hot_fields.cloud_capture } : {}),
       archived: !current || current.hot_fields.archived === 1, deleted: !current && versions.every(v => v.state !== 'retained'),
+      can_restore: current?.hot_fields.archived === 1,
       message_count: users.filter(u => u.message_id).length, conversation_count: new Set(users.map(u => u.session_id)).size,
       queued_count: users.filter(u => u.state === 'queued').length, delivery_count: deliveries.length,
       in_use: leases.length > 0 || users.some(u => u.state === 'running' || u.state === 'cancelling') || deliveries.some(d => d.state === 'sending'),
@@ -282,15 +285,19 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
       throw new RpcError('bad_request', 'File currently in use. Try again after the operation finishes.', 409);
     }
   };
-  const mutate = (id: string, action: 'archive' | 'delete', revision: string, remove: (id: string) => void): FileLifecycleResult => db.transaction(() => {
+  const mutate = (id: string, action: FileLifecycleMutation['action'], revision: string, apply: (id: string) => void): FileLifecycleResult => db.transaction(() => {
     const request = hash(JSON.stringify([id, action, revision]));
     const receipt = db.prepare('SELECT result FROM file_lifecycle_receipts WHERE request_id=?').get(request) as { result: string } | undefined;
     if (receipt) return { ...JSON.parse(receipt.result) as FileLifecyclePreview, replayed: true };
     const before = preview(id);
     if (before.revision !== revision) throw new RpcError('bad_request', 'File usage changed. Review the updated impact before confirming again.', 409);
+    if (action === 'restore' && !before.can_restore) {
+      throw new RpcError('bad_request', before.deleted ? 'This file was permanently deleted and cannot be restored.'
+        : !before.archived ? 'This file is already in your library.' : 'This file is no longer stored in the library and cannot be restored.', 409);
+    }
     if (action === 'delete' && before.in_use) throw new RpcError('bad_request', 'File currently in use. Try again after the operation finishes.', 409);
     db.prepare('INSERT INTO file_attachment_delete_permits VALUES (?)').run(before.record_id);
-    try { remove(before.record_id); } finally { db.prepare('DELETE FROM file_attachment_delete_permits WHERE source_id=?').run(before.record_id); }
+    try { apply(before.record_id); } finally { db.prepare('DELETE FROM file_attachment_delete_permits WHERE source_id=?').run(before.record_id); }
     if (action === 'delete') {
       db.prepare("UPDATE collection_file_attachment_versions SET blob_hash=NULL,state='deleted' WHERE source_id=?").run(before.record_id);
       if (exists(db, 'chat_turn_queue')) {
@@ -303,7 +310,9 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
         }
       }
     }
-    const result = { ...before, archived: true, deleted: action === 'delete', revision: '', usages: [], usages_truncated: false };
+    const result = action === 'delete'
+      ? { ...before, archived: true, deleted: true, can_restore: false, revision: '', usages: [], usages_truncated: false }
+      : preview(before.record_id);
     db.prepare('INSERT INTO file_lifecycle_receipts VALUES (?,?)').run(request, JSON.stringify(result));
     return result;
   }).immediate();

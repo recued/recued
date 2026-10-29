@@ -92,7 +92,7 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       || (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || Number(args.offset) < 0))
       || (args.read_version !== undefined && (typeof args.read_version !== 'string' || !/^[0-9a-f]{64}$/.test(args.read_version)))
       || (Number(args.offset ?? 0) > 0 && args.read_version === undefined)) {
-      return { ok: true, result: { status: 'invalid_arguments', hint: 'Use an exact local file_ref, a supported converter and a nonnegative character offset. Continue with both next_offset and read_version from the previous page.' } };
+      return { ok: true, result: { status: 'invalid_arguments', hint: 'Copy the complete file_ref from the attachment or tool result, including its file: prefix. Uploaded attachments are already stored. Use a supported converter and a nonnegative character offset. Continue with both next_offset and read_version from the previous page.' } };
     }
     const execute = deps.getExecuteRecipe();
     if (!execute || !ctx.execution_source) return { ok: true, result: { status: 'unavailable', hint: 'The governed document reader is unavailable in this context.' } };

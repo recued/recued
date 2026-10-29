@@ -360,7 +360,9 @@ export const createSqliteChatPlanStore = (
   db: Database.Database,
   getKey?: ChatKeyProvider,
   now: () => number = Date.now,
-): planApproval.PlanApprovalStore => {
+): planApproval.PlanApprovalStore & {
+  listForTurn(session_id: string, turn_id: string): Promise<ReadonlyArray<ChatPlanRecord>>;
+} => {
   const localMutations = createOrdinaryLocalMutationReceipts(db, now);
   const withLocalProof = (row: ChatPlanRow, execution: ChatPlanExecutionReceipt | undefined): ChatPlanExecutionReceipt | undefined => {
     const proof = localMutations.proof('chat_plan', row.plan_id, chatMutationIdentity(row));
@@ -402,6 +404,10 @@ export const createSqliteChatPlanStore = (
   const listSessionRows = db.prepare<{ session_id: string }>(`
     SELECT * FROM chat_plans
      WHERE session_id = @session_id
+     ORDER BY created_at ASC, rowid ASC
+  `);
+  const listTurnRows = db.prepare<{ session_id: string; turn_id: string }>(`
+    SELECT * FROM chat_plans WHERE session_id = @session_id AND turn_id = @turn_id
      ORDER BY created_at ASC, rowid ASC
   `);
   const findLatestRow = db.prepare<{
@@ -775,10 +781,7 @@ export const createSqliteChatPlanStore = (
     return { ...decoded, consumed_at };
   };
 
-  const listForSession = async (
-    session_id: string,
-  ): Promise<ReadonlyArray<ChatPlanRecord>> => {
-    const rows = listSessionRows.all({ session_id }) as ChatPlanRow[];
+  const readRecords = async (rows: ChatPlanRow[]): Promise<ReadonlyArray<ChatPlanRecord>> => {
     return Promise.all(rows.map(async (row): Promise<ChatPlanRecord> => {
       const decoded = await decodePlan(row, getKey);
       const plan =
@@ -805,6 +808,10 @@ export const createSqliteChatPlanStore = (
       };
     }));
   };
+  const listForSession = (session_id: string): Promise<ReadonlyArray<ChatPlanRecord>> =>
+    readRecords(listSessionRows.all({ session_id }) as ChatPlanRow[]);
+  const listForTurn = (session_id: string, turn_id: string): Promise<ReadonlyArray<ChatPlanRecord>> =>
+    readRecords(listTurnRows.all({ session_id, turn_id }) as ChatPlanRow[]);
 
   const listPendingRecords = async (): Promise<
     ReadonlyArray<ChatPlanRecord>
@@ -927,6 +934,7 @@ export const createSqliteChatPlanStore = (
     resolve,
     listPendingRecords,
     listForSession,
+    listForTurn,
     linkTurnToMessage,
     recordExecution,
     unlinkHold,

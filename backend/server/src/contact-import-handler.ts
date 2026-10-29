@@ -47,18 +47,16 @@ import {
 } from '@recued/contracts';
 
 import type { WsClient } from './ws-server.js';
-import type { ContactStore } from './storage/contact-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
 import {
   applyContactFileImport,
   planContactFileImport,
+  type ContactImportFileDeps,
 } from './contact-import-file.js';
 
-export interface ContactImportRpcDeps {
-  store: ContactStore;
+export interface ContactImportRpcDeps extends ContactImportFileDeps {
   /** The CRM mirror the reconcilers maintain — where the strangers already live. */
   mirror: CrmRecordMirrorStore;
-  now?: () => number;
 }
 
 /** Default page size. The stranger list is routinely in the thousands; the surface is
@@ -334,7 +332,7 @@ export const makeContactImportHandlers = (
   deps: ContactImportRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ContactImportMethods, WsClient> | undefined => {
   if (!deps) return undefined;
-  const fileDeps = { store: deps.store, ...(deps.now !== undefined ? { now: deps.now } : {}) };
+  const fileDeps: ContactImportFileDeps = deps;
   return {
     methods: [
       'contact.import.candidates',
@@ -352,7 +350,7 @@ export const makeContactImportHandlers = (
       'contact.import.file_preview': async (args) =>
         planContactFileImport(fileDeps, args.text),
       'contact.import.file_apply': async (args) =>
-        applyContactFileImport(fileDeps, args.text, args.apply_changes),
+        applyContactFileImport(fileDeps, args.text, args.apply_changes, args.occasions),
     },
   };
 };

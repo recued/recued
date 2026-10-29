@@ -287,7 +287,7 @@ export const composeMcpHttpTransport = (
   // `mcp_token_id` AND so we install a per-tool grant gate for
   // store-backed tokens. See Codex P1/P2 fold rationale in the file
   // header.
-  const dispatch: McpDispatch = async (envelope: unknown, token?: string) => {
+  const dispatch: McpDispatch = async (envelope, token, sendProgress) => {
     // Vault-lock gate (checked FIRST, before any token work). A sealed (LOCKED)
     // server refuses tool EXECUTION so no MCP-driven side effect (outbound http
     // / ai) fires while locked — the parity fix for the one no-human execution
@@ -540,7 +540,10 @@ export const composeMcpHttpTransport = (
     // returned dispatcher with the resolved deps; pass undefined for
     // the per-call token so the wrapper doesn't override our
     // `mcpTokenId` overlay.
-    return createMcpHttpDispatch(perCallDeps)(envelope, undefined);
+    const dispatchCall = createMcpHttpDispatch(perCallDeps);
+    return sendProgress === undefined
+      ? dispatchCall(envelope, undefined)
+      : dispatchCall(envelope, undefined, sendProgress);
   };
 
   const logBootBanner = (): void => {

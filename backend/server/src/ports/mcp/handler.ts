@@ -157,7 +157,8 @@ export type McpConcurrencyLimitResolver = (
  *  `mcp_token_id` (D-137 channel-isolation invariant). Token is optional
  *  in the type so legacy fixtures that ignore it still type-check; the
  *  HTTP transport's gate guarantees a non-empty token at runtime. */
-export type McpDispatch = (envelope: unknown, token?: string) => Promise<unknown | null>;
+export type McpDispatch = (envelope: unknown, token?: string,
+  sendProgress?: import('../../mcp-tool-progress.js').McpProgressSink) => Promise<unknown | null>;
 
 /** D-148 § A.6 line 820 — `GET /mcp/catalog` returns the topic +
  *  tool list visible to the calling token. The dispatcher resolves
@@ -852,7 +853,53 @@ export const createMcpPortHandler = (
         return;
       }
 
-      const response = await dispatch(envelope, token);
+      // Open a request-scoped SSE response lazily, only when a client accepts
+      // it and the dispatcher reports real progress. Ordinary calls stay JSON.
+      let progressStream = false;
+      let progressClosed = false;
+      const acceptsProgress = legacySession !== undefined
+        || String(req.headers.accept ?? '').split(',').some(value => {
+          const [mediaType, ...parameters] = value.trim().split(';');
+          return mediaType === 'text/event-stream'
+            && !parameters.some(parameter => /^q\s*=\s*0(?:\.0*)?$/i.test(parameter.trim()));
+        });
+      if (acceptsProgress) res.once('close', () => { progressClosed = true; });
+      const sendProgress: import('../../mcp-tool-progress.js').McpProgressSink | undefined = acceptsProgress
+        ? (notification) => {
+            if (progressClosed || res.writableEnded) return;
+            if (legacySession !== undefined) {
+              writeToStream(legacySession.response, `event: message\ndata: ${JSON.stringify(notification)}\n\n`);
+              return;
+            }
+            if (!progressStream) {
+              progressStream = true;
+              res.statusCode = 200;
+              res.setHeader('content-type', 'text/event-stream');
+              res.setHeader('cache-control', 'no-cache, no-transform');
+              res.setHeader('x-accel-buffering', 'no');
+              res.flushHeaders?.();
+              keepStreamAlive(res);
+            }
+            writeToStream(res, `data: ${JSON.stringify(notification)}\n\n`);
+          } : undefined;
+      let response: unknown;
+      try {
+        response = sendProgress === undefined
+          ? await dispatch(envelope, token)
+          : await dispatch(envelope, token, sendProgress);
+      } catch (error) {
+        if (progressStream && !res.writableEnded) res.end();
+        throw error;
+      } finally {
+        progressClosed = true;
+      }
+      if (progressStream) {
+        if (!res.destroyed && !res.writableEnded) {
+          if (response !== null && response !== undefined) writeToStream(res, `data: ${JSON.stringify(response)}\n\n`);
+          res.end();
+        }
+        return;
+      }
       // Accepted notification POSTs have no body in both supported HTTP eras.
       if (response === null || typeof response === 'undefined') {
         res.statusCode = 202;

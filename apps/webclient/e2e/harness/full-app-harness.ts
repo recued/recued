@@ -2550,6 +2550,7 @@ const buildFakeTransport = (
             };
           }
         }
+        if (rpc.method === 'chat.schedules.list') result = [];
         if (failChatSessionOpen && rpc.method === 'chat.session.get') {
           error = {
             code: 'UNAVAILABLE',
@@ -5347,6 +5348,16 @@ const buildFakeTransport = (
             ? undefined
             : { ...grant, lifecycle_state: 'revoked' };
         }
+        if (rpc.method === 'contact.search.local') {
+          const args = rpc.args as { query: string; offset?: number; limit?: number };
+          const query = args.query.trim().toLowerCase();
+          const roster: Array<{ name?: string; email: string; phone?: string; company?: string }> = !contactsDemo ? [] : contactsPagedDemo
+            ? [contactDemoRecord, secondContactDemoRecord, thirdContactDemoRecord] : [contactDemoRecord];
+          const matches = roster.filter(contact => [contact.name, contact.email, contact.phone, contact.company]
+            .some(value => value?.toLowerCase().includes(query)));
+          const offset = args.offset ?? 0;
+          result = { contacts: matches.slice(offset, offset + (args.limit ?? 50)), total: matches.length, rollups: {} };
+        }
         if (contactsDemo && rpc.method === 'contact.list') {
           const args = rpc.args as {
             name_contains?: unknown;
@@ -7619,7 +7630,7 @@ const buildFakeTransport = (
           heldRpcResponses.set(rpc.method, pending);
           return;
         } else if ((rpc.method === 'data_views.get' && new URLSearchParams(location.search).get('saved_views_get') === 'slow')
-          || (['data_views.create', 'data_views.update', 'data_views.rename', 'data_views.delete'].includes(rpc.method)
+          || (['data_views.create', 'data_views.create_once', 'data_views.update', 'data_views.rename', 'data_views.delete'].includes(rpc.method)
             && new URLSearchParams(location.search).get('saved_views_write') === 'slow')) {
           setTimeout(respond, 750);
           return;

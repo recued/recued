@@ -86,6 +86,9 @@ export interface FileLifecyclePreview {
   revision: string;
   archived: boolean;
   deleted: boolean;
+  /** True for an archived library record that can be restored. Older servers omit
+   * this field and do not accept the restore action. */
+  can_restore?: boolean;
   message_count: number;
   conversation_count: number;
   queued_count: number;
@@ -98,7 +101,7 @@ export interface FileLifecyclePreview {
 
 export interface FileLifecycleMutation {
   record_id: string;
-  action: 'archive' | 'delete';
+  action: 'archive' | 'restore' | 'delete';
   revision: string;
 }
 

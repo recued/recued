@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../automation/prompt-schedules-panel.js', () => import('./fixtures/prompt-schedules-panel-stub.js'));
 
 import type { ChatMessage, ChatSession } from '@recued/contracts';
 

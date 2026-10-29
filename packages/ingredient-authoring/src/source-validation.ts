@@ -33,9 +33,11 @@ export const validateAuthoringSource = (
     const result = kind === 'recipe' ? recipeValidator(body)
       : 'manifest_version' in body ? validatePack(body, { recipeValidator })
         : validateComposition(body, { recipeValidator });
-    return { valid: result.valid, total_issues: result.issues.length, issues: result.issues.slice(0, 100).map(issue => ({
-      ...issue, code: issue.code.slice(0, 128), path: issue.path.slice(0, 512), message: issue.message.slice(0, 2048),
-    })) };
+    return { valid: result.valid, total_issues: result.issues.length, issues: result.issues.slice(0, 100).map(issue => {
+      const bounded = { ...issue, code: issue.code.slice(0, 128), path: issue.path.slice(0, 512), message: issue.message.slice(0, 2048) };
+      if (issue.path.length > 512) delete bounded.reference_span;
+      return bounded;
+    }) };
   } catch {
     return refuse('validation_failed', 'Source could not be validated. Simplify its structure and validate again.');
   }

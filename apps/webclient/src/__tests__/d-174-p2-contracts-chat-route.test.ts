@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../automation/prompt-schedules-panel.js', () => import('./fixtures/prompt-schedules-panel-stub.js'));
 import { createMailWorkFixture } from '../../e2e/harness/mail-work-backend.js';
 import { mailWorkChatPrompt } from '../mail/mail-work-investigation.js';
 import {
@@ -167,6 +168,7 @@ interface FakeEl {
   attrs: Map<string, string>;
   children: FakeEl[];
   parent: FakeEl | null;
+  ownerDocument?: FakeDoc;
   listeners: Map<string, Array<(event?: FakeDomEvent) => void>>;
   readonly firstChild: FakeEl | null;
   setAttribute(k: string, v: string): void;
@@ -208,6 +210,7 @@ interface FakeDomEvent {
 interface FakeDoc {
   styleElements: FakeEl[];
   body?: FakeEl;
+  readonly defaultView: null;
   activeElement: FakeEl | null;
   listeners: Map<string, Array<(event?: FakeDomEvent) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
@@ -366,6 +369,7 @@ const makeFakeDocument = (): FakeDoc => {
     styleElements,
     listeners,
     activeElement: null,
+    defaultView: null,
     head: {
       querySelector(sel) {
         const parsed = matchSelector(sel);
@@ -381,11 +385,14 @@ const makeFakeDocument = (): FakeDoc => {
         return el;
       },
     },
-    createElement: (tag) => makeFakeEl(tag, (element) => {
-      doc.activeElement = element;
-    }),
+    createElement: (tag) => {
+      const element = makeFakeEl(tag, (focused) => { doc.activeElement = focused; });
+      element.ownerDocument = doc;
+      return element;
+    },
     createTextNode: (text) => {
       const node = makeFakeEl('#text');
+      node.ownerDocument = doc;
       node.textContent = text;
       return node;
     },

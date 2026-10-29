@@ -138,6 +138,18 @@ describe('D-250 § D7 — the route reads and renders', () => {
     expect(container.innerHTML).toContain('50%');
   });
 
+  it('an older read cannot replace a newer snapshot', async () => {
+    const replies: Array<(value: MetricReadOutput) => void> = [];
+    const { container, route } = mount(() => new Promise(resolve => { replies.push(resolve); }));
+    const current = route.refresh();
+    const original = data();
+    replies[1]!({ ...original, snapshot: { ...original.snapshot!, metrics: original.snapshot!.metrics.map(metric => ({ ...metric, reading: metricValue(0.75) })) } });
+    await current;
+    replies[0]!(original); await settle();
+    expect(container.innerHTML).toContain('75%');
+    expect(container.innerHTML).not.toContain('50%');
+  });
+
   it('renders the heading landing target the recovery policy names', async () => {
     // ⛔ `recovery-intent-landing.ts` points Stats at this exact attribute. A landing
     // target that never resolves silently drops focus to the document.
@@ -309,7 +321,10 @@ describe('D-250 § C4 — the erase is wired, and survives a repaint', () => {
       },
     });
     const click = (tag: string) => {
-      const ev = { target: { closest: () => ({ getAttribute: () => tag }) } } as unknown as Event;
+      const attrs = rendered(container.innerHTML).find(attrs => attrs.has('data-recued-publish-stop-action') && attrs.get('data-tag') === tag);
+      if (!attrs) throw new Error(`No stop control for ${tag}`);
+      const ev = { target: { closest: (selector: string) => matches(attrs, selector)
+        ? { getAttribute: (key: string) => attrs.get(key) ?? null } : null } } as unknown as Event;
       for (const x of [...handlers]) if (x.type === 'click') x.h(ev);
     };
     return { container, click, count: () => handlers.length };

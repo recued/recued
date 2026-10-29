@@ -160,8 +160,8 @@ export interface PermissionsPanelMount {
    *  resolves, on a catalog-load failure, or when the create form is disabled
    *  (no create callers wired). */
   getCatalog(): ReadonlyArray<CatalogIngredientView>;
-  /** Resolves after the on-mount catalog load settles (or immediately when
-   *  the create form is disabled). Test seam for the picker. */
+  /** Resolves after the latest initial or retry catalog read settles (or
+   *  immediately when the create form is disabled). */
   whenCatalogLoaded(): Promise<void>;
   /** Set one create-form draft field, the same path a control change drives
    *  (re-renders; setting `ingredient_id` resets `operation_id` to
@@ -248,6 +248,10 @@ export const PERMISSIONS_CREATE_SAVE_ATTR = 'data-recued-permissions-create-save
 /** The create-form error chip (validation / loosen-rejection / bad_request). */
 export const PERMISSIONS_CREATE_ERROR_ATTR =
   'data-recued-permissions-create-error';
+/** Stable inline recovery for the create form's catalog read. */
+export const PERMISSIONS_CATALOG_RECOVERY_ATTR = 'data-recued-permissions-catalog-recovery';
+export const PERMISSIONS_CATALOG_ERROR_ATTR = 'data-recued-permissions-catalog-error';
+export const PERMISSIONS_CATALOG_RETRY_ATTR = 'data-recued-permissions-catalog-retry';
 
 // ════════════════════════════════════════════════════════════════
 // Helpers
@@ -463,15 +467,40 @@ export const mountPermissionsPanel = (
   // instead of clobbering the post-delete re-list.
   let loadGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
-  // The on-mount catalog load. Resolves once the picker source settles.
+  // One catalog read owns the picker at a time, including retries.
   let pendingCatalog: Promise<void> = Promise.resolve();
+  let catalogLoading = false;
   // Rows with a delete rpc in flight (keyed by `rowKey`). One delete at a time
   // per row: while a row mutates, its Delete button renders disabled.
   const pendingByRow = new Set<string>();
 
+  const panel = doc.createElement('div');
+  panel.setAttribute(PERMISSIONS_PANEL_HOST_ATTR, '');
+  opts.host.appendChild(panel);
+
+  // Keep recovery outside the repainted content so a read or draft change
+  // cannot replace the retry button while it owns an interaction.
+  const catalogRecovery = doc.createElement('div');
+  catalogRecovery.setAttribute(PERMISSIONS_CATALOG_RECOVERY_ATTR, '');
+  catalogRecovery.setAttribute('hidden', '');
+  catalogRecovery.className = 'perm-catalog-recovery';
+  const catalogMessage = doc.createElement('p');
+  catalogMessage.setAttribute(PERMISSIONS_CATALOG_ERROR_ATTR, '');
+  catalogMessage.setAttribute('role', 'status');
+  catalogMessage.className = 'perm-catalog-error';
+  catalogRecovery.appendChild(catalogMessage);
+  const catalogRetry = doc.createElement('button');
+  catalogRetry.setAttribute(PERMISSIONS_CATALOG_RETRY_ATTR, '');
+  catalogRetry.setAttribute('type', 'button');
+  catalogRetry.className = 'perm-catalog-retry';
+  catalogRecovery.appendChild(catalogRetry);
+  if (canCreate) panel.appendChild(catalogRecovery);
   const root = doc.createElement('div');
-  root.setAttribute(PERMISSIONS_PANEL_HOST_ATTR, '');
-  opts.host.appendChild(root);
+  panel.appendChild(root);
+  const createHost = doc.createElement('div');
+  const inventoryHost = doc.createElement('div');
+  root.appendChild(createHost);
+  root.appendChild(inventoryHost);
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -619,15 +648,19 @@ export const mountPermissionsPanel = (
     card.appendChild(header);
 
     for (const view of rows) renderRow(card, view);
-    root.appendChild(card);
+    inventoryHost.appendChild(card);
   };
 
-  const render = (): void => {
+  const renderContent = (catalogOnly: boolean): void => {
     if (disposed) return;
-    clearChildren(root);
+    clearChildren(createHost);
 
     // The create form (when enabled) sits above the inventory.
     renderCreateForm();
+    // A picker read must not replace an existing rule's confirmation or
+    // action while the owner is using it.
+    if (catalogOnly) return;
+    clearChildren(inventoryHost);
 
     if (!canManageOverrides) return;
 
@@ -636,7 +669,7 @@ export const mountPermissionsPanel = (
     // the user can still act on.
     if (state.listError !== null) {
       appendLine(
-        root,
+        inventoryHost,
         PERMISSIONS_PANEL_ERROR_ATTR,
         'perm-error',
         `Recued could not load your permissions: ${state.listError}`,
@@ -662,7 +695,7 @@ export const mountPermissionsPanel = (
 
     if (state.phase === 'loading') {
       appendLine(
-        root,
+        inventoryHost,
         PERMISSIONS_PANEL_LOADING_ATTR,
         'perm-loading',
         'Loading permissions…',
@@ -671,7 +704,7 @@ export const mountPermissionsPanel = (
     }
     if (state.phase === 'ready') {
       appendLine(
-        root,
+        inventoryHost,
         PERMISSIONS_PANEL_EMPTY_ATTR,
         'perm-empty',
         'No rules yet. Anything you stop apps from doing shows up here.',
@@ -679,6 +712,38 @@ export const mountPermissionsPanel = (
     }
     // phase === 'error' with zero rows → the error chip above is the whole
     // surface; no empty / loading line.
+  };
+
+  const render = (options: { catalogOnly?: boolean } = {}): void => {
+    if (disposed) return;
+    const active = doc.activeElement;
+    const fieldFocus = active === null || active === undefined ? undefined : [
+      PERMISSIONS_CREATE_ACTOR_ATTR, PERMISSIONS_CREATE_INGREDIENT_ATTR,
+      PERMISSIONS_CREATE_OPERATION_ATTR, PERMISSIONS_CREATE_DENIED_ATTR,
+      PERMISSIONS_CREATE_APPROVAL_ATTR, PERMISSIONS_CREATE_MAXRISK_ATTR,
+    ].find(attr => root.querySelector?.(`[${attr}]`) === active);
+    const retryFocused = active === catalogRetry;
+    if (state.catalogError === null) catalogRecovery.setAttribute('hidden', '');
+    else catalogRecovery.removeAttribute('hidden');
+    const message = state.catalogError === null
+      ? '' : catalogLoading ? 'Loading Ingredients…'
+        : `Couldn’t load Ingredients. ${state.catalogError}`;
+    if (catalogMessage.textContent !== message) catalogMessage.textContent = message;
+    const messageClass = catalogLoading ? 'perm-catalog-error perm-catalog-loading' : 'perm-catalog-error';
+    if (catalogMessage.className !== messageClass) catalogMessage.className = messageClass;
+    const retryLabel = catalogLoading ? 'Trying…' : 'Try again';
+    if (catalogRetry.textContent !== retryLabel) catalogRetry.textContent = retryLabel;
+    catalogRetry.setAttribute('aria-disabled', catalogLoading ? 'true' : 'false');
+    catalogRetry.setAttribute('aria-busy', catalogLoading ? 'true' : 'false');
+    renderContent(options.catalogOnly === true);
+    if (fieldFocus !== undefined) {
+      root.querySelector?.<HTMLElement>(`[${fieldFocus}]`)?.focus?.({ preventScroll: true });
+    } else if (retryFocused && state.catalogError === null) {
+      const ingredient = root.querySelector?.<HTMLSelectElement>(`[${PERMISSIONS_CREATE_INGREDIENT_ATTR}]`);
+      const target = ingredient?.disabled === false ? ingredient
+        : root.querySelector?.<HTMLElement>(`[${PERMISSIONS_CREATE_ACTOR_ATTR}]`);
+      target?.focus?.({ preventScroll: true });
+    }
   };
 
 
@@ -773,23 +838,33 @@ export const mountPermissionsPanel = (
 
   const loadCatalog = (): Promise<void> => {
     const list = opts.runListCatalogOperations;
-    if (list === undefined) return Promise.resolve();
+    if (!canCreate || disposed || list === undefined) return Promise.resolve();
+    if (catalogLoading) return pendingCatalog;
+    catalogLoading = true;
+    render({ catalogOnly: true });
     pendingCatalog = (async () => {
       try {
         const { ingredients } = await list();
         if (disposed) return;
         state = { ...state, catalog: ingredients, catalogError: null };
-        render();
       } catch (err) {
         if (disposed) return;
         // A catalog-load failure degrades only the create form (the ingredient
         // picker shows "unavailable"); the inventory is untouched.
         state = { ...state, catalog: [], catalogError: errMessage(err) };
-        render();
+      } finally {
+        catalogLoading = false;
+        if (!disposed) render({ catalogOnly: true });
       }
     })();
     return pendingCatalog;
   };
+
+  catalogRetry.addEventListener('click', () => {
+    if (disposed || catalogLoading || state.catalogError === null) return;
+    catalogRetry.focus?.({ preventScroll: true });
+    void loadCatalog();
+  });
 
   const updateDraft = <K extends keyof CreateDraft>(
     field: K,
@@ -933,10 +1008,11 @@ export const mountPermissionsPanel = (
     // Ingredient (from the catalog).
     const catalog = state.catalog ?? [];
     const ingredientDisabled =
-      state.catalog === null || state.catalogError !== null || catalog.length === 0;
-    const ingredientPlaceholder =
-      state.catalogError !== null
-        ? `Recued cannot list them: ${state.catalogError}`
+      catalogLoading || state.catalog === null || state.catalogError !== null || catalog.length === 0;
+    const ingredientPlaceholder = catalogLoading
+      ? 'Loading Ingredients…'
+      : state.catalogError !== null
+        ? 'Ingredients unavailable'
         : state.catalog === null
           ? 'Loading Ingredients…'
           : catalog.length === 0
@@ -1024,11 +1100,9 @@ export const mountPermissionsPanel = (
     save.setAttribute(PERMISSIONS_CREATE_SAVE_ATTR, '');
     save.setAttribute('type', 'button');
     save.className = 'perm-create-save';
-    if (state.creating) {
-      save.setAttribute('disabled', '');
-      save.textContent = 'Saving…';
-    } else {
-      save.textContent = 'Add the rule';
+    if (state.creating || ingredientDisabled) save.setAttribute('disabled', '');
+    save.textContent = state.creating ? 'Saving…' : 'Add the rule';
+    if (!state.creating && !ingredientDisabled) {
       save.addEventListener('click', () => {
         void submitCreate();
       });
@@ -1044,7 +1118,7 @@ export const mountPermissionsPanel = (
       );
     }
 
-    root.appendChild(form);
+    createHost.appendChild(form);
   };
 
   // ── Initial paint + seed load ────────────────────────────────────
@@ -1081,7 +1155,7 @@ export const mountPermissionsPanel = (
       if (disposed) return;
       disposed = true;
       try {
-        opts.host.removeChild(root);
+        opts.host.removeChild(panel);
       } catch {
         // Some fake DOMs / a detached host throw on removeChild; ignore — the
         // host is the caller's to retain or discard.
@@ -1099,6 +1173,40 @@ export const mountPermissionsPanel = (
  *  isn't mounted. The Contracts route joins this into its `<style>` bundle. */
 export const PERMISSIONS_PANEL_STYLES = `
 
+[data-recued-permissions-panel] .perm-catalog-recovery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+[data-recued-permissions-panel] .perm-catalog-recovery[hidden] { display: none; }
+[data-recued-permissions-panel] .perm-catalog-error {
+  flex: 1 1 200px;
+  min-width: 0;
+  margin: 0;
+  color: var(--fail);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+[data-recued-permissions-panel] .perm-catalog-loading { color: var(--muted); }
+[data-recued-permissions-panel] .perm-catalog-retry {
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+[data-recued-permissions-panel] .perm-catalog-retry[aria-disabled="true"] {
+  opacity: 0.65;
+  cursor: wait;
+}
 [data-recued-permissions-panel] .perm-loading,
 [data-recued-permissions-panel] .perm-empty {
   font-size: 13px;

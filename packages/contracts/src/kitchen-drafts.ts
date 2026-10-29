@@ -7,11 +7,19 @@ export const KITCHEN_DRAFT_GET_OP = 'core.kitchen.draft.get';
 export const KITCHEN_DRAFT_UPDATE_OP = 'core.kitchen.draft.update';
 export const kitchenDraftPath = (draftId: string): string => `/webclient/#kitchen/import/${encodeURIComponent(draftId)}`;
 
+/** UTF-16 range inside a decoded JSON string, before JSON escaping. */
+export interface AuthoringReferenceSpan {
+  offset: number;
+  length: number;
+  target: 'key' | 'value';
+}
+
 export interface KitchenDraftIssue {
   severity: 'error' | 'warn' | 'info';
   code: string;
   path: string;
   message: string;
+  reference_span?: AuthoringReferenceSpan;
 }
 export interface KitchenDraftValidation {
   valid: boolean;

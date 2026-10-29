@@ -32,6 +32,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../automation/prompt-schedules-panel.js', () => import('./fixtures/prompt-schedules-panel-stub.js'));
 import type {
   SellerOverview,
   WebclientLocalKey,
@@ -3858,17 +3859,6 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
         caps: {},
         auth_state: 'healthy',
         last_synced_at: 1,
-      }],
-    });
-    await flush();
-    answerRpc('collection.list', {
-      records: [{
-        record_id: 'event-1',
-        received_at: 1,
-        modified_at: 1,
-        hot_fields: { summary: 'Customer review' },
-        size_bytes: 0,
-        source_id: 'provider-event-1',
       }],
     });
     await flush();

@@ -198,7 +198,7 @@ describe('D-145 PA7 — renderMailComposeDialog', () => {
     expect(html).toContain('&lt;script&gt;');
   });
 
-  it('strips the schema-derived sender_source ref so only the From picker is rendered', () => {
+  it('keeps sender and reply metadata out of the generic form', () => {
     // Codex P2 fold — pre-fold the form-renderer rendered a parallel
     // sender_source ref input alongside the dialog's curated From
     // picker. The dialog filters the field out of the FormDefinition
@@ -209,6 +209,7 @@ describe('D-145 PA7 — renderMailComposeDialog', () => {
       sources: [senderRecued, senderHubspot],
     });
     expect(html).not.toContain('data-form-field="sender_source"');
+    expect(html).not.toContain('data-form-field="in_reply_to"');
     // The curated picker is the only sender control.
     expect(html).toContain('data-action="select-mail-compose-sender"');
   });

@@ -57,6 +57,7 @@ import {
  *  prerequisites (e.g., no `scheduleStore` for cron, no `db` for
  *  auto-run) return `undefined` from `boot()` so the slot is skipped. */
 export interface SchedulerBootContext {
+  readonly promptScheduleTick?: (closed: () => boolean) => Promise<void>;
   readonly backupIntegrity?: import('../../../archive/backup-integrity.js').BackupIntegrity;
   readonly backupHealth?: import('../../../archive/backup-health.js').BackupHealth;
   readonly backupWatchdog?: import('../../../archive/backup-watchdog.js').BackupWatchdog;

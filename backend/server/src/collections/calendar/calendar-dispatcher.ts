@@ -695,7 +695,11 @@ export const handleCalendarRsvp = async (
       ...(selfAttendee?.email ? { self_email: selfAttendee.email } : {}),
     }),
   );
-  await collection.applyVerifiedUpsert(payload);
+  if ('removed' in payload) {
+    collection.applyVerifiedDelete(input.source_id, existing.resource_version);
+    return { source_id: payload.source_id, response_status: payload.response_status };
+  }
+  await collection.applyVerifiedUpsert(payload, existing.resource_version);
   const updatedSelf =
     payload.event.attendees?.find((a) => a.is_self) ?? selfAttendee;
   return {

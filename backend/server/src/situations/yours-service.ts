@@ -723,7 +723,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         })())) throw new Error('Confirm stopping this safety, legal or travel clock');
         const occasion = history.saveOccasion({ ...input.occasion,
           ...(previous?.source ? { source_pinned: true, ...(previous.month_day !== input.occasion.month_day ? { source_next_on: undefined } : {}) } : {}) }, now());
-        await deps.reminders?.tick(); return { id: occasion.id, message: 'Occasion saved with its annual clock.' };
+        await deps.reminders?.tick(); return { id: occasion.id, message: occasion.source_next_on !== undefined && !occasion.source ? 'Occasion saved with its one-time clock.' : 'Occasion saved with its annual clock.' };
       }
       case 'occasion.delete':
         if (!input.confirm_floor_delete && history.occasion(input.id)?.rules.some(rule => rule.enabled && rule.consequence === 'floor')) throw new Error('Confirm removing this safety, legal or travel clock');

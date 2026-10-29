@@ -48,9 +48,12 @@ export interface ParsedContactEntry {
   /** 1-based line (vCard) / row (CSV) — so an error names WHERE. */
   line: number;
   email?: string;
+  emails?: string[];
   name?: string;
   /** As written. The store canonicalizes; we do not guess at E.164 here. */
   phone?: string;
+  phones?: string[];
+  dates?: Array<{ label: string; date: string }>;
   company?: string;
   title?: string;
   photo?: string;
@@ -180,38 +183,50 @@ const annualDate = (raw: string, params = ''): string | undefined => {
 
 /** A dated entry with a label: Apple's `X-ABDATE` + `X-ABLabel`, or a Google
  *  Contacts export's `Event N` columns. The one labelled "Anniversary" is the
- *  contact's anniversary, unless the file already gave one; any other has no field
- *  on a contact, so it is named rather than dropped. */
+ *  contact's anniversary, unless the file already gave one. Other valid labelled
+ *  dates are offered for optional, contact-linked Occasions. */
 const placeLabelledDate = (
   entry: ParsedContactEntry, notes: string[], label: string | undefined, raw: string, params = '',
 ): void => {
   if (isZeroDate(raw)) return;
   const date = annualDate(raw, params);
+  if (label?.toLowerCase() === 'birthday') {
+    if (entry.birthday !== undefined) return;
+    entry.birthday = date ?? raw;
+    if (date === undefined) notes.push(birthdayKeptAsText(raw));
+    return;
+  }
   if (label?.toLowerCase() === 'anniversary') {
     if (entry.anniversary !== undefined) return;
     if (date !== undefined) entry.anniversary = date;
     else notes.push(anniversaryLeftOut(raw));
     return;
   }
-  notes.push(`${label ? `"${label}"` : 'a date with no label'} (${date ?? raw}) has no field on a contact and `
-    + 'was not imported. Add it in Yours → Occasions to be reminded.');
+  if (date !== undefined && label?.trim()) {
+    (entry.dates ??= []).push({ label: label.trim(), date });
+  } else {
+    notes.push(`${label ? `"${label}"` : 'a date with no label'} (${date ?? raw}) could not be offered as an Occasion. `
+      + (date === undefined ? REWRITE_DATE : 'Give the date a label in your contact file.'));
+  }
 };
 
 /** Is this property flagged PREFERRED? Both dialects appear in the wild:
  *  vCard 3.0 `TYPE=PREF` and vCard 4.0 `PREF=1`. */
-const isPreferred = (params: string): boolean =>
-  params.includes('PREF');
+const preference = (params: string): number => {
+  const numeric = /(?:^|;)PREF="?(\d+)"?(?:;|$)/u.exec(params)?.[1];
+  if (numeric !== undefined && Number(numeric) >= 1 && Number(numeric) <= 100) return Number(numeric);
+  return params.split(';').some(param => param === 'PREF'
+    || param.startsWith('TYPE=') && param.slice(5).replace(/^"|"$/gu, '').split(',').includes('PREF')) ? 1 : 101;
+};
 
 /** Take the PREFERRED value, else the first. A contact whose email is not flagged
  *  primary still HAS an email. */
-const pick = (values: { value: string; preferred: boolean }[]): string | undefined => {
-  const p = values.find((v) => v.preferred);
-  return (p ?? values[0])?.value;
-};
+const orderedValues = (values: { value: string; preference: number }[]): string[] =>
+  [...new Set([...values].sort((a, b) => a.preference - b.preference).map(v => v.value))];
 
 const parseVCardBlock = (lines: string[], startLine: number): { entry: ParsedContactEntry; notes: string[] } | string => {
-  const emails: { value: string; preferred: boolean }[] = [];
-  const phones: { value: string; preferred: boolean }[] = [];
+  const emails: { value: string; preference: number }[] = [];
+  const phones: { value: string; preference: number }[] = [];
   const entry: ParsedContactEntry = { line: startLine };
   let structuredName: string | undefined;
   const notes: string[] = [];
@@ -238,10 +253,10 @@ const parseVCardBlock = (lines: string[], startLine: number): { entry: ParsedCon
         break;
       }
       case 'EMAIL':
-        emails.push({ value: v, preferred: isPreferred(prop.params) });
+        if (canonicalizeEmail(v)) emails.push({ value: canonicalizeEmail(v), preference: preference(prop.params) });
         break;
       case 'TEL':
-        phones.push({ value: v, preferred: isPreferred(prop.params) });
+        if (v.replace(/^tel:/iu, '').trim()) phones.push({ value: v.replace(/^tel:/iu, '').trim(), preference: preference(prop.params) });
         break;
       case 'ORG':
         // `Company;Department` — the org is the first component.
@@ -310,13 +325,14 @@ const parseVCardBlock = (lines: string[], startLine: number): { entry: ParsedCon
 
   if (entry.name === undefined && structuredName !== undefined) entry.name = structuredName;
 
-  const email = pick(emails);
-  if (email !== undefined) {
-    const canonical = canonicalizeEmail(email);
-    if (canonical !== '') entry.email = canonical;
+  if (emails.length) {
+    entry.emails = orderedValues(emails);
+    entry.email = entry.emails[0]!;
   }
-  const phone = pick(phones);
-  if (phone !== undefined) entry.phone = phone;
+  if (phones.length) {
+    entry.phones = orderedValues(phones);
+    entry.phone = entry.phones[0]!;
+  }
 
   // An entry with neither an address nor a name is an identity nothing could ever
   // match — not by the address space, not by a phone lookup, not by a blocking key.

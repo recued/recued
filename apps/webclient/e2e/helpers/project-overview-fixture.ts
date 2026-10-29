@@ -73,9 +73,21 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
         writes.push({ method, ...args });
         const id = 'id' in args && args.id ? args.id : `new-${args.kind}-${writes.length}`;
         const existing = entities.find(entity => entity._kind === args.kind && entity.id === id);
-        const saved = { ...base(args.kind, id), done: false, blocks_task_ids: [], last_user_action_at: now,
-          related_project_ids: [], related_contact_ids: [], related_calendar_event_ids: [], related_mail_thread_ids: [],
-          ...existing, ...args, id, _kind: args.kind, updated_at: now + writes.length } as WorkEntity;
+        let saved: WorkEntity;
+        if (args.kind === 'task') {
+          const prior = existing?._kind === 'task' ? existing : undefined;
+          saved = { ...base('task', id), done: false, blocks_task_ids: [], ...prior, ...args,
+            title: args.title ?? prior?.title ?? '', id, _kind: 'task', updated_at: now + writes.length };
+        } else if (args.kind === 'note') {
+          const prior = existing?._kind === 'note' ? existing : undefined;
+          saved = { ...base('note', id), last_user_action_at: now,
+            related_project_ids: [], related_contact_ids: [], related_calendar_event_ids: [], related_mail_thread_ids: [],
+            ...prior, ...args, body: args.body ?? prior?.body ?? '', id, _kind: 'note', updated_at: now + writes.length };
+        } else if (args.kind === 'project') {
+          const prior = existing?._kind === 'project' ? existing : undefined;
+          saved = { ...base('project', id), state: 'active', last_activity_at: now, related_contact_ids: [],
+            ...prior, ...args, title: args.title ?? prior?.title ?? '', id, _kind: 'project', updated_at: now + writes.length };
+        } else throw new Error(`Project overview fixture cannot save ${args.kind}`);
         if (!existing && saved._kind === 'task' && wrongCreateLink) { saved.parent_project_id = 'other'; wrongCreateLink = false; }
         if (saved._kind === 'project' && args.kind === 'project' && args.target_completion_at === null) delete saved.target_completion_at;
         if (saved._kind === 'task' && args.kind === 'task' && 'clear_due_at' in args && args.clear_due_at) delete saved.due_at;

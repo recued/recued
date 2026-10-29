@@ -1469,24 +1469,43 @@ describe('GcalProvider — rsvpEvent', () => {
     ],
   };
 
+  it('qualifies organizer propagation and rejects private and organizer copies', async () => {
+    let current = { ...seed, organizer: { email: 'host@x.com', self: false }, privateCopy: false };
+    let accessRole = 'owner';
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig,
+      fetcher: async url => url.includes('/calendarList')
+        ? mkJson(200, { items: [{ id: 'alice@x.com', primary: true, accessRole }] }) : mkJson(200, current), scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    expect((await provider.readInvitation!('primary', seed.id)).notification_supported).toBe(true);
+    accessRole = 'reader';
+    expect((await provider.readInvitation!('primary', seed.id)).notification_supported).toBe(false);
+    accessRole = 'owner';
+    current = { ...current, privateCopy: true };
+    expect((await provider.readInvitation!('primary', seed.id)).notification_supported).toBe(false);
+    current = { ...current, privateCopy: false, organizer: { email: 'alice@x.com', self: true } };
+    expect((await provider.readInvitation!('primary', seed.id)).notification_supported).toBe(false);
+  });
+
   it('PATCHes the self attendee with the mapped response', async () => {
     const store = seedStore();
     let patchBody: unknown;
+    let ifMatch: string | null = null;
     const fetcher: HttpFetcher = async (url, init) => {
       if (url.includes('/users/me/calendarList')) {
-        return mkJson(200, { items: [{ id: 'primary' }] });
+        return mkJson(200, { items: [{ id: 'alice@x.com', primary: true, accessRole: 'owner' }] });
       }
       if (
         url.endsWith('/events/evt-rsvp') &&
         (init?.method ?? 'GET') === 'GET'
       ) {
-        return mkJson(200, seed);
+        return mkJson(200, { ...seed, etag: 'invitation-v1', attendees: patchBody ? [{ ...seed.attendees![0], responseStatus: 'accepted' }, seed.attendees![1]] : [{ ...seed.attendees![0], self: false }, { ...seed.attendees![1], self: true }] });
       }
       if (
         url.endsWith('/events/evt-rsvp') &&
         init?.method === 'PATCH'
       ) {
         patchBody = JSON.parse(init?.body as string);
+        ifMatch = new Headers(init?.headers).get('If-Match');
         return mkJson(200, {
           ...seed,
           attendees: [
@@ -1510,8 +1529,14 @@ describe('GcalProvider — rsvpEvent', () => {
       calendar_id: 'primary',
       source_id: 'evt-rsvp',
       response: 'accepted',
+      before_send: () => undefined,
+      self_email: 'alice@x.com',
     });
+    if ('removed' in payload) throw new Error('Expected a retained event.');
     expect(payload.event.attendees?.[0].response_status).toBe('accepted');
+    expect(payload.event.attendees).toHaveLength(2);
+    expect(ifMatch).toBe('invitation-v1');
+    expect(patchBody).toMatchObject({ attendeesOmitted: true, attendees: [{ email: 'alice@x.com', responseStatus: 'accepted' }] });
     expect((patchBody as { attendees: Array<{ responseStatus: string }> }).attendees[0].responseStatus)
       .toBe('accepted');
   });
@@ -1520,11 +1545,11 @@ describe('GcalProvider — rsvpEvent', () => {
     const store = seedStore();
     const withoutSelf: GcalEvent = {
       ...seed,
-      attendees: [{ email: 'bob@x.com', responseStatus: 'accepted' }],
+      attendees: [{ email: 'bob@x.com', self: true, responseStatus: 'accepted' }],
     };
     const fetcher: HttpFetcher = async (url, init) => {
       if (url.includes('/users/me/calendarList')) {
-        return mkJson(200, { items: [{ id: 'primary' }] });
+        return mkJson(200, { items: [{ id: 'alice@x.com', primary: true, accessRole: 'owner' }] });
       }
       if (
         url.endsWith('/events/evt-rsvp') &&
@@ -1561,25 +1586,26 @@ describe('GcalProvider — rsvpEvent', () => {
         { email: 'bob@x.com', responseStatus: 'accepted' },
       ],
     };
+    let responded = false;
     const fetcher: HttpFetcher = async (url, init) => {
       if (url.includes('/users/me/calendarList')) {
-        return mkJson(200, { items: [{ id: 'primary' }] });
+        return mkJson(200, { items: [{ id: 'alice@x.com', primary: true, accessRole: 'owner' }] });
       }
       if (
         url.endsWith('/events/evt-rsvp') &&
         (init?.method ?? 'GET') === 'GET'
       ) {
-        return mkJson(200, noSelfFlag);
+        return mkJson(200, { ...noSelfFlag, attendees: responded ? [{ ...noSelfFlag.attendees![0], responseStatus: 'tentative' }, noSelfFlag.attendees![1]] : noSelfFlag.attendees });
       }
       if (
         url.endsWith('/events/evt-rsvp') &&
         init?.method === 'PATCH'
       ) {
+        responded = true;
         return mkJson(200, {
           ...noSelfFlag,
           attendees: [
             { ...noSelfFlag.attendees![0], responseStatus: 'tentative' },
-            noSelfFlag.attendees![1],
           ],
         });
       }
@@ -1600,7 +1626,9 @@ describe('GcalProvider — rsvpEvent', () => {
       response: 'tentative',
       self_email: 'alice@x.com',
     });
+    if ('removed' in payload) throw new Error('Expected a retained event.');
     expect(payload.event.attendees?.[0].response_status).toBe('tentative');
+    expect(payload.event.attendees).toHaveLength(2);
   });
 });
 

@@ -78,6 +78,8 @@ export interface HistoryDeps {
    *  `notification.recent` (`listActivitiesByAction('notification_fired')`).
    *  Absent → both return `[]`. */
   auditLog?: AuditLogStore;
+  /** Durable history whose producer has not released delivery. Audit reads are unchanged. */
+  heldNotificationIds?: () => ReadonlySet<string>;
   /** The server's own public address (`publicAddress.baseUrl('root')`), or null when it has
    *  none. A notice's `link_url` that starts with it points into the owner's app, so
    *  `notification.recent` also gives it as `ui_link_url`. Absent ⇒ only a link that is
@@ -214,8 +216,9 @@ export const handleNotificationRecent = async (
 ): Promise<{ notifications: ServerRecentNotification[] }> => {
   if (!deps.auditLog) return { notifications: [] };
   const all = await deps.auditLog.listActivities();
+  const held = deps.heldNotificationIds?.();
   const rows = all
-    .filter((a) => a.action === 'notification_fired')
+    .filter((a) => a.action === 'notification_fired' && !held?.has(a.activity_id))
     .slice(0, clampLimit(req.limit));
   let ownerBaseUrl: string | null = null;
   try {

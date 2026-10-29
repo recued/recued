@@ -38,7 +38,8 @@ export interface Reminder {
   /** The instant it rings, epoch ms. */
   at: number;
   /** The owner's zone when it was set, so its time is worded back on the clock
-   *  it was asked on. `null` when no zone resolved (UTC is used). */
+   * it was asked on. Legacy rows may have null; their display uses the declared
+   * server zone. */
   time_zone: string | null;
   origin: ReminderOrigin;
   /** Built-in clock service correlation. Ordinary reminder ops cannot supply
@@ -66,13 +67,36 @@ export interface ReminderView {
   when: string;
   state: ReminderState;
   delivered_at: number | null;
-  /** The clock `when` is worded on, so a screen changing the time edits it on
-   *  the same clock. `null` ⇒ UTC. */
+  /** The resolved clock used by `when`, including the declared-zone fallback
+   * for legacy stored reminders. Older servers may return null (UTC). */
   time_zone: string | null;
+  /** The Yours clock owns this reminder's wording and schedule. */
+  managed_by?: 'clock';
 }
 
 /** Why a reminder was not changed or cancelled. */
 export type ReminderChangeReason = 'not_found' | 'not_pending';
+
+/** Stable ascending position among waiting reminders. */
+export interface ReminderListCursor {
+  at: number;
+  reminder_id: string;
+}
+
+/** Search and date bounds apply before paging. Date bounds name instants. */
+export interface ReminderListPageInput {
+  query?: string;
+  from?: number;
+  before?: number;
+  cursor?: ReminderListCursor;
+}
+
+export interface ReminderListRequest {
+  include_delivered?: boolean;
+  limit?: number;
+  /** Opt in to paging waiting reminders. Older list callers keep their shape. */
+  page?: ReminderListPageInput;
+}
 
 /** `core.reminder.list` and `reminder.list` answer with this. */
 export interface ReminderListResult {
@@ -82,6 +106,19 @@ export interface ReminderListResult {
   count: number;
   /** Rung or cancelled in the last 30 days, most recent first — on request. */
   delivered?: ReminderView[];
+  page?: {
+    matched_count: number;
+    next_cursor: ReminderListCursor | null;
+  };
+}
+
+/** The same creation receipt for a model-set reminder and an Automation alarm. */
+export interface ReminderCreateResult {
+  reminder: ReminderView;
+  when: string;
+  quiet_hours_note?: string;
+  /** The chosen time and any quiet-hours delay, ready to show to the owner. */
+  confirmation: string;
 }
 
 /** `core.reminder.update` and `reminder.update` answer with this. */

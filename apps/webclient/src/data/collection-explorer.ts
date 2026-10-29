@@ -31,7 +31,7 @@ import {
   type CollectionInstanceRow,
   type CollectionRecord,
 } from '@recued/contracts';
-import { renderReferenceIdentity } from '@recued/ui-shared';
+import { formatClientDateTime, renderReferenceIdentity } from '@recued/ui-shared';
 
 /** Click-dispatch contract with the route's `onClick` (keyed on
  *  `DATA_ROUTE_ACTION_ATTR`). The route adds one arm per action value. */
@@ -264,6 +264,26 @@ const renderStateBadge = (record: CollectionRecord, stateField: StateField | und
   return word === undefined
     ? ''
     : `<span class="col-explorer-state" ${COLLECTION_STATE_ATTR}="${e(value!)}">${e(word)}</span>`;
+};
+
+/** Mail keeps the familiar sender / subject / preview reading order. */
+const renderMailRow = (record: CollectionRecord, actionAttr: string): string => {
+  const hot = record.hot_fields;
+  const sent = hot.direction === 'outbound';
+  const addresses = Array.isArray(hot.to) ? hot.to.filter(value => typeof value === 'string').join(', ') : '';
+  const sender = sent ? `To ${addresses || 'unknown recipient'}` : typeof hot.from === 'string' && hot.from ? hot.from : 'Unknown sender';
+  const subject = typeof hot.subject === 'string' && hot.subject ? hot.subject : '(No subject)';
+  const preview = record.body_inline?.slice(0, 400).replace(/\s+/g, ' ').trim().slice(0, 160) ?? '';
+  const unread = !sent && hot.is_read === false;
+  return `<li class="col-explorer-row">
+    <button type="button" class="col-explorer-row-btn col-explorer-mail-row${unread ? ' is-unread' : ''}" ${actionAttr}="${COLLECTION_OPEN_RECORD_ACTION}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}">
+      <span class="col-explorer-mail-sender">${e(sender)}</span>
+      <time class="col-explorer-mail-date">${e(formatClientDateTime(record.received_at))}</time>
+      <span class="col-explorer-mail-subject">${e(subject)}</span>
+      ${preview ? `<span class="col-explorer-mail-preview">${e(preview)}</span>` : ''}
+      <span class="col-explorer-mail-status">${sent ? 'Sent' : 'Received'}${unread ? ' · Unread' : ''}${hot.has_attachments === true ? ' · Attachments' : ''}${typeof hot.folder === 'string' && hot.folder && hot.folder.toLowerCase() !== (sent ? 'sent' : 'received') ? ` · ${e(hot.folder)}` : ''}</span>
+    </button>
+  </li>`;
 };
 
 /** One list row — the primary field as title + the summary fields as sub-text. */
@@ -567,7 +587,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     body = `<p class="col-explorer-empty">No records in this collection yet.</p>`;
   } else {
     body = `<ul class="col-explorer-list" role="list">${props.records
-      .map((r) => renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr))
+      .map((r) => props.collection === 'mail' ? renderMailRow(r, props.actionAttr) : renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr))
       .join('')}</ul>`;
   }
 
@@ -611,6 +631,20 @@ export const COLLECTION_EXPLORER_STYLES = `
   border-radius: 0.5rem; background: var(--surface); color: var(--fg); cursor: pointer;
 }
 .col-explorer-row-btn:hover { background: var(--surface-sunk); }
+.col-explorer-mail-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 16px; padding: 14px 16px; }
+.col-explorer-mail-sender { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-explorer-mail-date { color: var(--fg-muted); font-size: 12px; }
+.col-explorer-mail-subject { grid-column: 1 / -1; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.col-explorer-mail-row.is-unread .col-explorer-mail-subject, .col-explorer-mail-row.is-unread .col-explorer-mail-sender { font-weight: 650; }
+.col-explorer-mail-row.is-unread { box-shadow: inset 3px 0 var(--accent); }
+.col-explorer-mail-preview { grid-column: 1 / -1; color: var(--fg-muted); font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.col-explorer-mail-status { grid-column: 1 / -1; color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .col-explorer-mail-row { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .col-explorer-mail-sender { white-space: normal; overflow-wrap: anywhere; }
+  .col-explorer-mail-date { grid-row: 4; }
+}
+
 .col-explorer-row-head { min-width: 0; display: flex; align-items: baseline; gap: 0.375rem; }
 .col-explorer-row-title {
   min-width: 0;

@@ -204,6 +204,8 @@ export interface ContactAliasRecord {
   source_id?: string;
   /** 0..1; `'manual'` is always 1.0. */
   confidence: number;
+  /** Explicit owner preference for the contact's displayed phone number. */
+  primary?: boolean;
   /** Unix-ms UTC. */
   created_at: number;
   /** Unix-ms UTC; bumped on resolver match. */
@@ -225,6 +227,8 @@ export interface ContactAliasInput {
    *  honestly reports "unknown" rather than fabricating one. */
   source_id?: string;
   confidence?: number;
+  /** Only manual phone aliases can choose the displayed phone number. */
+  primary?: boolean;
   /** Override id for tests. Production callers omit. */
   id?: string;
   /** Override created_at for tests. Production callers omit. */
@@ -293,6 +297,9 @@ export const validateContactAliasInput = (input: ContactAliasInput): void => {
   }
   if (typeof input.alias_pattern !== 'string') {
     throw new ContactIdentityValidationError('alias_pattern_required', 'alias_pattern');
+  }
+  if (input.primary !== undefined && (typeof input.primary !== 'boolean' || input.kind !== 'phone_alias' || input.source !== 'manual')) {
+    throw new ContactIdentityValidationError('primary_requires_manual_phone', 'primary');
   }
   const normalized = normalizeAliasPattern(input.alias_pattern);
   if (!normalized.length) {

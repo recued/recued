@@ -143,6 +143,8 @@ import { validateCommitmentEvidence } from './validate-commitment-evidence.js';
  *    - Recipe-level references to this ingredient.
  *  Those checks live in the storage / marketplace layers.
  */
+import type { AuthoringReferenceSpan } from '@recued/contracts';
+
 export type ValidationSeverity = 'error' | 'warn' | 'info';
 
 export interface ValidationIssue {
@@ -151,6 +153,7 @@ export interface ValidationIssue {
   /** Dot path into the manifest (e.g. "input.url", "output.response.id"). */
   path: string;
   message: string;
+  reference_span?: AuthoringReferenceSpan;
 }
 
 export interface ValidationResult {

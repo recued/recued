@@ -117,7 +117,7 @@ test('Automation is one list by recipe and dish, with filters and a way back fro
   const details = line.locator('[data-recued-automation-action="detail:dish"]');
   await details.click();
   const back = route.locator('[data-recued-automation-back]');
-  await expect(back).toHaveText('Back to By recipe');
+  await expect(back).toHaveText('Back to Overview');
   await expect(page).toHaveURL(/#automation\/dishes\/dish-e2e-1$/);
   await back.click();
   await expect(page).toHaveURL(/#automation\/all$/);
@@ -162,6 +162,7 @@ test('Automation contains its narrow authoring picker and modal header', async (
   await page.waitForFunction(() => window.__app?.ready === true);
 
   await page.getByRole('button', { name: 'Add schedule' }).click();
+  await page.getByLabel('Schedule type', { exact: true }).selectOption('recipe');
   const actions = page.locator('.automation-section-actions');
   const picker = actions.locator('.automation-add-picker');
   const option = picker.locator('.ref-picker-option').first();
@@ -261,7 +262,7 @@ test('Automation view tabs form one arrow-key keyboard stop', async ({ page }) =
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#automation'));
 
-  // D-319 §5.4 — two views: By recipe and Coming up.
+  // Two views: Overview and Coming up.
   const tabs = page.locator(`[${AUTOMATION_SUBNAV}]`);
   const all = page.locator(`[${AUTOMATION_SUBNAV}="all"]`);
   const comingUp = page.locator(`[${AUTOMATION_SUBNAV}="coming-up"]`);
@@ -275,7 +276,7 @@ test('Automation view tabs form one arrow-key keyboard stop', async ({ page }) =
     'aria-labelledby',
     'recued-automation-section-tab-all',
   );
-  await expect(page.getByRole('tabpanel', { name: /By recipe/ })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: /Overview/ })).toBeVisible();
   await expect(all).toHaveAttribute('aria-selected', 'true');
   await expect(all).toHaveAttribute('tabindex', '0');
   const stops = () => tabs.evaluateAll((nodes) => nodes.filter(
@@ -573,7 +574,7 @@ test('Automation keeps dish rename focus through cancel and save reconciliation'
   await expect(renamed).toBeFocused();
 });
 
-test('Automation keeps focus on its recipe filter after keyboard selection', async ({ page }) => {
+test('Automation keeps focus on its recipe filter after keyboard selection', async ({ page, browserName }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto(`${HARNESS_URL}?automation=rules`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -622,7 +623,7 @@ test('Automation keeps focus on its recipe filter after keyboard selection', asy
   })).toHaveCount(0);
   expect((await picker.boundingBox())?.height).toBeGreaterThanOrEqual(36);
 
-  await page.keyboard.press('Tab');
+  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
   const clear = page.getByRole('button', { name: 'Clear selection' });
   await expect(clear).toBeFocused();
   const clearTarget = await clear.boundingBox();
@@ -670,7 +671,7 @@ test('Automation preserves a recipe query and caret through live refresh', async
     (input as HTMLInputElement).selectionStart)).toBe(2);
 });
 
-test('Automation moves focus into and back from its Add picker', async ({ page }) => {
+test('Automation moves focus into and back from its Add picker', async ({ page, browserName }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#automation/schedules'));
 
@@ -678,6 +679,7 @@ test('Automation moves focus into and back from its Add picker', async ({ page }
   await expect(add).toBeVisible();
   await add.focus();
   await page.keyboard.press('Enter');
+  await page.getByLabel('Schedule type', { exact: true }).selectOption('recipe');
 
   const picker = page.getByRole('combobox', {
     name: 'Choose a recipe to automate',
@@ -686,7 +688,9 @@ test('Automation moves focus into and back from its Add picker', async ({ page }
   await expect(picker).toHaveAttribute('aria-expanded', 'true');
   await expect(picker).toBeFocused();
 
-  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Shift+Tab' : 'Shift+Tab');
+  await expect(page.getByLabel('Schedule type', { exact: true })).toBeFocused();
+  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Shift+Tab' : 'Shift+Tab');
   await expect(add).toBeFocused();
   await page.keyboard.press('Enter');
 
@@ -709,6 +713,7 @@ test('Automation Add inventory retry stays explicit, single-flight, and focus-ow
   const add = page.getByRole('button', { name: 'Add schedule' });
   await add.focus();
   await page.keyboard.press('Enter');
+  await page.getByLabel('Schedule type', { exact: true }).selectOption('recipe');
 
   const failure = page.locator(`[${AUTOMATION_ADD_ERROR}="schedules"]`);
   await expect(failure).toHaveAttribute('role', 'alert');
@@ -751,6 +756,7 @@ test('Automation returns schedule-modal focus to its Add trigger', async ({ page
 
   const add = page.getByRole('button', { name: 'Add schedule' });
   await add.click();
+  await page.getByLabel('Schedule type', { exact: true }).selectOption('recipe');
   const picker = page.getByRole('combobox', {
     name: 'Choose a recipe to automate',
   });

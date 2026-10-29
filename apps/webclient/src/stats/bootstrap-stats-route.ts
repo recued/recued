@@ -17,6 +17,7 @@
 
 import { renderStatsPanel } from '@recued/ui-shared';
 import type { MetricReadOutput, MetricSubmitSkipReason } from '@recued/contracts';
+import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 /** The route's own element, so it can be removed whole on dispose. */
 export const STATS_ROUTE_HOST_ATTR = 'data-recued-stats-route';
@@ -35,6 +36,27 @@ export const STATS_ROUTE_STYLES_MARKER = 'data-recued-stats-route-styles';
  *  how one app ends up with nine radii, which this session already paid to
  *  unpick once. */
 export const STATS_ROUTE_STYLES = `
+[${STATS_ROUTE_HOST_ATTR}] button, [${STATS_ROUTE_HOST_ATTR}] input {
+  min-height: 44px; max-width: 100%; box-sizing: border-box; font: inherit;
+}
+[${STATS_ROUTE_HOST_ATTR}] button {
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px);
+  color: var(--fg); background: var(--surface); cursor: pointer;
+}
+[${STATS_ROUTE_HOST_ATTR}] button[aria-disabled="true"] { opacity: .6; cursor: default; }
+[${STATS_ROUTE_HOST_ATTR}] :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+[${STATS_ROUTE_HOST_ATTR}] input { padding: 8px; min-width: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--fg); background: var(--bg); }
+[${STATS_ROUTE_HOST_ATTR}] .publish-start { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 10px 0; }
+[${STATS_ROUTE_HOST_ATTR}] .publish-start label { display: grid; gap: 4px; flex: 1 1 160px; min-width: 0; }
+[${STATS_ROUTE_HOST_ATTR}] .publish-start input { width: 100%; }
+[${STATS_ROUTE_HOST_ATTR}] .publish-confirm { margin-top: 12px; }
+[${STATS_ROUTE_HOST_ATTR}] .publish-confirm > button { margin: 4px 8px 4px 0; }
+[${STATS_ROUTE_HOST_ATTR}] .publish-payload { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+[${STATS_ROUTE_HOST_ATTR}] .publish-meta td { overflow-wrap: anywhere; }
+[${STATS_ROUTE_HOST_ATTR}] [data-recued-stats-feedback] { margin: 10px 0; overflow-wrap: anywhere; }
+[${STATS_ROUTE_HOST_ATTR}] [data-recued-stats-feedback] p { margin: 6px 0; }
+[${STATS_ROUTE_HOST_ATTR}] [data-recued-stats-action-error] { color: var(--danger); }
+
 [${STATS_ROUTE_HOST_ATTR}] {
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
@@ -77,7 +99,7 @@ export const STATS_ROUTE_STYLES = `
   font-size: 13px;
   color: var(--fg);
 }
-/* ⛔ TWO DIFFERENT PROBLEMS, THE SAME WEIGHT. send_failed never reached the board;
+/* ⛔ TWO DIFFERENT PROBLEMS, THE SAME WEIGHT. send_failed could not confirm delivery;
    rejected reached it and nothing was accepted. Both are states the owner has to act on,
    and the second one used to render as an unqualified success.
    ⚠ NO BACKTICKS IN THIS BLOCK — it lives inside a template literal, and one closes it. */
@@ -280,7 +302,19 @@ export const bootstrapStatsRoute = (opts: BootstrapStatsRouteOptions): StatsRout
   root.setAttribute(STATS_ROUTE_HOST_ATTR, '');
   opts.container.appendChild(root);
 
-  let pending: { metric_id: string; tag: string; season_id: string } | undefined;
+  type PublishChoice = { metric_id: string; tag: string; season_id: string };
+  type Operation = { kind: 'publish'; choice: PublishChoice } | { kind: 'stop'; tag: string } | { kind: 'submit' };
+  let pending: PublishChoice | undefined;
+  const drafts = new Map<string, { tag: string; season_id: string }>();
+  let data: MetricReadOutput | undefined;
+  let readGeneration = 0;
+  let reading = false;
+  let readError: string | undefined;
+  let actionError: string | undefined;
+  let actionStatus: string | undefined;
+  let operation: Operation | undefined;
+  let uncertain: Operation | undefined;
+  let needsCheck = false;
   let submitOutcome:
     | {
         sent: true; ranked: number; withdrawn: number; rejected: number;
@@ -312,117 +346,195 @@ export const bootstrapStatsRoute = (opts: BootstrapStatsRouteOptions): StatsRout
     return { ranked, withdrawn, rejected, rejectedReasons: [...reasons] };
   };
 
-  const paint = (inner: string): void => {
+  const escape = (value: string): string => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  const fieldDraft = (form: Element): { tag: string; season_id: string } => ({
+    tag: form.querySelector<HTMLInputElement>('[data-recued-publish-tag]')?.value ?? '',
+    season_id: form.querySelector<HTMLInputElement>('[data-recued-publish-season]')?.value ?? '1',
+  });
+  const captureDrafts = (): void => {
+    for (const form of Array.from(root.querySelectorAll?.<HTMLElement>('[data-recued-publish-start]') ?? [])) {
+      const metric = form.getAttribute('data-recued-publish-start');
+      if (metric !== null) drafts.set(metric, fieldDraft(form));
+    }
+  };
+  // Keep unchanged forms and their ancestry connected. Detaching a text field,
+  // even temporarily, discards native Undo/Redo and an active composition.
+  const paintMarkup = (html: string): void => {
+    const current = root.querySelector?.<HTMLElement>('.stats-panel');
+    if (!current) { root.innerHTML = html; return; }
+    const next = doc.createElement('div'); next.innerHTML = html;
+    const panel = next.querySelector?.<HTMLElement>('.stats-panel');
+    if (!panel) { root.innerHTML = html; return; }
+    const forms = Array.from(current.querySelectorAll<HTMLElement>('[data-recued-publish-start]'));
+    const kept = new Map<Node, Node>();
+    for (const form of Array.from(panel.querySelectorAll<HTMLElement>('[data-recued-publish-start]'))) {
+      const old = forms.find(candidate => candidate.getAttribute('data-recued-publish-start') === form.getAttribute('data-recued-publish-start'));
+      if (old && old.parentElement === current && form.parentElement === panel && old.textContent === form.textContent) {
+        const before = fieldDraft(old), after = fieldDraft(form);
+        if (before.tag === after.tag && before.season_id === after.season_id) kept.set(form, old);
+      }
+    }
+    const anchors = Array.from(current.childNodes).filter(node => [...kept.values()].includes(node));
+    const wanted = Array.from(panel.childNodes).flatMap(node => kept.has(node) ? [kept.get(node)!] : []);
+    if (anchors.some((node, index) => node !== wanted[index])) { root.innerHTML = html; return; }
+    const replaceAround = (host: HTMLElement, fresh: HTMLElement, keep: Map<Node, Node>): void => {
+      const held = Array.from(host.childNodes).filter(node => [...keep.values()].includes(node));
+      for (const child of Array.from(host.childNodes)) if (!held.includes(child)) host.removeChild(child);
+      let index = 0;
+      for (const child of Array.from(fresh.childNodes)) {
+        if (keep.has(child)) index++;
+        else host.insertBefore(child, held[index] ?? null);
+      }
+    };
+    replaceAround(current, panel, kept);
+    replaceAround(root, next, new Map([[panel, current]]));
+  };
+  const mutationAttrs = ['data-recued-publish-confirm-action', 'data-recued-publish-stop-action', 'data-recued-submit-action'] as const;
+  const controlAttrs = [...mutationAttrs, 'data-recued-publish-preview-action', 'data-recued-publish-cancel-action', 'data-recued-stats-retry'] as const;
+  const paint = (): void => {
     if (disposed) return;
-    root.innerHTML = `
-      <h1 data-recued-stats-route-heading tabindex="-1">Stats</h1>
-      ${inner}`;
-  };
-
-  const refresh = async (): Promise<void> => {
-    // ⛔⛔ A FAILED READ IS NOT AN EMPTY SURFACE. Rendering the "nothing measured yet"
-    // panel on an rpc error would tell an owner with months of history that their server
-    // has none — the same absent-versus-zero confusion the panel itself is built to
-    // avoid, one layer up.
-    try {
-      const data = await opts.read();
-      paint(renderStatsPanel({
-        data,
-        now: now(),
+    captureDrafts();
+    const active = doc.activeElement as HTMLInputElement | null;
+    const held = active && root.contains?.(active) === true ? active : null;
+    const formId = held?.closest?.('[data-recued-publish-start]')?.getAttribute('data-recued-publish-start');
+    const field = held?.hasAttribute('data-recued-publish-tag') ? 'tag' : held?.hasAttribute('data-recued-publish-season') ? 'season' : null;
+    const selection = field ? [held?.selectionStart, held?.selectionEnd, held?.selectionDirection] as const : null;
+    const attr = controlAttrs.find(key => held?.hasAttribute(key));
+    const metric = held?.getAttribute('data-metric'), tag = held?.getAttribute('data-tag');
+    const busyText = operation?.kind === 'publish' ? `Enabling publishing for #${operation.choice.tag}…`
+      : operation?.kind === 'stop' ? `Stopping publishing to #${operation.tag}…` : operation ? 'Sending today’s scores…' : null;
+    const stale = readError && data !== undefined ? '<p class="stats-note" data-recued-stats-stale>Showing your last loaded stats. Refresh failed; publishing controls wait for a successful read.</p>' : '';
+    const feedback = `<div data-recued-stats-feedback>
+      ${busyText ? `<p role="status">${escape(busyText)}</p>` : ''}
+      ${actionStatus ? `<p role="status">${escape(actionStatus)}</p>` : ''}
+      ${actionError ? `<p role="alert" data-recued-stats-action-error>${escape(actionError)}</p>` : ''}
+      ${readError ? `<section class="stats-panel--error" data-recued-stats-error role="alert"><p>Could not read your stats from this server.</p><p class="stats-note">${escape(readError)}</p>${stale}</section>` : ''}
+      ${readError || actionError || needsCheck ? `<button type="button" data-recued-stats-retry aria-label="Retry reading stats">${reading ? 'Retrying…' : 'Retry reading stats'}</button>` : ''}
+    </div>`;
+    const body = data === undefined
+      ? reading ? '<p class="stats-note" data-recued-stats-loading>Reading your stats…</p>' : ''
+      : renderStatsPanel({ data, now: now(), publishDrafts: Object.fromEntries(drafts),
         ...(pending !== undefined ? { pendingPublish: pending } : {}),
-        ...(submitOutcome !== undefined ? { submitOutcome } : {}),
-      }));
-    } catch (err) {
-      // ⚠ NO `if (disposed) return` HERE — `paint` already holds the only guard, and a
-      // second copy is a mutation-equivalent no-op: it reads as protection while
-      // protecting nothing. Proved by mutation — removing it reddens nothing, removing
-      // paint's reddens the dispose test.
-      const message = err instanceof Error ? err.message : String(err);
-      paint(`
-        <section class="stats-panel stats-panel--error" data-recued-stats-error>
-          <p>Could not read your stats from this server.</p>
-          <p class="stats-note">${message.replace(/[&<>"']/g, '')}</p>
-        </section>`);
+        ...(submitOutcome !== undefined ? { submitOutcome } : {}) });
+    paintMarkup(`<h1 data-recued-stats-route-heading tabindex="-1">Stats</h1>${feedback}${body}`);
+    root.setAttribute('aria-busy', String(reading || operation !== undefined));
+    for (const button of Array.from(root.querySelectorAll?.<HTMLButtonElement>('button') ?? [])) {
+      const mutation = mutationAttrs.some(key => button.hasAttribute(key));
+      const retry = button.hasAttribute('data-recued-stats-retry');
+      const cancel = button.hasAttribute('data-recued-publish-cancel-action');
+      const needsFreshData = mutation || button.hasAttribute('data-recued-publish-preview-action');
+      const blocked = operation !== undefined || (retry ? reading : cancel ? false : reading || (needsFreshData && (readError !== undefined || needsCheck)));
+      if (blocked) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled');
+      const own = operation?.kind === 'publish' && button.hasAttribute('data-recued-publish-confirm-action') && button.getAttribute('data-metric') === operation.choice.metric_id
+        || operation?.kind === 'stop' && button.hasAttribute('data-recued-publish-stop-action') && button.getAttribute('data-tag') === operation.tag
+        || operation?.kind === 'submit' && button.hasAttribute('data-recued-submit-action');
+      if (own) { button.setAttribute('aria-busy', 'true'); button.textContent = operation?.kind === 'publish' ? 'Publishing…' : operation?.kind === 'stop' ? 'Stopping…' : 'Sending…'; }
+      else button.removeAttribute('aria-busy');
+    }
+    if (held && active !== doc.activeElement) {
+      let target: HTMLElement | undefined;
+      if (formId && field) target = Array.from(root.querySelectorAll<HTMLElement>('[data-recued-publish-start]'))
+        .find(form => form.getAttribute('data-recued-publish-start') === formId)?.querySelector<HTMLElement>(`[data-recued-publish-${field}]`) ?? undefined;
+      else if (attr) target = Array.from(root.querySelectorAll<HTMLElement>(`[${attr}]`)).find(button => button.getAttribute('data-metric') === metric && button.getAttribute('data-tag') === tag);
+      target ??= root.querySelector<HTMLElement>('[data-recued-stats-route-heading]') ?? undefined;
+      target?.focus({ preventScroll: true });
+      if (field && selection && target?.tagName === 'INPUT') (target as HTMLInputElement).setSelectionRange(selection[0] ?? 0, selection[1] ?? 0, selection[2] ?? undefined);
     }
   };
-
-  // ⛔⛔ PAINT SYNCHRONOUSLY BEFORE THE READ. Two reasons, and the second is why a test
-  // could not see this route at all: a user gets the heading immediately instead of a
-  // blank pane while the rpc is in flight, AND the mount becomes observable even when
-  // the read never settles — which is exactly the state a fixture with no live server
-  // is in. Waiting for the promise meant "mounted" and "hung" looked identical.
-  paint('<p class="stats-note" data-recued-stats-loading>Reading your stats…</p>');
-  // ⛔ DELEGATED, NOT PER-BUTTON. Every repaint replaces the markup, so a listener bound
-  // to a button would die on the first refresh — and the erase would silently stop
-  // working exactly when the owner used it, since the first click repaints.
-  const onClick = (ev: Event): void => {
-    const target = ev.target as { closest?: (s: string) => { getAttribute(a: string): string | null } | null };
+  const reconcile = (): void => {
+    if (!data || !uncertain) return;
+    if (uncertain.kind === 'publish') {
+      const choice = uncertain.choice;
+      if (data.publications.some(pub => pub.tag === choice.tag && pub.metric_id === choice.metric_id && pub.season_id === choice.season_id && pub.state === 'active')) {
+        if (pending === choice) { pending = undefined; drafts.delete(choice.metric_id); }
+        actionStatus = `Publishing is enabled for #${choice.tag}.`; actionError = undefined; uncertain = undefined;
+      }
+    } else if (uncertain.kind === 'stop') {
+      const tag = uncertain.tag;
+      if (!data.publications.some(pub => pub.tag === tag && pub.state === 'active')) {
+        actionStatus = `Publishing is stopped on this server for #${tag}.`; actionError = undefined; uncertain = undefined;
+      }
+    }
+  };
+  const refresh = async (): Promise<void> => {
+    if (disposed) return;
+    const generation = ++readGeneration; reading = true; paint();
+    try {
+      const fresh = await opts.read();
+      if (disposed || generation !== readGeneration) return;
+      data = fresh; readError = undefined; needsCheck = false; reconcile();
+    } catch (error) {
+      if (!disposed && generation === readGeneration) readError = humanizeRpcError(error).trim() || 'Try reading your stats again.';
+    } finally {
+      if (!disposed && generation === readGeneration) { reading = false; paint(); }
+    }
+  };
+  const perform = async (next: Operation): Promise<void> => {
+    if (disposed || reading || operation || readError || needsCheck || !data) return;
+    captureDrafts(); operation = next; actionError = undefined; actionStatus = undefined; uncertain = undefined; paint();
+    try {
+      if (next.kind === 'publish') {
+        await opts.publish(next.choice);
+        if (disposed) return;
+        if (pending === next.choice) { pending = undefined; drafts.delete(next.choice.metric_id); }
+        actionStatus = `Publishing enabled for #${next.choice.tag}.`;
+      } else if (next.kind === 'stop') {
+        await opts.unpublish({ tag: next.tag });
+        if (disposed) return;
+        actionStatus = `Stop request saved for #${next.tag}.`;
+      } else {
+        const res = await opts.submit();
+        if (disposed) return;
+        submitOutcome = res.sent ? { sent: true, ...classify(res.results ?? []) } : { sent: false, reason: res.skip_reason ?? 'send_failed' };
+      }
+    } catch (error) {
+      if (disposed) return;
+      uncertain = next;
+      if (next.kind === 'submit') submitOutcome = { sent: false, reason: 'send_failed' };
+      else actionError = `Couldn’t confirm ${next.kind === 'publish' ? 'publishing' : 'stopping publication'}. ${humanizeRpcError(error)} Check the current settings before trying again.`;
+    } finally {
+      if (!disposed) { readGeneration++; reading = false; operation = undefined; needsCheck = true; paint(); }
+    }
+    // Release command ownership before this read; a newer command can start
+    // after a newer refresh supersedes it, without an old finally clearing it.
+    if (!disposed) await refresh();
+  };
+  const onClick = (event: Event): void => {
+    const target = event.target as HTMLElement | null;
+    if (disposed || target?.isConnected === false || root.contains?.(target) === false) return;
+    if (target?.closest?.('[data-recued-stats-retry]')) { if (!reading && !operation) void refresh(); return; }
+    if (operation) return;
+    if (target?.closest?.('[data-recued-publish-cancel-action]')) {
+      const metric = pending?.metric_id; pending = undefined; paint();
+      if (metric) {
+        const form = Array.from(root.querySelectorAll?.<HTMLElement>('[data-recued-publish-start]') ?? []).find(form => form.getAttribute('data-recued-publish-start') === metric);
+        form?.querySelector<HTMLElement>('[data-recued-publish-tag]')?.focus();
+      }
+      return;
+    }
+    if (reading || readError || needsCheck || !data) return;
     const stop = target?.closest?.('[data-recued-publish-stop-action]');
-    const stopTag = stop?.getAttribute('data-tag');
-    if (stopTag !== null && stopTag !== undefined) {
-      void opts.unpublish({ tag: stopTag }).then(refresh, refresh);
-      return;
-    }
-
-    // Step 1 — read what the owner typed and open the preview. ⚠ NOTHING IS SENT HERE.
+    const tag = stop?.getAttribute('data-tag');
+    if (tag !== null && tag !== undefined) { void perform({ kind: 'stop', tag }); return; }
     const preview = target?.closest?.('[data-recued-publish-preview-action]');
-    const previewMetric = preview?.getAttribute('data-metric');
-    if (previewMetric !== null && previewMetric !== undefined) {
-      const form = (opts.container as unknown as {
-        querySelector?: (s: string) => {
-          querySelector?: (s: string) => { value?: string } | null;
-        } | null;
-      }).querySelector?.(`[data-recued-publish-start="${previewMetric}"]`);
-      const tag = form?.querySelector?.('[data-recued-publish-tag]')?.value ?? '';
-      const season_id = form?.querySelector?.('[data-recued-publish-season]')?.value ?? '';
-      // ⛔ AN EMPTY TAG OPENS NOTHING. Previewing a payload addressed to '' would show the
-      // owner bytes that could never be sent, and the rpc refuses it anyway.
-      if (tag.length === 0 || season_id.length === 0) return;
-      pending = { metric_id: previewMetric, tag, season_id };
-      void refresh();
+    const metric = preview?.getAttribute('data-metric');
+    if (metric !== null && metric !== undefined) {
+      const form = opts.container.querySelector?.<HTMLElement>(`[data-recued-publish-start="${metric}"]`);
+      const values = form ? fieldDraft(form) : { tag: '', season_id: '' };
+      if (!values.tag || !values.season_id) return;
+      drafts.set(metric, values); pending = { metric_id: metric, ...values }; actionError = undefined; actionStatus = undefined; paint();
+      root.querySelector<HTMLElement>('[data-recued-publish-confirm]')?.focus();
       return;
     }
-
-    // Step 2 — the owner saw the bytes and confirmed.
     const confirm = target?.closest?.('[data-recued-publish-confirm-action]');
-    const cMetric = confirm?.getAttribute('data-metric');
-    if (cMetric !== null && cMetric !== undefined) {
-      const tag = confirm?.getAttribute('data-tag') ?? '';
-      const season_id = confirm?.getAttribute('data-season') ?? '';
-      pending = undefined;
-      void opts.publish({ tag, metric_id: cMetric, season_id }).then(refresh, refresh);
-      return;
+    if (confirm && pending && confirm.getAttribute('data-metric') === pending.metric_id && confirm.getAttribute('data-tag') === pending.tag && confirm.getAttribute('data-season') === pending.season_id) {
+      void perform({ kind: 'publish', choice: pending }); return;
     }
-
-    if (target?.closest?.('[data-recued-publish-cancel-action]') != null) {
-      pending = undefined;
-      void refresh();
-      return;
-    }
-
-    if (target?.closest?.('[data-recued-submit-action]') != null) {
-      void opts.submit().then(
-        (res) => {
-          // ⛔ A MISSING `skip_reason` ON A NOT-SENT RESULT IS TREATED AS A SEND FAILURE,
-          // not dropped. It can only come from a server older than the field, and the
-          // honest reading of "it did not send and will not say why" is the recoverable
-          // fault — never silence, which is the defect this replaces.
-          submitOutcome = res.sent
-            ? { sent: true, ...classify(res.results ?? []) }
-            : { sent: false, reason: res.skip_reason ?? 'send_failed' };
-          return refresh();
-        },
-        () => {
-          // The rpc itself rejected — the socket, not the board.
-          submitOutcome = { sent: false, reason: 'send_failed' };
-          return refresh();
-        },
-      );
-    }
+    if (target?.closest?.('[data-recued-submit-action]')) void perform({ kind: 'submit' });
   };
-  (opts.container as unknown as { addEventListener?: (t: string, h: (e: Event) => void) => void })
-    .addEventListener?.('click', onClick);
-
+  const onInput = (): void => { captureDrafts(); };
+  root.addEventListener?.('input', onInput);
+  opts.container.addEventListener?.('click', onClick);
   void refresh();
 
   return {
@@ -432,6 +544,8 @@ export const bootstrapStatsRoute = (opts: BootstrapStatsRouteOptions): StatsRout
       (opts.container as unknown as {
         removeEventListener?: (t: string, h: (e: Event) => void) => void;
       }).removeEventListener?.('click', onClick);
+      root.removeEventListener?.('input', onInput);
+      readGeneration++;
       // ⛔ THE HALF THAT WAS MISSING. Dropping the listener without removing
       // the markup left the page on screen under its successor.
       root.remove?.();

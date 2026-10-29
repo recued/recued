@@ -44,6 +44,8 @@ export interface MailComposeValues {
   body: string;
   attachments: readonly string[];
   in_reply_to: string | null;
+  /** RFC Message-IDs, never provider thread or record ids. */
+  references?: readonly string[];
   sender_source: string;
 }
 
@@ -123,8 +125,7 @@ export const MAIL_COMPOSE_MAX_ATTACHMENTS = 20;
 export interface MailReplyContext {
   /** The mail being replied to. */
   original_message: {
-    /** Canonical id of the original mail (used as the `in_reply_to`
-     *  ref). */
+    /** RFC Message-ID of the original, including angle brackets. */
     id: string;
     /** Subject line of the original. The compose substrate prepends
      *  `Re: ` (when not already prefixed). */
@@ -132,9 +133,16 @@ export interface MailReplyContext {
     /** Sender of the original (becomes the prepopulated single
      *  `to` recipient). */
     from: string;
-    /** Optional thread id — passed through to the rpc's `references`
-     *  via the host's send dispatch. */
+    /** Privacy seeds for addresses repeated in the original message text. */
+    to?: readonly string[];
+    cc?: readonly string[];
+    /** Provider thread identity for display only; never an RFC header. */
     thread_id?: string;
+    reply_to?: readonly string[];
+    references?: readonly string[];
+    /** Plain text read from this exact message, for owner-started drafting. */
+    body?: string;
+    body_truncated?: boolean;
   };
   /** Source id of the mail Source that received the original (becomes
    *  the prepopulated `sender_source`). The host validates send-
@@ -184,10 +192,7 @@ export interface MailSenderSourceOption {
   mail_instance_slug: string;
 }
 
-/** AI-assist sidebar action kinds. The wider closed list preserves the PA7
- * render contract; `MAIL_COMPOSE_REWRITE_ACTIONS` below is the launch-safe
- * subset with a real host/recipe implementation. Compose-from-empty and draft
- * reply remain out until they have grounded source/context semantics. */
+/** Owner-started drafting and transformations of the current body. */
 export const MAIL_COMPOSE_AI_ACTIONS = [
   'compose',
   'rewrite-formal',

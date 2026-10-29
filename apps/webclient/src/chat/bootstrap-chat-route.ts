@@ -1,3 +1,5 @@
+import { downloadStoredFile } from '../files/file-preview.js';
+import { mountPromptSchedulesPanel, type PromptScheduleClient } from '../automation/prompt-schedules-panel.js';
 import { approvalValueLabel, renderResourceReview, tier1CallDetails, tier1CallTitle, type ApprovalValueLabels } from '@recued/contracts';
 import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
 import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
@@ -475,7 +477,7 @@ export const CHAT_ROUTE_CREATE_CLOSE_ATTR = CREATE_OVERLAY_CLOSE_ATTR;
 // shell-frame Step 2), so the owner controls everything in flight from any
 // screen. The chat route is back to a thin DOM host.
 
-export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient {
+export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient, PromptScheduleClient {
   /** What the assistant is CARRYING about this conversation, and a way to drop
    *  it. ⛔ The brief sits in the packet of every later turn and only its fold
    *  TRAIL ever reached the owner — that folds happened, never what they kept. */
@@ -4642,6 +4644,9 @@ export const bootstrapChatRoute = (
     return { ...next, sending: false, pending_turn_id: null };
   };
 
+  const promptSchedulesHost = doc.createElement('div');
+  const promptSchedules = mountPromptSchedulesPanel({ host: promptSchedulesHost, call: opts.conn, compact: true,
+    ...(opts.subscribe ? { subscribe: opts.subscribe } : {}) });
   const routeRoot = doc.createElement('div');
   const answerCodeCopy = createAnswerCodeCopy(doc, routeRoot);
   routeRoot.setAttribute(CHAT_ROUTE_HOST_ATTR, '');
@@ -5279,7 +5284,7 @@ export const bootstrapChatRoute = (
 
   const renderMessage = (
     host: HTMLElement,
-    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'turn_id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations'>,
+    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'turn_id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations' | 'execution_source'>,
     activity: ReadonlyArray<ChatActivityRow> = [],
     pendingText?: string,
   ): HTMLElement => {
@@ -5292,7 +5297,8 @@ export const bootstrapChatRoute = (
     }
     const role = doc.createElement('span');
     role.className = 'chat-message-role';
-    role.textContent = messageRoleLabel(message.role);
+    role.textContent = message.role === 'user' && message.execution_source?.channel === 'schedule' && message.execution_source.prompt_schedule
+      ? `Scheduled request · revision ${message.execution_source.prompt_schedule.revision}` : messageRoleLabel(message.role);
     if (message.tool_call) {
       const labels = {
         running: 'Running', held: 'Waiting to hear back', succeeded: 'Completed',
@@ -5395,6 +5401,18 @@ export const bootstrapChatRoute = (
               void openFilePreview(doc, { record_id: file.file_id, filename: name }, opts.filePreviewCallers!, abort.signal);
             });
             item.appendChild(doc.createTextNode(' ')); item.appendChild(inspect);
+            const download = doc.createElement('button'); download.type = 'button'; download.textContent = 'Download';
+            download.setAttribute('aria-label', `Download ${name}`); download.className = 'chat-message-file-preview';
+            const status = doc.createElement('span'); status.setAttribute('role', 'status');
+            download.addEventListener('click', () => {
+              filePickerAbort?.abort(); const abort = new AbortController(); filePickerAbort = abort;
+              download.disabled = true; status.textContent = '';
+              void downloadStoredFile(doc, { record_id: file.file_id, content_hash: file.content_hash, size: file.size }, opts.filePreviewCallers!, abort.signal)
+                .catch(error => { if (!disposed && item.isConnected && !abort.signal.aborted) status.textContent = error instanceof Error ? error.message : 'The file could not be downloaded.'; })
+                .finally(() => { if (!disposed && item.isConnected) download.disabled = false; });
+            });
+            item.append(doc.createTextNode(' '), download, status);
+
           }
         }
         if (file.legacy_capture) {
@@ -8889,6 +8907,7 @@ export const bootstrapChatRoute = (
 
   const render = (): void => {
     if (disposed) return;
+    const scheduleFocus = promptSchedulesHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
     const answerPosition = answerCodeCopy.capture();
     const queueFocus = queueView.captureFocus(doc, routeRoot);
     const attachmentFocus = captureAttachmentFocus();
@@ -8906,6 +8925,7 @@ export const bootstrapChatRoute = (
     restoreAttachmentFocus(attachmentFocus);
     restoreComposerFocus(composerFocus);
     queueView.restoreFocus(doc, routeRoot, queueFocus, () => focusComposer(true));
+    if (scheduleFocus?.isConnected) scheduleFocus.focus?.({ preventScroll: true });
   };
 
   const renderContents = (): void => {
@@ -9420,7 +9440,7 @@ export const bootstrapChatRoute = (
               const warning = doc.createElement('span');
               warning.textContent =
                 'Delete this chat, its messages, and everything saved with it, '
-                + 'for good? You cannot undo this.';
+                + 'for good? Any linked schedule and queued runs will also be cancelled. You cannot undo this.';
               confirm.appendChild(warning);
               const confirmActions = doc.createElement('div');
               confirmActions.className = 'chat-history-guard-actions';
@@ -9577,7 +9597,12 @@ export const bootstrapChatRoute = (
     };
     if (isEmpty) {
       const button = filesButton();
-      if (button) { const header = doc.createElement('header'); header.className = 'chat-thread-header'; header.appendChild(button); thread.appendChild(header); }
+      if (state.thread.session) {
+        const header = doc.createElement('header'); header.className = 'chat-thread-header';
+        if (button) header.appendChild(button);
+        promptSchedules.setSession(state.thread.session.id);
+        header.appendChild(promptSchedulesHost); thread.appendChild(header);
+      }
     }
 
     const aiNotice = state.aiAvailable === false ? buildAiNotice() : null;
@@ -9745,6 +9770,8 @@ export const bootstrapChatRoute = (
       const threadTop = doc.createElement('div');
       threadTop.className = 'chat-thread-top';
       threadTop.appendChild(threadHeader);
+      promptSchedules.setSession(state.thread.session?.id);
+      threadTop.appendChild(promptSchedulesHost);
       thread.appendChild(threadTop);
 
       // ⛔⛔ WHAT THE ASSISTANT IS CARRYING, shown above the thread it steers.
@@ -10065,7 +10092,7 @@ export const bootstrapChatRoute = (
             role: 'assistant',
             content: inflightTurn.assistant_content,
           },
-          projectInFlightActivity(inflightTurn, state.transparency),
+          projectInFlightActivity(inflightTurn, state.transparency, state.thread.tool_call_records),
           sourceProjection?.pendingText
             ?? (
               dataDiagnosisForTurn === null
@@ -10279,7 +10306,7 @@ export const bootstrapChatRoute = (
             clientHeight: scroller.clientHeight,
           };
 
-    const activity = projectInFlightActivity(inflight, state.transparency);
+    const activity = projectInFlightActivity(inflight, state.transparency, state.thread.tool_call_records);
     const answerPosition = answerCodeCopy.capture();
     if (activity.length === 0) {
       // Text only — the cheap path. Same painter as a completed answer, so a
@@ -11046,6 +11073,7 @@ export const bootstrapChatRoute = (
     discardDraft = false,
     resumeReading = true,
   ): Promise<boolean> => {
+    if (sessionId !== state.activeSessionId && promptSchedules.protectDraft()) return false;
     if (historyActionInFlight()) {
       focusHistoryActionOwner();
       return false;
@@ -11717,6 +11745,7 @@ export const bootstrapChatRoute = (
     discardProtectedDraft = false,
     addressMode?: 'push' | 'replace',
   ): void => {
+    if (promptSchedules.protectDraft()) return;
     rememberReadingPosition();
     if (historyActionInFlight()) {
       focusHistoryActionOwner();
@@ -12121,6 +12150,7 @@ export const bootstrapChatRoute = (
   };
 
   const createSession = async (title?: string): Promise<void> => {
+    if (promptSchedules.protectDraft()) return;
     try {
       const { session_id } = title !== undefined
         ? await opts.conn('chat.session.create', { title })
@@ -12829,7 +12859,10 @@ export const bootstrapChatRoute = (
             (event.kind === 'chat.token_streamed'
               || event.kind === 'chat.tool_call_started'
               || event.kind === 'chat.tool_call_completed'
-              || event.kind === 'chat.transparency')
+              || event.kind === 'chat.transparency'
+              || event.kind === 'chat.session_changed' && event.field === 'tool_call'
+                && isChatToolCallRecord(event.value) && event.value.state === 'running'
+                && event.value.turn_id === currentThread.inflight?.turn_id)
             && threadChanged
             && currentThread.inflight !== null
             && next.inflight !== null
@@ -13108,7 +13141,7 @@ export const bootstrapChatRoute = (
       return { ...copyComposerRecoveryDraft(active ?? { text: '', protected: false, modelSourceId: null }),
         ...(parkedDrafts.length ? { parkedDrafts } : {}) };
     },
-    hasUnsavedChanges: () =>
+    hasUnsavedChanges: () => promptSchedules.hasDraft() ||
       mailComposeMount?.hasUnsavedChanges() === true
       || createOverlay?.hasUnsavedChanges() === true
       || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
@@ -13126,7 +13159,7 @@ export const bootstrapChatRoute = (
         || (pendingRecoveryDraft?.interruptedUploads?.length ?? 0) > 0
         || (pendingRecoveryDraft?.protected === true && pendingRecoveryDraft.text.trim().length > 0)
       ),
-    unsavedChangesPrompt: () =>
+    unsavedChangesPrompt: () => promptSchedules.hasDraft() ? 'Discard this unfinished schedule?' :
       mailComposeMount?.hasUnsavedChanges() === true
         ? 'Throw away this unfinished email?'
         : createOverlay?.hasUnsavedChanges() === true
@@ -13138,7 +13171,7 @@ export const bootstrapChatRoute = (
               : hasPendingVoiceRecordings()
                 ? 'Discard unfinished voice notes and leave Chat?'
                 : null,
-    hasInFlightWork: () => sendDispatches.size > 0 || state.sending
+    hasInFlightWork: () => promptSchedules.pending() || sendDispatches.size > 0 || state.sending
       // A turn left running in another chat is still this tab's work.
       || turnsInFlightBySession.size > 0
       || pendingPlanActions.size > 0
@@ -13165,6 +13198,7 @@ export const bootstrapChatRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      promptSchedules.dispose();
       filePickerAbort?.abort();
       conversationFiles?.dispose();
       historyMessageSearch.dispose();

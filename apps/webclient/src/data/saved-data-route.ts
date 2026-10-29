@@ -4,17 +4,21 @@ import {
   type SavedDataView, type SavedDataViewCreateRequest,
   type SavedDataViewRenameRequest, type SavedDataViewDeleteRequest,
   type SavedDataViewUpdateRequest, type SavedDataViewDefinition, type SavedDataViewRetiredResolveRequest,
+  type SavedDataViewCreateOnceRequest, type SavedDataViewCreation,
 } from '@recued/contracts';
 import { bootstrapDataRoute, type BootstrapDataRouteOptions, type DataRoute } from './bootstrap-data-route.js';
+import { newSavedViewCreateAttempt, checkSavedViewCreation, submitSavedViewCreation, type SavedViewCreateAttempt, type SavedViewCreateResult } from './saved-view-creation.js';
 import { stampZone } from '@recued/ui-shared';
 import { serializeShellRoute } from '../shell/route.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export interface SavedDataViewsClient {
   /** `retired` (D-300): pack views an update replaced that the owner had set up. */
-  list(): Promise<{ views: SavedDataView[]; retired?: SavedDataView[] }>;
+  list(): Promise<{ views: SavedDataView[]; retired?: SavedDataView[]; create_once?: true }>;
   get(args: { id: string }): Promise<{ view: SavedDataView | null }>;
   create(args: SavedDataViewCreateRequest): Promise<{ view: SavedDataView }>;
+  createOnce?(args: SavedDataViewCreateOnceRequest): Promise<SavedDataViewCreation>;
+  getCreation?(args: SavedDataViewCreateOnceRequest): Promise<{ creation: SavedDataViewCreation | null }>;
   update(args: SavedDataViewUpdateRequest): Promise<{ view: SavedDataView }>;
   rename(args: SavedDataViewRenameRequest): Promise<{ view: SavedDataView }>;
   delete(args: SavedDataViewDeleteRequest): Promise<{ deleted: boolean }>;
@@ -195,6 +199,8 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   let pendingAlertId: string | null = null;
   let edit: { kind: 'create' | 'rename'; view: SavedDataView | null; name: string } | null = null;
   let deleting: SavedDataView | null = null;
+  let createMode: 'unknown' | 'safe' | 'legacy' = opts.savedViews.createOnce && opts.savedViews.getCreation ? 'unknown' : 'legacy';
+  let createAttempt: { input: SavedViewCreateAttempt; phase: 'retryable' | 'uncertain'; message: string } | null = null;
   let listOpen = opts.savedViewId === undefined;
   let listSeq = 0;
   let loadSeq = 0;
@@ -230,9 +236,10 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     target?.focus?.(reveal ? undefined : { preventScroll: true });
   };
   // A completed view write must not pull focus out of a Data action started
-  // while it was settling. Native disabled controls may leave focus on body.
+  // while it was settling. Removed controls may leave native focus on body
+  // or, in Safari, the focusable content root.
   const canFocusCompletion = (): boolean => doc.activeElement == null
-    || doc.activeElement === doc.body || tools.contains?.(doc.activeElement) === true;
+    || doc.activeElement === doc.body || doc.activeElement === opts.root || tools.contains?.(doc.activeElement) === true;
   const chrome = opts.chrome ?? 'data';
   /** ⛔ THE SAVE CONTROL FOLLOWS THE CHILD, NOT THE CHROME. It is hidden only
    *  when there is no data surface mounted to save — bare `#views`, which is a
@@ -266,7 +273,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     listOpen = tools.querySelector?.('details')?.open ?? listOpen;
     const html = `
       <header class="saved-data-header"><h1 class="data-title" data-recued-data-route-heading tabindex="-1">${chrome === 'views' ? 'Saved views' : 'Data'}</h1>
-        ${child === null ? '' : `<button type="button" data-view-action="new" ${canSave ? '' : 'disabled'}>${selectedView === null ? 'Save current view' : 'Save as new'}</button>`}
+        ${(child === null && !createAttempt) || (createAttempt && edit?.kind === 'create') ? '' : `<button type="button" data-view-action="new" ${!busy && (createAttempt || canSave) ? '' : 'disabled'}>${createAttempt ? 'Check saved view' : selectedView === null ? 'Save current view' : 'Save as new'}</button>`}
         ${chrome === 'views' ? `<button type="button" data-view-action="refresh" aria-label="Refresh saved views" ${listing || busy ? 'aria-disabled="true"' : ''} ${listing ? 'aria-busy="true"' : ''}>${listing ? 'Refreshing…' : 'Refresh saved views'}</button>` : ''}
         ${chrome === 'data' ? `<a class="saved-data-views-link" href="${e(serializeShellRoute('views'))}">Saved views</a>` : ''}</header>
       ${chrome !== 'views' ? '' : `${listing ? '<p role="status">Loading saved views…</p>' : ''}
@@ -318,9 +325,14 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
         <button type="button" data-view-action="replace" ${canSave ? '' : 'disabled'}>Replace saved settings</button>
       </div>`}
       ${edit === null ? '' : `<form class="saved-data-editor" data-view-editor="${e(edit.view?.id ?? 'new')}">
-        <label>View name<input data-view-name name="view-name" maxlength="${SAVED_DATA_VIEW_NAME_LIMIT}" value="${e(edit.name)}" required ${busy ? 'disabled' : ''}></label>
-        <button type="submit" data-view-action="save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save view'}</button>
-        <button type="button" data-view-action="cancel" ${busy ? 'disabled' : ''}>Cancel</button>
+        <label>View name<input data-view-name name="view-name" maxlength="${SAVED_DATA_VIEW_NAME_LIMIT}" value="${e(edit.name)}" required ${busy ? 'disabled' : ''} ${edit.kind === 'create' && createAttempt ? 'readonly' : ''}></label>
+        ${edit.kind !== 'create' || !createAttempt || createAttempt.phase === 'retryable'
+          ? `<button type="submit" data-view-action="save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : createAttempt && edit.kind === 'create' ? 'Try saving again' : 'Save view'}</button>` : ''}
+        ${edit.kind === 'create' && createAttempt ? `<button type="button" data-view-action="check-create" ${busy ? 'disabled' : ''}>${busy ? 'Checking…' : createAttempt.input.safe ? 'Check saved view' : 'Check saved views'}</button>` : ''}
+        <button type="button" data-view-action="cancel" ${busy ? 'disabled' : ''}>${edit.kind === 'create' && createAttempt ? 'Close' : 'Cancel'}</button>
+        ${edit.kind === 'create' && createAttempt ? `<p data-view-create-settings>Settings in this save: ${e(settingsSummary(createAttempt.input.request.definition))}</p>
+          <p data-view-create-status role="status">${e(createAttempt.message)}</p>
+          ${createAttempt.input.safe ? '' : `<p><a href="${e(serializeShellRoute('views'))}">Open Saved views</a> to inspect your views. This server cannot safely repeat an unconfirmed save.</p>`}` : ''}
       </form>`}
       ${deleting === null ? '' : `<div class="saved-data-confirm" role="group" aria-label="Delete saved view">
         <p>Delete “${e(deleting.name)}”? Its records will stay.</p>
@@ -344,10 +356,13 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
         tools.insertBefore(node, following ? null : editor);
       }
       editorName.disabled = busy;
-      for (const button of Array.from(editor.querySelectorAll<HTMLButtonElement>('button'))) {
-        button.disabled = busy;
-        if (button.getAttribute('data-view-action') === 'save') button.textContent = busy ? 'Saving…' : 'Save view';
-      }
+      editorName.readOnly = edit.kind === 'create' && createAttempt !== null;
+      // Keep the name input connected, but update the recovery controls and
+      // messages when a save changes phase.
+      const label = editorName.closest('label');
+      const nextLabel = nextEditor?.querySelector('[data-view-name]')?.closest('label');
+      for (const node of Array.from(editor.childNodes)) if (node !== label) editor.removeChild(node);
+      for (const node of Array.from(nextEditor?.childNodes ?? [])) if (node !== nextLabel) editor.appendChild(node);
     } else tools.innerHTML = html;
     if (returnTo) restoreViewFocus(returnTo, true);
     else if (listFocused) tools.querySelector<HTMLElement>('details > summary')?.focus({ preventScroll: true });
@@ -376,6 +391,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     try {
       const result = await opts.savedViews.list();
       if (disposed || seq !== listSeq) return;
+      createMode = result.create_once === true && opts.savedViews.createOnce && opts.savedViews.getCreation ? 'safe' : 'legacy';
       views = result.views;
       retired = result.retired ?? [];
       if (selectedView !== null) {
@@ -486,21 +502,72 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     }
   };
 
+  const saveNewView = async (checking = false): Promise<void> => {
+    if (busy || edit?.kind !== 'create') return;
+    if (createAttempt?.phase === 'uncertain' && !checking) return;
+    const name = edit.name;
+    const definition = createAttempt?.input.request.definition ?? child?.currentView();
+    if (!definition) { actionError = 'Go back to a list or a search before you save a view.'; render(); return; }
+    if (!name.trim()) { actionError = 'Give this view a name.'; render(); return; }
+    const captured = structuredClone(definition);
+    const retrying = createAttempt !== null;
+    busy = true; actionError = null; render();
+    try {
+      if (createMode === 'unknown' && createAttempt === null) {
+        await refreshViews();
+        if (disposed) return;
+        if (createMode === 'unknown') throw new Error('Could not check saved-view support. Try saving again when your server is available.');
+      }
+      createAttempt ??= { input: newSavedViewCreateAttempt(name, captured, createMode === 'safe'), phase: 'uncertain', message: 'Saving this view…' };
+      const attempt = createAttempt;
+      let observation = listSeq;
+      let result: SavedViewCreateResult;
+      if (checking && !attempt.input.safe) {
+        await refreshViews();
+        result = { kind: 'uncertain', message: listError === null ? 'Inspect Saved views before starting another save. The original save may already exist.' : `Could not load Saved views: ${listError}` };
+      } else result = checking ? await checkSavedViewCreation(opts.savedViews, attempt.input) : await submitSavedViewCreation(opts.savedViews, attempt.input, retrying);
+      if (disposed || createAttempt !== attempt) return;
+      if (attempt.input.safe && observation !== listSeq && (result.kind === 'saved' || result.kind === 'removed')) {
+        observation = listSeq;
+        result = await checkSavedViewCreation(opts.savedViews, attempt.input);
+        if (disposed || createAttempt !== attempt) return;
+        if (observation !== listSeq) result = { kind: 'uncertain', message: 'Saved views changed while this save was being checked. Check it again.' };
+      }
+      if (result.kind === 'saved') {
+        const existing = views.find(view => view.id === result.view.id);
+        const view = existing && existing.revision > result.view.revision ? existing : result.view;
+        views = [...views.filter(entry => entry.id !== view.id), view].sort((a, b) => a.name.localeCompare(b.name));
+        listSeq++; listing = false; createAttempt = null; edit = null;
+        const changed = view.name !== attempt.input.request.name || !sameSavedDataViewDefinition(view.definition, attempt.input.request.definition);
+        notice = changed ? `Your save completed. The view is now “${view.name}” with newer settings. Open it from Saved views to review it.`
+          : `Saved “${view.name}”. Open it from Saved views.`;
+      } else if (result.kind === 'removed') {
+        views = views.filter(view => view.id !== result.view_id);
+        listSeq++; listing = false;
+        createAttempt = null; edit = null;
+        notice = 'This view was saved and later removed. It has not been recreated.';
+      } else if (result.kind === 'rejected') {
+        createAttempt = null; actionError = result.message;
+        // Re-read support after an explicit refusal rather than silently
+        // falling back to a different write on the same click.
+        if (opts.savedViews.createOnce && opts.savedViews.getCreation) createMode = 'unknown';
+      } else {
+        createAttempt = { ...attempt, phase: result.kind, message: result.message };
+      }
+    } catch (error) { if (!disposed) actionError = humanizeRpcError(error); }
+    finally { if (!disposed) { busy = false; render(); } }
+  };
+
   const save = async (): Promise<void> => {
     if (busy || edit === null) return;
+    if (edit.kind === 'create') { await saveNewView(); return; }
     const editing = edit;
-    const definition = child?.currentView();
-    if (editing.kind === 'create' && (definition === null || definition === undefined)) {
-      actionError = 'Go back to a list or a search before you save a view.'; render(); return;
-    }
     if (!editing.name.trim()) { actionError = 'Give this view a name.'; render(); return; }
     busy = true;
     actionError = null;
     render();
     try {
-      const result = editing.view !== null
-        ? await opts.savedViews.rename({ id: editing.view.id, expected_revision: editing.view.revision, name: editing.name })
-        : await opts.savedViews.create({ name: editing.name, definition: definition! });
+      const result = await opts.savedViews.rename({ id: editing.view!.id, expected_revision: editing.view!.revision, name: editing.name });
       if (disposed) return;
       views = [...views.filter((view) => view.id !== result.view.id), result.view]
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -698,9 +765,10 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     event.preventDefault();
     actionError = null;
     notice = null;
+    if (action === 'check-create') { pending = saveNewView(true); return; }
     if (action === 'refresh') { pending = refreshViews(); return; }
     if (action === 'update' || action === 'replace') { pending = update(action === 'replace'); return; }
-    if (action === 'cancel') { const origin = formOrigin; edit = null; deleting = null; render(origin ?? undefined); return; }
+    if (action === 'cancel') { const origin = formOrigin; edit = null; deleting = null; if (createAttempt) notice = 'An earlier save still needs confirmation. Choose Check saved view to continue.'; render(origin ?? undefined); return; }
     if (action === 'confirm-delete') { pending = remove(); return; }
     if (action === 'retired-apply' || action === 'retired-keep' || action === 'retired-dismiss') {
       const replaced = retired.find((entry) => entry.id === control.getAttribute('data-view-id'));
@@ -718,6 +786,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       return;
     }
     if (action === 'new') {
+      if (createAttempt) { edit = { kind: 'create', view: null, name: createAttempt.input.request.name }; deleting = null; render(); return; }
       if (child?.currentView() == null || child.hasInFlightWork()) {
         actionError = 'Go back to a list or a search before you save a view.'; render(); return;
       }
@@ -735,7 +804,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   };
   const input = (event: Event): void => {
     const target = event.target as HTMLInputElement | null;
-    if (edit !== null && target?.hasAttribute('data-view-name')) edit.name = target.value;
+    if (edit !== null && !(edit.kind === 'create' && createAttempt) && target?.hasAttribute('data-view-name')) edit.name = target.value;
   };
   const submit = (event: Event): void => { event.preventDefault(); pending = save(); };
   const keydown = (event: KeyboardEvent): void => {
@@ -754,6 +823,8 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   pending = Promise.all([loadView(), refreshViews()]).then(() => {});
   return {
     whenLoaded: async () => { await pending; await child?.whenLoaded(); },
+    navigateDeepLink: (hash: string): boolean => !busy && edit === null && deleting === null
+      && child?.navigateDeepLink?.(hash) === true,
     getRunPageContext: () => child?.getRunPageContext() ?? null,
     getRecoveryContextFreshness: (): 'current' | 'unavailable' =>
       disposed || child === null || loadError !== null || listError !== null

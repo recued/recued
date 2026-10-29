@@ -106,4 +106,15 @@ describe('D-325 scopes at the other read boundaries', () => {
     }
     expect(getContactStore).not.toHaveBeenCalled(); expect(getCollectionRegistry).not.toHaveBeenCalled();
   });
+  it('fences CSV source reads even when the operation writes a new file', async () => {
+    const f = await fixture(); const read = vi.fn();
+    const adapter = createKernelAdapter({ csvInspect: read, csvTransform: read, csvFilter: read,
+      assertReadScope: (slug, origin) => assertKernelReadScope(f.access, slug, origin) });
+    for (const slug of ['csv-inspect', 'csv-transform', 'csv-filter']) {
+      await expect(adapter({ slug, input: { source: 'file:one', other_source: 'file:two' },
+        risk_tier: slug === 'csv-inspect' ? 'read' : 'write', output: {},
+        stepMeta: { step_id: 'csv', execution_source: source } })).rejects.toThrow(/permission refusal/);
+    }
+    expect(read).not.toHaveBeenCalled();
+  });
 });

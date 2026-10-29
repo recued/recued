@@ -15,6 +15,7 @@
 
 import { OPS, UNARY_OPS, type ConditionOp } from '@recued/contracts';
 import type { ParamType } from '@recued/transforms';
+import type { AuthoringReferenceSpan } from '@recued/contracts';
 import type { ValidationSeverity } from '../validate.js';
 import { RESERVED_STEP_IDS } from './constants.js';
 
@@ -23,6 +24,7 @@ export type AddFn = (
   code: string,
   path: string,
   message: string,
+  reference_span?: AuthoringReferenceSpan,
 ) => void;
 
 /** Pattern for a template reference value. Reference values can't be

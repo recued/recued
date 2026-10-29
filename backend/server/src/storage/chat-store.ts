@@ -370,6 +370,9 @@ export const ensureChatSchema = (db: Database.Database): void => {
   if (!messageCols.has('turn_id')) {
     db.exec('ALTER TABLE chat_messages ADD COLUMN turn_id TEXT');
   }
+  // Schedule outcomes select one turn without traversing the conversation's history.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_session_turn
+    ON chat_messages(session_id, turn_id, ts DESC, message_id DESC) WHERE turn_id IS NOT NULL`);
   // How many messages this session held when the owner last looked at it.
   //
   // ⛔ MESSAGE COUNT, NOT A TIMESTAMP. `last_active_at` is the obvious key and
@@ -487,6 +490,9 @@ export const ensureChatSchema = (db: Database.Database): void => {
       ON chat_plans (session_id, tool, args_hash, status, consumed_at);
     CREATE INDEX IF NOT EXISTS idx_chat_plans_turn
       ON chat_plans (session_id, turn_id, tool, args_hash, created_at);
+    CREATE INDEX IF NOT EXISTS idx_chat_plans_unfinished
+      ON chat_plans (session_id, turn_id, created_at, plan_id)
+      WHERE status='approved' AND (consumed_at IS NULL OR execution_status IN ('running','held'));
   `);
 
   // `retry_of_plan_id` landed after the durable action table. Keep the
@@ -1238,6 +1244,7 @@ const messageFromRow = async (
     parseDataDiagnosisResolution(row.metadata_blob);
   const install_offers = installOffersOf(parseMessageMetadataObject(row.metadata_blob).install_offers);
   let source_citations: ChatSourceCitation[] = [];
+  const execution_source = parseMessageMetadataObject(row.metadata_blob).execution_source;
   const storedSources = parseMessageMetadataObject(row.metadata_blob).source_citations_encrypted;
   if (role === 'assistant' && typeof storedSources === 'string') {
     try {
@@ -1260,6 +1267,7 @@ const messageFromRow = async (
   return {
     id: row.message_id,
     session_id: row.session_id,
+    ...(isExecutionSource(execution_source) ? { execution_source } : {}),
     role,
     content,
     target_server: row.target_server as ChatPickerTarget,
@@ -1398,6 +1406,11 @@ export const deriveChatMessageRecallEligibility = (
 ): ChatMessageRecallEligibility => {
   if (!isExecutionSource(source)) {
     return CHAT_MESSAGE_RECALL_ELIGIBILITY.INELIGIBLE;
+  }
+  // An owner-created prompt conversation belongs to the owner's recall corpus.
+  // Its system provenance and non-user contributor stamp remain distinct.
+  if (source.channel === 'schedule' && source.prompt_schedule !== undefined && source.contract_id === undefined) {
+    return CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
   }
   if (source.channel === 'messenger') {
     // Messenger authenticates the bound conversation, not its sender.
@@ -2655,9 +2668,11 @@ export const createChatStore = (
       || ('message_id' in reply_to && reply_to.message_id === input.id))) throw new Error('Invalid quoted reply reference.');
     let ts = input.ts ?? Date.now();
     // D-177 5.f — the contributor stamp is SERVER-derived here at the one
-    // persistence point, never caller-supplied: role fully determines the
-    // contributor for every row shape the store accepts today.
-    const contributor = contributorForChatRole(input.role);
+    // persistence point, never caller-supplied. A saved scheduled request is
+    // system input, not a newly typed owner contribution.
+    const scheduledSource = input.execution_source?.channel === 'schedule' && input.execution_source.prompt_schedule !== undefined
+      ? input.execution_source : undefined;
+    const contributor = scheduledSource && input.role === 'user' ? 'tool_result' : contributorForChatRole(input.role);
     const recall_eligibility = deriveChatMessageRecallEligibility(
       input.execution_source,
     );
@@ -2782,8 +2797,9 @@ export const createChatStore = (
       attachments_blob: input.attachments && input.attachments.length > 0
         ? JSON.stringify(input.attachments)
         : null,
-      metadata_blob: input.data_diagnosis || input.tool_call || reply_to_encrypted || source_citations_encrypted || install_offers.length > 0
+      metadata_blob: scheduledSource || input.data_diagnosis || input.tool_call || reply_to_encrypted || source_citations_encrypted || install_offers.length > 0
         ? JSON.stringify({
+            ...(scheduledSource ? { execution_source: scheduledSource } : {}),
             ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
             ...(input.tool_call ? { tool_call: input.tool_call } : {}),
             ...(reply_to_encrypted ? { reply_to_encrypted } : {}),
@@ -2844,7 +2860,7 @@ export const createChatStore = (
       ...(input.tool_calls ? { tool_calls: input.tool_calls } : {}),
       ...(input.provenance ? { provenance: input.provenance } : {}),
       ...(input.attachments && input.attachments.length > 0
-        ? { attachments: input.attachments }
+        ? { attachments: input.attachments.map(attachmentLifecycle.describe) }
         : {}),
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }

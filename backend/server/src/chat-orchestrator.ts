@@ -1,3 +1,4 @@
+import { answerOutputAttachments } from './chat-output-files.js';
 import { withResourceReview } from './resource-review.js';
 import { captureResourceReview } from '@recued/contracts';
 /** D-137 / D-164 P6.3 — Server-side chat orchestrator: single AI main
@@ -195,6 +196,7 @@ import {
 } from './chat-turn-executor.js';
 import { createChatPiiSlotOrderingSeeder } from './chat-pii-slot-ordering.js';
 import { markChatToolCallSaved, rememberChatToolCallFailure, withChatToolCallContext } from './chat-tool-call-context.js';
+import { withToolProgress } from './execution/tool-progress.js';
 import {
   RECALL_SEARCH_TOOL_NAME,
   recallJoinedPieces,
@@ -1235,6 +1237,8 @@ export interface ChatOrchestratorDeps {
 }
 
 export interface ChatTurnInput {
+  /** Host-only: the scheduler invokes the normal chat loop with system provenance. */
+  scheduled_prompt?: import('@recued/contracts').ScheduledPromptOrigin;
   /** Host-only queue ownership. Never accepted from an RPC payload. */
   queue_turn_id?: string;
   /** Host snapshot of routing at admission; authorization is still checked at execution. */
@@ -1972,6 +1976,7 @@ export interface OrchestratorDispatch {
 
 
 export interface ChatOrchestrator {
+  promptSchedules?: import('./prompt-schedules.js').PromptSchedules;
   messengerBridge?: import('./chat-messenger-bridge.js').ChatMessengerBridge;
   turnQueue?: import('./chat-turn-queue.js').ChatTurnQueue;
   /** Start a turn — persists the user message, mints a turn_id, and
@@ -2175,7 +2180,7 @@ export const renderAttachmentMarker = (
     .filter((a): a is { id: string; name: string } => a.name !== undefined);
   if (named.length === 0) return '';
   const list = named.map((a) => `${a.name} (${a.id})`).join(', ');
-  return `\n[files attached to this message: ${list}]`;
+  return `\n[files attached to this message: ${list}]\nAttachment references are complete stored file_ref values. Copy the entire value inside parentheses, including file:. These files are already stored.`;
 };
 
 /** ⚠ EXPORTED FOR THE SEAM TEST, and that is not incidental. `renderAttachmentMarker`
@@ -2857,9 +2862,11 @@ export const createChatOrchestrator = (
         && planApprovalModule.requiresPlanApproval(entry)
         && arg_values !== null && typeof arg_values === 'object' && !Array.isArray(arg_values)
         && holdSource !== undefined
-        && holdSource.actor === 'user_self'
-        && (holdSource.channel === 'chat' || holdSource.channel === 'messenger')
-        && executionSourceContractId(holdSource) === undefined;
+        && ((holdSource.actor === 'user_self'
+          && (holdSource.channel === 'chat' || holdSource.channel === 'messenger')
+          && executionSourceContractId(holdSource) === undefined)
+          || (holdSource.channel === 'schedule' && holdSource.prompt_schedule !== undefined
+            && holdSource.contract_id === undefined));
       const sameTurnPending = sameTurn !== undefined && sameTurn.status === 'proposed';
       // D-329 — asked again in a later turn while its ask is still out, it is that ask: a
       // second one would reach every channel twice for one write.
@@ -3145,13 +3152,15 @@ export const createChatOrchestrator = (
       ?? buildChatExecutionSource(session_id, turn_id);
     // Persist before crossing the tool boundary. A failed start write refuses
     // dispatch; a reconnect must never lose a call that actually started.
-    const durableCalls = source.channel === 'chat'
-      && source.actor === 'user_self' && source.contract_id === undefined
-      && source.chat_session_id === session_id
+    const durableOwnerConversation = (source.channel === 'chat'
+      && source.actor === 'user_self' && source.contract_id === undefined)
+      || (source.channel === 'schedule' && source.prompt_schedule !== undefined
+        && source.contract_id === undefined);
+    const durableCalls = durableOwnerConversation
+      && 'chat_session_id' in source && source.chat_session_id === session_id
       && deps.chatStore.getSession(session_id) !== null
       ? deps.chatStore.toolCalls : undefined;
-    const candidates = () => source.channel === 'chat' && source.actor === 'user_self'
-      && source.contract_id === undefined ? get_retained_candidates?.() ?? [] : [];
+    const candidates = () => durableOwnerConversation ? get_retained_candidates?.() ?? [] : [];
     const callStartedAt = now();
     let callMessageId: string | undefined;
     try {
@@ -3210,6 +3219,7 @@ export const createChatOrchestrator = (
       tool_name,
       tier,
       args: arg_values,
+      ...(callMessageId ? { call_id: callMessageId } : {}),
       ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
     });
     const startedAt = now();
@@ -3217,7 +3227,11 @@ export const createChatOrchestrator = (
     try {
       result = await runWithExecutionCaseVerificationContext(
         { session_id, turn_id },
-        () => withChatToolCallContext({
+        () => withToolProgress(callMessageId && durableCalls ? (progress) => {
+          if (!durableCalls.displayProgress(callMessageId!, progress, now())) return;
+          safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id,
+            field: 'tool_call', value: durableCalls.get(callMessageId!) });
+        } : undefined, () => withChatToolCallContext({
           bind: (run_id, recipe_id) => {
             if (callMessageId) durableCalls?.bind(callMessageId, run_id, recipe_id);
           },
@@ -3250,7 +3264,7 @@ export const createChatOrchestrator = (
                       else if (executionSourceContractId(source) !== undefined) throw new Error('The original Chat write authority is unavailable.');
                     }, dispatch)
                 : dispatch();
-            })),
+            }))),
       );
     } catch (e) {
       const failure: ChatDispatchResult = { ok: false, reason: 'execution_error',
@@ -3673,8 +3687,8 @@ export const createChatOrchestrator = (
         );
       }
       const directOwnerRecallSurface =
-        params.execution_source.channel === 'chat'
-        && params.execution_source.actor === 'user_self'
+        ((params.execution_source.channel === 'chat' && params.execution_source.actor === 'user_self')
+          || (params.execution_source.channel === 'schedule' && params.execution_source.prompt_schedule !== undefined))
         && !executionSourceHasContract(params.execution_source);
       const surfaceCatalogTools = directOwnerRecallSurface
         ? catalogTools
@@ -3887,7 +3901,7 @@ export const createChatOrchestrator = (
             params.assert_active?.();
             return result;
           },
-          ...(params.execution_source.channel === 'chat' ? {
+          ...((params.execution_source.channel === 'chat' || (params.execution_source.channel === 'schedule' && params.execution_source.prompt_schedule !== undefined)) ? {
             onAnswerReady: async (text: string) => {
               params.assert_active?.();
               await ctx.out.token(ctx.turn_id, text);
@@ -3993,7 +4007,11 @@ export const createChatOrchestrator = (
         `chat-orchestrator: session ${input.session_id} not found (create a session first via chat.session.create)`,
       );
     }
-    const executionSource = buildChatExecutionSource(input.session_id, turn_id);
+    const executionSource: ExecutionSource = input.scheduled_prompt
+      ? { channel: 'schedule', actor: 'system', schedule_id: input.scheduled_prompt.schedule_id,
+          cron: input.scheduled_prompt.cron, prompt_schedule: input.scheduled_prompt,
+          chat_session_id: input.session_id, turn_id }
+      : buildChatExecutionSource(input.session_id, turn_id);
     const picker_target = input.picker_state.current as ChatPickerTarget;
     const pickerAtSend = buildPickerAtSend(picker_target);
     const modelLayer = resolveModelPref(session, input.model_pref);
@@ -4105,7 +4123,7 @@ export const createChatOrchestrator = (
     // persisted USER turn (chat channel only). Best-effort: a candidate
     // that fails to record only means a scoped grant degrades to asking.
     try {
-      deps.forwardedSenderIndex?.recordUserTurn(
+      if (!input.scheduled_prompt) deps.forwardedSenderIndex?.recordUserTurn(
         input.session_id,
         turnMessage,
         now(),
@@ -4275,7 +4293,9 @@ export const createChatOrchestrator = (
               deps.resolveFileNames?.(input.attachments.map((a) => a.file_id))
                 ?? new Map<string, string>(),
             )}`
-            : modelMessage,
+            : input.scheduled_prompt
+              ? `[Scheduled request: ${input.scheduled_prompt.schedule_id}, occurrence ${input.scheduled_prompt.occurrence_id}, saved revision ${input.scheduled_prompt.revision}. Execute the saved request below. This is an unattended turn; use normal approvals for writes.]\n${modelMessage}`
+              : modelMessage,
           chat_tail: builtChatTail.messages,
         }),
         visible_recall_item_ids: [
@@ -4583,6 +4603,7 @@ export const createChatOrchestrator = (
       ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
       retained_alias_candidates: getRetainedCandidates(),
       ...(assistantProvenance ? { provenance: assistantProvenance } : {}),
+      attachments: answerOutputAttachments(picker_target, turnResult.final_ai_output, turnResult.tool_results),
       source_citations: answerSourceCitations(picker_target, turnResult.tool_results, streamSessionStore.sourceCitations(input.session_id), assistantContent, turnResult.prefetch_source_citations),
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
@@ -4810,6 +4831,7 @@ export const createChatOrchestrator = (
         execution_source: inbound.source, turn_id, ts: Math.max(now(), inbound.ts + 1),
         ...(result?.tool_calls ? { tool_calls: result.tool_calls } : {}),
         ...(result?.provenance ? { provenance: result.provenance } : {}),
+        attachments: answerOutputAttachments(picker_target, result?.final_ai_output, result?.tool_results),
         source_citations: answerSourceCitations(picker_target, result?.tool_results, streamSessionStore.sourceCitations(session_id), text, result?.prefetch_source_citations),
         // D-323 — the offers the turn's calls came back with, as a web app
         // turn's answer carries them; the messenger bridge and the email door

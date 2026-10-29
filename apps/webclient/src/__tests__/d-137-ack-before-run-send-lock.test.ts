@@ -7,6 +7,7 @@
  *  visible in the history busy state and independently settle. */
 
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../automation/prompt-schedules-panel.js', () => import('./fixtures/prompt-schedules-panel-stub.js'));
 import type {
   BroadcastEventKind,
   ChatMessage,

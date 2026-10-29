@@ -32,8 +32,16 @@ export const REF_PICKER_RESULTS_ATTR = 'data-ref-picker-results';
 export const REF_PICKER_CLEAR_ATTR = 'data-ref-picker-clear';
 export const REF_PICKER_OPTION_INDEX_ATTR = 'data-ref-picker-option-index';
 export const REF_PICKER_VALUE_ATTR = 'data-ref-picker-value';
+export const REF_PICKER_RECOVERY_ATTR = 'data-ref-picker-recovery';
+export const REF_PICKER_RECOVERY_MESSAGE_ATTR = 'data-ref-picker-recovery-message';
+export const REF_PICKER_RETRY_ATTR = 'data-ref-picker-retry';
 
 const listId = (pickerId: string): string => `ref-picker-list-${pickerId}`;
+
+/** Partial failures use the inline recovery row. With no known matches there
+ * is no dropdown; retrying with known matches keeps those choices available. */
+export const refPickerResultsVisible = (state: RefPickerState): boolean =>
+  state.open && (state.retryableError === null || state.options.length > 0);
 
 /** Stable per-option element id — shared with `wire.ts` so it can set the
  *  input's `aria-activedescendant` on keyboard nav. */
@@ -49,7 +57,7 @@ export const renderRefPicker = (
 ): string => {
   const { pickerId } = config;
   const hidden = renderHiddenFormField(state, config);
-  const expanded = state.open ? 'true' : 'false';
+  const expanded = refPickerResultsVisible(state) ? 'true' : 'false';
   const placeholder = config.placeholder ?? '';
   // Always present; `wire.ts` toggles its `hidden` so a commit/clear is a
   // pure attribute flip (no structural repaint of the field row).
@@ -73,6 +81,10 @@ export const renderRefPicker = (
     ` aria-label="${e(ariaLabel)}"${activeDescendant} />`,
     clearButton,
     `</div>`,
+    `<div class="ref-picker-recovery" ${REF_PICKER_RECOVERY_ATTR}${state.retryableError === null ? ' hidden' : ''}>`,
+    `<span ${REF_PICKER_RECOVERY_MESSAGE_ATTR} role="status">${e(state.retryableError ?? '')}</span>`,
+    `<button type="button" class="ref-picker-retry" ${REF_PICKER_RETRY_ATTR}>Try again</button>`,
+    `</div>`,
     renderRefPickerResults(state, config),
     `</div>`,
   ].join('');
@@ -84,8 +96,9 @@ export const renderRefPickerResults = (
   config: RefPickerRenderConfig,
 ): string => {
   const { pickerId } = config;
-  const hiddenAttr = state.open ? '' : ' hidden';
-  const body = state.open ? renderRefPickerResultRows(state, config) : '';
+  const visible = refPickerResultsVisible(state);
+  const hiddenAttr = visible ? '' : ' hidden';
+  const body = visible ? renderRefPickerResultRows(state, config) : '';
   return [
     `<ul class="ref-picker-results" ${REF_PICKER_RESULTS_ATTR}`,
     ` id="${e(listId(pickerId))}" role="listbox" aria-busy="${state.loading ? 'true' : 'false'}"${hiddenAttr}>`,
@@ -101,7 +114,7 @@ export const renderRefPickerResultRows = (
   state: RefPickerState,
   config: RefPickerRenderConfig,
 ): string => {
-  if (state.loading) {
+  if (state.loading && state.retryableError === null) {
     return statusRow(config.loadingText ?? DEFAULT_LOADING);
   }
   if (state.error !== null) {
@@ -109,11 +122,11 @@ export const renderRefPickerResultRows = (
   }
   // ⛔ The truncation note rides the EMPTY branch too — that is the case it
   // exists for. "No matches" over a capped read is the reading that misleads.
-  const truncatedRow = state.truncated
+  const truncatedRow = state.truncated && state.retryableError === null
     ? statusRow(config.truncatedText ?? DEFAULT_TRUNCATED, ' ref-picker-status--truncated')
     : '';
   if (state.options.length === 0) {
-    return statusRow(config.emptyText ?? DEFAULT_EMPTY)
+    return (state.retryableError === null ? statusRow(config.emptyText ?? DEFAULT_EMPTY) : '')
       + truncatedRow;
   }
   return state.options

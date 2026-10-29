@@ -906,6 +906,7 @@ describe('CalDAV — a write edits the file in place', () => {
     expect(after).toContain('ATTENDEE;CN=Jane;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:jane@x.com\r\n');
     expect(after).toContain('DTSTART;TZID=America/Los_Angeles:20261020T090000\r\n');
     expect(after).not.toContain('SEQUENCE');
+    if ('removed' in payload) throw new Error('Expected the CalDAV invitation to remain available.');
     expect(payload.event.attendees?.find((a) => a.email === 'me@x.com')?.response_status).toBe('accepted');
   });
 });

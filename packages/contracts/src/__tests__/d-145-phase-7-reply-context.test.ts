@@ -46,7 +46,7 @@ describe('D-145 PA7 — deriveReplyValues', () => {
   it('populates to / subject / in_reply_to / sender_source from the context', () => {
     const result = deriveReplyValues({
       original_message: {
-        id: 'mail-555',
+        id: '<original@example.test>',
         subject: 'Lunch?',
         from: 'bob@example.com',
       },
@@ -55,7 +55,8 @@ describe('D-145 PA7 — deriveReplyValues', () => {
     expect(result).toEqual({
       to: ['bob@example.com'],
       subject: 'Re: Lunch?',
-      in_reply_to: 'mail-555',
+      in_reply_to: '<original@example.test>',
+      references: ['<original@example.test>'],
       sender_source: 'recued.mail_message',
     });
   });

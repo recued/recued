@@ -95,14 +95,14 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
     occasions: (limit = 100, offset = 0): Occasion[] => list(db, 'proactive_occasions', limit, offset),
     saveOccasion(input: OccasionInput, at: number): Occasion {
       if (!input || !validText(input.title, 500) || !nextAnnualDate(input.month_day, '2000-01-01') || typeof input.muted !== 'boolean'
-        || !Array.isArray(input.rules) || input.rules.length > 100 || JSON.stringify(input).length > 65536) throw new Error('Invalid annual occasion');
+        || !Array.isArray(input.rules) || input.rules.length > 100 || JSON.stringify(input).length > 65536) throw new Error('Invalid occasion');
       validatePeople(input.people);
-      if (input.source_next_on !== undefined && input.source_next_on !== null && !isAssetDate(input.source_next_on)) throw new Error('Invalid calendar occurrence date');
+      if (input.source_next_on !== undefined && input.source_next_on !== null && !isAssetDate(input.source_next_on)) throw new Error('Invalid occasion date');
       if (input.where && (!validText(input.where.key, 2000) || !validText(input.where.name, 500))) throw new Error('Invalid occasion place');
       if (input.sphere !== undefined && !['personal', 'professional'].includes(input.sphere)) throw new Error('Invalid occasion sphere');
       for (const rule of input.rules) {
-        if (rule.when.kind !== 'expiry' || rule.when.field !== 'next_on') throw new Error('An occasion rule reads its annual next_on date');
-        if (rule.reaction.occurrence === 'action' && rule.expiry_policy !== 'strict_expire') throw new Error('An annual habit expires after its actual due day');
+        if (rule.when.kind !== 'expiry' || rule.when.field !== 'next_on') throw new Error('An occasion rule reads its next_on date');
+        if (rule.reaction.occurrence === 'action' && rule.expiry_policy !== 'strict_expire') throw new Error('An occasion habit expires after its actual due day');
         validateAssetRule(rule, { dates: { next_on: '2000-01-01' }, readings: {}, observations: {} });
       }
       if (new Set(input.rules.map(rule => rule.id)).size !== input.rules.length) throw new Error('Occasion rules need distinct identities');

@@ -19,6 +19,8 @@ export type {
   OperationRow,
 } from './schema.js';
 export { canonicalHash } from './canonical-hash.js';
+export { referenceFormatHintHelp } from './reference-format-hints.js';
+export { recipeStepKernelOperations, recipeStepTransforms, type RecipeStepGroup } from './recipe-step-choices.js';
 export {
   hashRecordsDeclaration,
   isRecordsComposition,
@@ -92,3 +94,4 @@ export {
 } from './ingredient-op.js';
 export { validateAuthoringSource } from './source-validation.js';
 export type { AuthoringSourceKind, AuthoringSourceValidation, AuthoringRecipeValidator } from './source-validation.js';
+export { kernelArguments, type KernelArgumentSchema } from './kernel-inputs.js';

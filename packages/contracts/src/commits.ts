@@ -454,13 +454,12 @@ export type ExecutionSource =
        *  NEVER "contract-free". The owner's remedy is re-save (re-mint + re-stamp). */
       contract_id?: string;
     }
-  | {
+  | ({
       channel: 'schedule';
       actor: 'system';
       /** Host-stamped identity of the actual scheduler row. */
       schedule_id?: string;
       cron: string;
-      source_recipe: string;
       /** D-209 §1.4 — the owner's own AUTOMATION runs under a contract: the origin
        *  recipe's (the owner's own scheduled recipes take `OWNER_CONTRACT_ID`).
        *  `resolveTrustCeiling` reads it → has-contract → `read` ceiling → writes HOLD.
@@ -468,7 +467,10 @@ export type ExecutionSource =
        *  contract's ceiling — never automatic. Optional because a genuinely
        *  server-internal background dispatch (a materialize) may run contract-free. */
       contract_id?: string;
-    }
+    } & (
+      | { source_recipe: string; prompt_schedule?: never; chat_session_id?: never; turn_id?: never }
+      | { source_recipe?: never; contract_id?: never; prompt_schedule: import('./prompt-schedule.js').ScheduledPromptOrigin; chat_session_id: string; turn_id: string }
+    ))
   | {
       channel: 'reactive';
       actor: 'system';
@@ -570,7 +572,8 @@ export const isExecutionSource = (value: unknown): value is ExecutionSource => {
     case 'schedule':
       return actor === 'system'
         && isString(v.cron)
-        && isString(v.source_recipe)
+        && ((isString(v.source_recipe) && v.prompt_schedule === undefined)
+          || (v.source_recipe === undefined && isScheduledPromptSource(v)))
         && isOptString(v.schedule_id)
         && isOptString(v.contract_id);
     case 'reactive':
@@ -611,7 +614,8 @@ export const executionSourceContractId = (
  *  chat under a contract approves its own card, as a household member or a self-restricted
  *  session does, and that is not the owner's approval. */
 export const ownerApprovesCallsOf = (source: ExecutionSource): boolean =>
-  source.channel === 'mcp' || (source.actor === 'user_self' && executionSourceContractId(source) === undefined);
+  source.channel === 'mcp' || (source.actor === 'user_self' && executionSourceContractId(source) === undefined)
+  || (source.channel === 'schedule' && source.prompt_schedule !== undefined && source.contract_id === undefined);
 
 /** True when the `ExecutionSource` carries a `contract_id`. The single
  *  condition governing `contract_snapshot` presence on a commit (D-161
@@ -1181,3 +1185,15 @@ export const isCommit = (value: unknown): value is Commit => {
   }
   return true;
 };
+
+function isScheduledPromptSource(v: Record<string, unknown>): boolean {
+  const origin = v.prompt_schedule;
+  if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return false;
+  const p = origin as Record<string, unknown>;
+  return v.contract_id === undefined && typeof v.chat_session_id === 'string' && typeof v.turn_id === 'string'
+    && typeof p.schedule_id === 'string' && p.schedule_id === v.schedule_id
+    && typeof p.occurrence_id === 'string' && typeof p.cron === 'string' && p.cron === v.cron
+    && Number.isSafeInteger(p.revision) && Number(p.revision) > 0
+    && typeof p.due_at === 'number' && Number.isFinite(p.due_at)
+    && (p.trigger === undefined || p.trigger === 'manual');
+}

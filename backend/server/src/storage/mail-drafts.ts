@@ -1,7 +1,7 @@
 /** Encrypted local drafts with per-origin ownership and revision CAS. */
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { RpcError, parseMailDraftContent, parseMailDraftCreate, parseMailDraftUpdate, parseMailDraftDelete,
+import { RpcError, readStoredMailDraftContent, parseMailDraftCreate, parseMailDraftUpdate, parseMailDraftDelete,
   parseMailDraftGet, parseMailDraftList, type MailDraft, type MailDraftSummary } from '@recued/contracts';
 import type { PreapprovalCodec } from './preapproval-codec.js';
 import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from './preapproval-lifecycle.js';
@@ -71,7 +71,8 @@ export const createMailDraftStore = (db: Database.Database, codec: PreapprovalCo
   };
   const get = async (raw: unknown, principal: MailDraftPrincipal): Promise<MailDraft> => {
     const { draft_id } = parseMailDraftGet(raw); const row = read(draft_id, principal);
-    const content = parseMailDraftContent(await codec.open(row.ciphertext!));
+    // As it was saved: a recipient rule newer than the draft must not lock the owner out of it.
+    const content = readStoredMailDraftContent(await codec.open(row.ciphertext!));
     const fresh = read(draft_id, principal);
     if (fresh.revision !== row.revision || fresh.incarnation !== row.incarnation || preapprovalHash(content) !== row.content_hash) stale();
     return { draft_id, incarnation: row.incarnation, revision: row.revision, content,

@@ -59,6 +59,7 @@ import type {
   InitialScanOptions,
   ProbedCalendarCaps,
   ProviderEventPayload,
+  ProviderRsvpResult,
   RsvpEventInput,
   UpdateEventInput,
 } from './provider.js';
@@ -179,6 +180,9 @@ export const graphRecurrenceRule = (recurrence: GraphCalRecurrence | null | unde
 };
 
 export interface GraphCalEvent {
+  '@odata.etag'?: string;
+  isOrganizer?: boolean;
+  responseStatus?: GraphCalAttendee['status'];
   id: string;
   /** Graph spells this `iCalUId` (capital U, lower d). */
   iCalUId?: string;
@@ -533,6 +537,7 @@ export const createGraphCalProvider = (
     body: unknown,
     operation: string,
     returnsBody = true,
+    beforeSend?: () => void,
   ): Promise<T | null> => {
     let token = await ensureToken(false);
     const headers: Record<string, string> = graphHeaders(token);
@@ -541,11 +546,13 @@ export const createGraphCalProvider = (
       headers['Content-Type'] = 'application/json';
       payload = JSON.stringify(body);
     }
+    beforeSend?.();
     let res = await fetcher(url, { method, headers, body: payload });
     if (res.status === 401 && !opts.managedFetcher) {
       token = await ensureToken(true);
       const retryHeaders: Record<string, string> = graphHeaders(token);
       if (payload) retryHeaders['Content-Type'] = 'application/json';
+      beforeSend?.();
       res = await fetcher(url, {
         method,
         headers: retryHeaders,
@@ -617,8 +624,15 @@ export const createGraphCalProvider = (
   };
   const payloadOf = async (
     event: GraphCalEvent, calendarId: string, calendarName?: string, signal?: AbortSignal,
-  ): Promise<ProviderEventPayload> =>
-    buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event, signal));
+  ): Promise<ProviderEventPayload> => {
+    const payload = buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event, signal));
+    const selfEmail = accountEmail.toLowerCase();
+    if (selfEmail) payload.event.attendees = payload.event.attendees?.map(attendee =>
+      attendee.email.toLowerCase() === selfEmail ? { ...attendee, is_self: true,
+        ...(event.responseStatus ? { response_status: mapAttendeeResponse(event.responseStatus) } : {}) } : attendee);
+    if (event['@odata.etag']) payload.etag = event['@odata.etag'];
+    return payload;
+  };
 
   // ── initial scan ────────────────────────────────────────────
   /** `signal` stops the scan between pages and events by THROWING: a normal
@@ -1076,11 +1090,11 @@ export const createGraphCalProvider = (
     return body;
   };
 
-  const eventUrl = (eventId: string): string =>
-    `${GRAPH_API_BASE}/me/events/${encodeURIComponent(eventId)}`;
+  const eventUrl = (eventId: string, calendarId?: string): string =>
+    `${GRAPH_API_BASE}/me/${calendarId ? `calendars/${encodeURIComponent(calendarId)}/` : ''}events/${encodeURIComponent(eventId)}`;
 
-  const fetchEvent = async (eventId: string): Promise<GraphCalEvent> =>
-    graphGet<GraphCalEvent>(eventUrl(eventId), 'events.get');
+  const fetchEvent = async (eventId: string, calendarId?: string): Promise<GraphCalEvent> =>
+    graphGet<GraphCalEvent>(eventUrl(eventId, calendarId), 'events.get');
 
   return {
     kind: 'graph',
@@ -1230,8 +1244,24 @@ export const createGraphCalProvider = (
       );
     },
 
-    async rsvpEvent(input: RsvpEventInput): Promise<ProviderEventPayload> {
+    async readInvitation(calendar_id, source_id) {
+      const calendars = await listCalendars();
+      const calendar = calendars.find(cal => cal.id === calendar_id);
+      const account = calendars.find(cal => cal.isDefaultCalendar)?.owner?.address;
+      const current = await fetchEvent(source_id, calendar_id);
+      return { payload: await payloadOf(current, calendar_id),
+        notification_supported: Boolean(account?.includes('@')) && calendar?.canEdit === true
+          && current.isOrganizer === false && current.responseStatus?.response !== 'organizer' };
+    },
+
+    async rsvpEvent(input: RsvpEventInput): Promise<ProviderRsvpResult> {
       requireCalendarId(input.calendar_id, 'events.rsvp');
+      if (input.expected_etag) {
+        const current = await fetchEvent(input.source_id, input.calendar_id);
+        if (current['@odata.etag'] !== input.expected_etag) {
+          throw new CalendarAdapterError('version_conflict', 'The invitation changed before responding.');
+        }
+      }
       const endpoint =
         input.response === 'accepted'
           ? 'accept'
@@ -1240,18 +1270,29 @@ export const createGraphCalProvider = (
             : 'tentativelyAccept';
       const body: Record<string, unknown> = { sendResponse: true };
       if (input.comment) body.comment = input.comment;
+      input.before_send?.();
       await graphMutate<void>(
-        `${eventUrl(input.source_id)}/${endpoint}`,
+        `${eventUrl(input.source_id, input.calendar_id)}/${endpoint}`,
         'POST',
         body,
         `events.${endpoint}`,
         false,
+        input.before_send,
       );
       // Graph's accept/decline/tentativelyAccept returns 202 with no
       // body — fetch the event back so the dispatcher gets a verified
       // canonical payload to write into the warehouse.
-      const refreshed = await fetchEvent(input.source_id);
-      return payloadOf(refreshed, input.calendar_id);
+      try {
+        const refreshed = await fetchEvent(input.source_id, input.calendar_id);
+        return await payloadOf(refreshed, input.calendar_id);
+      } catch (error) {
+        // Only a successful decline handoff followed by a missing copy proves
+        // removal. A timeout/404 on the POST itself remains an unknown result.
+        if (input.response === 'declined' && error instanceof CalendarAdapterError && error.code === 'event_not_found') {
+          return { removed: true, source_id: input.source_id, response_status: 'declined' };
+        }
+        throw error;
+      }
     },
   };
 };

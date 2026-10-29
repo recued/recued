@@ -37,6 +37,9 @@ export const isContactAnnualDate = (value: unknown): value is string => typeof v
 export const contactExcludedFromProactive = (contact: Pick<ContactRecord, 'privacy_marks'>): boolean =>
   contact.privacy_marks?.some(mark => ['hidden', 'deceased', 'former_partner'].includes(mark)) === true;
 
+/** Known identifiers beyond the contact's displayed primary values. */
+export interface ContactAdditionalIdentifiers { emails: string[]; phones: string[] }
+
 /** Canonical contact record. Adapters preserve the system pair via
  *  `stampCanonicalFields` at the dispatch boundary so transforms see
  *  the `_id` / `_collection` keys consistently with the other warehouse

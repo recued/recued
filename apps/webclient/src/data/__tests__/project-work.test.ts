@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkEntity, WorkEntityProjectItemsRpcResponse } from '@recued/contracts';
+import { renderProjectOverview, type ProjectOverviewProps } from '@recued/ui-shared/work-entity-page';
 import { createProjectWork, type ProjectItemsCaller } from '../project-work.js';
 
 const project: Extract<WorkEntity, { _kind: 'project' }> = { _kind: 'project', id: 'p', title: 'Launch', state: 'active',
@@ -34,5 +35,20 @@ describe('project work read ownership', () => {
     expect(work.sections.task).toMatchObject({ items: [{ title: 'Confirmed' }], total: 1, error: expect.stringContaining('could not be confirmed') });
     expect(work.sections.note).toMatchObject({ items: [], error: 'Notes unavailable' });
     expect(work.sections.note.total).toBeUndefined();
+  });
+
+  it('on a server that cannot list project work, says to update it instead of offering a retry', async () => {
+    const older = Object.assign(new Error('Unknown rpc method: work_entity.project.items'), { code: 'unknown_method' });
+    const work = createProjectWork(project, vi.fn<ProjectItemsCaller>().mockRejectedValue(older), () => {});
+    await work.load('task'); await work.load('note');
+    expect(work.sections.task).toMatchObject({ unsupported: true, loading: false });
+    expect(work.sections.task.error).toBeUndefined();
+    const html = renderProjectOverview({ project: project as unknown as ProjectOverviewProps['project'], sections: work.sections,
+      editing: false, source_label: 'Recued', can_edit: true, can_create_task: true, can_create_note: true });
+    expect(html).toContain("Update your Recued server to list this project's tasks.");
+    expect(html).toContain("Update your Recued server to list this project's notes.");
+    expect(html).not.toContain('Unknown rpc method');
+    expect(html).not.toContain('project-work-retry');
+    expect(html).not.toContain('role="alert"');
   });
 });

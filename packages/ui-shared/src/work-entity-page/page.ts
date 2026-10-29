@@ -36,7 +36,7 @@ import {
   renderSourceAffordanceChips,
   renderSourceDropdown,
 } from './source-dropdown.js';
-import { renderWorkEntityListView } from './list-view.js';
+import { renderWorkEntityListView, type TaskListSelection } from './list-view.js';
 import { renderWorkEntityDialog, type WorkEntityDialogProps } from './dialog.js';
 
 export interface WorkEntityPageProps {
@@ -66,6 +66,8 @@ export interface WorkEntityPageProps {
   /** Booking-only server-side lifecycle filter echoed into the list control. */
   booking_lifecycle_filter?: BookingLifecycleState | 'all';
   task_filters?: TaskViewFilters;
+  task_selection?: TaskListSelection;
+  list_toolbar_html?: string;
   /** Exact row whose edit detail is loading. It remains focusable while busy. */
   opening_entity_id?: string;
   /** Forwarded to an open dialog when user dismissal needs confirmation. */
@@ -120,6 +122,8 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
     empty_state_copy: spec.empty_state_copy,
     search_query: state.search_query,
     ...(props.task_filters !== undefined ? { task_filters: props.task_filters } : {}),
+    ...(props.task_selection ? { task_selection: props.task_selection } : {}),
+    ...(props.list_toolbar_html ? { toolbar_html: props.list_toolbar_html } : {}),
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: props.booking_lifecycle_filter ?? 'all' }
       : {}),

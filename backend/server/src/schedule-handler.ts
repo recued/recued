@@ -1,9 +1,10 @@
 /** Schedule rpc handlers — dispatched from the WS registry.
  *
- *  Four methods:
+ *  Schedule methods:
  *    schedules.list               list all (optional recipe_id filter)
  *    schedules.create             { recipe_id, publisher_id?, cron_expression, enabled?, dish_id? }
  *    schedules.update             { cron_expression?, enabled?, dish_id? }
+ *    schedules.reschedule         move a pending one-off run with its saved revision
  *    schedules.delete             by schedule_id
  *
  *  D-319 — a schedule belongs to a dish and fires as it, with its settings;
@@ -231,9 +232,14 @@ const scheduleWithConfig = (
   const behind = s.enabled
     && typeof s.next_run_at === 'number'
     && s.next_run_at < now;
+  const status = deps.preapprovalStatus?.(s.schedule_id);
+  const reschedule = s.mode === 'one_shot' && deps.store.rescheduleOneShot
+    ? deps.store.oneShotRescheduleState?.(s, now) : null;
   return {
     ...s,
-    ...deps.preapprovalStatus?.(s.schedule_id),
+    ...status,
+    ...(reschedule ? { reschedule_identity: reschedule.identity,
+      ...(reschedule.revision ? { reschedule_revision: reschedule.revision } : {}) } : {}),
     ...(overlay !== undefined ? { config_overlay: overlay } : {}),
     ...(behind ? { missed_cycles: countMissedCycles(s, now) } : {}),
   };
@@ -248,6 +254,36 @@ export const listSchedules = (
     ? deps.store.listByRecipe(query.recipe_id)
     : deps.store.list();
   return { schedules: schedules.map((s) => scheduleWithConfig(deps, s, now)) };
+};
+
+/** A separate command makes old servers refuse, rather than ignore, a move. */
+export const rescheduleOneShot = (
+  deps: ScheduleHandlerDeps,
+  body: { schedule_id?: unknown; run_at?: unknown; expected_revision?: unknown },
+): { schedule: ServerSchedule } => {
+  if (typeof body.schedule_id !== 'string' || !body.schedule_id
+    || typeof body.expected_revision !== 'string' || !body.expected_revision) {
+    throw new RpcError('bad_request', 'schedule_id and expected_revision are required.', 400);
+  }
+  const now = deps.now?.() ?? Date.now();
+  if (typeof body.run_at !== 'number' || !Number.isSafeInteger(body.run_at)
+    || !Number.isFinite(new Date(body.run_at).getTime()) || body.run_at <= now) {
+    throw new RpcError('bad_request', 'Choose a valid future date and time.', 400);
+  }
+  if (!deps.store.rescheduleOneShot) throw new RpcError('unavailable', 'This server cannot reschedule one-off runs.', 503);
+  const current = deps.store.get(body.schedule_id);
+  if (!current) throw new RpcError('not_found', 'Schedule no longer exists.', 404);
+  const cron = oneShotCronExpression(body.run_at, resolveScheduleZone(current, deps));
+  const growth = estimateSize({ ...current, run_at: body.run_at, next_run_at: body.run_at, cron_expression: cron }) - estimateSize(current);
+  if (growth > 0 && deps.gate) {
+    const check = deps.gate.canWrite(growth);
+    if (!check.ok) throw new RpcError(check.reason ?? 'storage_pressure', `schedule update rejected: ${check.reason}`, 507);
+  }
+  const updated = deps.store.rescheduleOneShot(body.schedule_id, {
+    run_at: body.run_at, cron_expression: cron, expected_revision: body.expected_revision, now: deps.now ?? Date.now,
+  });
+  if (updated.run_at !== current.run_at) emitSchedule(deps.eventBus, 'updated');
+  return { schedule: scheduleWithConfig(deps, updated, now) };
 };
 
 export const createSchedule = (
@@ -691,6 +727,7 @@ export type ScheduleMethods =
   | 'schedules.list'
   | 'schedules.create'
   | 'schedules.update'
+  | 'schedules.reschedule'
   | 'schedules.delete'
   | 'schedules.missed'
   | 'schedules.answerMissed';
@@ -706,7 +743,7 @@ export const makeScheduleHandlers = (
   };
   return {
     methods: [
-      'schedules.list', 'schedules.create', 'schedules.update', 'schedules.delete',
+      'schedules.list', 'schedules.create', 'schedules.update', 'schedules.reschedule', 'schedules.delete',
       'schedules.missed', 'schedules.answerMissed',
       'schedules.local_writes.review', 'schedules.local_writes.authorize', 'schedules.local_writes.revoke',
     ],
@@ -725,6 +762,7 @@ export const makeScheduleHandlers = (
       'schedules.create': async (args) => createSchedule(deps, args),
       'schedules.missed': async () => missedRuns(deps),
       'schedules.answerMissed': async (args) => answerMissed(deps, args),
+      'schedules.reschedule': async (args) => rescheduleOneShot(deps, args),
       'schedules.update': async (args) => {
         if (!args.schedule_id || typeof args.schedule_id !== 'string') {
           throw new RpcError('bad_request', 'schedule_id is required', 400);

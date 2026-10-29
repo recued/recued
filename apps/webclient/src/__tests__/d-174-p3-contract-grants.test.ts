@@ -2072,6 +2072,59 @@ describe('D-327 — an agreement is its key\'s whole authority', () => {
     expect(collectByAttr(root, CONTRACT_KEY_CREATE_ATTR)).toHaveLength(0);
   });
 
+  it('a late key lookup cannot revive a key superseded by a newer read', async () => {
+    const keys = makeKeyStore([keyToken()]);
+    const ctx = mountRoute('door_alpha', { contracts: [KEY_AGREEMENT], keyCallers: keys.callers });
+    await ctx.route.whenLoaded();
+    const panel = ctx.route.contractKeyPanel()!;
+    await panel.whenLoaded();
+    const replies: Array<(result: { tokens: McpInboundTokenRecord[] }) => void> = [];
+    keys.list.mockImplementation(() => new Promise(resolve => { replies.push(resolve); }));
+    const older = panel.refresh(), newer = panel.refresh();
+    replies[1]!({ tokens: [] });
+    await newer;
+    expect(panel.getState()).toBe('none');
+    replies[0]!({ tokens: [keyToken()] });
+    await older;
+    expect(panel.getState()).toBe('none');
+    expect(collectByAttr(ctx.root as unknown as FakeEl, CONTRACT_KEY_TURN_OFF_ATTR)).toHaveLength(0);
+    ctx.route.dispose();
+  });
+
+  it('keeps each legacy key off after a later revoke and the follow-up read fail', async () => {
+    const keys = makeKeyStore([
+      keyToken({ token_id: 'newer', created_at: Date.parse('2023-06-15T12:00:00Z') }),
+      keyToken({ token_id: 'older', created_at: Date.parse('2020-06-15T12:00:00Z') }),
+      keyToken({ token_id: 'another-contract', contract_id: 'door_beta' }),
+    ]);
+    const read = keys.list.getMockImplementation()!;
+    const revoke = keys.revoke.getMockImplementation()!;
+    const ctx = mountRoute('door_alpha', { contracts: [KEY_AGREEMENT], keyCallers: keys.callers });
+    await ctx.route.whenLoaded();
+    const panel = ctx.route.contractKeyPanel()!;
+    await panel.whenLoaded();
+    keys.list.mockRejectedValue(new Error('Read unavailable'));
+    keys.revoke.mockImplementationOnce(revoke).mockRejectedValueOnce(new Error('Second revoke unavailable'));
+    const root = panel.root as unknown as FakeEl;
+    collectByAttr(root, CONTRACT_KEY_TURN_OFF_ATTR)[0]!.click();
+    collectByAttr(root, CONTRACT_KEY_CONFIRM_ATTR)[0]!.click();
+    await tick(20);
+    expect(panel.getState()).toBe('active');
+    expect(allText(root)).toContain('2020');
+    expect(allText(root)).not.toContain('2023');
+    collectByAttr(root, CONTRACT_KEY_TURN_OFF_ATTR)[0]!.click();
+    expect(keys.revoke).toHaveBeenCalledTimes(2);
+    keys.list.mockImplementation(read);
+    await panel.refresh();
+    collectByAttr(root, CONTRACT_KEY_TURN_OFF_ATTR)[0]!.click();
+    collectByAttr(root, CONTRACT_KEY_CONFIRM_ATTR)[0]!.click();
+    await tick(20);
+    expect(keys.revoke.mock.calls.map(([args]) => args.token_id)).toEqual(['newer', 'older', 'older']);
+    expect(keys.tokens.find(token => token.token_id === 'another-contract')?.revoked_at).toBeNull();
+    expect(panel.getState()).toBe('none');
+    ctx.route.dispose();
+  });
+
   it('offers an older agreement no new key, but lets its existing key be turned off', async () => {
     const empty = makeKeyStore();
     const older = mountRoute('door_alpha', { keyCallers: empty.callers });

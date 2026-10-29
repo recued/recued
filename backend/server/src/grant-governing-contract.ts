@@ -145,6 +145,8 @@ export const resolveGrantGoverningContractId = (
   definitionStore: ContractDefinitionStore,
   now: () => number,
 ): string | undefined => {
+  if (source.channel === 'schedule' && source.prompt_schedule !== undefined
+    && source.contract_id === undefined) return OWNER_CONTRACT_ID;
   const explicit = executionSourceContractId(source);
   // An explicit contract_id is ALWAYS a bound door — never the owner
   // sentinel, even if it literally equals OWNER_CONTRACT_ID (the escalation fence: the
@@ -198,6 +200,8 @@ export const resolveGrantGoverningContractId = (
  *    - an anonymous source, whose door contract is the OWNER's standing dispatch
  *      authority, not the visitor's identity (`renderProvenanceAttribution`). */
 export const authoringContractId = (source: ExecutionSource): string | undefined => {
+  if (source.channel === 'schedule' && source.prompt_schedule !== undefined
+    && source.contract_id === undefined) return OWNER_CONTRACT_ID;
   if (source.actor === 'anonymous') return undefined;
   const explicit = executionSourceContractId(source);
   if (explicit !== undefined) return explicit === OWNER_CONTRACT_ID ? undefined : explicit;

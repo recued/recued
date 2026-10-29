@@ -1,3 +1,5 @@
+import { isToolProgress, type ToolProgress } from './tool-progress.js';
+
 /** Durable chat tool-call display state. This is evidence, never retry authority
  * or a replacement for a live process handle. Arguments/results remain in the
  * encrypted, paired chat messages. */
@@ -13,6 +15,8 @@ export interface ChatToolCallRecord {
   updated_at: number;
   last_signal_at?: number;
   stalled?: boolean;
+  /** Most recent numeric display observation; never a model message. */
+  progress?: ToolProgress;
   reviewed_at?: number;
   /** When the call first stopped to wait (an approval, another server, a pick).
    *  Kept once the call settles, so "it waited, then finished" stays readable after
@@ -36,5 +40,6 @@ export const isChatToolCallRecord = (value: unknown): value is ChatToolCallRecor
     && ['last_signal_at', 'reviewed_at', 'held_at'].every(key => row[key] === undefined
       || typeof row[key] === 'number' && Number.isFinite(row[key]))
     && (row.stalled === undefined || typeof row.stalled === 'boolean')
+    && (row.progress === undefined || isToolProgress(row.progress))
     && (row.denied === undefined || row.denied === true);
 };

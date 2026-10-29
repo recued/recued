@@ -6,7 +6,7 @@ export type SettingsBatchReader<Key extends string> = <T extends Record<string, 
 export const createSettingsBatch = <Key extends string>(reader: Key, native: SettingReader,
   load: (keys: readonly string[]) => Array<{ key: string; value: string }>): SettingsBatchReader<Key> => {
   return function settings<T extends Record<string, unknown>>(this: Record<Key, SettingReader>, fallbacks: T): T {
-    const keys = Object.keys(fallbacks); if (!keys.length) return {} as T;
+    const keys = Object.keys(fallbacks); if (!keys.length) return { ...fallbacks };
     const points = (): T => Object.fromEntries(keys.map(key => [key, this[reader](key, fallbacks[key])])) as T;
     let useNative = false;
     try { useNative = Object.getOwnPropertyDescriptor(this, reader)?.value === native; } catch { /* Retain the custom reader. */ }

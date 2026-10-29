@@ -174,6 +174,17 @@ export interface SavedDataViewCreateRequest {
   name: string;
   definition: SavedDataViewDefinition;
 }
+/** One owner save attempt. Replays must keep its name and settings unchanged. */
+export interface SavedDataViewCreateOnceRequest extends SavedDataViewCreateRequest {
+  request_id: string;
+}
+/** The original save's durable identity plus its current record. A removed
+ * record stays removed when the same request is retried. */
+export interface SavedDataViewCreation {
+  request_id: string;
+  view_id: string;
+  view: SavedDataView | null;
+}
 export interface SavedDataViewDeleteRequest {
   id: string;
   expected_revision: number;

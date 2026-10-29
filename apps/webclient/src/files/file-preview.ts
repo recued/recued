@@ -1,12 +1,69 @@
 import { FILE_PREVIEW_MAX_BYTES, FILE_PREVIEW_TEXT_CHARACTERS,
+  FILE_READ_CHUNK_MAX_BYTES, type FileContentReadRequest, type FileContentReadResponse,
   type FilePreviewRequest, type FilePreviewResult } from '@recued/contracts';
 import { renderPdfPreview } from './file-preview-pdf.js';
 
 export interface FilePreviewCallers {
   preview: (args: FilePreviewRequest) => Promise<FilePreviewResult>;
-  read: (args: { record_id: string }) => Promise<{ record_id: string; filename: string; mime_type: string; bytes_b64: string }>;
+  read: (args: FileContentReadRequest) => Promise<Pick<FileContentReadResponse, 'record_id' | 'filename' | 'mime_type' | 'bytes_b64'> & Partial<FileContentReadResponse>>;
 }
 export type FilePreviewTarget = FilePreviewRequest & { filename?: string };
+/** Fetch bounded RPC chunks, pin their source version, then verify the complete
+ * file. A cancelled or inconsistent transfer never reaches the browser save. */
+export const readStoredFileDownload = async (
+  target: FilePreviewTarget & { content_hash?: string; size?: number },
+  callers: Pick<FilePreviewCallers, 'read'>, signal?: AbortSignal,
+): Promise<{ filename: string; mime_type: string; bytes: Uint8Array } | undefined> => {
+  const digest = async (bytes: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes).buffer))]
+    .map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const chunks: Uint8Array[] = [];
+  let offset = 0, expected = target.content_hash, size = target.size, filename: string | undefined, mime: string | undefined;
+  while (true) {
+    if (signal?.aborted) return;
+    const file = await callers.read({ record_id: target.record_id, offset, length: FILE_READ_CHUNK_MAX_BYTES,
+      ...(expected ? { expected_hash: expected } : {}) });
+    if (signal?.aborted) return;
+    if (file.record_id !== target.record_id) throw new Error('The server returned a different file.');
+    if ((filename !== undefined && file.filename !== filename) || (mime !== undefined && file.mime_type !== mime)) throw new Error('The file changed during download.');
+    filename = file.filename; mime = file.mime_type;
+    const bytes = Uint8Array.from(atob(file.bytes_b64), char => char.charCodeAt(0));
+    // Older paired servers return the whole file. Never accept this after a chunk.
+    if (file.offset === undefined) {
+      if (offset !== 0) throw new Error('The download lost its chunk position.');
+      expected ??= file.content_hash || file.blob_hash || undefined;
+      size ??= file.size_bytes; chunks.push(bytes); offset = bytes.length; break;
+    }
+    if (file.offset !== offset || bytes.length > FILE_READ_CHUNK_MAX_BYTES
+      || !Number.isSafeInteger(file.size_bytes) || Number(file.size_bytes) < 0
+      || (size !== undefined && size !== file.size_bytes)
+      || typeof file.content_hash !== 'string' || !/^[a-f0-9]{64}$/.test(file.content_hash)
+      || (expected !== undefined && expected !== file.content_hash)
+      || await digest(bytes) !== file.chunk_hash) throw new Error('The downloaded chunk does not match this file.');
+    size = file.size_bytes; expected = file.content_hash; chunks.push(bytes); offset += bytes.length;
+    if (offset > size!) throw new Error('The download exceeds the file size.');
+    if (file.next_offset === null) {
+      if (offset !== size) throw new Error('The file download was incomplete. Try again.');
+      break;
+    }
+    if (!bytes.length || file.next_offset !== offset || offset >= size!) throw new Error('The download did not advance correctly.');
+  }
+  if (size !== undefined && offset !== size) throw new Error('The file download was incomplete. Try again.');
+  const bytes = new Uint8Array(offset); let written = 0;
+  for (const chunk of chunks) { bytes.set(chunk, written); written += chunk.length; }
+  if (expected && await digest(bytes) !== expected) throw new Error('The downloaded file does not match this attachment.');
+  if (signal?.aborted) return;
+  return { filename: filename!, mime_type: mime!, bytes };
+};
+export const downloadStoredFile = async (
+  doc: Document, target: FilePreviewTarget & { content_hash?: string; size?: number },
+  callers: Pick<FilePreviewCallers, 'read'>, signal?: AbortSignal,
+): Promise<void> => {
+  const file = await readStoredFileDownload(target, callers, signal);
+  if (!file || signal?.aborted) return;
+  const url = URL.createObjectURL(new Blob([new Uint8Array(file.bytes)], { type: file.mime_type }));
+  try { const link = doc.createElement('a'); link.href = url; link.download = file.filename; link.click(); }
+  finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+};
 const active = new WeakMap<Document, () => void>();
 
 export const previewText = (bytes: Uint8Array): { text: string; truncated: boolean } => {
@@ -173,10 +230,6 @@ export const openFilePreview = (
       : failure instanceof Error ? failure.message : 'Could not preview this file.';
     error.hidden = false; status.textContent = ''; retry.hidden = false;
   };
-  const decode = (value: string): Uint8Array => {
-    const binary = doc.defaultView!.atob(value);
-    return Uint8Array.from(binary, char => char.charCodeAt(0));
-  };
   const urlFor = (bytes: Uint8Array, mime: string): string => {
     const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime })); urls.add(url); return url;
   };
@@ -212,10 +265,10 @@ export const openFilePreview = (
     void (async () => {
       let content = cached;
       if (!content) {
-        const file = await callers.read({ record_id: target.record_id });
+        const file = await readStoredFileDownload(target, callers, rendering.signal);
+        if (!file) return;
         if (!alive || own !== generation) return;
-        if (file.record_id !== target.record_id) throw new Error('The server returned a different file.');
-        content = { bytes: decode(file.bytes_b64), mime: file.mime_type, filename: file.filename };
+        content = { bytes: file.bytes, mime: file.mime_type, filename: file.filename };
       }
       const url = urlFor(content.bytes, content.mime); const link = doc.createElement('a'); link.href = url; link.download = content.filename; link.click();
       setTimeout(() => { URL.revokeObjectURL(url); urls.delete(url); }, 1000);

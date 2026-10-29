@@ -7496,8 +7496,17 @@ export const bootstrapWebclient = async (
     switchWorkTracker.track((input: typeof args) => input.outcome === 'fulfill'
       ? rpcConn.call('work_entity.commitment.fulfill', { id: input.id })
       : rpcConn.call('work_entity.commitment.cancel', { id: input.id }))(args);
-  const dataContactListCaller: DataContactListCaller = (args) =>
-    rpcConn.call('contact.list', args);
+  const dataContactListCaller: DataContactListCaller = async (args) => {
+    const query = args.query?.trim();
+    if (!query) { const { query: _query, ...browse } = args; return rpcConn.call('contact.list', browse); }
+    try { return await rpcConn.call('contact.search.local', { ...args, query }); }
+    catch (error) {
+      if ((error as { code?: string } | null)?.code === 'unknown_method') {
+        throw Object.assign(new Error('Update your Recued server to search contacts by email, phone, company or alias.'), { code: 'unknown_method' });
+      }
+      throw error;
+    }
+  };
   const dataContactGetCaller: DataContactGetCaller = (args) =>
     rpcConn.call('contact.get', args);
   // D-205 merge-review item 3 — what every OTHER source says about each field. The
@@ -7619,6 +7628,8 @@ export const bootstrapWebclient = async (
   // server switch waits for them.
   const dataReminderCallers: ReminderCallers = {
     list: (args) => rpcConn.call('reminder.list', args),
+    create: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('reminder.create', input))(args),
     update: (args) =>
       switchWorkTracker.track((input: typeof args) => rpcConn.call('reminder.update', input))(args),
     cancel: (args) =>
@@ -11374,6 +11385,8 @@ export const bootstrapWebclient = async (
           list: () => rpcConn.call('data_views.list', undefined),
           get: (args) => rpcConn.call('data_views.get', args),
           create: switchWorkTracker.track((args) => rpcConn.call('data_views.create', args)),
+          createOnce: switchWorkTracker.track((args) => rpcConn.call('data_views.create_once', args)),
+          getCreation: args => rpcConn.call('data_views.creation.get', args),
           update: switchWorkTracker.track((args) => rpcConn.call('data_views.update', args)),
           rename: switchWorkTracker.track((args) => rpcConn.call('data_views.rename', args)),
           delete: switchWorkTracker.track((args) => rpcConn.call('data_views.delete', args)),
@@ -11449,6 +11462,23 @@ export const bootstrapWebclient = async (
         calendarEventCallers: {
           get: args => rpcConn.call('collection.calendar.event.get', args),
           update: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.update', args)),
+          respond: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.respond', args)),
+        },
+        mailMessageCallers: {
+          get: args => rpcConn.call('collection.mail.message.get', args),
+          conversation: args => rpcConn.call('collection.mail.conversation.get', args),
+        },
+        mailCompose: {
+          serverTimeZone: getServerTimeZone,
+          drafts: mailDraftCallers,
+          listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
+          runExecute: args => rpcConn.call('execute', { ...args, trigger_source: 'manual' }, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }),
+          listFiles: () => listComposeFiles(dataMirrorSearchCaller),
+          pickFiles: async (selected, signal) => {
+            const inventory = await listComposeFiles(dataMirrorSearchCaller);
+            if (signal?.aborted === true) return [];
+            return openFilePickPanel(doc, inventory, selected, signal);
+          },
         },
         collectionSearchAllCaller: dataCollectionSearchAllCaller,
         packInstalledListCaller: dataPackInstalledListCaller,
@@ -11598,6 +11628,7 @@ export const bootstrapWebclient = async (
           () => rpcConn.call('preapproval.capabilities'),
         ),
         schedulesListCaller: automationSchedulesListCaller,
+        schedulesRescheduleCaller: args => rpcConn.call('schedules.reschedule', args),
         schedulesUpdateCaller: switchWorkTracker.track(
           automationSchedulesUpdateCaller,
         ),

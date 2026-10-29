@@ -173,7 +173,8 @@ export const createChatTurnQueueStore = (db: Database.Database, getKey?: ChatKey
   const read = async (row: QueueRow): Promise<QueuedChatCommand> =>
     JSON.parse(await decodeChatContentFromStorage(row.payload,
       { session_id: row.session_id, message_id: `queue:${row.turn_id}` }, getKey)) as QueuedChatCommand;
-  const admit = async (command: QueuedChatCommand, submission: string, repeat = false): Promise<ChatTurnAcceptance> => {
+  const admit = async (command: QueuedChatCommand, submission: string, repeat = false,
+    beforeInsert?: (turn_id: string) => undefined): Promise<ChatTurnAcceptance> => {
     const admittedGeneration = generation(command.session_id);
     if (command.input.queue_generation !== undefined && command.input.queue_generation !== admittedGeneration) {
       throw new RpcError('bad_request', 'The conversation changed. Reopen it before sending.', 400);
@@ -260,6 +261,9 @@ export const createChatTurnQueueStore = (db: Database.Database, getKey?: ChatKey
             throw new RpcError('bad_request', 'Messenger delivery storage is full. Resolve pending deliveries before sending another message.', 400);
           }
         }
+        // Trusted ingress may bind its own durable record in this SAME transaction.
+        // Replayed submissions return above without running this callback again.
+        if (beforeInsert?.(turn_id) !== undefined) throw new Error('Queue admission checks must finish synchronously.');
         db.prepare(`INSERT INTO chat_turn_queue
           (turn_id, session_id, family, status, fingerprint, payload, created_at, attachments_indexed)
           VALUES (?, ?, ?, 'queued', ?, ?, ?, 1)`).run(turn_id, command.session_id, command.family, fingerprint, payload, Date.now());

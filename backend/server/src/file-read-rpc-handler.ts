@@ -15,7 +15,7 @@
  *  chat orchestrator — same read, separate dispatcher, no shared rpc envelope. */
 
 import type Database from 'better-sqlite3';
-import { RpcError, type HandlerSlice, type ServerRpcRegistry } from '@recued/contracts';
+import { RpcError, type HandlerSlice, type ServerRpcRegistry, type FileContentReadRequest, type FileContentReadResponse } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
 import { handleFileRead, type FileReadDeps } from './collections/file/file-read-handler.js';
 import { createCloudFileAttachments, type CloudFileAttachmentDeps } from './cloud-file-attachments.js';
@@ -53,15 +53,8 @@ const requireRegisteredClient = (client: WsClient): void => {
 
 export const handleDataFileRead = async (
   deps: FileReadRpcDeps,
-  args: { record_id: string },
-): Promise<{
-  record_id: string;
-  bytes_b64: string;
-  mime_type: string;
-  filename: string;
-  size_bytes: number;
-  blob_hash: string;
-}> => {
+  args: FileContentReadRequest,
+): Promise<FileContentReadResponse> => {
   if (typeof args.record_id !== 'string' || args.record_id.length === 0) {
     throw new RpcError('bad_request', 'data.file.read: record_id is required');
   }
@@ -73,15 +66,7 @@ export const handleDataFileRead = async (
       503,
     );
   }
-  const file = await handleFileRead(fileReadDeps, { record_id: args.record_id });
-  return {
-    record_id: file.record_id,
-    bytes_b64: file.bytes_b64,
-    mime_type: file.mime_type,
-    filename: file.filename,
-    size_bytes: file.size_bytes,
-    blob_hash: file.blob_hash,
-  };
+  return handleFileRead(fileReadDeps, args);
 };
 
 type FileReadRpcMethods = 'data.file.attachments.preview' | 'data.file.attachments.sources' | 'data.file.attachments.remote.list' | 'data.file.attachments.remote.get' | 'data.file.attachments.import' | 'data.file.read' | 'data.file.usage' | 'data.file.mutate' | 'data.file.attachments.list' | 'data.file.attachments.get' | 'data.file.attachments.conversation';
@@ -164,7 +149,7 @@ export const makeFileReadRpcHandlers = (
       'data.file.mutate': async (args, client) => {
         requireRegisteredClient(client);
         requireFileId(args.record_id);
-        if (!args.revision || typeof args.revision !== 'string' || !['archive', 'delete'].includes(args.action)) {
+        if (!args.revision || typeof args.revision !== 'string' || !['archive', 'restore', 'delete'].includes(args.action)) {
           throw new RpcError('bad_request', 'Review the file usage and choose an action.', 400);
         }
         const { replayed, ...result } = retainedFiles().mutateLifecycle!(args);
@@ -177,14 +162,14 @@ export const makeFileReadRpcHandlers = (
           catch { console.error('File lifecycle notification failed after commit.'); }
         }
         await deps.getFileReadDeps()?.auditLog?.logActivity({ activity_id: '', timestamp: Date.now(),
-          action: args.action === 'archive' ? 'collection_record_updated' : 'collection_record_deleted', target: result.record_id,
+          action: args.action === 'delete' ? 'collection_record_deleted' : 'collection_record_updated', target: result.record_id,
           detail: JSON.stringify({ operation: args.action, message_count: result.message_count, queued_count: result.queued_count }) })
           .catch(() => { console.error('File lifecycle audit write failed after commit.'); });
         return result;
       },
       'data.file.read': async (args, client) => {
         requireRegisteredClient(client);
-        return handleDataFileRead(deps, args as { record_id: string });
+        return handleDataFileRead(deps, args);
       },
     },
   };

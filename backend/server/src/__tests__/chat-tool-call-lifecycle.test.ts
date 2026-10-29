@@ -14,6 +14,7 @@ import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createChatToolCallStore } from '../storage/chat-tool-call-store.js';
 import { InFlightRegistry } from '../execution/in-flight-registry.js';
 import { LaneSemaphore } from '../execution/lane-semaphore.js';
+import { reportToolProgress } from '../execution/tool-progress.js';
 import { handleExecutionActive, handleToolCallDismiss } from '../execution-control-handler.js';
 import type { WsClient } from '../ws-server.js';
 
@@ -73,6 +74,20 @@ const orchestrator = (store: ReturnType<typeof createChatStore>,
 const turnInput = { session_id: 'session', message: 'Search mail', picker_state: { current: 'self' as const } };
 
 describe('durable chat calls through the orchestrator', () => {
+  it('scheduled turns retain system provenance on every tool call and result', async () => {
+    const { store } = storage();
+    const app = orchestrator(store, async ctx => {
+      expect(ctx.execution_source).toMatchObject({ channel: 'schedule', actor: 'system', schedule_id: 'ps' });
+      expect(store.toolCalls!.list()).toHaveLength(1);
+      return { ok: true, result: { answer: 'current mail' } };
+    });
+    await app.runTurn({ ...turnInput, scheduled_prompt: { schedule_id: 'ps', occurrence_id: 'ps:1:1', revision: 1, due_at: 1, cron: 'one_shot' } });
+    const rows = await store.listMessages('session');
+    expect(rows.filter(m => m.role === 'tool')).toHaveLength(2);
+    for (const row of rows) expect(row.execution_source).toMatchObject({ channel: 'schedule', actor: 'system' });
+    expect(rows.find(m => m.tool_call)?.tool_call?.state).toBe('succeeded');
+  });
+
   it('records before dispatch, tracks the exact live run, and saves the result before synthesis', async () => {
     const { db, store } = storage();
     const entered = deferred(), release = deferred(), synthesizing = deferred(), finish = deferred();
@@ -87,6 +102,7 @@ describe('durable chat calls through the orchestrator', () => {
         source: ctx.execution_source!, session_id: 'chat:session', origin: 'attended',
         started_at: Date.now(), abort: vi.fn(), ...(onProgress ? { onProgress } : {}) });
       live.reportProgress('run-real', 'heartbeat');
+      reportToolProgress({ kind: 'provider', current: 3, total: 10 });
       entered.resolve();
       await release.promise;
       live.completeRun('run-real');
@@ -99,7 +115,7 @@ describe('durable chat calls through the orchestrator', () => {
       await Promise.race([entered.promise, turn.then(() => { throw new Error('Dispatch was not reached'); })]);
       const [record] = store.toolCalls!.list();
       expect(record).toMatchObject({ run_id: 'run-real', recipe_id: 'long-recipe',
-        last_signal_at: expect.any(Number) });
+        last_signal_at: expect.any(Number), progress: { kind: 'provider', current: 3, total: 10 } });
       expect(JSON.stringify(record)).not.toContain('private arguments');
       expect(db.prepare('SELECT role FROM chat_messages').all()).toHaveLength(2);
       const active = handleExecutionActive({ registry: live, toolCalls: store.toolCalls },
@@ -352,6 +368,28 @@ describe('restart recovery and lifecycle boundaries', () => {
     expect(calls.list()).toEqual([]);
     expect(db.prepare('SELECT json_extract(metadata_blob, \'$.tool_call.state\') AS state FROM chat_messages WHERE message_id = ?')
       .get('call')).toEqual({ state: 'succeeded' });
+  });
+
+  it('keeps delayed captions separate from liveness and stall recovery', async () => {
+    const { store } = storage();
+    const calls = store.toolCalls!;
+    await calls.start(startInput('call'));
+    calls.bind('call', 'run', 'recipe');
+    expect(calls.progress('call', 'run', 2_000, false)).toBe(true);
+    const measurement = { kind: 'provider' as const, current: 3, total: 10 };
+    expect(calls.displayProgress('call', measurement, 6_000)).toBe(true);
+    expect(calls.get('call')?.last_signal_at).toBe(2_000);
+    // A caption must not postpone the next real heartbeat's durable write.
+    expect(calls.progress('call', 'run', 7_000, false)).toBe(true);
+    expect(calls.progress('call', 'run', 7_500, true)).toBe(true);
+    expect(calls.displayProgress('call', { ...measurement, current: 4 }, 8_000)).toBe(true);
+    expect(calls.get('call')).toMatchObject({
+      stalled: true, last_signal_at: 7_000, progress: { current: 4 },
+    });
+    expect(calls.progress('call', 'run', 8_001, false)).toBe(true);
+    expect(calls.get('call')).toMatchObject({ stalled: false, last_signal_at: 8_001 });
+    calls.hold('call');
+    expect(calls.displayProgress('call', measurement, Date.now() + 1)).toBe(false);
   });
 
   it('cannot replace the outer run identity or keep writing through detached async context', async () => {

@@ -37,6 +37,9 @@ import {
   MAIL_MESSAGE_SCHEMA,
   MAIL_COMPOSE_REWRITE_ACTIONS,
   REWRITE_COMPOSED_MAIL_RECIPE_ID,
+  DRAFT_COMPOSED_MAIL_RECIPE_ID,
+  MAIL_DRAFT_BRIEF_MAX,
+  MAIL_DRAFT_SOURCE_MAX,
   SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,
   SEND_COMPOSED_MAIL_RECIPE_ID,
   addComposeAttachmentsTransition,
@@ -44,6 +47,7 @@ import {
   composeDialog,
   composePayloadToSendRecipeConfig,
   composeRewriteRecipeConfig,
+  composeDraftRecipeConfig,
   composeStateToSendPayload,
   formFromCanonicalSchema,
   initialMailComposeState,
@@ -60,7 +64,7 @@ import {
   type MailComposeAttachment,
   type MailComposeState,
   type MailReplyContext,
-  type MailComposeRewriteAction,
+  type MailComposeAiAction,
   type MailSenderSourceOption,
 } from '@recued/contracts';
 import { renderMailComposeDialog, stampZone } from '@recued/ui-shared';
@@ -229,7 +233,7 @@ export const mailDraftContentFromCompose = (
     content: parseMailDraftContent({
       ...extras,
       ...composePayloadToSendRecipeConfig(result.payload),
-      body_format: prior?.body_format ?? 'text',
+      body_format: prior?.body_format === 'html' && prior.body === values.body ? 'html' : 'text',
     }),
   };
 };
@@ -341,6 +345,7 @@ export const rewrittenMailBodyFromExecuteResponse = (
       row.type === 'text'
       && typeof row.data === 'string'
       && row.data.trim().length > 0
+      && row.data.length <= MAIL_DRAFT_SOURCE_MAX
     ) return row.data;
   }
   return null;
@@ -421,8 +426,13 @@ export const mountMailCompose = (
   let attachmentAbort: AbortController | null = null;
   let attachmentBusy = false;
   let assistGeneration = 0;
+  let brief = '';
+  let replyContext: MailReplyContext | null = null;
+  let discardConfirm = false;
+  let copyRecipientsOpen = false;
+  let opener: HTMLElement | null = null;
   let assistState: {
-    busyAction: MailComposeRewriteAction | null;
+    busyAction: MailComposeAiAction | null;
     error: string | null;
     undo: { previous: string; applied: string } | null;
   } = { busyAction: null, error: null, undo: null };
@@ -430,6 +440,7 @@ export const mountMailCompose = (
   let destroyed = false;
   let saved: MailDraft | null = null;
   let savedValues = '';
+  let savedBrief = '';
   let draftStatus = '';
   let scheduleVisible = false;
   let scheduleTime = '';
@@ -440,38 +451,37 @@ export const mountMailCompose = (
    *  outcome surface: the dialog stays open, so "done" has to be visible here. */
   let mailboxStatus = '';
   const resetSaved = (): void => {
-    saved = null; savedValues = ''; draftStatus = ''; scheduleVisible = false; scheduleTime = ''; mailboxStatus = '';
+    outcome = null;
+    saved = null; savedValues = ''; savedBrief = ''; draftStatus = ''; scheduleVisible = false; scheduleTime = ''; mailboxStatus = '';
     pendingSave = null; pendingSchedule = null;
   };
 
   const sendCapable = (): MailSenderSourceOption[] =>
     sources.filter((s) => s.send_capable);
 
-  /** D-264 — every Source this dialog can do ANYTHING with. The open paths gate
-   *  on this, not on `sendCapable`, because a mailbox that can only hold a draft
-   *  is exactly who the dialog now opens for.
-   *
-   *  ⛔ `openCreate` used to require `readiness === 'ready'` AND a send-capable
-   *  first sender, and both callers IGNORE its `false` return — so New mail
-   *  silently did nothing for the users this feature was built for, in Mail and
-   *  in Chat. Nothing was red: the readiness derivation and the dialog renderer
-   *  were each tested, and the JOIN between them was not. */
-  const composable = (): MailSenderSourceOption[] =>
-    sources.filter((s) => s.send_capable || s.draft_capable);
-
-  /** Both statuses the dialog may open on — the reply path's half of the same
-   *  rule `mailComposeOpenSender` carries for the create path. */
-  const openableReadiness = (): boolean =>
-    mailComposeOpenSender(readinessState, sources) !== null;
-
+  /** Preserve the owner's focused control and textarea selection when an
+   * asynchronous AI or draft operation repaints the shared dialog. */
   const render = (): void => {
     if (destroyed) return;
     const dialog = composeDialog(state);
     if (dialog === null) {
       host.innerHTML = '';
+      if (opener?.isConnected) opener.focus();
+      opener = null;
       deps.onStateChanged?.();
       return;
     }
+    const active = host.ownerDocument.activeElement;
+    const ownerWindow = host.ownerDocument.defaultView;
+    const focusAttributes = ['data-mail-compose-ai-brief', 'data-form-field', 'data-form-array-item', 'data-action'];
+    const hadFocus = ownerWindow !== null && active instanceof ownerWindow.HTMLElement && host.contains(active);
+    const focusAttribute = hadFocus
+      ? focusAttributes.find(attribute => active.hasAttribute(attribute)) : undefined;
+    const focusValue = focusAttribute ? active?.getAttribute(focusAttribute) : null;
+    const focusIndex = focusAttribute ? [...host.querySelectorAll<HTMLElement>(`[${focusAttribute}]`)]
+      .filter(element => element.getAttribute(focusAttribute) === focusValue).indexOf(active as HTMLElement) : -1;
+    const selection = ownerWindow !== null && (active instanceof ownerWindow.HTMLTextAreaElement || active instanceof ownerWindow.HTMLInputElement)
+      ? { start: active.selectionStart, end: active.selectionEnd } : null;
     host.innerHTML = renderMailComposeDialog({
       definition,
       state: dialog,
@@ -484,7 +494,16 @@ export const mountMailCompose = (
         busyAction: assistState.busyAction,
         error: assistState.error,
         canUndo: assistState.undo !== null,
+        brief,
+        draftUnavailableReason: dialog.values.in_reply_to && !replyContext
+          ? 'Open the original email to draft an AI reply. You can still rewrite this saved message.'
+          : replyContext?.original_message.body_truncated
+            ? 'This email exceeds the AI reply context limit. Write your reply manually, then use the rewrite controls.'
+            : null,
       },
+      discardConfirm,
+      copyRecipientsOpen,
+      ...(replyContext ? { replySubject: replyContext.original_message.subject } : {}),
       attachmentBusy,
       ...(deps.drafts ? { savedDraft: { status: draftStatus, scheduling: scheduleVisible, runAt: scheduleTime,
         // D-269 — the same thunk the activation stamp already uses, so the line
@@ -496,6 +515,19 @@ export const mountMailCompose = (
       ...(mailboxStatus ? { mailboxStatus } : {}),
         ...(draftBusyLabel ? { busyLabel: draftBusyLabel } : {}) } } : {}),
     });
+    if (focusAttribute) {
+      const restored = [...host.querySelectorAll<HTMLElement>(`[${focusAttribute}]`)]
+        .filter(element => element.getAttribute(focusAttribute) === focusValue)[focusIndex];
+      restored?.focus({ preventScroll: true });
+      if (selection && ownerWindow !== null && (restored instanceof ownerWindow.HTMLTextAreaElement
+        || (restored instanceof ownerWindow.HTMLInputElement && /^(text|search|tel|url|password)$/.test(restored.type)))
+        && selection.start !== null && selection.end !== null) {
+        restored.setSelectionRange(selection.start, selection.end);
+      }
+    }
+    if (hadFocus && !host.contains(host.ownerDocument.activeElement)) {
+      host.querySelector<HTMLElement>('.mail-compose-dialog')?.focus({ preventScroll: true });
+    }
     deps.onStateChanged?.();
   };
 
@@ -513,6 +545,10 @@ export const mountMailCompose = (
     if (dialog === null) return;
     const time = host.querySelector<HTMLInputElement>('[data-mail-draft-time]');
     if (time) scheduleTime = time.value;
+    const briefInput = host.querySelector<HTMLTextAreaElement>('[data-mail-compose-ai-brief]');
+    if (briefInput) brief = briefInput.value;
+    const copies = host.querySelector<HTMLDetailsElement>('[data-mail-compose-copy-recipients]');
+    if (copies) copyRecipientsOpen = copies.open;
     const read = readFormValues(host);
     const patch: Record<string, unknown> = {};
     for (const key of ['subject', 'body', 'to', 'cc', 'bcc'] as const) {
@@ -563,6 +599,7 @@ export const mountMailCompose = (
       if (destroyed || generation !== draftGeneration) return;
       draftStatus = 'Draft saved.';
       savedValues = JSON.stringify(composeDialog(state)!.values);
+      savedBrief = brief;
       deps.drafts.changed?.();
       const response = await deps.runExecute({
         recipe_id: SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,
@@ -618,6 +655,7 @@ export const mountMailCompose = (
       const current = draftContent();
       const unchanged = current !== null && JSON.stringify(current) === signature;
       savedValues = unchanged ? JSON.stringify(composeDialog(state)!.values) : '';
+      if (unchanged) savedBrief = brief;
       draftStatus = unchanged ? 'Draft saved.' : 'Earlier version saved. Save again to keep your latest edits.';
       deps.drafts.changed?.();
       if (schedule) {
@@ -668,9 +706,22 @@ export const mountMailCompose = (
     setState(setComposeSubmittingTransition(state, true));
     const generation = draftGeneration;
     try {
+      const listed = await deps.listMailInstances();
+      if (destroyed || generation !== draftGeneration) return;
+      syncFromDom();
+      sources = listed.instances.map(senderOptionFromInstance);
+      const current = composeDialog(state)!;
+      const checked = composeStateToSendPayload(withoutBlankRecipients(current.values), {
+        resolveContactEmail, findSenderSource: id => sources.find(source => source.id === id) ?? null,
+      });
+      if (!checked.ok) {
+        state = setComposeSubmittingTransition(state, false);
+        setState(setComposeErrorsTransition(state, checked.errors));
+        return;
+      }
       const response = await deps.runExecute({
         recipe_id: SEND_COMPOSED_MAIL_RECIPE_ID,
-        config: saved ? draftContent() ?? composePayloadToSendRecipeConfig(result.payload) : composePayloadToSendRecipeConfig(result.payload),
+        config: saved ? draftContent() ?? composePayloadToSendRecipeConfig(checked.payload) : composePayloadToSendRecipeConfig(checked.payload),
       });
       if (destroyed || generation !== draftGeneration) return;
       const nextOutcome = mailComposeSubmitOutcomeFromExecuteResponse(response);
@@ -766,16 +817,33 @@ export const mountMailCompose = (
     assistState = { busyAction: null, error: null, undo: null };
   };
 
-  const close = (): void => {
+  const hasUnsavedChanges = (): boolean => {
+    syncFromDom();
+    const dialog = composeDialog(state);
+    if (!dialog) return false;
+    if (saved && JSON.stringify(dialog.values) === savedValues && brief === savedBrief) return false;
+    return brief.trim().length > 0 || dialog.values.subject.trim().length > 0
+      || dialog.values.body.trim().length > 0 || dialog.values.to.length > 0
+      || dialog.values.cc.length > 0 || dialog.values.bcc.length > 0 || dialog.values.attachments.length > 0;
+  };
+
+  const close = (discard = false): void => {
+    if (composeDialog(state)?.submitting) return;
+    if (!discard && hasUnsavedChanges()) {
+      discardConfirm = true; render();
+      host.querySelector<HTMLButtonElement>('[data-action="keep-mail-compose"]')?.focus();
+      return;
+    }
     const next = closeComposeTransition(state);
     if (next === state) return;
     draftGeneration += 1;
     retireAttachment();
     resetAssist();
+    brief = ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
     setState(next);
   };
 
-  const runAssist = async (action: MailComposeRewriteAction): Promise<void> => {
+  const runAssist = async (action: MailComposeAiAction): Promise<void> => {
     syncFromDom();
     const dialog = composeDialog(state);
     if (
@@ -784,10 +852,17 @@ export const mountMailCompose = (
       || attachmentBusy
       || assistState.busyAction !== null
     ) return;
-    if (dialog.values.body.trim().length === 0) {
+    const drafting = action === 'compose' || action === 'draft-reply';
+    const draftError = !brief.trim() ? 'Describe what you want the email to say.'
+      : brief.length > MAIL_DRAFT_BRIEF_MAX ? 'Shorten your instructions before drafting.'
+      : dialog.values.body.length > MAIL_DRAFT_SOURCE_MAX ? 'Shorten the current message before drafting.'
+      : dialog.values.in_reply_to && !replyContext ? 'Open the original email to draft an AI reply.'
+      : replyContext?.original_message.body_truncated ? 'The original email is too long for AI drafting. Write a reply manually.'
+      : null;
+    if ((drafting && draftError) || (!drafting && dialog.values.body.trim().length === 0)) {
       assistState = {
         busyAction: null,
-        error: 'Write a message before asking AI to rewrite it.',
+        error: drafting ? draftError : 'Write a message before asking AI to rewrite it.',
         undo: null,
       };
       render();
@@ -798,13 +873,15 @@ export const mountMailCompose = (
       (candidate) => candidate.id === dialog.values.sender_source,
     );
     const baseline = dialog.values.body;
+    const signature = JSON.stringify([dialog.values, brief]);
     const generation = ++assistGeneration;
     assistState = { busyAction: action, error: null, undo: null };
     render();
     try {
       const response = await deps.runExecute({
-        recipe_id: REWRITE_COMPOSED_MAIL_RECIPE_ID,
-        config: composeRewriteRecipeConfig({
+        recipe_id: drafting ? DRAFT_COMPOSED_MAIL_RECIPE_ID : REWRITE_COMPOSED_MAIL_RECIPE_ID,
+        config: ((): Record<string, unknown> => {
+          const input = {
           values: {
             ...dialog.values,
             // Recipient slots can carry contact refs. Seed the privacy ledger
@@ -821,13 +898,17 @@ export const mountMailCompose = (
             ),
           },
           sender_email: source?.account_email ?? '',
-        }, action),
+          };
+          return action === 'compose' || action === 'draft-reply'
+            ? composeDraftRecipeConfig({ ...input, brief, reply: replyContext })
+            : composeRewriteRecipeConfig(input, action);
+        })(),
       });
       if (destroyed || generation !== assistGeneration) return;
       syncFromDom();
       const current = composeDialog(state);
       if (current === null) return;
-      if (current.values.body !== baseline) {
+      if (JSON.stringify([current.values, brief]) !== signature) {
         assistState = {
           busyAction: null,
           error: 'The message changed while AI was working, so Recued left your newer text untouched.',
@@ -840,7 +921,7 @@ export const mountMailCompose = (
       if (rewritten === null) {
         assistState = {
           busyAction: null,
-          error: 'AI did not return a usable rewrite. Your message is unchanged.',
+          error: 'AI did not return a usable message. Your draft is unchanged.',
           undo: null,
         };
         render();
@@ -879,7 +960,7 @@ export const mountMailCompose = (
     if (dialog.values.body !== undo.applied) {
       assistState = {
         busyAction: null,
-        error: 'Undo was not applied because the message changed after the rewrite.',
+        error: 'Undo was not applied because the message changed after the AI edit.',
         undo: null,
       };
       render();
@@ -962,6 +1043,8 @@ export const mountMailCompose = (
       close();
       return;
     }
+    if (action === 'keep-mail-compose') { discardConfirm = false; render(); focusCompose(); return; }
+    if (action === 'discard-mail-compose') { close(true); return; }
     if (action === 'submit-mail-compose') {
       void submit();
       return;
@@ -985,6 +1068,10 @@ export const mountMailCompose = (
       undoAssist();
       return;
     }
+    if (action === 'mail-compose-ai-draft') {
+      void runAssist(replyContext ? 'draft-reply' : 'compose');
+      return;
+    }
     const rewriteAction = MAIL_COMPOSE_REWRITE_ACTIONS.find(
       (candidate) => action === `mail-compose-ai-${candidate}`,
     );
@@ -1004,6 +1091,31 @@ export const mountMailCompose = (
 
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (!composeDialog(state) || event.isComposing) return;
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation();
+      if (discardConfirm) { discardConfirm = false; render(); focusCompose(); }
+      else close();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = [...host.querySelectorAll<HTMLElement>('button, input, textarea, select, a[href], summary')]
+      .filter(element => !element.matches(':disabled') && element.getClientRects().length > 0);
+    const first = focusable[0], last = focusable.at(-1);
+    const active = host.ownerDocument.activeElement;
+    const outsideControl = !focusable.includes(active as HTMLElement);
+    if (event.shiftKey && (active === first || outsideControl)) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && (active === last || outsideControl)) { event.preventDefault(); first?.focus(); }
+  };
+  host.addEventListener('keydown', onKeyDown);
+  const focusCompose = (preferBody = false): void => {
+    const body = host.querySelector<HTMLElement>('[data-form-field="body"]:not(:disabled)');
+    const instructions = host.querySelector<HTMLElement>('[data-mail-compose-ai-brief]:not(:disabled)');
+    (preferBody ? body ?? instructions : instructions ?? body)?.focus();
+  };
+  const onSubmit = (event: Event): void => { event.preventDefault(); };
+  host.addEventListener('submit', onSubmit);
 
   const refresh = async (): Promise<MailComposeReadiness> => {
     const generation = ++refreshGeneration;
@@ -1019,6 +1131,7 @@ export const mountMailCompose = (
       readinessState = { status: 'unavailable' };
     }
     if (destroyed || generation !== refreshGeneration) return readinessState;
+    syncFromDom();
     render();
     return readinessState;
   };
@@ -1029,7 +1142,7 @@ export const mountMailCompose = (
       const dialog = composeDialog(state);
       if (
         first === null
-        || dialog?.submitting === true
+        || dialog !== null
         || attachmentBusy
         || assistState.busyAction !== null
       ) return false;
@@ -1037,19 +1150,22 @@ export const mountMailCompose = (
       resetSaved();
       retireAttachment();
       resetAssist();
+      brief = ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
+      opener = host.ownerDocument.activeElement as HTMLElement | null;
       setState(
         openCreateComposeTransition(state, {
           default_sender_source_id: first.id,
         }),
       );
+      focusCompose();
       return true;
     },
     openReply(context) {
       const dialog = composeDialog(state);
       if (
-        !openableReadiness()
-        || !composable().some((source) => source.id === context.original_source_id)
-        || dialog?.submitting === true
+        readinessState.status !== 'ready'
+        || !sendCapable().some((source) => source.id === context.original_source_id)
+        || dialog !== null
         || attachmentBusy
         || assistState.busyAction !== null
       ) {
@@ -1059,7 +1175,10 @@ export const mountMailCompose = (
       resetSaved();
       retireAttachment();
       resetAssist();
+      brief = ''; replyContext = context; discardConfirm = false; copyRecipientsOpen = false;
+      opener = host.ownerDocument.activeElement as HTMLElement | null;
       setState(openReplyComposeTransition(state, context));
+      focusCompose();
       return true;
     },
     async openSaved(draftId) {
@@ -1068,32 +1187,26 @@ export const mountMailCompose = (
       try {
         const draft = await deps.drafts.get({ draft_id: draftId });
         if (destroyed || generation !== draftGeneration) return false;
-        resetSaved(); saved = draft;
+        resetSaved(); resetAssist(); brief = ''; replyContext = null; discardConfirm = false; saved = draft;
+        copyRecipientsOpen = (Array.isArray(draft.content.cc) && draft.content.cc.length > 0)
+          || (Array.isArray(draft.content.bcc) && draft.content.bcc.length > 0);
+        opener = host.ownerDocument.activeElement as HTMLElement | null;
         state = openCreateComposeTransition(state, { default_sender_source_id: draft.content.sender_mail_instance });
         state = setComposeValuesTransition(state, { sender_source: draft.content.sender_mail_instance, to: draft.content.to,
           cc: draft.content.cc as string[] ?? [], bcc: draft.content.bcc as string[] ?? [], subject: draft.content.subject,
           body: draft.content.body, attachments: draft.content.attachments as string[] ?? [],
-          in_reply_to: draft.content.in_reply_to as string ?? null });
+          in_reply_to: draft.content.in_reply_to as string ?? null,
+          ...(Array.isArray(draft.content.references) ? { references: draft.content.references as string[] } : {}) });
+        if (draft.content.in_reply_to && state.dialog) state = { ...state, dialog: { ...state.dialog, mode: 'reply' } };
         savedValues = JSON.stringify(composeDialog(state)!.values); draftStatus = 'Draft saved.'; render();
+        focusCompose(true);
         return true;
       } catch (error) { if (!destroyed) throw error; return false; }
     },
     state: () => state,
     readiness: () => readinessState,
     refresh,
-    hasUnsavedChanges: () => {
-      syncFromDom();
-      const dialog = composeDialog(state);
-      if (dialog === null) return false;
-      const values = dialog.values;
-      if (saved && JSON.stringify(values) === savedValues) return false;
-      return values.subject.trim().length > 0
-        || values.body.trim().length > 0
-        || values.to.length > 0
-        || values.cc.length > 0
-        || values.bcc.length > 0
-        || values.attachments.length > 0;
-    },
+    hasUnsavedChanges,
     hasInFlightWork: () =>
       composeDialog(state)?.submitting === true
       || attachmentBusy
@@ -1107,6 +1220,8 @@ export const mountMailCompose = (
       assistGeneration += 1;
       host.removeEventListener('click', onClick);
       host.removeEventListener('change', onChange);
+      host.removeEventListener('keydown', onKeyDown);
+      host.removeEventListener('submit', onSubmit);
       host.innerHTML = '';
     },
   };

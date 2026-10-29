@@ -103,32 +103,56 @@ export const csv_parse: TransformFn = (p) => {
   const quote = typeof p.quote === 'string' && p.quote.length === 1 ? p.quote : '"';
   const hasHeader = p.has_header !== false;
   const ragged = p.ragged === 'skip' || p.ragged === 'error' ? p.ragged : 'pad';
+  // File operations opt into strict parsing and bounds; existing recipes keep
+  // their established permissive behavior unless they explicitly request it.
+  const strict = p.strict === true;
+  const bound = (key: string): number => typeof p[key] === 'number' && Number.isSafeInteger(p[key]) && Number(p[key]) > 0
+    ? Number(p[key]) : Infinity;
+  const maxRows = bound('max_rows'), maxColumns = bound('max_columns');
+  const maxCells = bound('max_cells'), maxCellChars = bound('max_cell_chars');
 
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = '';
   let inQuotes = false;
   let sawCell = false;
+  let afterQuote = false;
+  let quotedRow = false;
+  let cells = 0;
 
-  const endCell = (): void => { row.push(cell); cell = ''; sawCell = true; };
+  const append = (ch: string): void => {
+    if (cell.length + ch.length > maxCellChars) throw new Error('csv_parse: cell character limit exceeded');
+    cell += ch;
+  };
+  const endCell = (): void => {
+    if (row.length >= maxColumns || ++cells > maxCells) throw new Error('csv_parse: column or cell limit exceeded');
+    row.push(cell); cell = ''; sawCell = true; afterQuote = false;
+  };
   const endRow = (): void => {
     endCell();
     // A trailing newline must not produce a phantom row of one empty cell.
-    if (!(row.length === 1 && row[0] === '')) rows.push(row);
+    if (!(row.length === 1 && row[0] === '' && !(strict && quotedRow))) {
+      if (rows.length >= maxRows) throw new Error('csv_parse: row limit exceeded');
+      rows.push(row);
+    }
     row = [];
     sawCell = false;
+    quotedRow = false;
   };
 
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i]!;
     if (inQuotes) {
-      if (ch !== quote) { cell += ch; continue; }
+      if (ch !== quote) { append(ch); continue; }
       // `""` inside a quoted field is one literal quote.
-      if (text[i + 1] === quote) { cell += quote; i += 1; continue; }
+      if (text[i + 1] === quote) { append(quote); i += 1; continue; }
       inQuotes = false;
+      afterQuote = true;
       continue;
     }
-    if (ch === quote && cell === '') { inQuotes = true; continue; }
+    if (strict && afterQuote && ch !== delimiter && ch !== '\r' && ch !== '\n') throw new Error('csv_parse: unexpected text after closing quote');
+    if (ch === quote && cell === '') { inQuotes = true; quotedRow = true; continue; }
+    if (strict && ch === quote) throw new Error('csv_parse: quote inside an unquoted cell');
     if (ch === delimiter) { endCell(); continue; }
     // The `i += 1` is belt-and-braces: without it a CRLF ends the row twice and
     // the empty-row guard below swallows the second, so the output is identical.
@@ -136,11 +160,12 @@ export const csv_parse: TransformFn = (p) => {
     // better than relying on another branch to clean up after it.
     if (ch === '\r') { if (text[i + 1] === '\n') i += 1; endRow(); continue; }
     if (ch === '\n') { endRow(); continue; }
-    cell += ch;
+    append(ch);
   }
+  if (strict && inQuotes) throw new Error('csv_parse: unterminated quoted cell');
   // An unterminated final line still has a cell to flush; `sawCell` keeps a
   // file ending in a newline from emitting an empty trailing row.
-  if (cell !== '' || sawCell || row.length > 0) endRow();
+  if (cell !== '' || sawCell || row.length > 0 || (strict && quotedRow)) endRow();
 
   if (!hasHeader) return rows;
   const header = rows.shift();

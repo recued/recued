@@ -1,3 +1,4 @@
+import { createPromptSchedules, type PromptSchedules } from '../../prompt-schedules.js';
 import { withQueuedChatTurns } from '../../chat-turn-queue.js';
 import { createProjectionVersionProbe } from '../../chat-projection-refresh.js';
 import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
@@ -218,6 +219,7 @@ import {
   parseChatCatalogProjectionEnv,
   resolveCatalogProjectionForSource,
   type ChatOrchestrator,
+  type ChatBroadcastEmitter,
   type ExecuteChatAiCall,
 } from '../../chat-orchestrator.js';
 import {
@@ -731,7 +733,9 @@ export const composeChatOrchestrator = (
     })(connection_name);
   };
 
+  let promptSchedules: PromptSchedules | undefined;
   const chatToolHandlerDeps: ChatToolHandlerDeps = {
+    getPromptSchedules: () => promptSchedules,
     getContactStore,
     getCollectionRegistry,
     ...(deps.readMailBody ? { readMailBody: deps.readMailBody } : {}),
@@ -1300,7 +1304,11 @@ export const composeChatOrchestrator = (
   });
   const chatRegistry = executionCases.registry;
 
-  const broadcast = broadcastEmitterFromBus(eventBus);
+  const chatEvents = broadcastEmitterFromBus(eventBus);
+  const broadcast: ChatBroadcastEmitter = { emit(event) {
+    promptSchedules?.recordFailure(event);
+    chatEvents.emit(event);
+  } };
   const selfSignature = {
     server_kind: 'recued' as const,
     version: process.env.RECUED_VERSION ?? '0.0.0',
@@ -1814,6 +1822,17 @@ export const composeChatOrchestrator = (
     ...(deps.publicBaseUrl !== undefined ? { publicBaseUrl: deps.publicBaseUrl } : {}),
   });
   const orchestrator = withQueuedChatTurns(executionOrchestrator, { db, store: chatStore, getKey: chatKeyProvider, broadcast, messengerBridge });
+
+  promptSchedules = createPromptSchedules({ db, store: chatStore, queue: orchestrator.turnQueue!,
+    instanceId: selfSignature.instance_id,
+    runTurn: (input) => executionOrchestrator.runTurn(input), getKey: chatKeyProvider, broadcast,
+    readPlans: (session, turn) => planApprovalStoreShared.listForTurn(session, turn),
+    recordChange: (action, id, revision) => {
+      void auditLog?.logActivity({ activity_id: '', timestamp: Date.now(), action: action === 'created' ? 'schedule_create' : action === 'remove' ? 'schedule_delete' : 'schedule_update',
+        target: id, detail: JSON.stringify({ kind: 'prompt', change: action, revision }) }).catch(() => undefined);
+    },
+  });
+  orchestrator.promptSchedules = promptSchedules;
 
   const chatDeps: ChatRpcDeps = {
     store: chatStore,

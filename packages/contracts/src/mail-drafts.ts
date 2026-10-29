@@ -27,12 +27,12 @@ export const parseMailDraftId = (value: unknown): string => typeof value === 'st
   && /^mad_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value) ? value : bad('Invalid saved draft ID.');
 const revision = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
   ? value : bad('The current draft revision is required.');
-export const parseMailDraftContent = (value: unknown): MailDraftContent => {
+const parseContent = (value: unknown, stored: boolean): MailDraftContent => {
   const raw = object(value, ['sender_mail_instance', 'to', 'cc', 'bcc', 'subject', 'body', 'body_format',
     'in_reply_to', 'references', 'reply_to', 'reconciliation_id', 'attachments']);
   parsePreapprovalJson(raw);
   if (raw.body_format !== undefined && raw.body_format !== 'text' && raw.body_format !== 'html') bad('Body format must be text or html.');
-  const normalized = normalizeMailSend(raw);
+  const normalized = normalizeMailSend(raw, stored ? { storedRecipients: true } : {});
   if (normalized.subject.length > MAIL_MESSAGE_SUBJECT_MAX) bad('The draft subject is too long.');
   const content: MailDraftContent = { sender_mail_instance: normalized.instance, to: normalized.to, subject: normalized.subject,
     body: normalized.body_html ?? normalized.body_text, body_format: normalized.body_html !== undefined ? 'html' : 'text' };
@@ -52,6 +52,13 @@ export const parseMailDraftContent = (value: unknown): MailDraftContent => {
   if (new TextEncoder().encode(JSON.stringify(content)).length > PREAPPROVAL_LIMITS.plan_bytes) bad('The saved draft is too large for review.');
   return content;
 };
+export const parseMailDraftContent = (value: unknown): MailDraftContent => parseContent(value, false);
+/** A saved draft, read back as it was saved. A draft saved before the one-address-per-entry rule
+ *  (`65a427f18`) can hold "ann@example.com, bob@example.com" in one entry. Parsed with that rule,
+ *  it could not be opened, fixed or deleted, and it failed the whole Saved drafts list. Reading
+ *  skips the rule. Saving a change, sending, exporting to a mailbox and review still apply it, so
+ *  such a draft goes nowhere until each recipient has an entry of its own. */
+export const readStoredMailDraftContent = (value: unknown): MailDraftContent => parseContent(value, true);
 export const parseMailDraftCreate = (value: unknown): MailDraftCreateRequest => {
   const row = object(value, ['idempotency_key', 'content']);
   if (typeof row.idempotency_key !== 'string' || !row.idempotency_key.length || row.idempotency_key.length > 128) bad('A draft save request key is required.');

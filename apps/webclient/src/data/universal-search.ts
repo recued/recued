@@ -1,4 +1,4 @@
-/** Universal search over locally available work, collections and installed
+/** Universal search over saved contacts, work, collections and installed
  *  capabilities. Work is grouped by kind, collections by source.
  *
  *  🔑 WHY IT EXISTS: until this, the only way to search across mail / calendar /
@@ -25,6 +25,7 @@
 
 import type {
   CollectionSearchDidYouMean,
+  ContactRecord,
   CollectionSearchGroup,
   CollectionSearchMatch,
   WorkEntitySearchGroup,
@@ -43,6 +44,9 @@ export const SEARCH_OPEN_WORK_ACTION = 'universal-search-open-work';
 export const SEARCH_MORE_WORK_ACTION = 'universal-search-more-work';
 export const SEARCH_WORK_KIND_ATTR = 'data-search-work-kind';
 export const SEARCH_WORK_ID_ATTR = 'data-search-work-id';
+export const SEARCH_OPEN_CONTACT_ACTION = 'universal-search-open-contact';
+export const SEARCH_MORE_CONTACTS_ACTION = 'universal-search-more-contacts';
+export const SEARCH_CONTACT_EMAIL_ATTR = 'data-search-contact-email';
 export const SEARCH_OPEN_RECIPE_ACTION = 'universal-search-open-recipe';
 export const SEARCH_RECIPE_ID_ATTR = 'data-search-recipe';
 export const SEARCH_OPEN_PACK_ACTION = 'universal-search-open-pack';
@@ -88,6 +92,15 @@ export interface UniversalSearchMarketMatch {
   publisher_id?: string;
 }
 
+export interface UniversalContactSearch {
+  contacts: readonly ContactRecord[];
+  total: number;
+  loading: boolean;
+  more: boolean;
+  error?: string;
+  unsupported?: boolean;
+}
+
 export interface UniversalSearchProps {
   /** What the owner typed. */
   query: string;
@@ -99,9 +112,14 @@ export interface UniversalSearchProps {
   /** `collection.searchAll` groups, server-ordered by hit count. */
   groups?: ReadonlyArray<CollectionSearchGroup>;
   workGroups?: ReadonlyArray<WorkEntitySearchGroup>;
+  contactSearch?: UniversalContactSearch;
   workLoading?: boolean;
   workLoadingKinds?: ReadonlySet<WorkEntitySearchKind>;
   workError?: string;
+  /** The server cannot search tasks, notes, projects and commitments: one before 26.10.28
+   *  answers `work_entity.search` with `unknown_method`. Not a failure, since a retry cannot
+   *  help: the rest completes the search, and the box says what it searched. */
+  workUnsupported?: boolean;
   /** The server's "did you mean": the query with each word NO store holds
    *  replaced by the closest word one does. Offered, never applied — the
    *  groups answer what was typed. */
@@ -233,6 +251,21 @@ const renderGroup = (g: CollectionSearchGroup, actionAttr: string, now: number):
       ${SEARCH_GROUP_SLUG_ATTR}="${e(g.slug)}"
       ${SEARCH_GROUP_PLATFORM_ATTR}="${e(g.platform)}">More in ${e(g.slug)}</button>` : ''}
 </section>`;
+};
+
+const renderContactGroup = (search: UniversalContactSearch | undefined, actionAttr: string): string => {
+  if (!search || !search.loading && !search.error && !search.unsupported && search.contacts.length === 0) return '';
+  return `<section class="rq-group rq-contact-group" aria-label="Contact search results">
+    <h3 class="rq-group-head"><span class="rq-group-name">Contacts</span><span class="rq-group-count">${search.unsupported ? 'Update required' : search.loading && !search.contacts.length ? 'Searching' : search.error && !search.contacts.length ? 'Unavailable' : `${search.contacts.length} of ${search.total}`}</span></h3>
+    ${search.unsupported ? '<p class="rq-subtle">Update your Recued server to search saved contacts here.</p>' : ''}
+    ${search.error ? `<p class="rq-error" role="alert">${e(search.error)}</p>` : ''}
+    ${search.loading ? '<p class="rq-hint" role="status">Searching contacts…</p>' : ''}
+    <ul class="rq-rows">${search.contacts.map(contact => `<li class="rq-row"><button type="button" class="rq-row-btn" ${e(actionAttr)}="${SEARCH_OPEN_CONTACT_ACTION}" ${SEARCH_CONTACT_EMAIL_ATTR}="${e(contact.email)}">
+      <span class="rq-row-title">${e(contact.name || contact.email)}</span>
+      <span class="rq-row-excerpt">${e([contact.email, contact.phone, contact.company].filter(Boolean).join(' · '))}</span>
+    </button></li>`).join('')}</ul>
+    ${!search.unsupported && (search.more || search.error) ? `<button type="button" class="rq-more" ${e(actionAttr)}="${SEARCH_MORE_CONTACTS_ACTION}"${search.loading ? ' aria-disabled="true" aria-busy="true"' : ''}>${search.error ? 'Retry contacts' : 'More contacts'}</button>` : ''}
+  </section>`;
 };
 
 const WORK_LABELS: Record<WorkEntitySearchKind, string> = {
@@ -402,11 +435,17 @@ export const renderUniversalSearch = (
   now: number = Date.now(),
 ): string => {
   const q = props.query.trim();
+  const contactScope = props.contactSearch?.unsupported ? ' Update your Recued server to search contacts too.' : '';
+  let scope = props.workUnsupported === true
+    ? 'Mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects and commitments too.'
+    : 'Tasks, notes, projects, commitments, mail, calendar, files, installed recipes and packs.';
+  if (props.contactSearch && !props.contactSearch.unsupported)
+    scope = `Contacts, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
   const box = `<label class="rq-search-label" for="rq-search-input">Search everything</label>
 <input id="rq-search-input" class="rq-search-input" type="search" autocomplete="off" aria-describedby="rq-search-scope"
   ${SEARCH_INPUT_ATTR} value="${e(props.query)}"
   placeholder="Search your saved data…">
-<p id="rq-search-scope" class="rq-subtle">Tasks, notes, projects, commitments, mail, calendar, files, installed recipes and packs.</p>`;
+<p id="rq-search-scope" class="rq-subtle">${scope}${contactScope}</p>`;
   if (q === '') {
     return `<div class="rq-search">${box}
 <p class="rq-hint">Type to search saved data on this server.</p></div>`;
@@ -415,53 +454,57 @@ export const renderUniversalSearch = (
   const workGroups = props.workGroups ?? [];
   const visibleWork = workGroups.filter(group => group.matches.length > 0 || group.error);
   const workCount = workGroups.reduce((count, group) => count + group.matches.length, 0);
+  const contactCount = props.contactSearch?.contacts.length ?? 0;
+  const contactGroup = renderContactGroup(props.contactSearch, props.actionAttr);
   const recipes = props.recipes ?? [];
   const packs = props.packs ?? [];
   const market = props.marketplace ?? [];
   const pending = props.loading === true
     ? props.capabilitiesLoading === true ? 'Searching…' : 'Searching records…'
     : props.capabilitiesLoading === true ? 'Searching installed recipes and packs…' : '';
-  const progress = pending || props.workLoading ? `<p class="rq-hint" role="status">${pending || 'Searching tasks, notes, projects and commitments…'}</p>` : '';
+  const progress = pending || props.workLoading || props.contactSearch?.loading ? `<p class="rq-hint" role="status">${pending || (props.workLoading ? 'Searching tasks, notes, projects and commitments…' : 'Searching contacts…')}</p>` : '';
   const failed = props.error !== undefined || props.workError !== undefined
-    || props.capabilitiesError !== undefined || workGroups.some(group => group.error);
+    || props.capabilitiesError !== undefined || props.contactSearch?.error !== undefined || workGroups.some(group => group.error);
   const searchErrors = [props.error ? `Mail, calendar and files: ${props.error}` : undefined,
     props.workError, props.capabilitiesError].filter((error): error is string => error !== undefined);
   const errors = searchErrors.map(error => `<p class="rq-error" role="alert">${e(error)}</p>`).join('')
     + (searchErrors.length > 0 ? `<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_RETRY_ACTION}">Try again</button>` : '');
   const didYouMean = props.didYouMean !== undefined
-    && workCount === 0 ? renderDidYouMean(props.didYouMean, props.actionAttr)
+    && workCount === 0 && contactCount === 0 && !props.contactSearch?.loading && !props.contactSearch?.error && !props.contactSearch?.unsupported ? renderDidYouMean(props.didYouMean, props.actionAttr)
     : '';
-  if (groups.length === 0 && workCount === 0 && recipes.length === 0 && packs.length === 0) {
+  if (groups.length === 0 && workCount === 0 && contactCount === 0 && recipes.length === 0 && packs.length === 0) {
     // An unfinished local read cannot establish an empty result or justify
     // offering a cloud search. Completed groups remain usable while it runs.
-    if (progress || failed) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}
+    if (progress || failed) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}${contactGroup}
       ${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true)).join('')}</div>`;
     // ⛔ NAMES THE SCOPE IT SEARCHED. "No results" alone cannot be told apart
     // from "the search did not run", and an owner reading the shorter sentence
     // concludes their data is not there when it may simply not be synced.
     return `<div class="rq-search">${box}
 ${didYouMean}
+${contactGroup}
 <p class="rq-empty">No matches in the searched sources for “${e(q)}”. Sources still syncing will not appear yet.</p>
 ${props.marketplaceError !== undefined
   ? `<p class="rq-error" role="alert">${e(props.marketplaceError)}</p>`
   : ''}
 ${market.length > 0 ? renderMarketGroup(market, props.actionAttr) : ''}
-${market.length === 0 && props.marketplaceOffered === true
+${market.length === 0 && props.marketplaceOffered === true && !props.contactSearch?.unsupported
   ? renderMarketOffer(q, props.actionAttr, props.marketplaceLoading === true)
   : ''}</div>`;
   }
   const total = groups.reduce((n, g) => n + g.matches.length, 0);
   const places = groups.length + workGroups.filter(group => group.matches.length > 0).length
-    + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
-  const absent = groups.length > 0 && props.absentWords !== undefined && props.absentWords.length > 0
+    + (contactCount > 0 ? 1 : 0) + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
+  const absent = groups.length > 0 && contactCount === 0 && props.absentWords !== undefined && props.absentWords.length > 0
     ? renderAbsentWords(props.absentWords)
     : '';
   return `<div class="rq-search">${box}
 ${errors}
 ${absent}
 ${didYouMean}
-<p class="rq-summary" role="status">${total + workCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
+<p class="rq-summary" role="status">${total + workCount + contactCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) || props.contactSearch?.more ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
 ${progress}
+${contactGroup}
 ${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true)).join('')}
 ${groups.map((g) => renderGroup(g, props.actionAttr, now)).join('')}
 ${packs.length > 0 ? renderPackGroup(packs, props.actionAttr) : ''}

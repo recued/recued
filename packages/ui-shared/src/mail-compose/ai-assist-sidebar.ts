@@ -1,11 +1,9 @@
-/** Mail-compose body rewrite controls.
- *
- * Only transformations of an existing body render here. “Compose” and “Draft
- * reply” remain in the broader contract vocabulary, but exposing either before
- * grounding and source-context semantics exist would invite invented mail. */
+/** Owner-started drafting and body rewrites in the shared composer. */
 
 import {
   MAIL_COMPOSE_REWRITE_ACTIONS,
+  MAIL_DRAFT_BRIEF_MAX,
+  type MailComposeAiAction,
   type MailComposeRewriteAction,
 } from '@recued/contracts';
 import { e } from '../template.js';
@@ -14,7 +12,10 @@ export interface AiAssistSidebarProps {
   /** Sending and rewriting are mutually exclusive draft mutations. */
   submitting: boolean;
   /** The one transformation awaiting its governed execute response. */
-  busyAction?: MailComposeRewriteAction | null;
+  busyAction?: MailComposeAiAction | null;
+  brief?: string;
+  mode?: 'create' | 'reply';
+  draftUnavailableReason?: string | null;
   /** Owner-facing failure/local conflict copy. */
   error?: string | null;
   /** Whether the host still holds a safely-applicable one-step undo. */
@@ -49,14 +50,20 @@ export const renderAiAssistSidebar = (props: AiAssistSidebarProps): string => {
     ? `<p class="mail-compose-ai-error" role="alert">${e(props.error)}</p>`
     : '';
   const undo = props.canUndo === true
-    ? `<button type="button" class="mail-compose-ai-undo" data-action="mail-compose-ai-undo"${disabledAttr}>Undo last rewrite</button>`
+    ? `<button type="button" class="mail-compose-ai-undo" data-action="mail-compose-ai-undo"${disabledAttr}>Undo last AI change</button>`
     : '';
   return `
     <aside class="mail-compose-ai-assist" aria-label="AI assist">
       <h3 class="mail-compose-ai-title">AI assist</h3>
       <p class="mail-compose-ai-help">
-        Rewrite the current message body. You review every change before sending.
+        ${props.mode === 'reply' ? 'Draft a reply using the original email and your instructions.' : 'Describe the email you want to write.'} Review and edit the draft before sending.
       </p>
+      <label class="mail-compose-ai-brief-label">${props.mode === 'reply' ? 'What should your reply say?' : 'What should this email say?'}
+        <textarea data-mail-compose-ai-brief rows="4" maxlength="${MAIL_DRAFT_BRIEF_MAX}"${disabledAttr}>${e(props.brief ?? '')}</textarea>
+      </label>
+      <button type="button" class="mail-compose-ai-action" data-action="mail-compose-ai-draft"${disabled || props.draftUnavailableReason ? ' disabled aria-disabled="true"' : ''}${busyAction === 'compose' || busyAction === 'draft-reply' ? ' aria-busy="true"' : ''}>${busyAction === 'compose' || busyAction === 'draft-reply' ? 'Drafting…' : 'Draft with AI'}</button>
+      ${props.draftUnavailableReason ? `<p class="mail-compose-ai-help" role="status">${e(props.draftUnavailableReason)}</p>` : ''}
+      <p class="mail-compose-ai-help">Refine the current message:</p>
       <div class="mail-compose-ai-actions">
         ${buttons}
       </div>

@@ -42,6 +42,7 @@ import type {
 } from './entity-schema.js';
 import type { IngredientManifest } from './ingredient.js';
 import type { EntityFieldPrivacy } from './pii-alias.js';
+import type { AuthoringReferenceSpan } from './kitchen-drafts.js';
 
 /** One issue surfaced by the decompose-validator. Mirrors the pure package's
  *  `CompositionValidationIssue` (= `@recued/ingredients` `ValidationIssue`)
@@ -52,6 +53,7 @@ export interface AuthoringValidationIssue {
   code: string;
   path: string;
   message: string;
+  reference_span?: AuthoringReferenceSpan;
 }
 
 /** What landed on a successful install. A 1×1 composition installs as a

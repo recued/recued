@@ -41,6 +41,8 @@ import type { QuoteSignoffReleaseInput, QuoteSignoffReleaseResult } from '@recue
 import type { ReminderView } from '@recued/contracts';
 import type { AssetCreateInput, AssetUpdateInput, AssetObservationInput } from '@recued/contracts';
 import {
+  parseCsvInspectInput, parseCsvTransformInput,
+  type CsvInspectInput, type CsvInspectResult, type CsvTransformInput, type CsvTransformResult,
   parsePreparePreapproval,
   parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete,
   type MailDraft,
@@ -862,6 +864,8 @@ export interface KernelDispatchers {
    *  the column is missing and zero rows because nothing matched are the same
    *  count and completely different facts — over a customer list, conflating
    *  them answers "no such customer" about a spelling mistake. */
+  csvInspect?: (input: CsvInspectInput) => Promise<CsvInspectResult>;
+  csvTransform?: (input: CsvTransformInput, scope: { run_id?: string; step_id?: string }) => Promise<CsvTransformResult>;
   csvFilter?: (input: {
     record_id?: string;
     slug?: string;
@@ -2813,6 +2817,23 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           );
         }
         return dispatchers.fileReadTemp({ ref: input.ref, run_id });
+      }
+      case 'csv-inspect': {
+        if (!dispatchers.csvInspect) throw new IngredientError('SERVER_NOT_REACHABLE', 'CSV inspection requires a paired server', { slug });
+        let input: CsvInspectInput;
+        try { input = parseCsvInspectInput(call.input); }
+        catch (error) { throw new IngredientError('BAD_INPUT', (error as Error).message, { slug }); }
+        return dispatchers.csvInspect(input);
+      }
+      case 'csv-transform': {
+        if (!dispatchers.csvTransform) throw new IngredientError('SERVER_NOT_REACHABLE', 'CSV operations require a paired server', { slug });
+        let input: CsvTransformInput;
+        try { input = parseCsvTransformInput(call.input); }
+        catch (error) { throw new IngredientError('BAD_INPUT', (error as Error).message, { slug }); }
+        return dispatchers.csvTransform(input, {
+          ...(call.stepMeta?.run_id ? { run_id: call.stepMeta.run_id } : {}),
+          ...(call.stepMeta?.step_id ? { step_id: call.stepMeta.step_id } : {}),
+        });
       }
       case 'csv-filter': {
         if (!dispatchers.csvFilter) {

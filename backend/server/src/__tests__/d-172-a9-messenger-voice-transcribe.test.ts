@@ -350,7 +350,7 @@ describe('D-172 A.9 messenger voice transcription', () => {
     });
     const marked = promptBody<{ user_message: string }>(result.aiInputs[0]).user_message;
     expect(marked).toBe(
-      `send this to Bob\n[files attached to this message: voice.ogg (${capturedId})]`,
+      `send this to Bob\n[files attached to this message: voice.ogg (${capturedId})]\nAttachment references are complete stored file_ref values. Copy the entire value inside parentheses, including file:. These files are already stored.`,
     );
     // ⚠ The STORED message keeps what the person sent — the marker is on the
     // model's copy only.

@@ -14,6 +14,8 @@ import {
   REWRITE_COMPOSED_MAIL_RECIPE_ID,
   SEND_COMPOSED_MAIL_RECIPE_ID,
   composeRewriteRecipeConfig,
+  composeDraftRecipeConfig,
+  deriveReplyValues,
   composePayloadToSendRecipeConfig,
   type ComposeMailSendPayload,
   type MailSenderSourceOption,
@@ -54,6 +56,22 @@ describe('mail compose send dispatch result', () => {
 });
 
 describe('mail compose governed body rewrite', () => {
+  it('keeps routing outside AI while binding reply context to the original email', () => {
+    const reply = { original_source_id: 'work', original_message: {
+      id: '<parent@example.test>', from: 'sender@example.test', subject: 'Question',
+      reply_to: ['reply@example.test'], references: ['<root@example.test>'], body: 'Original request',
+      thread_id: 'opaque-provider-id',
+    } };
+    const values = { ...EMPTY_MAIL_COMPOSE_VALUES, ...deriveReplyValues(reply) };
+    const config = composeDraftRecipeConfig({ values, sender_email: 'owner@example.test', brief: ' Ask for details ', reply });
+    expect(values.to).toEqual(['reply@example.test']);
+    expect(values.references).toEqual(['<root@example.test>', '<parent@example.test>']);
+    expect(config).toMatchObject({ brief: 'Ask for details', original_body: 'Original request', original_subject: 'Question' });
+    expect(config).not.toHaveProperty('in_reply_to');
+    expect(config).not.toHaveProperty('references');
+    expect(config).not.toHaveProperty('sender_source');
+    expect(config).not.toHaveProperty('attachments');
+  });
   it('maps each supported action to the hidden recipe without exposing non-body draft fields', () => {
     const values = {
       ...EMPTY_MAIL_COMPOSE_VALUES,
@@ -111,6 +129,9 @@ describe('mail compose governed body rewrite', () => {
     expect(rewrittenMailBodyFromExecuteResponse({
       success: true,
       output: { render: [{ type: 'text', data: '   ' }] },
+    })).toBeNull();
+    expect(rewrittenMailBodyFromExecuteResponse({
+      success: true, output: { render: [{ type: 'text', data: 'x'.repeat(65_537) }] },
     })).toBeNull();
   });
 });
@@ -317,6 +338,16 @@ describe('D-264 — saving a draft uses the DRAFT gate', () => {
       expect(result.content.references).toEqual(['<a@example.com>']);
       expect(result.content.reply_to).toBe('other@example.com');
     }
+  });
+
+  it('preserves an unchanged HTML draft and treats edits in the plain-text composer as text', () => {
+    const prior = { sender_mail_instance: 'work', to: ['them@example.com'], subject: 'HTML draft',
+      body: '<p>Earlier message</p>', body_format: 'html' as const };
+    const source = hooks(option({ draft_capable: true }));
+    const unchanged = mailDraftContentFromCompose({ ...values, body: prior.body }, source, prior);
+    expect(unchanged.ok && unchanged.content.body_format).toBe('html');
+    const edited = mailDraftContentFromCompose({ ...values, body: 'A < B, and a new draft.' }, source, prior);
+    expect(edited.ok && edited.content.body_format).toBe('text');
   });
 });
 

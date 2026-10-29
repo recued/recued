@@ -19,6 +19,7 @@ import { createOccasionClockService } from '../situations/occasion-clock-service
 import { createAssetOccurrenceService } from '../situations/asset-occurrence-service.js';
 import { createAssetReminderService, type AssetReminderService } from '../situations/asset-reminder-service.js';
 import { declaredOccasions } from '../situations/declared-occasions.js';
+import { applyContactFileImport, planContactFileImport } from '../contact-import-file.js';
 import { buildSituationSources, situationSourceAccess } from '../situations/sources.js';
 import { createSituationQuery } from '../situations/query.js';
 import { createCalendarTable } from '../collections/calendar/calendar-table.js';
@@ -65,6 +66,27 @@ const fixture = () => {
 };
 
 describe('D-325 actual annual occasion clocks', () => {
+  it('schedules imported annual and one-time dates through the existing clocks without inventing another one-time year', async () => {
+    const f = fixture(); const store = createContactStore(f.db);
+    const deps = { store, history: f.history, now: f.now, transaction: <T>(work: () => T): T => f.db.transaction(work)() };
+    const text = ['BEGIN:VCARD', 'FN:Ana', 'EMAIL:ana@example.test', 'item1.X-ABDATE:--10-24', 'item1.X-ABLabel:First met',
+      'item2.X-ABDATE:2026-10-24', 'item2.X-ABLabel:Graduation',
+      'item3.X-ABDATE:--10-24', 'item3.X-ABLabel:Quiet date', 'END:VCARD'].join('\n');
+    const dates = planContactFileImport(deps, text).occasions!;
+    expect(applyContactFileImport(deps, text, false, dates.map(date => ({ key: date.key, recurrence: date.label === 'Graduation' ? 'once' : 'yearly', reminder_days: date.label === 'Quiet date' ? null : 7 })))).toMatchObject({ occasions_saved: 3, failures: [] });
+    const annual = f.history.occasions().find(row => row.title.endsWith('First met'))!;
+    const once = f.history.occasions().find(row => row.source_next_on !== undefined)!;
+    const quiet = f.history.occasions().find(row => row.title.endsWith('Quiet date'))!;
+    const b = f.boot(); await b.sender.tick();
+    expect(quiet.rules[0]?.enabled).toBe(false); expect(f.rows.byOccasion(quiet.id)).toEqual([]);
+    expect(f.sends()).toBeGreaterThan(0);
+    expect(f.rows.byOccasion(annual.id)).toHaveLength(1); expect(f.rows.byOccasion(once.id)).toHaveLength(1);
+    expect(f.history.occasion(once.id)?.source_active).not.toBe(false);
+    f.at('2027-10-17T12:00Z'); await b.sender.tick();
+    expect(f.rows.byOccasion(annual.id)).toHaveLength(2); expect(f.rows.byOccasion(once.id)).toHaveLength(1);
+    expect(f.rows.byOccasion(quiet.id)).toEqual([]);
+    expect(f.errors).not.toHaveBeenCalled();
+  });
   it('changes a notice into an action in the same year without reusing a notice receipt as a commitment', async () => {
     const f = fixture(); const occasion = f.save(); const b = f.boot(); await b.sender.tick(); const notice = f.rows.byOccasion(occasion.id)[0]!;
     f.history.saveOccasion({ ...occasion, rules: [{ ...occasion.rules[0]!, reaction: { notify: true, occurrence: 'action', emit: false } }] }, f.now());

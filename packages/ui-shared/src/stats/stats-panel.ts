@@ -32,6 +32,7 @@ import {
   renderPublishStart,
   renderStopPublishing,
   renderSubmitNow,
+  type PublishDraftValues,
 } from './publish-dialog.js';
 
 import { e } from '../template.js';
@@ -41,6 +42,7 @@ export interface StatsPanelProps {
   /** § D7 — the metric whose publish preview is open, and the tag typed for it. Held by
    *  the caller so this render stays pure. */
   readonly pendingPublish?: { readonly metric_id: string; readonly tag: string; readonly season_id: string };
+  readonly publishDrafts?: Readonly<Record<string, PublishDraftValues>>;
   /** § B3.3 — what the owner's last press of "send now" actually did. Held by the caller
    *  so this render stays pure; absent until they have pressed it. */
   readonly submitOutcome?:
@@ -171,6 +173,9 @@ export const renderStatsPanel = (props: StatsPanelProps): string => {
         <h2>Your stats</h2>
         <p class="stats-empty">Nothing measured yet. These fill in after the next
         housekeeping cycle — no setup needed.</p>
+        ${renderPublications(data)}
+        ${renderSubmitNow({ publications: data.publications.length,
+          ...(props.submitOutcome !== undefined ? { outcome: props.submitOutcome } : {}) })}
       </section>`;
   }
 
@@ -300,6 +305,7 @@ export const renderStatsPanel = (props: StatsPanelProps): string => {
         .filter((m) => m.publishable)
         .map((m) => renderPublishStart({
           metric: m,
+          ...(props.publishDrafts?.[m.metric_id] !== undefined ? { draft: props.publishDrafts[m.metric_id] } : {}),
           ...(props.pendingPublish?.metric_id === m.metric_id
             ? { pending: { tag: props.pendingPublish.tag, season_id: props.pendingPublish.season_id } }
             : {}),

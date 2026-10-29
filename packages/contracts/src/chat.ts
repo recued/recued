@@ -112,7 +112,13 @@ export type Tier1ToolName =
   | 'file.search'
   | 'recipe.run'
   | 'recipe.stop'
-  | 'recipe.schedule';
+  | 'recipe.schedule'
+  | 'schedule.run_prompt'
+  | 'schedule.list'
+  | 'schedule.update'
+  | 'schedule.pause'
+  | 'schedule.resume'
+  | 'schedule.remove';
 
 export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'contact.search',
@@ -139,6 +145,12 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'recipe.run',
   'recipe.stop',
   'recipe.schedule',
+  'schedule.run_prompt',
+  'schedule.list',
+  'schedule.update',
+  'schedule.pause',
+  'schedule.resume',
+  'schedule.remove',
 ] as const;
 
 export const TIER1_TOOL_NAME_SET: ReadonlySet<Tier1ToolName> =
@@ -183,6 +195,12 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   // D-193 amendment — "every Monday at 8", "tomorrow at 9": arming a recipe to
   // run LATER, on its own. Tagged beside the pair it completes.
   'recipe.schedule': ['recipe', 'schedule', 'later', 'recurring', 'automation', 'workflow'],
+  'schedule.run_prompt': ['schedule', 'prompt', 'later', 'recurring', 'automation', 'chat'],
+  'schedule.list': ['schedule', 'list', 'find', 'automation', 'chat'],
+  'schedule.update': ['schedule', 'edit', 'change', 'reschedule', 'automation', 'chat'],
+  'schedule.pause': ['schedule', 'pause', 'stop', 'cancel', 'automation', 'chat'],
+  'schedule.resume': ['schedule', 'resume', 'restart', 'automation', 'chat'],
+  'schedule.remove': ['schedule', 'remove', 'delete', 'stop', 'automation', 'chat'],
 } as const;
 
 /** Per-Tier-1 read-vs-write classification. `recipe.run` is `unknown`
@@ -273,6 +291,12 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   // ask: the owner only (every door refused), while the owner's contract holds
   // `core.schedule.recipe`.
   'recipe.schedule': 'write',
+  'schedule.run_prompt': 'write',
+  'schedule.list': 'read',
+  'schedule.update': 'write',
+  'schedule.pause': 'write',
+  'schedule.resume': 'write',
+  'schedule.remove': 'write',
 } as const;
 
 /** D-164 § 6 — per-Tier-1 batch-dispatch safety. Source for
@@ -338,6 +362,12 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   // Monday at 8 and every Thursday at 5") join the same main dish, which the
   // first may make (D-319). Only the order of the calls keeps that to one dish.
   'recipe.schedule': false,
+  'schedule.run_prompt': false,
+  'schedule.list': true,
+  'schedule.update': false,
+  'schedule.pause': false,
+  'schedule.resume': false,
+  'schedule.remove': false,
 } as const;
 
 /** § A.1.1 — registry entry shape. The LLM sees `name` / `description`
@@ -1438,6 +1468,8 @@ export interface ChatProvenanceRef {
 export interface ChatMessageAttachment {
   file_id: string;
   media_class: string;
+  /** Host-resolved immutable content identity; output handoff checks it at retention. */
+  content_hash?: string;
   /** Draft selection guard; checked and replaced by a version ID at admission. */
   selection_revision?: string;
   /** Server-resolved immutable attachment metadata; absent on older servers. */
@@ -1564,6 +1596,8 @@ export type ChatMessageReply = ChatReplyReference & {
 };
 
 export interface ChatMessage {
+  /** Host provenance for a scheduled occurrence; never supplied by chat.send. */
+  execution_source?: ExecutionSource;
   id: string;
   session_id: string;
   role: ChatMessageRole;
@@ -1728,6 +1762,14 @@ export type ChatRpcMethod =
   | 'chat.delivery.skip'
   | 'chat.messenger.connect'
   | 'chat.messenger.status'
+  | 'chat.schedules.list'
+  | 'chat.schedule.create'
+  | 'chat.schedule.update'
+  | 'chat.schedule.pause'
+  | 'chat.schedule.resume'
+  | 'chat.schedule.remove'
+  | 'chat.schedule.run_now'
+  | 'chat.schedule.preview'
   | 'chat.turns.list'
   | 'chat.turn.withdraw'
   | 'chat.turn.cancel'
@@ -1858,6 +1900,14 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.egress.get',
   'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
   'chat.messenger.status',
+  'chat.schedules.list',
+  'chat.schedule.create',
+  'chat.schedule.update',
+  'chat.schedule.pause',
+  'chat.schedule.resume',
+  'chat.schedule.remove',
+  'chat.schedule.run_now',
+  'chat.schedule.preview',
   'chat.turns.list',
   'chat.turn.withdraw',
   'chat.turn.cancel',
@@ -2225,6 +2275,12 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'recipe.stop': 'recipe',
   // Grouped with the op that grants it (`core.schedule.recipe`, entity `schedule`).
   'recipe.schedule': 'schedule',
+  'schedule.run_prompt': 'schedule',
+  'schedule.list': 'schedule',
+  'schedule.update': 'schedule',
+  'schedule.pause': 'schedule',
+  'schedule.resume': 'schedule',
+  'schedule.remove': 'schedule',
 };
 
 const ASSET_KEYWORD_ARG_SCHEMA = {
@@ -2956,6 +3012,181 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     classification: TIER1_CLASSIFICATIONS['recipe.schedule'],
     topic_tags: TIER1_TOPIC_TAGS['recipe.schedule'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.schedule'],
+  },
+  'schedule.run_prompt': {
+    name: 'schedule.run_prompt', description: "Schedule an AI request for later: one-off or recurring. Creates a dedicated conversation, reused on later occurrences. Uses current tool grants and normal write approvals. Supply a complete prompt; the current conversation is not copied. The user can chat in the new conversation without changing its schedule.",
+    arg_schema: {
+    "type": "object",
+    "properties": {
+        "title": {
+            "type": "string"
+        },
+        "prompt": {
+            "type": "string",
+            "description": "The complete request to execute each time, including needed names and scope. Later conversation does not change it."
+        },
+        "time_zone": {
+            "type": "string",
+            "description": "IANA timezone, e.g. America/Los_Angeles."
+        },
+        "run_at": {
+            "type": "string",
+            "description": "One-off ISO date-time with an explicit UTC offset."
+        },
+        "cron_expression": {
+            "type": "string",
+            "description": "Recurring five-field cron, at least five minutes between runs."
+        },
+        "mode": {
+            "type": "string",
+            "enum": [
+                "one_shot",
+                "recurring"
+            ]
+        },
+        "creation_id": {
+            "type": "string",
+            "description": "Stable unique ID for this creation request; required from an external MCP client."
+        }
+    },
+    "required": [
+        "title",
+        "prompt",
+        "mode",
+        "time_zone"
+    ],
+    "additionalProperties": false
+},
+    classification: TIER1_CLASSIFICATIONS['schedule.run_prompt'],
+    topic_tags: TIER1_TOPIC_TAGS['schedule.run_prompt'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['schedule.run_prompt'],
+  },
+  'schedule.list': {
+    name: 'schedule.list', description: "Read scheduled prompts linked to this conversation. Set all=true to find schedules in other conversations. Use the returned IDs and revisions to manage them.",
+    arg_schema: {
+    "type": "object",
+    "properties": {
+        "all": {
+            "type": "boolean"
+        }
+    },
+    "required": [],
+    "additionalProperties": false
+},
+    classification: TIER1_CLASSIFICATIONS['schedule.list'],
+    topic_tags: TIER1_TOPIC_TAGS['schedule.list'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['schedule.list'],
+  },
+  'schedule.update': {
+    name: 'schedule.update', description: "Explicitly change a saved scheduled prompt or its timing. Withdraws queued occurrences of the old revision. Ordinary conversation never changes the saved request.",
+    arg_schema: {
+    "type": "object",
+    "properties": {
+        "schedule_id": {
+            "type": "string"
+        },
+        "expected_revision": {
+            "type": "integer",
+            "description": "Revision returned by schedule.list; refuses stale edits."
+        },
+        "title": {
+            "type": "string"
+        },
+        "prompt": {
+            "type": "string",
+            "description": "The complete request to execute each time, including needed names and scope. Later conversation does not change it."
+        },
+        "time_zone": {
+            "type": "string",
+            "description": "IANA timezone, e.g. America/Los_Angeles."
+        },
+        "run_at": {
+            "type": "string",
+            "description": "One-off ISO date-time with an explicit UTC offset."
+        },
+        "cron_expression": {
+            "type": "string",
+            "description": "Recurring five-field cron, at least five minutes between runs."
+        }
+    },
+    "required": [
+        "schedule_id",
+        "expected_revision"
+    ],
+    "additionalProperties": false
+},
+    classification: TIER1_CLASSIFICATIONS['schedule.update'],
+    topic_tags: TIER1_TOPIC_TAGS['schedule.update'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['schedule.update'],
+  },
+  'schedule.pause': {
+    name: 'schedule.pause', description: "Pause future occurrences and withdraw queued scheduled turns. A turn already running can finish. The conversation remains usable.",
+    arg_schema: {
+    "type": "object",
+    "properties": {
+        "schedule_id": {
+            "type": "string"
+        },
+        "expected_revision": {
+            "type": "integer",
+            "description": "Revision returned by schedule.list; refuses stale edits."
+        }
+    },
+    "required": [
+        "schedule_id",
+        "expected_revision"
+    ],
+    "additionalProperties": false
+},
+    classification: TIER1_CLASSIFICATIONS['schedule.pause'],
+    topic_tags: TIER1_TOPIC_TAGS['schedule.pause'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['schedule.pause'],
+  },
+  'schedule.resume': {
+    name: 'schedule.resume', description: "Resume a paused scheduled prompt. A one-off in the past must first be updated to a future time.",
+    arg_schema: {
+    "type": "object",
+    "properties": {
+        "schedule_id": {
+            "type": "string"
+        },
+        "expected_revision": {
+            "type": "integer",
+            "description": "Revision returned by schedule.list; refuses stale edits."
+        }
+    },
+    "required": [
+        "schedule_id",
+        "expected_revision"
+    ],
+    "additionalProperties": false
+},
+    classification: TIER1_CLASSIFICATIONS['schedule.resume'],
+    topic_tags: TIER1_TOPIC_TAGS['schedule.resume'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['schedule.resume'],
+  },
+  'schedule.remove': {
+    name: 'schedule.remove', description: "Remove a scheduled prompt and its queued occurrences. Keeps the conversation and its history; a turn already running can finish.",
+    arg_schema: {
+    "type": "object",
+    "properties": {
+        "schedule_id": {
+            "type": "string"
+        },
+        "expected_revision": {
+            "type": "integer",
+            "description": "Revision returned by schedule.list; refuses stale edits."
+        }
+    },
+    "required": [
+        "schedule_id",
+        "expected_revision"
+    ],
+    "additionalProperties": false
+},
+    classification: TIER1_CLASSIFICATIONS['schedule.remove'],
+    topic_tags: TIER1_TOPIC_TAGS['schedule.remove'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['schedule.remove'],
   },
 } as const;
 

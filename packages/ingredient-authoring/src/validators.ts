@@ -2365,10 +2365,11 @@ export const validateComposition = (
   }
   if (opts.recipeValidator !== undefined) {
     for (const [idx, recipe] of (decomposed.recipes ?? []).entries()) {
-      issues.push(...opts.recipeValidator(recipe).issues.map((issue) => ({
-        ...issue,
-        path: issue.path.length > 0 ? `recipes[${idx}].${issue.path}` : `recipes[${idx}]`,
-      })));
+      issues.push(...opts.recipeValidator(recipe).issues.map((issue) => {
+        // These bodies were compiled from recipe_templates, not read from source.recipes.
+        const { reference_span: _compiledSpan, ...finding } = issue;
+        return { ...finding, path: `recipe_templates[${idx}]` };
+      }));
     }
   }
   return {

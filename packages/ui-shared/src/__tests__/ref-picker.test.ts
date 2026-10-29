@@ -30,6 +30,9 @@ import {
   REF_PICKER_RESULTS_ATTR,
   REF_PICKER_STYLES,
   REF_PICKER_VALUE_ATTR,
+  REF_PICKER_RECOVERY_ATTR,
+  REF_PICKER_RECOVERY_MESSAGE_ATTR,
+  REF_PICKER_RETRY_ATTR,
   renderRefPicker,
   renderRefPickerResultRows,
   revertQuery,
@@ -41,6 +44,7 @@ import {
   type RefPickerOption,
   type RefPickerRenderConfig,
   type RefPickerSelection,
+  type RefPickerSearchPage,
 } from '../ref-picker/index.js';
 
 const OPTIONS: RefPickerOption[] = [
@@ -344,6 +348,79 @@ describe('ref-picker wire', () => {
     await Promise.resolve();
     await Promise.resolve();
   };
+
+  it('retries the failed query after blur without clearing cached matches, selection, or the form mirror', async () => {
+    const { root, input, results, mirror, recovery, retry } = buildShell('demo', { withMirror: true });
+    let resolve!: (page: RefPickerSearchPage) => void;
+    const pending = new Promise<RefPickerSearchPage>(done => { resolve = done; });
+    const search = vi.fn<(_: string) => Promise<RefPickerSearchPage>>()
+      .mockResolvedValueOnce({ options: [OPTIONS[0]!], truncated: true, retryableError: 'Search interrupted.' })
+      .mockReturnValueOnce(pending);
+    const onChange = vi.fn();
+    const handle = wireRefPicker(asParent(root), { search, config: CONFIG, onChange,
+      initialValue: { id: 'r-beta', label: 'Beta digest' }, schedule: syncSchedule });
+    handle.setQuery('alpha');
+    await flush();
+    expect(results.innerHTML).toContain('Alpha report');
+    expect(recovery.getAttribute('hidden')).toBeNull();
+    expect(mirror.value).toBe('r-beta');
+    dispatch(input, 'focusout', {});
+    expect(input.value).toBe('Beta digest');
+    dispatch(retry, 'click', {});
+    dispatch(retry, 'click', {});
+    expect(search.mock.calls.map(([query]) => query)).toEqual(['alpha', 'alpha']);
+    expect(retry.getAttribute('aria-busy')).toBe('true');
+    expect(results.innerHTML).toContain('Alpha report');
+    resolve({ options: [OPTIONS[0]!, OPTIONS[2]!], truncated: true });
+    await flush();
+    expect(input.value).toBe('alpha');
+    expect(root.querySelector(`[${REF_PICKER_INPUT_ATTR}]`)).toBe(input);
+    expect(results.innerHTML).toContain('Gamma alert');
+    expect(recovery.getAttribute('hidden')).not.toBeNull();
+    expect(handle.getValue()).toEqual({ id: 'r-beta', label: 'Beta digest' });
+    expect(mirror.value).toBe('r-beta');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('ignores a late retry failure after a newer query succeeded', async () => {
+    const { root, input, results, recovery, retry } = buildShell();
+    let resolve!: (page: RefPickerSearchPage) => void;
+    const pending = new Promise<RefPickerSearchPage>(done => { resolve = done; });
+    const search = vi.fn<(_: string) => Promise<RefPickerSearchPage>>()
+      .mockResolvedValueOnce({ options: [], retryableError: 'Search interrupted.' })
+      .mockReturnValueOnce(pending)
+      .mockResolvedValueOnce({ options: [OPTIONS[1]!] });
+    const handle = wireRefPicker(asParent(root), { search, config: CONFIG, schedule: syncSchedule });
+    handle.setQuery('alpha'); await flush();
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+    expect(results.getAttribute('hidden')).not.toBeNull();
+    expect(results.innerHTML).not.toContain('No matches.');
+    dispatch(retry, 'click', {});
+    handle.setQuery('beta'); await flush();
+    resolve({ options: [], retryableError: 'Old failure.' }); await flush();
+    expect(results.innerHTML).toContain('Beta digest');
+    expect(results.innerHTML).not.toContain('Alpha report');
+    expect(recovery.getAttribute('hidden')).not.toBeNull();
+    expect(handle.getQuery()).toBe('beta');
+  });
+
+  it('discards a pending retry when the host replaces the selection', async () => {
+    const { root, input, mirror, recovery, retry } = buildShell('demo', { withMirror: true });
+    let resolve!: (page: RefPickerSearchPage) => void;
+    const pending = new Promise<RefPickerSearchPage>(done => { resolve = done; });
+    const search = vi.fn<(_: string) => Promise<RefPickerSearchPage>>()
+      .mockResolvedValueOnce({ options: [], retryableError: 'Search interrupted.' })
+      .mockReturnValueOnce(pending);
+    const handle = wireRefPicker(asParent(root), { search, config: CONFIG, schedule: syncSchedule });
+    handle.setQuery('alpha'); await flush();
+    dispatch(retry, 'click', {});
+    handle.setValue({ id: 'r-beta', label: 'Beta digest' });
+    resolve({ options: [OPTIONS[0]!], retryableError: 'Old failure.' }); await flush();
+    expect(recovery.getAttribute('hidden')).not.toBeNull();
+    expect(input.value).toBe('Beta digest');
+    expect(mirror.value).toBe('r-beta');
+    expect(handle.getValue()?.id).toBe('r-beta');
+  });
 
   it('attaches without a value: input empty, clear hidden, list closed', () => {
     const { root, input, results, clear } = buildShell();
@@ -800,6 +877,7 @@ interface FakeNode {
   listeners: Map<string, Array<(event: unknown) => void>>;
   value: string;
   innerHTML: string;
+  textContent: string;
   focusCount: number;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
@@ -827,6 +905,7 @@ const makeNode = (tag: string, attrs: Record<string, string> = {}): FakeNode => 
     listeners: new Map(),
     value: '',
     innerHTML: '',
+    textContent: '',
     focusCount: 0,
     getAttribute: (name) => node.attrs.get(name) ?? null,
     setAttribute: (name, value) => {
@@ -929,6 +1008,8 @@ const buildShell = (
   clear: FakeNode;
   results: FakeNode;
   mirror: FakeNode;
+  recovery: FakeNode;
+  retry: FakeNode;
 } => {
   const root = makeNode('div');
   const shell = makeNode('div', { 'data-ref-picker': pickerId });
@@ -944,13 +1025,18 @@ const buildShell = (
   const input = makeNode('input', { [REF_PICKER_INPUT_ATTR]: '' });
   const clear = makeNode('button', { [REF_PICKER_CLEAR_ATTR]: '', hidden: '' });
   const results = makeNode('ul', { [REF_PICKER_RESULTS_ATTR]: '', hidden: '' });
+  const recovery = makeNode('div', { [REF_PICKER_RECOVERY_ATTR]: '', hidden: '' });
+  recovery.appendChild(makeNode('span', { [REF_PICKER_RECOVERY_MESSAGE_ATTR]: '' }));
+  const retry = makeNode('button', { [REF_PICKER_RETRY_ATTR]: '' });
+  recovery.appendChild(retry);
   if (opts.withMirror === true) shell.appendChild(mirror);
   field.appendChild(input);
   field.appendChild(clear);
   shell.appendChild(field);
+  shell.appendChild(recovery);
   shell.appendChild(results);
   root.appendChild(shell);
-  return { root, shell, input, clear, results, mirror };
+  return { root, shell, input, clear, results, mirror, recovery, retry };
 };
 
 /** Materialize a rendered option `<li>` as a real fake node under the

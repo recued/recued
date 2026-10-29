@@ -49,6 +49,17 @@ const chatMessage = (overrides: Partial<ChatMessage> = {}): ChatMessage => ({
 });
 
 describe('chat activity projections', () => {
+  it('puts progress on its exact running call and removes it when that call settles', () => {
+    const turn: InFlightTurn = { turn_id: 'turn-progress', assistant_content: '', transparency: [],
+      tool_calls: [{ ...toolCall(), call_id: 'call-a' }, { ...toolCall(), call_id: 'call-b' }] };
+    const record: ChatToolCallRecord = { message_id: 'call-b', session_id: 'sess_1', turn_id: turn.turn_id,
+      tool_name: 'mail.search', state: 'running', started_at: 1, updated_at: 2,
+      progress: { kind: 'provider', current: 3, total: 10 } };
+    const rows = projectInFlightActivity(turn, undefined, { 'call:call-b': record });
+    expect(rows.map(row => row.text)).toEqual(['running mail.search...', 'running mail.search... · Tool progress: 3 of 10']);
+    const settled = projectInFlightActivity(turn, undefined, { 'call:call-b': { ...record, state: 'succeeded' } });
+    expect(settled.map(row => row.text)).toEqual(['running mail.search...', 'running mail.search...']);
+  });
   it('projects tool rows for started, ok, and error statuses', () => {
     // Case 1.
     const rows = projectMessageActivity(

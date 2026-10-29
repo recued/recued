@@ -44,6 +44,9 @@ export {
   REF_PICKER_CLEAR_ATTR,
   REF_PICKER_OPTION_INDEX_ATTR,
   REF_PICKER_VALUE_ATTR,
+  REF_PICKER_RECOVERY_ATTR,
+  REF_PICKER_RECOVERY_MESSAGE_ATTR,
+  REF_PICKER_RETRY_ATTR,
 } from './render.js';
 
 export { asRefPickerSearchPage } from './types.js';

@@ -741,16 +741,35 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     }
     if (value.type === 'occasion') {
       const own = value.occasion;
-      const node = form(own ? 'Edit occasion' : 'Create occasion', async node => { const occasion = { ...own, ...(own?.id ? { id: own.id } : {}), title: field(node, 'title'),
-        month_day: field(node, 'month-day'), people: field(node, 'person') ? [field(node, 'person')] : [], muted: yes(node, 'muted'), rules: own?.rules ?? [] };
+      const node = form(own ? 'Edit occasion' : 'Create occasion', async node => {
+        const once = !own?.source && field(node, 'repeat') === 'once';
+        const date = field(node, 'date');
+        if (once && !isAssetDate(date)) throw new Error('Choose a date for this one-time occasion');
+        const { source_next_on: _previousDate, ...base } = own ?? {};
+        const occasion = { ...base, ...(own?.source && own.source_next_on !== undefined ? { source_next_on: own.source_next_on } : {}),
+          ...(own?.id ? { id: own.id } : {}), title: field(node, 'title'),
+          month_day: once ? date.slice(-5) : field(node, 'month-day'), ...(once ? { source_next_on: date } : {}),
+          people: [...new Set([...(own?.people.slice(1) ?? []), ...(field(node, 'person') ? [field(node, 'person')] : [])])], muted: yes(node, 'muted'), rules: own?.rules ?? [] };
         const confirmFloor = !!own?.rules.some(rule => rule.consequence === 'floor' && rule.enabled && !rule.muted) && occasion.muted;
         if (confirmFloor && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm stopping this safety, legal or travel clock?')) return;
         await change(value.proposal ? { action: 'proposal.edit', id: value.proposal.id, payload: { ...value.proposal.payload, occasion } } : { action: 'occasion.save', occasion, confirm_floor_mute: confirmFloor }); });
-      label(node, 'Name', 'title', own?.title ?? ''); label(node, 'Annual date (MM-DD)', 'month-day', own?.month_day ?? ''); select(node, 'Person', 'person', personChoices(), own?.people[0]); checked(node, 'Muted', 'muted', own?.muted ?? false); formActions(node); return;
+      label(node, 'Name', 'title', own?.title ?? '');
+      const repeat = !own?.source ? select(node, 'Repeat', 'repeat', [['yearly', 'Every year'], ['once', 'One time']], own?.source_next_on !== undefined ? 'once' : 'yearly') : null;
+      const annual = label(node, 'Annual date (MM-DD)', 'month-day', own?.month_day ?? '');
+      const date = !own?.source ? label(node, 'Date', 'date', own?.source_next_on ?? '', 'date') : null;
+      const showDate = () => {
+        const once = repeat?.value === 'once';
+        annual.parentElement!.hidden = once; annual.disabled = once;
+        if (date) { date.parentElement!.hidden = !once; date.disabled = !once; }
+      };
+      repeat?.addEventListener('change', showDate); showDate();
+      const choices = personChoices();
+      if (own?.people[0] && !choices.some(([id]) => id === own.people[0])) choices.push([own.people[0], holderName(own.people[0])]);
+      select(node, 'Person', 'person', choices, own?.people[0]); checked(node, 'Muted', 'muted', own?.muted ?? false); formActions(node); return;
     }
     if (value.type === 'occasion_rule') {
       const own = value.rule;
-      const node = form(own ? `Edit ${own.title}` : 'Add annual habit', async node => {
+      const node = form(own ? `Edit ${own.title}` : value.occasion.source_next_on !== undefined && !value.occasion.source ? 'Add reminder' : 'Add annual habit', async node => {
         const offset = field(node, 'offset').trim();
         if (offset && (!Number.isSafeInteger(Number(offset)) || Number(offset) < 0)) throw new Error('Use a whole, non-negative offset');
         const rule: AssetRule = { id: own?.id ?? `habit_${globalThis.crypto.randomUUID().replaceAll('-', '')}`, title: field(node, 'title'),
@@ -1425,8 +1444,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         if (occasion.source_active === false) el('p', 'Its source was removed or hidden. Reminders are suspended.', item);
         const actions = yoursActions(item); button(actions, 'Edit occasion', () => open({ type: 'occasion', occasion })); button(yoursMenu(actions, occasion.title, ['occasion', occasion.id]), 'Delete occasion', () => { const floor = occasion.rules.some(rule => rule.enabled && rule.consequence === 'floor');
           if (floor && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm removing this safety, legal or travel clock?')) return; return change({ action: 'occasion.delete', id: occasion.id, confirm_floor_delete: floor }); });
-        button(actions, 'Add habit', () => open({ type: 'occasion_rule', occasion }));
-        for (const rule of occasion.rules) { const row = card(item, rule.title === occasion.title ? 'Annual reminder' : rule.title, undefined, ['occasion-rule', occasion.id, rule.id]); el('p', `${rule.reaction.occurrence === 'action' ? 'Task' : 'Notice'} · ${reminderTimingWords(rule.schedule, rule.expiry_policy)}${rule.muted ? ' · muted' : ''}`, row);
+        button(actions, occasion.source_next_on !== undefined && !occasion.source ? 'Add reminder' : 'Add habit', () => open({ type: 'occasion_rule', occasion }));
+        for (const rule of occasion.rules) { const row = card(item, rule.title === occasion.title ? (occasion.source_next_on !== undefined && !occasion.source ? 'Reminder' : 'Annual reminder') : rule.title, undefined, ['occasion-rule', occasion.id, rule.id]); el('p', `${rule.reaction.occurrence === 'action' ? 'Task' : 'Notice'} · ${reminderTimingWords(rule.schedule, rule.expiry_policy)}${!rule.enabled ? ' · disabled' : rule.muted ? ' · muted' : ''}`, row);
           button(row, 'Edit occasion rule', () => open({ type: 'occasion_rule', occasion, rule }));
           button(row, rule.muted ? 'Resume' : 'Mute', () => { const needs = rule.consequence === 'floor' && !rule.muted; if (needs && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm stopping this safety, legal or travel clock?')) return;
             return change({ action: 'occasion.save', occasion: { ...occasion, rules: occasion.rules.map(value => value.id === rule.id ? { ...value, muted: !value.muted, pinned: true } : value) }, confirm_floor_mute: needs }); }); }
@@ -1440,7 +1459,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           if (!snapshot.episodes.length) el('p', 'No episode of this occasion is recorded yet.', history);
         }
       }
-      if (!snapshot.occasions.length) yoursEmpty(content, 'Name an annual occasion. Birthdays also come from your contacts.');
+      if (!snapshot.occasions.length) yoursEmpty(content, 'Add a yearly or one-time occasion. Birthdays also come from your contacts.');
     } else {
       button(pageHeader!.actions, 'Record episode', () => open({ type: 'episode' })).className = 'yours-primary';
       const management = section(content, 'Memory settings');

@@ -44,6 +44,7 @@ import { buildStepGraph, findForwardReferences } from '../graph.js';
 import { hasAnyConnectionReadPermission } from './structural.js';
 import { ALLOWED_NAMESPACES } from './constants.js';
 import type { AddFn } from './helpers.js';
+import { referenceLocations, type ReferenceLocation } from './reference-locations.js';
 
 export const validateReferences = (
   r: Record<string, unknown>,
@@ -92,10 +93,17 @@ export const validateReferences = (
     scannable.metadata = metaWithoutReadme;
   }
   const serialized = JSON.stringify(scannable);
+  const locate = referenceLocations(scannable, serialized);
+  const at = (match: RegExpExecArray): AddFn => {
+    const location = locate(match.index, match[0].length);
+    return (severity, code, path, message, reference_span) => add(severity, code, path || location?.path || '', message,
+      reference_span ?? (path ? undefined : location?.reference_span));
+  };
 
   // Nested template detection — `{{ ... {{ ... }} ... }}` is not allowed
-  if (/\{\{[^{}]*\{\{/.test(serialized)) {
-    add('error', 'nested_template', '',
+  const nested = /\{\{[^{}]*\{\{/.exec(serialized);
+  if (nested) {
+    at(nested)('error', 'nested_template', '',
       'nested {{...{{...}}...}} templates are not allowed — compute the inner value in a step first');
   }
 
@@ -103,11 +111,12 @@ export const validateReferences = (
   const refRe = /\{\{\s*([a-z_]+)\.([a-zA-Z_][a-zA-Z0-9_.]*?)(?::[a-z]+)?\s*\}\}/g;
   let match: RegExpExecArray | null;
   while ((match = refRe.exec(serialized)) !== null) {
+    const emit = at(match);
     const ns = match[1];
     const path = match[2];
 
     if (ns === 'vault') {
-      add('error', 'vault_ref_in_recipe', '',
+      emit('error', 'vault_ref_in_recipe', '',
         `{{vault.${path}}} is not allowed in recipes — only ingredients may reference vault`);
       continue;
     }
@@ -117,13 +126,13 @@ export const validateReferences = (
       // the same `unknown_namespace` bucket as any other unrecognized
       // namespace; the `'account'` literal in the Namespace type is
       // reserved for a future category but has no resolver path.
-      add('error', 'unknown_namespace', '',
+      emit('error', 'unknown_namespace', '',
         `{{account.${path}}} — the account namespace was retired in D-125 P5.2; route credentials through an enrolled connection (Settings → Connections)`);
       continue;
     }
 
     if (!ALLOWED_NAMESPACES.has(ns)) {
-      add('error', 'unknown_namespace', '',
+      emit('error', 'unknown_namespace', '',
         `unknown namespace "${ns}" in {{${ns}.${path}}} — allowed: ${[...ALLOWED_NAMESPACES].join(', ')}`);
       continue;
     }
@@ -151,7 +160,7 @@ export const validateReferences = (
     // stable per-record identity, not the default.
     // See internal design notes.
     if (ns === 'context' && /^recipe\b/.test(path) && r.auto_run !== undefined) {
-      add('error', 'context_recipe_in_auto_run', '',
+      emit('error', 'context_recipe_in_auto_run', '',
         `{{context.${path}}} never persists in an auto_run recipe — it is manual/cron only, so this read is always undefined and any gate on it is always true. Carry reactive state by pairing this watcher with a convergent write keyed on the record (the shape the seller pack's procedural recipes use), or, only if the source has no stable per-record identity, a data.shared cursor.`);
       continue;
     }
@@ -168,7 +177,7 @@ export const validateReferences = (
       // generic data resolver would bypass operation grants, provenance stamps,
       // version gates, and the Records execution principal.
       if (sub === 'records') {
-        add('error', 'records_data_ref_forbidden', '',
+        emit('error', 'records_data_ref_forbidden', '',
           `{{data.${path}}} is not a recipe namespace — call the installed Records pack operation instead`);
         continue;
       }
@@ -197,7 +206,7 @@ export const validateReferences = (
       // Every {{config.X}} must be a declared variable
       const varName = path.split('.')[0];
       if (!declaredVars.has(varName)) {
-        add('error', 'undeclared_variable_ref', '',
+        emit('error', 'undeclared_variable_ref', '',
           `{{config.${varName}}} referenced but not declared in variables block`);
       } else {
         referencedVars.add(varName);
@@ -208,7 +217,7 @@ export const validateReferences = (
     if (ns === 'step') {
       const stepId = path.split('.')[0];
       if (!declaredStepIds.has(stepId)) {
-        add('error', 'undeclared_step_ref', '',
+        emit('error', 'undeclared_step_ref', '',
           `{{step.${stepId}}} referenced but no step with id "${stepId}" exists`);
       }
       continue;
@@ -232,7 +241,7 @@ export const validateReferences = (
   while ((enrichmentMatch = enrichmentRefRe.exec(serialized)) !== null) {
     const fullPath = enrichmentMatch[1];
     if (typeof fullPath !== 'string') continue;
-    validateEnrichmentRef(`{{data.enrichment.${fullPath}}}`, fullPath, add);
+    validateEnrichmentRef(`{{data.enrichment.${fullPath}}}`, fullPath, at(enrichmentMatch));
     const scope = extractPlatformReferenceScope(fullPath);
     if (scope !== null) platformScopesRead.add(scope);
   }
@@ -262,6 +271,7 @@ export const validateReferences = (
   const aliasRefRe = /\{\{\s*data\.([^}\s]+?)\s*\}\}/g;
   let aliasMatch: RegExpExecArray | null;
   while ((aliasMatch = aliasRefRe.exec(serialized)) !== null) {
+    const emit = at(aliasMatch);
     const fullPath = aliasMatch[1];
     if (typeof fullPath !== 'string') continue;
     // Already-canonical paths flow through the enrichment scanner
@@ -279,7 +289,7 @@ export const validateReferences = (
     if (crmAliased !== null) {
       const refSample = `{{data.${fullPath}}}`;
       const enrichmentSubpath = crmAliased.canonicalPostData.slice('enrichment.'.length);
-      validateEnrichmentRef(refSample, enrichmentSubpath, add);
+      validateEnrichmentRef(refSample, enrichmentSubpath, emit);
       platformScopesRead.add(`connection.api.${crmAliased.vendor}.${crmAliased.entity}`);
       continue;
     }
@@ -297,7 +307,7 @@ export const validateReferences = (
     if (fullPath === 'crm' || fullPath.startsWith('crm.')) {
       const issue = classifyCrmAliasFailure(fullPath, aliasRegistry);
       if (issue !== null) {
-        add('error', issue.code, '', `{{data.${fullPath}}} — ${issue.message}`);
+        emit('error', issue.code, '', `{{data.${fullPath}}} — ${issue.message}`);
       }
       continue;
     }
@@ -306,7 +316,7 @@ export const validateReferences = (
     if (aliased === null) continue;
     const refSample = `{{data.${fullPath}}}`;
     const enrichmentSubpath = aliased.canonicalPostData.slice('enrichment.'.length);
-    validateEnrichmentRef(refSample, enrichmentSubpath, add);
+    validateEnrichmentRef(refSample, enrichmentSubpath, emit);
     platformScopesRead.add(`connection.api.${aliased.vendor}.${aliased.entity}`);
   }
 
@@ -680,6 +690,7 @@ const classifyCrmAliasFailure = (
 export const validateForwardReferences = (r: Record<string, unknown>, add: AddFn): void => {
   const graph = buildStepGraph(r);
   const forwards = findForwardReferences(graph);
+  const locations = new Map<string, Map<string, ReferenceLocation>>();
   for (const f of forwards) {
     const fromNode = graph.nodes[f.from];
     const fromPath = fromNode?.phase === 'prefetch'
@@ -691,7 +702,22 @@ export const validateForwardReferences = (r: Record<string, unknown>, add: AddFn
       : fromNode?.phase === 'prefetch' && toPhase === 'prefetch'
       ? `references prefetch step '${f.to}' (prefetch runs in parallel — no ordering guarantee)`
       : `references step '${f.to}' which hasn't run yet when this step executes`;
-    add('error', 'forward_step_ref', fromPath,
-      `step '${f.from}' ${explanation}`);
+    if (!locations.has(fromPath)) {
+      const rows = fromNode?.phase === 'prefetch' ? r.prefetch_steps : r.steps;
+      const step = Array.isArray(rows) ? rows[f.from_index] : undefined;
+      const serialized = JSON.stringify(step), found = new Map<string, ReferenceLocation>();
+      if (serialized) {
+        const locate = referenceLocations(step, serialized);
+        for (const match of serialized.matchAll(/\{\{\s*step\.([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_]+)*(?::[a-z]+)?\s*\}\}/g)) {
+          const location = locate(match.index, match[0].length);
+          if (location?.reference_span?.target === 'value' && !found.has(match[1]!)) found.set(match[1]!, location);
+        }
+      }
+      locations.set(fromPath, found);
+    }
+    const location = locations.get(fromPath)?.get(f.to);
+    const path = location ? fromPath + (location.path.startsWith('[') ? '' : '.') + location.path : fromPath;
+    add('error', 'forward_step_ref', path,
+      `step '${f.from}' ${explanation}`, location?.reference_span);
   }
 };

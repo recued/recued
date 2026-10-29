@@ -13,6 +13,8 @@
 import type Database from 'better-sqlite3';
 import { afterLocalCommit } from './local-transaction.js';
 import type { Schedule } from '@recued/scheduler';
+import { RpcError } from '@recued/contracts';
+import { preapprovalHash } from './preapproval-invocations.js';
 import {
   assertPreapprovalLegacyEnable, initializePreapprovalLifecycle, mutatePreapprovalResource,
   notePreapprovalOwnerMutation, preapprovalLogicalEnabled,
@@ -28,6 +30,8 @@ export const schedulePreapprovalMaterial = (schedule: Schedule): Record<string, 
   instance_id: schedule.instance_id ?? null, dish_id: schedule.dish_id ?? null,
 });
 
+export interface OneShotRescheduleState { identity: string; revision?: string }
+
 export interface ScheduleStore {
   readonly realmDatabase?: Database.Database;
   list(): Schedule[];
@@ -39,6 +43,12 @@ export interface ScheduleStore {
   /** Records that an ordinary fire began, so a pending review cannot approve
    * a stale "next execution" selector. No pre-approval is granted here. */
   noteQualifyingOccurrence?(schedule_id: string, occurrence_key: string): void;
+  /** The token is absent once due or admitted, including an unfinished run
+   * whose last_run_at has not yet been written. Legacy stores fail closed. */
+  oneShotRescheduleState?(snapshot: Schedule, now: number): OneShotRescheduleState | null;
+  rescheduleOneShot?(schedule_id: string, change: {
+    run_at: number; cron_expression: string; expected_revision: string; now: () => number;
+  }): Schedule;
   set(schedule: Schedule): void;
   delete(schedule_id: string): boolean;
   /** Update last_run_at / next_run_at / status fields on a schedule.
@@ -111,6 +121,23 @@ export const createScheduleStore = (
     "SELECT key FROM preapproval_resource_identity WHERE kind='one_shot' AND key=?",
   ).get(id) ? 'one_shot' : 'next_schedule';
 
+  const rescheduleState = (schedule: Schedule, now: number): OneShotRescheduleState | null => {
+    if (schedule.mode !== 'one_shot') return null;
+    const kind = kindFor(schedule.schedule_id);
+    const identity = synchronizePreapprovalIdentity(db, kind, schedule.schedule_id, material(schedule.schedule_id));
+    if (!identity) return null;
+    const state: OneShotRescheduleState = { identity: identity.incarnation };
+    if (schedule.last_run_at !== null || !Number.isSafeInteger(schedule.run_at)
+      || !Number.isFinite(new Date(schedule.run_at!).getTime()) || schedule.run_at! <= now) return state;
+    // Admission persists before execution. Empty reviewed tombstones only
+    // retire an old approval window; they do not mean the recipe started.
+    const admitted = db.prepare(`SELECT 1 FROM preapproval_occurrences
+      WHERE target_kind=? AND target_key=? AND incarnation=?
+        AND (future_ref IS NULL OR payload_hash != '') LIMIT 1`)
+      .get(kind, schedule.schedule_id, identity.incarnation);
+    return admitted ? state : { ...state, revision: `${identity.incarnation}:${identity.revision}` };
+  };
+
   return {
     realmDatabase: db,
     list() {
@@ -147,6 +174,43 @@ export const createScheduleStore = (
         db.prepare(`INSERT INTO preapproval_occurrences(target_kind,target_key,incarnation,occurrence_key,
           sequence,payload_hash,future_ref,consumed_at) VALUES(?,?,?,?,?,'',NULL,?)`)
           .run(kind, schedule_id, identity.incarnation, occurrence_key, sequence, Date.now());
+      }).immediate();
+    },
+
+    oneShotRescheduleState(snapshot, now) {
+      return db.transaction(() => {
+        const current = this.get(snapshot.schedule_id);
+        // A list snapshot must never borrow the token of a newer row. Runtime
+        // statistics need no material revision; eligibility still reads them fresh.
+        if (!current || preapprovalHash(schedulePreapprovalMaterial(snapshot)) !== preapprovalHash(schedulePreapprovalMaterial(current))) return null;
+        return rescheduleState(current, now);
+      }).immediate();
+    },
+    rescheduleOneShot(schedule_id, change) {
+      return db.transaction(() => {
+        const current = this.get(schedule_id);
+        if (!current) throw new RpcError('not_found', 'Schedule no longer exists.', 404);
+        const now = change.now();
+        const state = rescheduleState(current, now);
+        if (!state?.revision) throw new RpcError('conflict', 'Only a future one-off run that has not started can be rescheduled.', 409);
+        if (state.revision !== change.expected_revision) {
+          throw new RpcError('conflict', 'This schedule changed. Reload it before saving a new time.', 409);
+        }
+        if (!Number.isSafeInteger(change.run_at) || !Number.isFinite(new Date(change.run_at).getTime())
+          || change.run_at <= now) throw new RpcError('bad_request', 'Choose a valid future date and time.', 400);
+        if (change.run_at === current.run_at) return current;
+        // An old reviewed slot is (or will be) tombstoned on retirement. Do
+        // not acknowledge a time the scheduler would then suppress forever.
+        const retiredSlot = db.prepare(`SELECT 1 FROM preapproval_activations
+          WHERE target_kind=? AND target_key=? AND target_incarnation=? AND due_at=? LIMIT 1`)
+          .get(kindFor(schedule_id), schedule_id, state.identity, change.run_at);
+        if (retiredSlot) throw new RpcError('conflict', 'That time belongs to a previous reviewed run. Choose a different future time.', 409);
+        const updated = { ...current, run_at: change.run_at, next_run_at: change.run_at,
+          cron_expression: change.cron_expression };
+        // The ordinary store mutation invalidates reviews of the previous
+        // instant. A physically parked reviewed run stays paused.
+        this.set(updated);
+        return updated;
       }).immediate();
     },
 

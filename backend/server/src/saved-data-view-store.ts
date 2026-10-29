@@ -1,5 +1,6 @@
 /** Owner view settings in the realm database; its normal encryption/backup applies. */
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { canonicalJSONStringifyStrict } from '@recued/crypto';
 import type Database from 'better-sqlite3';
 import {
   RpcError, SAVED_DATA_VIEW_LIMIT, SAVED_DATA_VIEW_NAME_LIMIT,
@@ -9,7 +10,7 @@ import {
   savedDataViewSupportsAlerts, savedDataViewSupportsReview, type SavedDataView,
   type SavedDataViewCreateRequest, type SavedDataViewRenameRequest,
   type SavedDataViewDeleteRequest, type SavedDataViewUpdateRequest,
-  type SavedDataViewRetiredResolveRequest,
+  type SavedDataViewRetiredResolveRequest, type SavedDataViewCreateOnceRequest, type SavedDataViewCreation,
 } from '@recued/contracts';
 import { createSavedDataViewAlertStore, type SavedDataViewAlertStore, type SavedDataViewMatchReader } from './saved-data-view-alert-store.js';
 
@@ -18,6 +19,8 @@ export interface SavedDataViewStore {
   list(): SavedDataView[];
   get(id: string): SavedDataView | null;
   create(request: SavedDataViewCreateRequest): SavedDataView;
+  createOnce?(request: SavedDataViewCreateOnceRequest): SavedDataViewCreation;
+  getCreation?(request: SavedDataViewCreateOnceRequest): SavedDataViewCreation | null;
   update(request: SavedDataViewUpdateRequest): SavedDataView;
   rename(request: SavedDataViewRenameRequest): SavedDataView;
   delete(request: SavedDataViewDeleteRequest): void;
@@ -72,7 +75,10 @@ export const createSavedDataViewStore = (
   db: Database.Database,
   options: { readTasks?: SavedDataViewMatchReader; readRecords?: SavedDataViewMatchReader; now?: () => number } = {},
 ): SavedDataViewStore => {
-  db.exec('CREATE TABLE IF NOT EXISTS saved_data_views (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL)');
+  db.exec(`CREATE TABLE IF NOT EXISTS saved_data_views (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS saved_data_view_creations (
+      request_id TEXT PRIMARY KEY NOT NULL, view_id TEXT NOT NULL, request_hash TEXT NOT NULL
+    )`);
   const alerts = createSavedDataViewAlertStore(db, { task: options.readTasks, records: options.readRecords }, options.now);
   /** Any row, a retired one included — the resolve path needs it; everything else asks
    *  `get`, to which a retired view no longer exists. */
@@ -140,27 +146,52 @@ export const createSavedDataViewStore = (
     }
     return view;
   };
+  const creationInput = (request: SavedDataViewCreateRequest) => {
+    const name = nameOf(request.name), definition = parseSavedDataViewDefinition(request.definition);
+    if (definition === null) throw new RpcError('bad_request', 'Invalid saved view settings.', 400);
+    return { name, definition };
+  };
+  const createRow = (input: ReturnType<typeof creationInput>): SavedDataView => {
+    refuseOwnerLimit();
+    const now = Date.now();
+    const view: SavedDataView = { id: `view_${randomUUID()}`, ...input, revision: 1, created_at: now, updated_at: now };
+    write(view, true); return view;
+  };
+  const requestKey = (request: SavedDataViewCreateOnceRequest): string => {
+    if (typeof request.request_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(request.request_id)) {
+      throw new RpcError('bad_request', 'A valid saved-view request ID is required.', 400);
+    }
+    return request.request_id;
+  };
+  const creationHash = (input: ReturnType<typeof creationInput>) =>
+    createHash('sha256').update(canonicalJSONStringifyStrict(input)).digest('hex');
+  const readCreation = (key: string, hash: string): SavedDataViewCreation | null => {
+    const row = db.prepare('SELECT view_id, request_hash FROM saved_data_view_creations WHERE request_id=?')
+      .get(key) as { view_id: string; request_hash: string } | undefined;
+    if (!row) return null;
+    if (row.request_hash !== hash) throw new RpcError('conflict', 'This save request already belongs to different view settings. Start a new save.', 409);
+    return { request_id: key, view_id: row.view_id, view: get(row.view_id) };
+  };
   return {
     alerts,
     get,
     list: () => db.prepare('SELECT data FROM saved_data_views ORDER BY id').all()
       .map((row) => decode(row)!).filter((view) => view.retired === undefined)
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
-    create: db.transaction((request: SavedDataViewCreateRequest) => {
-      const name = nameOf(request.name);
-      const definition = parseSavedDataViewDefinition(request.definition);
-      if (definition === null) throw new RpcError('bad_request', 'Invalid saved view settings.', 400);
-      // ⛔ OWNER ROWS ONLY. `SAVED_DATA_VIEW_LIMIT` is the OWNER's allowance
-      // (owner's ruling, 2026-09-22): counting pack views here would make
-      // installing a pack silently spend slots, and the refusal below would
-      // then blame the owner — "Delete a view to make room" — for space a pack
-      // took. Pack views are capped separately, per pack, at sync time.
-      refuseOwnerLimit();
-      const now = Date.now();
-      const view: SavedDataView = { id: `view_${randomUUID()}`, name, definition, revision: 1, created_at: now, updated_at: now };
-      db.prepare('INSERT INTO saved_data_views (id, data) VALUES (?, ?)').run(view.id, JSON.stringify(view));
-      return view;
-    }),
+    create: db.transaction((request: SavedDataViewCreateRequest) => createRow(creationInput(request))),
+    createOnce: db.transaction((request: SavedDataViewCreateOnceRequest) => {
+      const key = requestKey(request), input = creationInput(request), hash = creationHash(input);
+      const prior = readCreation(key, hash);
+      if (prior) return prior;
+      const view = createRow(input);
+      // This receipt deliberately survives view deletion. A delayed retry must
+      // never resurrect a bookmark or bypass the owner's deletion.
+      db.prepare('INSERT INTO saved_data_view_creations(request_id, view_id, request_hash) VALUES(?,?,?)')
+        .run(key, view.id, hash);
+      return { request_id: key, view_id: view.id, view };
+    }).immediate,
+    getCreation: db.transaction((request: SavedDataViewCreateOnceRequest) =>
+      readCreation(requestKey(request), creationHash(creationInput(request)))),
     update: db.transaction((request: SavedDataViewUpdateRequest) => {
       const view = current(request);
       if (!Object.hasOwn(request, 'definition') && !Object.hasOwn(request, 'alert')

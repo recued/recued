@@ -64,6 +64,7 @@ import {
  *  on `chat.message_complete` carries the real timestamps; this shape
  *  is ephemeral during streaming only. */
 export interface InFlightToolCall {
+  call_id?: string;
   tool_name: string;
   tier: ChatToolCall['tier'];
   args: unknown;
@@ -244,12 +245,21 @@ export const rememberToolCallRecords = (
 ): Readonly<Record<string, ChatToolCallRecord>> | undefined => {
   let next = records;
   for (const call of calls) {
-    if (call.run_id === undefined) continue;
-    const prior = next?.[call.run_id];
+    // Core tools can report progress before (or without) a recipe run id.
+    const unboundKey = `call:${call.message_id}`;
+    const key = call.run_id ?? unboundKey;
+    const prior = next?.[key] ?? next?.[unboundKey]
+      ?? Object.values(next ?? {}).find(record => record.message_id === call.message_id);
+    // Keep terminal updates even when they omit display data, but do not let
+    // an unbound snapshot recreate an alias after this call acquired a run.
+    if (call.run_id === undefined && (prior?.run_id !== undefined
+      || call.progress === undefined && prior === undefined
+        && !TERMINAL_TOOL_CALL_STATES.includes(call.state))) continue;
     if (prior !== undefined && (call.updated_at < prior.updated_at
       || (TERMINAL_TOOL_CALL_STATES.includes(prior.state)
         && !TERMINAL_TOOL_CALL_STATES.includes(call.state)))) continue;
-    next = { ...(next ?? {}), [call.run_id]: call };
+    next = { ...(next ?? {}), [key]: call };
+    if (call.run_id !== undefined) delete (next as Record<string, ChatToolCallRecord>)[unboundKey];
   }
   return next;
 };
@@ -674,6 +684,7 @@ export const reduceChatThreadEvent = (
       const message = known.messages[index];
       const prior = message?.tool_call;
       if (!prior || prior.turn_id !== call.turn_id
+          || prior.run_id !== undefined && call.run_id === undefined
           || call.updated_at < prior.updated_at
           || (['succeeded', 'failed', 'interrupted'].includes(prior.state)
             && ['running', 'held'].includes(call.state))) return known;
@@ -822,6 +833,7 @@ export const reduceChatThreadEvent = (
           tier: event.tier,
           args: event.args,
           status: 'started',
+          ...(event.call_id ? { call_id: event.call_id } : {}),
         },
       ],
     });

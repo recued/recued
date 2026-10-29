@@ -158,6 +158,16 @@ describe('D-169 P2 Slice 2 history handlers', () => {
     }
   });
 
+  it('keeps held producer history out of catch-up until released, filtering before the page limit', async () => {
+    const history = [activityEntry({ activity_id: 'deferred' }), activityEntry({ activity_id: 'delivered' })];
+    const held = new Set(['deferred']);
+    const deps: HistoryDeps = { auditLog: fakeAuditLog({ listActivities: async () => history }), heldNotificationIds: () => held };
+    expect((await handleNotificationRecent(deps, { limit: 1 })).notifications.map(row => row.id)).toEqual(['delivered']);
+    expect(await deps.auditLog!.listActivities()).toEqual(history);
+    held.clear();
+    expect((await handleNotificationRecent(deps, { limit: 1 })).notifications.map(row => row.id)).toEqual(['deferred']);
+  });
+
   it('filters fired notifications newest-first and slices after filtering', async () => {
     const listActivities = vi.fn(async () => [
       activityEntry({

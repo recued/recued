@@ -129,7 +129,7 @@ describe('event_triggers validation wiring', () => {
       event_triggers: [{ event: 'data.file.{{config.file_slug}}.*.created' }],
     });
     const issues = (input: unknown) => validateRecipe(input).issues
-      .filter((issue) => issue.path.startsWith('event_triggers'))
+      .filter((issue) => issue.code.startsWith('event_trigger_'))
       .map(({ severity, code, path, message }) => ({ severity, code, path, message }));
 
     it('accepts one the recipe declares, as a required setting', () => {

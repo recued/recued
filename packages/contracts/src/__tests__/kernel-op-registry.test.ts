@@ -91,8 +91,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // (D-315 slice 7).
   // 28 → 30 on 2026-10-15: file.folders and file.save-to-folder, so chat files an
   // emailed attachment into a folder the owner names (D-318 follow-up 11).
-  storage: 30,
-  schedule: 1,
+  storage: 32,
+  schedule: 2,
   kitchen: 4,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -317,6 +317,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.reminder.update|reminder|reminder-update|write',
       // NATIVE since 2026-10-05 — no recipe step may schedule another recipe; chat
       // schedules through its own Tier-1 `recipe.schedule` tool, granted by this id.
+      'core.schedule.prompt|schedule|(native)|write',
       'core.schedule.recipe|schedule|(native)|write',
       // D-207 §4.5 — the op path moved under `seller`; the backing capability
       // slug (`customer-access-*`) is deliberately unchanged.
@@ -351,8 +352,10 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // ⛔ csv.filter SAVES a new file record per run, so it is a write; csv.rows
       // returns the same matches as a value and saves nothing.
       'core.storage.csv.filter|storage|csv-filter|write',
+      'core.storage.csv.inspect|storage|csv-inspect|read',
       'core.storage.csv.rows|storage|csv-rows|read',
       'core.storage.csv.stats|storage|csv-stats|read',
+      'core.storage.csv.transform|storage|csv-transform|write',
       'core.storage.data-file-read|storage|data-file-read|read',
       'core.storage.exchange.status|storage|exchange-status|read',
       'core.storage.file.delete|storage|file-delete|destructive',

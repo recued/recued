@@ -15,6 +15,8 @@ import { createAuthenticationAlertStore } from '../authentication-alert-store.js
 import { sourceIdConnectionName } from '../work-entity-source-boot.js';
 import { collectionOAuthSourceName } from '../collection-oauth-sources.js';
 import { createAuthenticationAlertRuntime } from '../authentication-alert-runtime.js';
+import { createPromptScheduleAlertRuntime } from '../prompt-schedule-alert-runtime.js';
+import { shouldSuppressForQuietHours, defaultQuietHoursPolicy } from '@recued/contracts';
 import { createFormDefinitionReader } from '../form-contract-gate.js';
 import { join, dirname } from 'node:path';
 
@@ -91,6 +93,8 @@ import {
   createBuiltinWebhookRegistrationProfileRegistry,
 } from '../webhook-registration-profile-presets.js';
 import { createWebhookOutboxRuntime } from '../webhook-outbox-dispatcher.js';
+import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
+import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { createWebhookRecipeOutboxSink } from '../webhook-recipe-consumer.js';
 import {
   createOperationBoundWebhookFixtureAdapters,
@@ -1212,6 +1216,7 @@ export const composeListeners = async (
       ? { calendarEnroll: collection.calendarStack.enrollDeps }
       : {}),
     ...(collection.mailStack ? { mailEnroll: collection.mailStack.enrollDeps } : {}),
+    ...(app.cacheBlobs ? { mailBodyBlobs: app.cacheBlobs } : {}),
     // D-318 step 1 — `collection.mail.chat_door.*`, and the chat mailbox's flag
     // in `collection.mail.list`.
     ...(collection.mailChatDoor ? { mailChatDoor: collection.mailChatDoor } : {}),
@@ -1543,6 +1548,7 @@ export const composeListeners = async (
 
   const historyDeps: HistoryDeps = {
     ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+    heldNotificationIds: () => app.chatOrchestratorRef?.promptSchedules?.heldNoticeIds() ?? new Set(),
     // So `notification.recent` can give a notice's link as an in-app address too.
     ownerBaseUrl: () => storage.publicAddress.baseUrl('root'),
     ...(askCardDetails ? { resolveAskDetails: askCardDetails } : {}),
@@ -3227,6 +3233,14 @@ export const composeListeners = async (
       auditLog: storage.auditLog, notifier: execution.notificationBlock,
       canRun: () => (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
       getPublicBaseUrl: () => storage.publicAddress.baseUrl('root') }) : undefined;
+  const promptSchedules = app.chatOrchestratorRef?.promptSchedules;
+  const promptScheduleAlerts = storage.db && promptSchedules && execution.notificationBlock && storage.auditLog
+    ? createPromptScheduleAlertRuntime({ db: storage.db, schedules: promptSchedules,
+      auditLog: storage.auditLog, notifier: execution.notificationBlock, events: storage.eventBus,
+      canRun: () => (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
+      isQuiet: at => shouldSuppressForQuietHours({ policy: storage.quietHoursStore?.read() ?? defaultQuietHoursPolicy(), instant: at,
+        timeZone: resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+      getPublicBaseUrl: () => storage.publicAddress.baseUrl('root') }) : undefined;
 
   // D-174 #22 + slice 1 — built ONCE, used TWICE: the `work_entity.{upsert,
   // delete}` pair-RPC below and the Tier-1 `work.create` chat tool both
@@ -4403,6 +4417,10 @@ export const composeListeners = async (
           contactImportDeps: {
             store: app.contactStoreRef,
             mirror: app.crmRecordMirrorStoreRef,
+            ...(storage.db ? {
+              history: createProactiveHistoryStore(storage.db, createProactiveProposalStore(storage.db)),
+              transaction: <T>(work: () => T): T => storage.db!.transaction(work)(),
+            } : {}),
           },
         }
       : {}),
@@ -5173,6 +5191,7 @@ export const composeListeners = async (
   webhookOutboxRuntime?.start();
   savedDataViewAlerts?.start();
   authenticationAlerts?.start();
+  promptScheduleAlerts?.start();
 
   // ⛔ What would otherwise START work during a restart is told to stop the
   // moment the server begins stopping, before any drain step waits on anything:
@@ -5185,11 +5204,12 @@ export const composeListeners = async (
   //    left to the boot sweep (`NotificationBlock.beginStopping`).
   const turnQueue = app.chatOrchestratorRef?.turnQueue;
   const answers = execution.notificationBlock;
-  if (lifecycle && (turnQueue || answers)) {
+  if (lifecycle && (turnQueue || answers || promptScheduleAlerts)) {
     lifecycle.machine.onStateChange((_prev, next) => {
       if (next !== 'draining') return;
       turnQueue?.close();
       answers?.beginStopping();
+      void promptScheduleAlerts?.stop();
     });
   }
 
@@ -5208,6 +5228,7 @@ export const composeListeners = async (
     const drains = [
       ...(savedDataViewAlerts ? [begin(() => savedDataViewAlerts.stop())] : []),
       ...(authenticationAlerts ? [begin(() => authenticationAlerts.stop())] : []),
+      ...(promptScheduleAlerts ? [begin(() => promptScheduleAlerts.stop())] : []),
       ...(webhookOutboxRuntime ? [begin(() => webhookOutboxRuntime.stop())] : []),
       ...(messengerIngressSupervisor
         ? [begin(() => messengerIngressSupervisor.stop())]

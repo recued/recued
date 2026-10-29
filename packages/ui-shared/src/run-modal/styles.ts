@@ -202,6 +202,11 @@ export const RUN_MODAL_STYLES = `
   color: var(--fg);
   font: inherit;
 }
+/* Native WebKit menus ignore min-height; an explicit height keeps the
+   existing arrow and gives every single-choice menu a usable target. */
+.run-modal-panel select:not([multiple]) {
+  height: 44px;
+}
 [${RUN_MODAL_OVERLAY_ATTR}] [${RUN_MODAL_CONFIG_ATTR}] {
   box-sizing: border-box;
   width: 100%;

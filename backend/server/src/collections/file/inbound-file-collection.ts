@@ -9,7 +9,7 @@ import { createFileAttachmentLifecycle, type FileAttachmentLifecycle, type FileL
 import type Database from 'better-sqlite3';
 import type { StorageGate } from '@recued/storage-gate';
 import type { AuditLogStore } from '@recued/storage';
-import { isFileCloudCapture, type FileCloudCapture } from '@recued/contracts';
+import { RpcError, isFileCloudCapture, type FileCloudCapture } from '@recued/contracts';
 import type {
   FileLifecycleMutation,
   CollectionHealth,
@@ -663,19 +663,24 @@ export const createInboundFileCollection = (
         result = attachmentLifecycle.mutate(input.record_id, input.action, input.revision, id => {
           const previous = table.get(id);
           if (previous) changed.push(previous);
-          if (input.action === 'archive') {
-            db.prepare(`UPDATE ${quoteSqliteIdent(table.tableName)} SET hot_fields=json_set(hot_fields,'$.archived',1) WHERE record_id=?`).run(id);
-          } else {
+          if (input.action === 'archive' || input.action === 'restore') {
+            // Every transition needs a fresh revision, even with a fixed clock.
+            // Otherwise archive → restore could reuse an old archive receipt.
+            db.prepare(`UPDATE ${quoteSqliteIdent(table.tableName)} SET hot_fields=json_set(hot_fields,'$.archived',?),
+              modified_at=MAX(modified_at+1,?) WHERE record_id=?`).run(input.action === 'archive' ? 1 : 0, Date.now(), id);
+          } else if (input.action === 'delete') {
             synchronizePreapprovalIdentity(db, 'file_source', `${slug}:${id}`, null);
             table.delete(id); refDelete.run(slug, id);
+          } else {
+            throw new RpcError('bad_request', 'Choose archive, restore or delete.');
           }
         });
       } finally { gate.setUsed(totalBytes()); }
       const previous = changed[0];
       if (previous) {
         const fields = previous.hot_fields;
-        if (input.action === 'archive') emitter.updated(result.record_id, fields);
-        else emitter.deleted(result.record_id, fields);
+        if (input.action === 'delete') emitter.deleted(result.record_id, fields);
+        else emitter.updated(result.record_id, table.get(result.record_id)?.hot_fields ?? fields);
       }
       return result;
     },

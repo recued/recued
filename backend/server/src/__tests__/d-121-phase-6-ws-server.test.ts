@@ -116,9 +116,8 @@ describe('D-121 Phase 6 — WS events.subscribe rpc integration', () => {
   it('rejects an unregistered socket without installing a bus subscription', async () => {
     // Let the preceding test's close callback remove its registered listener;
     // this assertion is about the new socket never increasing the count.
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await expect.poll(() => bus.subscriberCount(), { timeout: 5_000 }).toBe(0);
     const before = bus.subscriberCount();
-    expect(before).toBe(0);
     const ws = await connectWithToken();
     const reply = await callRpc(ws, 'events.subscribe', { kinds: ['execution'] });
 

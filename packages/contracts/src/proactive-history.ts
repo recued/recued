@@ -31,8 +31,9 @@ export interface Occasion {
   id: string;
   title: string;
   class_id?: string;
-  /** An annual date. Its year is computed at read time, never rolled forward
-   * in storage. February 29 waits for a real leap day. */
+  /** Month and day; annual dates compute their next year at read time.
+   * A one-time date uses source_next_on instead. February 29 falls on
+   * February 28 in a common year. */
   month_day: string;
   people: string[];
   where?: SituationPlace;
@@ -41,7 +42,7 @@ export interface Occasion {
    * changing the owner's mute choice or overwriting an owner-edited series. */
   source_active?: boolean;
   source_pinned?: boolean;
-  /** Expanded calendar series use their actual next instance. Null means no
+  /** A one-time occasion or expanded calendar series uses its actual next date. Null means no
    * future instance is known; it must not fall back to an invented recurrence. */
   source_next_on?: string | null;
   sphere?: Sphere;

@@ -185,8 +185,14 @@ export const projectRowText = (entity: WorkEntity): RowText => {
 };
 
 /** Render the list view (search input + entity rows or empty state). */
+export interface TaskListSelection {
+  selected_ids: ReadonlySet<string>;
+  unavailable: ReadonlyMap<string, string>;
+  busy: boolean;
+}
+
 export const renderWorkEntityListView = (
-  props: WorkEntityListViewProps & { opening_entity_id?: string },
+  props: WorkEntityListViewProps & { opening_entity_id?: string; task_selection?: TaskListSelection; toolbar_html?: string },
 ): string => {
   const search = renderSearchInput(
     props.search_query,
@@ -204,11 +210,13 @@ export const renderWorkEntityListView = (
           props.rows,
           props.show_source_label,
           props.opening_entity_id,
+          props.task_selection,
         );
   return `
     <div class="work-entity-list-view" data-kind="${e(props.kind)}">
       ${search}
       ${filters}
+      ${props.toolbar_html ?? ''}
       ${body}
     </div>
   `;
@@ -267,12 +275,14 @@ const renderRows = (
   rows: readonly WorkEntityListRow[],
   show_source_label: boolean,
   opening_entity_id: string | undefined,
+  selection?: TaskListSelection,
 ): string => {
   const items = rows
     .map((row) => renderRow(
       row,
       show_source_label,
       row.entity.id === opening_entity_id,
+      selection,
     ))
     .join('');
   return `<ul class="work-entity-list" role="list">${items}</ul>`;
@@ -346,6 +356,7 @@ const renderRow = (
   row: WorkEntityListRow,
   show_source_label: boolean,
   opening: boolean,
+  selection?: TaskListSelection,
 ): string => {
   const text = projectRowText(row.entity);
   const sourceLabel = show_source_label
@@ -364,6 +375,11 @@ const renderRow = (
     : '';
   return `
     <li class="work-entity-list-row">
+      ${selection && row.entity._kind === 'task' ? `<label class="work-entity-task-select"${selection.unavailable.has(row.entity.id) ? ` title="${e(selection.unavailable.get(row.entity.id)!)}"` : ''}>
+        <input type="checkbox" data-action="task-bulk-toggle" data-task-id="${e(row.entity.id)}" data-task-bulk-focus="select:${e(row.entity.id)}"
+          ${selection.selected_ids.has(row.entity.id) ? 'checked' : ''} ${selection.busy || selection.unavailable.has(row.entity.id) ? 'disabled' : ''}>
+        <span>Select ${e(text.primary)}${selection.unavailable.has(row.entity.id) ? ` — ${e(selection.unavailable.get(row.entity.id)!)}` : ''}</span>
+      </label>` : ''}
       <button
         type="button"
         class="work-entity-list-row-button"

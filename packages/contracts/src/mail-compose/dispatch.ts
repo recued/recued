@@ -285,6 +285,7 @@ export const composeStateToSendPayload = (
   if (resolvedCc.length > 0) payload.cc = resolvedCc;
   if (resolvedBcc.length > 0) payload.bcc = resolvedBcc;
   if (values.in_reply_to !== null) payload.in_reply_to = values.in_reply_to;
+  if (values.references?.length) payload.references = [...values.references];
   // D-172 P2 — carry the selected attachment refs into the payload.
   if (values.attachments.length > 0) payload.attachments = [...values.attachments];
   return { ok: true, payload };

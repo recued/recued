@@ -21,6 +21,7 @@ import Database from 'better-sqlite3';
 import { RpcError } from '@recued/contracts';
 import { handleMailDraftSaveToMailbox } from '../draft-save-to-mailbox.js';
 import { createMailDraftStore, type MailDraftPrincipal } from '../../../storage/mail-drafts.js';
+import { preapprovalHash } from '../../../preapproval-invocations.js';
 import type { SavedDraftMeta } from '../provider.js';
 import type { CollectionRegistry } from '../../registry.js';
 
@@ -98,6 +99,21 @@ describe('D-264 — the export reads the STORED draft', () => {
     await expect(handleMailDraftSaveToMailbox(
       { registry, drafts: h.drafts }, { draft_id: h.draft_id }, principal,
     )).rejects.toBeInstanceOf(RpcError);
+    h.db.close();
+  });
+
+  it('refuses a draft saved before one address per entry, before the provider sees it', async () => {
+    const h = await harness();
+    // What a server before the rule stored. The store reads it as it was saved; the export must not send it.
+    const legacy = { sender_mail_instance: 'work', to: ['ann@example.com, bob@example.com'],
+      subject: 'Subject', body: 'Body', body_format: 'text' as const };
+    h.db.prepare('UPDATE mail_drafts SET ciphertext=?, content_hash=? WHERE draft_id=?')
+      .run(JSON.stringify(legacy), preapprovalHash(legacy), h.draft_id);
+    await expect(h.drafts.get({ draft_id: h.draft_id }, principal)).resolves.toMatchObject({ content: legacy });
+    await expect(handleMailDraftSaveToMailbox(
+      { registry: h.registry, drafts: h.drafts }, { draft_id: h.draft_id }, principal,
+    )).rejects.toThrow('mail-send: to[0] holds more than one address; give each recipient its own entry');
+    expect(h.calls).toEqual([]);
     h.db.close();
   });
 

@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   mountPermissionsPanel,
+  PERMISSIONS_CATALOG_ERROR_ATTR,
+  PERMISSIONS_CATALOG_RECOVERY_ATTR,
+  PERMISSIONS_CATALOG_RETRY_ATTR,
   PERMISSIONS_CREATE_ACTOR_ATTR,
   PERMISSIONS_CREATE_APPROVAL_ATTR,
   PERMISSIONS_CREATE_DENIED_ATTR,
@@ -1069,6 +1072,9 @@ describe('D-166 Permissions create form', () => {
 
     expect(onlyByAttr(host, PERMISSIONS_CREATE_INGREDIENT_ATTR).getAttribute('disabled')).toBe('');
     expect(mount.getCatalog()).toEqual([]);
+    expect(allText(onlyByAttr(host, PERMISSIONS_CATALOG_ERROR_ATTR)).join(' ')).toContain('catalog down');
+    expect(onlyByAttr(host, PERMISSIONS_CATALOG_RECOVERY_ATTR).hasAttribute('hidden')).toBe(false);
+    expect(onlyByAttr(host, PERMISSIONS_CREATE_SAVE_ATTR).disabled).toBe(true);
 
     mount.setCreateField('actor', 'user_self');
     mount.setCreateField('denied', true);
@@ -1077,5 +1083,112 @@ describe('D-166 Permissions create form', () => {
     expect(mount.getCreateError()).toBe('Choose an Ingredient.');
     expect(calls.runUpsertOverride).not.toHaveBeenCalled();
     mount.dispose();
+  });
+
+  it('coalesces catalog retries while preserving the live draft and existing rules', async () => {
+    const pending = deferred<{ ingredients: CatalogIngredientView[] }>();
+    const existing = overrideView('user_self', CONTACTS, null, { approval: 'always' });
+    let reads = 0;
+    const { host, mount, calls } = mountFor({
+      withCreate: true,
+      overrides: [existing],
+      runListCatalogOperations: () => {
+        reads += 1;
+        return reads === 1 ? Promise.reject(new Error('catalog down')) : pending.promise;
+      },
+    });
+    await mount.whenLoaded();
+    await mount.whenCatalogLoaded();
+    mount.setCreateField('actor', 'user_self');
+    mount.setCreateField('denied', true);
+    mount.setCreateField('max_risk_without_approval', 'write');
+
+    const retry = onlyByAttr(host, PERMISSIONS_CATALOG_RETRY_ATTR);
+    retry.click();
+    retry.click();
+    const settled = mount.whenCatalogLoaded();
+    expect(reads).toBe(2);
+    expect(retry.getAttribute('aria-disabled')).toBe('true');
+    expect(onlyByAttr(host, PERMISSIONS_CREATE_SAVE_ATTR).disabled).toBe(true);
+    expect(onlyByAttr(host, PERMISSIONS_CATALOG_ERROR_ATTR).textContent).toBe('Loading Ingredients…');
+    expect(mount.hasInFlightWork()).toBe(false);
+    expect(mount.getOverrides()).toEqual([existing]);
+    expect(calls.runListOverrides).toHaveBeenCalledTimes(1);
+    expect(calls.runUpsertOverride).not.toHaveBeenCalled();
+    expect(calls.runDeleteOverride).not.toHaveBeenCalled();
+
+    // A choice made while the read is pending belongs to the current draft.
+    mount.setCreateField('actor', 'contracted_user');
+    mount.setCreateField('approval', 'always');
+    pending.resolve({ ingredients: catalogFixture() });
+    await settled;
+    expect(onlyByAttr(host, PERMISSIONS_CATALOG_RECOVERY_ATTR).hasAttribute('hidden')).toBe(true);
+    expect(onlyByAttr(host, PERMISSIONS_CREATE_INGREDIENT_ATTR).disabled).toBe(false);
+    expect(onlyByAttr(host, PERMISSIONS_CREATE_SAVE_ATTR).disabled).toBe(false);
+    expect(mount.getOverrides()).toEqual([existing]);
+    expect(calls.runListOverrides).toHaveBeenCalledTimes(1);
+    expect(calls.runUpsertOverride).not.toHaveBeenCalled();
+
+    // A stale programmatic click on the now-hidden action is also inert.
+    retry.click();
+    expect(reads).toBe(2);
+    mount.setCreateField('ingredient_id', DEALS);
+    await mount.submitCreate();
+    expect(calls.runUpsertOverride).toHaveBeenCalledExactlyOnceWith({
+      actor: 'contracted_user', ingredient_id: DEALS,
+      policy: { denied: true, approval: 'always', max_risk_without_approval: 'write' },
+    });
+    mount.dispose();
+  });
+
+  it('allows another attempt after a retry fails and treats an empty catalog as a successful read', async () => {
+    let reads = 0;
+    const { host, mount, calls } = mountFor({
+      withCreate: true,
+      runListCatalogOperations: async () => {
+        reads += 1;
+        if (reads <= 2) throw new Error(`catalog unavailable ${reads}`);
+        return { ingredients: [] };
+      },
+    });
+    await mount.whenCatalogLoaded();
+    onlyByAttr(host, PERMISSIONS_CATALOG_RETRY_ATTR).click();
+    await mount.whenCatalogLoaded();
+    expect(allText(onlyByAttr(host, PERMISSIONS_CATALOG_ERROR_ATTR)).join(' ')).toContain('catalog unavailable 2');
+    expect(onlyByAttr(host, PERMISSIONS_CATALOG_RETRY_ATTR).getAttribute('aria-disabled')).toBe('false');
+    onlyByAttr(host, PERMISSIONS_CATALOG_RETRY_ATTR).click();
+    await mount.whenCatalogLoaded();
+    expect(reads).toBe(3);
+    expect(onlyByAttr(host, PERMISSIONS_CATALOG_RECOVERY_ATTR).hasAttribute('hidden')).toBe(true);
+    expect(allText(onlyByAttr(host, PERMISSIONS_CREATE_INGREDIENT_ATTR)).join(' ')).toContain('No Ingredients installed');
+    expect(onlyByAttr(host, PERMISSIONS_CREATE_SAVE_ATTR).disabled).toBe(true);
+    expect(calls.runUpsertOverride).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('ignores a late catalog retry %s and stale clicks after disposal', async outcome => {
+    const pending = deferred<{ ingredients: CatalogIngredientView[] }>();
+    let reads = 0;
+    const { host, mount, calls } = mountFor({
+      withCreate: true,
+      runListCatalogOperations: () => {
+        reads += 1;
+        return reads === 1 ? Promise.reject(new Error('catalog down')) : pending.promise;
+      },
+    });
+    await mount.whenCatalogLoaded();
+    const retry = onlyByAttr(host, PERMISSIONS_CATALOG_RETRY_ATTR);
+    retry.click();
+    const settled = mount.whenCatalogLoaded();
+    mount.dispose();
+    if (outcome === 'success') pending.resolve({ ingredients: catalogFixture() });
+    else pending.reject(new Error('late catalog failure'));
+    await settled;
+    retry.click();
+    expect(host.children).toEqual([]);
+    expect(mount.getCatalog()).toEqual([]);
+    expect(reads).toBe(2);
+    expect(calls.runUpsertOverride).not.toHaveBeenCalled();
+    expect(calls.runDeleteOverride).not.toHaveBeenCalled();
   });
 });

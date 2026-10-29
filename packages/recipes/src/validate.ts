@@ -26,7 +26,7 @@
  *  them and exposes the public types + convenience wrappers.
  */
 
-import type { RecipeDefinition } from '@recued/contracts';
+import type { RecipeDefinition, AuthoringReferenceSpan } from '@recued/contracts';
 import {
   validateRequiredFields,
   validateRecipeId,
@@ -74,6 +74,7 @@ export interface ValidationIssue {
   /** Dot path into the recipe (e.g. "metadata.author", "steps[3].id"). */
   path: string;
   message: string;
+  reference_span?: AuthoringReferenceSpan;
 }
 
 export interface ValidationResult {
@@ -87,8 +88,8 @@ export interface ValidationResult {
  *  Never throws — malformed input produces issues instead. */
 export const validateRecipe = (input: unknown): ValidationResult => {
   const issues: ValidationIssue[] = [];
-  const add = (severity: ValidationSeverity, code: string, path: string, message: string): void => {
-    issues.push({ severity, code, path, message });
+  const add = (severity: ValidationSeverity, code: string, path: string, message: string, reference_span?: AuthoringReferenceSpan): void => {
+    issues.push({ severity, code, path, message, ...(reference_span ? { reference_span } : {}) });
   };
 
   if (!input || typeof input !== 'object' || Array.isArray(input)) {

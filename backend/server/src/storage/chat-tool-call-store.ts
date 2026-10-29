@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { isChatToolCallRecord, type ChatToolCallRecord } from '@recued/contracts';
+import { isChatToolCallRecord, isToolProgress, TOOL_PROGRESS_INTERVAL_MS, type ChatToolCallRecord, type ToolProgress } from '@recued/contracts';
 import type { AppendMessageInput } from './chat-store.js';
 
 // Shared by all chat-store adapters in this server process. Opening another
@@ -64,6 +64,7 @@ export interface ChatToolCallTracker {
   get(message_id: string): ChatToolCallRecord | undefined;
   bind(message_id: string, run_id: string, recipe_id?: string): void;
   progress(message_id: string, run_id: string, at: number, stalled: boolean): boolean;
+  displayProgress(message_id: string, progress: ToolProgress, at: number): boolean;
   hold(message_id: string): void;
   interrupt(message_id: string, includeHeld?: boolean): void;
   list(session_id?: string): ChatToolCallRecord[];
@@ -118,12 +119,21 @@ export const createChatToolCallTracker = (
       if (!call || call.process_id !== processId || call.state !== 'running'
         || call.run_id !== run_id || !Number.isFinite(at)) return false;
       if (at < call.updated_at) return false;
-      // Coalesce heartbeat/output activity to at most one write per second;
+      // Coalesce heartbeat/output activity to at most one write per five seconds;
       // the first observation and changes to stalled state are immediate.
-      if (call.last_signal_at !== undefined && at - call.updated_at < 1_000
+      if (call.last_signal_at !== undefined
+        && at - (stalled ? call.updated_at : call.last_signal_at) < TOOL_PROGRESS_INTERVAL_MS
         && Boolean(call.stalled) === stalled) return false;
       return write(call, { ...call, updated_at: Math.max(at, call.updated_at),
         ...(stalled ? {} : { last_signal_at: at }), stalled });
+    },
+    displayProgress(message_id, progress, at) {
+      const call = read(message_id);
+      if (!call || call.process_id !== processId || call.state !== 'running'
+        || !Number.isFinite(at) || at < call.updated_at || !isToolProgress(progress)) return false;
+      // A coalesced caption may describe an older observation. Only the live
+      // run's own signals may advance liveness or clear a stall warning.
+      return write(call, { ...call, progress, updated_at: at });
     },
     hold(message_id) {
       const call = read(message_id);

@@ -34,8 +34,12 @@ import {
   REF_PICKER_INPUT_ATTR,
   REF_PICKER_OPTION_INDEX_ATTR,
   REF_PICKER_RESULTS_ATTR,
+  REF_PICKER_RECOVERY_ATTR,
+  REF_PICKER_RECOVERY_MESSAGE_ATTR,
+  REF_PICKER_RETRY_ATTR,
   REF_PICKER_VALUE_ATTR,
   refPickerOptionDomId,
+  refPickerResultsVisible,
   renderRefPickerResultRows,
 } from './render.js';
 import { asRefPickerSearchPage } from './types.js';
@@ -58,6 +62,7 @@ interface ElementLike {
   removeEventListener(type: string, fn: (event: EventLike) => void): void;
   parentElement?: ElementLike | null;
   innerHTML?: string;
+  textContent?: string | null;
   focus?: () => void;
   scrollIntoView?: (options?: { block?: 'nearest' }) => void;
 }
@@ -88,6 +93,10 @@ export const wireRefPicker = (
   // reads the committed id off THIS element, not the visible input — so a
   // commit/clear must write the id through here or the form reads a stale id.
   let mirrorEl: ElementLike | null = null;
+  let recoveryEl: ElementLike | null = null;
+  let recoveryMessageEl: ElementLike | null = null;
+  let retryEl: ElementLike | null = null;
+  let lastSearchQuery = '';
   let hadFocus = false;
   let restoringFocus = false;
   let destroyed = false;
@@ -101,18 +110,19 @@ export const wireRefPicker = (
   // drifted from state (commit / clear / revert), so typing never moves
   // the caret.
   const paint = (): void => {
+    const resultsVisible = refPickerResultsVisible(state);
     if (resultsEl !== null) {
       if (resultsEl.innerHTML !== undefined) {
-        resultsEl.innerHTML = state.open
+        resultsEl.innerHTML = resultsVisible
           ? renderRefPickerResultRows(state, config)
           : '';
       }
-      setBoolAttr(resultsEl, 'hidden', !state.open);
+      setBoolAttr(resultsEl, 'hidden', !resultsVisible);
       resultsEl.setAttribute('aria-busy', state.loading ? 'true' : 'false');
     }
     if (inputEl !== null) {
       if ((inputEl.value ?? '') !== state.query) inputEl.value = state.query;
-      inputEl.setAttribute('aria-expanded', state.open ? 'true' : 'false');
+      inputEl.setAttribute('aria-expanded', resultsVisible ? 'true' : 'false');
       inputEl.setAttribute('aria-busy', state.loading ? 'true' : 'false');
       if (state.open && state.activeIndex >= 0) {
         inputEl.setAttribute(
@@ -135,10 +145,22 @@ export const wireRefPicker = (
       const next = state.selectedId ?? '';
       if (mirrorEl.value !== next) mirrorEl.value = next;
     }
+    if (recoveryEl !== null) setBoolAttr(recoveryEl, 'hidden', state.retryableError === null);
+    const recoveryMessage = state.retryableError ?? '';
+    if (recoveryMessageEl !== null && recoveryMessageEl.textContent !== recoveryMessage) {
+      recoveryMessageEl.textContent = recoveryMessage;
+    }
+    if (retryEl !== null) {
+      const label = state.loading ? 'Searching…' : 'Try again';
+      if (retryEl.textContent !== label) retryEl.textContent = label;
+      retryEl.setAttribute('aria-disabled', state.loading ? 'true' : 'false');
+      retryEl.setAttribute('aria-busy', state.loading ? 'true' : 'false');
+    }
   };
 
   // ── search ─────────────────────────────────────────────────────────
   const runSearch = (value: string, immediate: boolean): void => {
+    lastSearchQuery = value;
     cancelDebounce?.();
     cancelDebounce = null;
     // Bump the invalidation token NOW (not inside `fire`), so a newer
@@ -167,7 +189,7 @@ export const wireRefPicker = (
         (result) => {
           if (destroyed || seq !== searchSeq) return;
           const page = asRefPickerSearchPage(result);
-          state = setResults(state, page.options, page.truncated === true);
+          state = setResults(state, page.options, page.truncated === true, page.retryableError ?? null);
           paint();
         },
         (err: unknown) => {
@@ -185,17 +207,21 @@ export const wireRefPicker = (
   };
 
   // ── commit helpers ─────────────────────────────────────────────────
+  const invalidateSearch = (): void => {
+    cancelDebounce?.();
+    cancelDebounce = null;
+    searchSeq += 1;
+  };
   const select = (optionIndex: number): void => {
     const option = state.options[optionIndex];
     if (option === undefined) return;
+    invalidateSearch();
     state = commitOption(state, option);
     paint();
     opts.onChange?.({ id: option.id, label: option.label });
   };
   const doClear = (): void => {
-    cancelDebounce?.();
-    cancelDebounce = null;
-    searchSeq += 1;
+    invalidateSearch();
     state = clearSelection(state);
     paint();
     opts.onChange?.(null);
@@ -268,6 +294,18 @@ export const wireRefPicker = (
   };
 
   const onClick = (event: EventLike): void => {
+    if (closestWithAttr(event.target, REF_PICKER_RETRY_ATTR, shellEl) !== null) {
+      prevent(event);
+      if (destroyed || state.loading || state.retryableError === null) return;
+      // Blur restores the committed label. Retry still belongs to the failed
+      // query, even after the owner visited another field.
+      state = { ...state, query: lastSearchQuery, open: true };
+      restoringFocus = true;
+      try { inputEl?.focus?.(); } finally { restoringFocus = false; }
+      paint();
+      runSearch(lastSearchQuery, true);
+      return;
+    }
     if (closestWithAttr(event.target, REF_PICKER_CLEAR_ATTR, shellEl) === null) {
       return;
     }
@@ -303,6 +341,7 @@ export const wireRefPicker = (
   // button may take focus normally, then its click clears and returns focus —
   // important on touch, where cancelling pointerdown can suppress click.
   const onFocusout = (): void => {
+    if (restoringFocus) return;
     hadFocus = false;
     state = revertQuery(closeList(state));
     paint();
@@ -316,6 +355,7 @@ export const wireRefPicker = (
 
   const attach = (searchRoot: ParentNode): void => {
     detach();
+    recoveryEl = recoveryMessageEl = retryEl = null;
     const queryable = searchRoot as unknown as ElementLike;
     // Degrade gracefully on a root that can't be queried (a minimal-DOM
     // test host, or a surface that string-renders its innerHTML): the
@@ -333,6 +373,9 @@ export const wireRefPicker = (
     resultsEl = shellEl.querySelector(`[${REF_PICKER_RESULTS_ATTR}]`);
     clearEl = shellEl.querySelector(`[${REF_PICKER_CLEAR_ATTR}]`);
     mirrorEl = shellEl.querySelector(`[${REF_PICKER_VALUE_ATTR}]`);
+    recoveryEl = shellEl.querySelector(`[${REF_PICKER_RECOVERY_ATTR}]`);
+    recoveryMessageEl = shellEl.querySelector(`[${REF_PICKER_RECOVERY_MESSAGE_ATTR}]`);
+    retryEl = shellEl.querySelector(`[${REF_PICKER_RETRY_ATTR}]`);
     bind(shellEl, 'input', onInput);
     bind(shellEl, 'keydown', onKeydown);
     const pointerEventsAvailable =
@@ -384,6 +427,7 @@ export const wireRefPicker = (
     setValue: (selection: RefPickerSelection | null) => {
       if (destroyed) return;
       if (selection === null) {
+        invalidateSearch();
         state = clearSelection(state);
       } else if (selection.id === state.selectedId) {
         // Label hydration is not a new choice. Preserve an open inventory,
@@ -396,6 +440,7 @@ export const wireRefPicker = (
           query: state.query === priorLabel ? selection.label : state.query,
         };
       } else {
+        invalidateSearch();
         state = commitOption(state, { id: selection.id, label: selection.label });
       }
       paint();
@@ -410,6 +455,7 @@ export const wireRefPicker = (
       cancelDebounce = null;
       detach();
       shellEl = inputEl = resultsEl = clearEl = mirrorEl = null;
+      recoveryEl = recoveryMessageEl = retryEl = null;
     },
   };
 };

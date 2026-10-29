@@ -1,3 +1,4 @@
+import { outputFilesFromResults, outputFileSelectionValid, OUTPUT_FILE_GUIDANCE } from './chat-output-files.js';
 import { visibleSourceFacts, renderSourceFacts, sourceFactOutputSchema, SOURCE_FACT_GUIDANCE, SOURCE_FACT_REPAIR, SOURCE_FACT_FAILURE } from './chat-source-facts.js';
 /** D-160 spec-O-5 — the chat turn MECHANICS.
  *
@@ -555,6 +556,7 @@ const failedToolLoopContent = (response: string, failure: Parameters<typeof deco
  *  output is a stray key the model invented (preserved through
  *  `coerceAIOutput`'s spread). */
 const AI_OUTPUT_ENVELOPE_KEYS: ReadonlySet<string> = new Set([
+  'output_files',
   'response',
   'events',
   'tool_calls',
@@ -873,6 +875,8 @@ export const RECUED_CORE_TEXT = `Emit AIOutput JSON only — never wrap in markd
 ${CHAT_OUTPUT_SHAPE}
 
 "events" RECORDS something worth remembering. It never performs an action — only a "tool_calls" entry does anything at all. Never tell the user you have done something unless a tool call in this turn did it.
+
+For a requested downloadable file, use available tools to create the stored file and attach it to the answer. Inline text alone leaves that request unfinished. If no tool can create it, say the file has not been delivered.
 
 Never state a specific value from the user's own data — an amount, a cost, a date, a count, an address in their records, messages, files or accounts — unless it is in front of you: in a tool result this turn, in "prior_tool_calls", in the carried brief, or said earlier in this conversation. A value you work out from their data, such as a total, needs every value it uses in front of you. If one is not there, FETCH it with a tool. A search that came back empty is not permission to supply the value from your own guess; it means the value has not been found yet, and the right move is a different tool or a different query, not an answer. Saying "I do not have that yet" is always better than a number you cannot point to. General knowledge is different: a widely known public fact, such as a city's population or the year of a historical event, you may answer from what you know, and when it changes over time, say how current your figure is. When the user needs a figure as it is right now, such as a price or an exchange rate, look for a tool that has it first.
 
@@ -2711,6 +2715,7 @@ export const runChatTurn = async (
     && picker_target === 'self' && dispatchPeerName === null;
   const invalidSourceAnswers = new WeakSet<AIOutput>();
   const outputLengthStops = new WeakSet<AIOutput>();
+  let outputFileGuidanceActive = false;
   let mainCallCount = 0;
   let sourceFactRepairUsed = false;
   const callMainTurn = async (
@@ -2744,7 +2749,8 @@ export const runChatTurn = async (
     const activeEditTarget = mailEvidence && editTarget ? mailWorkEditTarget(editTarget.plan, mailEvidence.planSnapshot()) : null;
     const sourceFactDemand = sourceFactReadOnly && visibleSourceFacts(prior_tool_calls ?? [], prior_tool_calls ?? []).active;
     const systemPrompt = mainSystemPrompt + (activeEditTarget ? `\n\n${MAIL_WORK_EDIT_SHAPE}` : '')
-      + (sourceFactDemand ? `\n\n${SOURCE_FACT_GUIDANCE}` : '');
+      + (sourceFactDemand ? `\n\n${SOURCE_FACT_GUIDANCE}` : '')
+      + (outputFileGuidanceActive ? `\n\n${OUTPUT_FILE_GUIDANCE}` : '');
     const systemRole: LLMMessageRole = inputs.system_role ?? 'system';
     let fittedChatTail = inputs.content.chat_tail.map(message => mailEvidence && message.role === 'assistant'
       ? { ...message, content: `Earlier AI proposal, not source evidence; check it against the supplied observations before refining:\n${message.content}` }
@@ -3835,6 +3841,7 @@ export const runChatTurn = async (
       // site's (distinct failure points; worst case 2 recovery calls per
       // turn, each individually bounded at one).
       let loopRecoveryUsed = false;
+      let outputFileRepairUsed = false;
       // Separate budget from `loopRecoveryUsed`: a turn can decode EMPTY once
       // and MALFORMED once, and they are different failures with different
       // feedback. Each is individually bounded at one, so the worst case adds
@@ -4076,7 +4083,7 @@ export const runChatTurn = async (
             }
 
             const issued = deps.wasValueIssuedToModel;
-            const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody)
+            const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody, { tool: tc.tool, packet: lastSourcePacket })
               // ⛔ A VALUE THE SUBSTRATE ISSUED IS NOT AN INVENTION. See
               //   `wasValueIssuedToModel` — the prefetch block is injected after
               //   the corpus is captured, so its identifiers can never appear in
@@ -4360,6 +4367,7 @@ export const runChatTurn = async (
         // passing the live reference would let those mutations leak
         // into the earlier round's wire input.
         if (!sourceReadBatch) projectionReadBarrier = toolResultsAccum.length;
+        outputFileGuidanceActive ||= outputFilesFromResults(toolResultsAccum).length > 0;
         const reinvokeResult = await tryMainTurn(
           retainForReinvoke(priorToolCalls, roundStart),
           reusedAssetRead ? ASSET_READ_REUSE_FEEDBACK : undefined,
@@ -4472,6 +4480,31 @@ export const runChatTurn = async (
           }
         }
 
+        const outputFiles = outputFilesFromResults(toolResultsAccum);
+        if (!loopReplyStopped && currentAiOutput.tool_calls.length === 0
+          && (outputFiles.length > 0 || currentAiOutput.output_files !== undefined)
+          && !outputFileSelectionValid(currentAiOutput, outputFiles)) {
+          if (!outputFileRepairUsed) {
+            outputFileRepairUsed = true;
+            const repair = await tryMainTurn(priorToolCalls.slice(),
+              `${OUTPUT_FILE_GUIDANCE} Select from these completed outputs: ${JSON.stringify(outputFiles)}. Return your final answer with output_files.`);
+            totalUsage = aggregateTokenUsageReports(totalUsage, repair.usage);
+            if (stopForContextTrim(repair, responseBeforeReinvoke)) break toolLoop;
+            if (repair.kind === 'ok') {
+              currentAiOutput = repair.output;
+              loopReplyStopped = isEmptyChatAiOutput(currentAiOutput) || outputLengthStops.has(currentAiOutput);
+              if (outputLengthStops.has(currentAiOutput)) loopStopMessage = OUTPUT_LENGTH_EXHAUSTED_MESSAGE;
+            } else {
+              toolLoopFailure = { detail: repair.detail };
+              terminationReason = 'aborted';
+              loopReplyStopped = true; loopStopMessage = failedReplyMessage(repair); emitDecoderFailure(repair, 'tool_loop');
+            }
+          }
+          if (!loopReplyStopped && currentAiOutput.tool_calls.length === 0 && !outputFileSelectionValid(currentAiOutput, outputFiles)) {
+            currentAiOutput = { response: 'I could not select a verified output to attach. The requested file has not been delivered.', events: [], tool_calls: [], output_files: [] };
+          }
+        }
+
         assistantContent = loopReplyStopped
           ? withStopMessage(responseBeforeReinvoke, loopStopMessage)
           : currentAiOutput.response;
@@ -4578,6 +4611,7 @@ export const runChatTurn = async (
               && !isEmptyChatAiOutput(reviewed.output)
               && !outputLengthStops.has(reviewed.output)
               && (reviewed.output.tool_calls?.length ?? 0) === 0
+              && (!outputFiles.length || outputFileSelectionValid(reviewed.output, outputFiles))
             ) {
               currentAiOutput = reviewed.output;
               assistantContent = currentAiOutput.response;

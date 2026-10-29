@@ -367,6 +367,7 @@ describe('startPostListenerRuntime', () => {
       serverTimeZone: expect.any(Function),
       // R21.1 — the vault-unlocked predicate gates the scheduler ticks.
       isVaultUnlocked: options.app.isVaultUnlocked,
+      promptScheduleTick: expect.any(Function),
     });
     const schedulerOptions = runtimeMocks.startSchedulers.mock.calls[0]![0];
     expect(schedulerOptions.serverTimeZone()).toBe('Europe/Dublin');

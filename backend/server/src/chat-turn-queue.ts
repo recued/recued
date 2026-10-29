@@ -15,7 +15,9 @@ export interface ChatTurnQueue {
   withdraw(session: string, turn: string): Promise<ChatWithdrawnDraft>;
   cancel(session: string, turn: string): Promise<void>;
   retry(session: string, turn: string, submission: string): Promise<ChatTurnAcceptance>;
-  submit(command: QueuedChatCommand, submission: string, repeat?: boolean): Promise<ChatTurnAcceptance>;
+  /** beforeInsert runs synchronously in the admission transaction, only for a new turn. */
+  submit(command: QueuedChatCommand, submission: string, repeat?: boolean,
+    beforeInsert?: (turn_id: string) => undefined): Promise<ChatTurnAcceptance>;
   register(family: string, execute: (command: QueuedChatCommand, turn: string, assertActive: () => void, complete: () => void) => Promise<ChatTurnAck>): void;
   close(): void;
 }
@@ -145,9 +147,9 @@ export const withQueuedChatTurns = (
       if (!row || row.session_id !== session) throw new RpcError('not_found', 'Turn not found in this conversation.', 404);
       return queue.submit(await journal.read(row), submission, true);
     },
-    async submit(command, submission, repeat) {
+    async submit(command, submission, repeat, beforeInsert) {
       if (closed) throw new Error('Conversation worker is shutting down.');
-      const ack = await journal.admit(command, submission, repeat);
+      const ack = await journal.admit(command, submission, repeat, beforeInsert);
       notify(command.session_id);
       // Defer execution until the admission caller has received its receipt.
       queueMicrotask(pump);

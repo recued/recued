@@ -1,6 +1,6 @@
 import type { CollectionRecord } from './collections.js';
 
-/** Paired owner UI: inspect an event and edit a single local event. */
+/** Paired owner UI: inspect events, edit local events, and respond to remote invitations. */
 export interface CalendarEventRef {
   slug: string;
   source_id: string;
@@ -33,7 +33,30 @@ export interface CalendarEventSnapshot {
   incarnation: string | null;
   editable: boolean;
   read_only_reason?: string;
+  /** A provider read succeeded for this request; absent on cached/local reads. */
+  provider_verified?: true;
+  /** Saved details remain available when a remote refresh fails. */
+  refresh_error?: string;
+  /** Only a live provider invitation may offer organizer-facing responses. */
+  invitation?: {
+    organizer: { email: string; display_name?: string };
+    attendee_email: string;
+    response: 'accepted' | 'declined' | 'tentative' | 'needs_action';
+    can_respond: boolean;
+    scope: 'event' | 'occurrence' | 'series';
+    unavailable_reason?: string;
+  };
 }
+
+export type CalendarInvitationResponse = 'accepted' | 'tentative' | 'declined';
+export interface CalendarEventRespondRequest extends CalendarEventRef {
+  expected_version: string;
+  expected_incarnation: string;
+  response: CalendarInvitationResponse;
+}
+export type CalendarEventRespondResult =
+  | { removed: false; snapshot: CalendarEventSnapshot }
+  | { removed: true; source_id: string; response: 'declined' };
 
 export interface CalendarEventPatch {
   summary?: string;

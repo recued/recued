@@ -114,6 +114,12 @@ describe('chat-store — turn_id on messages', () => {
     // server actually finds on disk. ⚠ Order matters: the store prepares its
     // INSERT once, at construction, so the legacy row has to be written by a
     // store built against the schema it was written under.
+    // A pre-column database also predates every index that names that column.
+    // Remove those dependencies before fabricating the old schema.
+    for (const index of db.prepare('SELECT name FROM pragma_index_list(?)').all('chat_messages') as { name: string }[]) {
+      const columns = db.prepare('SELECT name FROM pragma_index_info(?)').all(index.name) as { name: string | null }[];
+      if (columns.some(column => column.name === 'turn_id')) db.exec(`DROP INDEX "${index.name.replaceAll('"', '""')}"`);
+    }
     db.exec('ALTER TABLE chat_messages DROP COLUMN turn_id');
     expect(
       (db.prepare('PRAGMA table_info(chat_messages)').all() as { name: string }[])

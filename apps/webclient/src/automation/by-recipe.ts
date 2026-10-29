@@ -66,7 +66,7 @@ export interface ByRecipeGroup {
   readonly href: string;
   readonly lines: readonly ByRecipeDishLine[];
   /** Rows of this recipe that belong to no dish (made before D-319). */
-  readonly strayRows: readonly string[];
+  readonly strayRows: readonly { readonly html: string; readonly chip: AutomationChip }[];
   /** It starts on its own, and nobody switched it on. */
   readonly notSwitchedOn: boolean;
   /** It starts on its own, and the server only ships it: its pack is not
@@ -96,12 +96,13 @@ export const chipOf = (line: ByRecipeDishLine): AutomationChip =>
       ? 'needs-you'
       : line.status.kind === 'failing' ? 'failing' : 'on';
 
-/** How many lines each filter would show; a recipe nobody switched on is Off. */
+/** How many items each filter would show; a recipe nobody switched on is Off. */
 export const chipCounts = (groups: readonly ByRecipeGroup[]): Record<AutomationChip, number> => {
   const counts: Record<AutomationChip, number> = { on: 0, off: 0, 'needs-you': 0, failing: 0 };
   for (const group of groups) {
     if (group.notSwitchedOn) counts.off += 1;
     for (const line of group.lines) counts[chipOf(line)] += 1;
+    for (const row of group.strayRows) counts[row.chip] += 1;
   }
   return counts;
 };
@@ -109,11 +110,12 @@ export const chipCounts = (groups: readonly ByRecipeGroup[]): Record<AutomationC
 export const renderChips = (
   counts: Readonly<Record<AutomationChip, number>>,
   active: AutomationChip | null,
+  showCounts = true,
 ): string => `
   <div class="automation-chips" role="group" aria-label="Show only">
     ${AUTOMATION_CHIPS.map((chip) => `<button type="button" class="automation-chip"
       ${AUTOMATION_ACTION_ATTR}="chip:${chip}" ${AUTOMATION_CHIP_ATTR}="${chip}"
-      aria-pressed="${active === chip ? 'true' : 'false'}">${e(CHIP_LABEL[chip])} <span class="automation-chip-count">${counts[chip]}</span></button>`).join('')}
+      aria-pressed="${active === chip ? 'true' : 'false'}">${e(CHIP_LABEL[chip])}${showCounts ? ` <span class="automation-chip-count">${counts[chip]}</span>` : ''}</button>`).join('')}
   </div>`;
 
 const button = (action: string, id: string, label: string, extra = ''): string =>
@@ -162,7 +164,7 @@ export const renderByRecipe = (view: ByRecipeView): string => {
   const shown = view.groups.flatMap((group) => {
     const lines = view.chip === null ? group.lines : group.lines.filter((line) => chipOf(line) === view.chip);
     const notSwitchedOn = group.notSwitchedOn && (view.chip === null || view.chip === 'off');
-    const strays = view.chip === null ? group.strayRows : [];
+    const strays = view.chip === null ? group.strayRows : group.strayRows.filter((row) => row.chip === view.chip);
     return lines.length === 0 && !notSwitchedOn && strays.length === 0 ? [] : [{ group, lines, notSwitchedOn, strays }];
   });
   return shown.map(({ group, lines, notSwitchedOn, strays }) => {
@@ -190,7 +192,7 @@ export const renderByRecipe = (view: ByRecipeView): string => {
             <span>${e(NOT_INSTALLED_TEXT)} <a href="${e(serializeShellRoute('packs'))}">Install it from Packs</a> to switch it on.</span>
           </div>`
         : ''}
-      ${strays.length > 0 ? `<ul class="automation-list">${strays.join('')}</ul>` : ''}
+      ${strays.length > 0 ? `<ul class="automation-list">${strays.map((row) => row.html).join('')}</ul>` : ''}
     </section>`;
   }).join('');
 };
@@ -198,6 +200,7 @@ export const renderByRecipe = (view: ByRecipeView): string => {
 /** One run coming up. */
 export interface ComingUpEntry {
   readonly at: number;
+  /** A recipe's name or a saved prompt's title. */
   readonly recipe_name: string;
   readonly href: string;
   /** Its dish's name, when the recipe has more than one. */
@@ -207,10 +210,10 @@ export interface ComingUpEntry {
 }
 
 /** "Coming up": the next runs, soonest first. */
-export const renderComingUp = (entries: readonly ComingUpEntry[]): string => {
+export const renderComingUp = (entries: readonly ComingUpEntry[], emptyText = 'Nothing is due to run on its own.'): string => {
   const sorted = [...entries].sort((a, b) => a.at - b.at);
   if (sorted.length === 0) {
-    return `<p class="automation-section-hint" ${AUTOMATION_COMING_UP_ATTR}>Nothing is due to run on its own.</p>`;
+    return `<p class="automation-section-hint" ${AUTOMATION_COMING_UP_ATTR}>${e(emptyText)}</p>`;
   }
   return `<ol class="automation-coming-up" ${AUTOMATION_COMING_UP_ATTR}>
     ${sorted.map((entry) => `<li>
@@ -234,13 +237,13 @@ export const BY_RECIPE_STYLES = `
 @media (max-width: 640px) {
   .automation-chip { min-height: 44px; }
 }
-.automation-recipe { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; min-width: 0; }
-.automation-recipe-title { margin: 0 0 6px; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.automation-recipe { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 18px 20px; margin: 0 0 12px; min-width: 0; }
+.automation-recipe-title { margin: 0 0 12px; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 .automation-recipe-title a { color: inherit; text-decoration: none; }
 .automation-recipe-title a:hover { text-decoration: underline; }
 .automation-recipe-summary { color: var(--fg-muted); font-weight: 400; font-size: 13px; }
-.automation-dishes { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.automation-dish-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.automation-dishes { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.automation-dish-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-width: 0; }
 .automation-dish-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 .automation-dish-dot--off { background: var(--border-strong, var(--border)); }
 .automation-dish-dot--failing { background: var(--danger); }
@@ -253,10 +256,16 @@ export const BY_RECIPE_STYLES = `
 .automation-dish-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .automation-dish-actions [role="switch"][aria-checked="true"] { border-color: var(--accent); color: var(--accent); }
 .automation-dish-reason { margin: 2px 0 0 16px; font-size: 12px; color: var(--danger); }
-.automation-dish-rows { margin: 6px 0 0 16px; }
+.automation-dish-rows { margin: 12px 0 0 16px; }
 .automation-not-on { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 13px; color: var(--fg-muted); }
-.automation-coming-up { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.automation-coming-up li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 13px; }
+.automation-coming-up { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.automation-coming-up li { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; font-size: 13px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .automation-coming-up time { font-variant-numeric: tabular-nums; min-width: 11em; }
-.automation-coming-up-what { color: var(--fg-muted); }
+.automation-coming-up li>a { min-width: 0; overflow-wrap: anywhere; }
+.automation-coming-up-what { color: var(--fg-muted); min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .automation-recipe { padding: 16px; }
+  .automation-dish-actions { width: 100%; margin-left: 0; }
+  .automation-dish-rows { margin-left: 0; }
+}
 `;

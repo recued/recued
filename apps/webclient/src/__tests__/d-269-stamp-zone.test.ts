@@ -75,10 +75,14 @@ describe('D-269 — the browser-zone idiom is accounted for, file by file', () =
     //    labels timestamps as device time when event-zone details are absent.
     //    It does not stamp a saved alert, mail send or scheduled recipe; the
     //    calendar editor uses the event's own zone.
+    //  · the one-off reschedule editor — its native datetime picker uses
+    //    the device's wall clock and labels that clock explicitly. It sends
+    //    an absolute run_at; it never replaces the schedule's time_zone.
     //  · two-clock.ts — the fallback implementations themselves (`stampZone`
     //    and the preview's own client-zone default). This is where the reading
     //    is supposed to live, exactly once.
     expect(hits.sort()).toEqual([
+      'apps/webclient/src/automation/one-off-reschedule.ts',
       'apps/webclient/src/chat/bootstrap-chat-route.ts',
       'apps/webclient/src/data/collection-explorer.ts',
       'packages/ui-shared/src/two-clock.ts',

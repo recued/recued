@@ -95,6 +95,12 @@ const EXPECTED: Readonly<Record<Tier1ToolName, readonly string[]>> = {
   'recipe.run': [],
   'recipe.stop': [],
   'recipe.schedule': [SCHEDULE_RECIPE_OP_ID],
+  'schedule.run_prompt': ['core.schedule.prompt'],
+  'schedule.list': ['core.schedule.prompt'],
+  'schedule.update': ['core.schedule.prompt'],
+  'schedule.pause': ['core.schedule.prompt'],
+  'schedule.resume': ['core.schedule.prompt'],
+  'schedule.remove': ['core.schedule.prompt'],
 };
 
 describe('D-327 — the needs the Contracts page shows are what the handlers check', () => {

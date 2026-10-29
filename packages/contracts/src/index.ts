@@ -74,7 +74,7 @@ export {
   crmFieldPackTypeConforms,
   vendorEntitiesFromComposition,
 } from './connection-agnostic.js';
-export { parseMailDraftId, parseMailDraftContent, parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete, parseMailDraftList,
+export { parseMailDraftId, parseMailDraftContent, readStoredMailDraftContent, parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete, parseMailDraftList,
   type MailDraft, type MailDraftContent, type MailDraftSummary, type MailDraftCreateRequest, type MailDraftUpdateRequest, type MailDraftDeleteRequest } from './mail-drafts.js';
 
 export type {
@@ -2334,6 +2334,7 @@ export {
 // D-121 Phase 1 — `data.contact` warehouse collection.
 export type {
   ContactRecord,
+  ContactAdditionalIdentifiers,
   ContactSource,
   ContactObservedSource,
   ContactImportRowSource,
@@ -3318,6 +3319,10 @@ export type {
   ReminderView,
   ReminderChangeReason,
   ReminderListResult,
+  ReminderListRequest,
+  ReminderListPageInput,
+  ReminderListCursor,
+  ReminderCreateResult,
   ReminderUpdateResult,
   ReminderCancelResult,
 } from './reminder.js';
@@ -3432,7 +3437,7 @@ export {
   CalendarAdapterError,
 } from './calendar.js';
 export { CALENDAR_EVENT_EDIT_LIMITS } from './calendar-event-rpc.js';
-export type { CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest } from './calendar-event-rpc.js';
+export type { CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarInvitationResponse } from './calendar-event-rpc.js';
 export type {
   CanonicalEvent,
   CalendarRecordHotFields,
@@ -5716,6 +5721,8 @@ export type {
   ContactImportCandidate,
   ContactImportFileChange,
   ContactImportFilePlan,
+  ContactImportOccasion,
+  ContactImportOccasionSelection,
 } from './contact-sources.js';
 
 // D-192 slice 6 — the `import_scope` escape hatch (Fork A): a user-declared
@@ -5943,6 +5950,13 @@ export type {
   NormalizedMailSend,
   ComposeDispatchHooks,
   ComposeRewriteRecipeInput,
+  MailMessageRef,
+  MailMessageSnapshot,
+  MailConversationScope,
+  MailConversationCursor,
+  MailConversationRequest,
+  MailConversationItem,
+  MailConversationSnapshot,
 } from './mail-compose/index.js';
 export {
   MAIL_COMPOSE_MODES,
@@ -5971,6 +5985,10 @@ export {
   SEND_COMPOSED_MAIL_RECIPE_ID,
   composeRewriteRecipeConfig,
   REWRITE_COMPOSED_MAIL_RECIPE_ID,
+  composeDraftRecipeConfig,
+  DRAFT_COMPOSED_MAIL_RECIPE_ID,
+  MAIL_DRAFT_BRIEF_MAX,
+  MAIL_DRAFT_SOURCE_MAX,
 } from './mail-compose/index.js';
 
 // D-145 PA5 — form renderer substrate (types, generators, validators).
@@ -6811,6 +6829,7 @@ export * from './stall-detection.js';
 // the `execution.{active,kill,cancel,promote}` rpc shapes).
 export * from './execution-control.js';
 export * from './chat-tool-call.js';
+export * from './tool-progress.js';
 // Durable operation-scoped approval outcomes. A recipe run may own several;
 // one approval group may cover several receipts.
 export * from './gated-action.js';
@@ -7134,3 +7153,10 @@ export type { LocalAutomationScope, LocalAutomationReview, LocalAutomationHooks 
 export * from './kitchen-drafts.js';
 export * from './pack-copy.js';
 export * from './resolved-input.js';
+
+export * from './prompt-schedule.js';
+export * from './csv-toolkit.js';
+
+export type { ContactSearchLocalRequest, ContactSearchLocalResponse } from './contact-search.js';
+export * from './csv-toolkit-authoring.js';
+export * from './file-content-read.js';

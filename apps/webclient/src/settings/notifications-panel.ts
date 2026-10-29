@@ -172,6 +172,8 @@ export const NOTIFICATIONS_BRIDGE_ROW_ERROR_ATTR =
   'data-recued-notifications-bridge-row-error';
 export const NOTIFICATIONS_BRIDGE_EMPTY_ATTR =
   'data-recued-notifications-bridge-empty';
+export const NOTIFICATIONS_BRIDGE_LOADING_ATTR = 'data-recued-notifications-bridge-loading';
+export const NOTIFICATIONS_BRIDGE_RETRY_ATTR = 'data-recued-notifications-bridge-retry';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams + handle
@@ -279,9 +281,8 @@ export interface NotificationsPanelMount {
    *  notification-settings mutation happens elsewhere (e.g. a connection
    *  enrolment that flips a row's readiness). */
   refresh(): void;
-  /** Initial load promise — resolves after the first `runDescribe`
-   *  settles (success → `ready`, failure → `error`). Subsequent
-   *  `refresh()` calls also update the tracked promise. */
+  /** Most-recent channel load, including its device read on success.
+   * Channels render as soon as their own read completes. */
   whenLoaded(): Promise<void>;
   /** Tear down the panel DOM + remove event listeners. Idempotent. */
   dispose(): void;
@@ -498,6 +499,7 @@ export const mountNotificationsPanel = (
   let renderedPhraseInput: HTMLInputElement | undefined;
   /** Most-recent `runDescribe` promise, exposed via `whenLoaded()`. */
   let pendingDescribePromise: Promise<void> = Promise.resolve();
+  let channelLoadGeneration = 0;
   let retryTransition = false;
   let pendingRetryFocus = false;
   let renderedRetryButton: HTMLButtonElement | undefined;
@@ -518,6 +520,10 @@ export const mountNotificationsPanel = (
    *  instead of being clobbered by it. Mirrors the asks / packs /
    *  cache-card `loadGeneration` DD. */
   let bridgeLoadGeneration = 0;
+  let bridgeLoading = false;
+  let bridgeHasPairedDevices: boolean | undefined;
+  let renderedBridgeCard: HTMLElement | undefined;
+  const bridgeEventVersions = new Map<string, number>();
   const bridgeRowToggling = new Set<string>(); // keys: `${token_id}::${mode}`
   const bridgeRowErrors = new Map<string, string>(); // keys: client_token_id
   const pendingBridgeTogglePromises = new Map<string, Promise<void>>();
@@ -589,64 +595,29 @@ export const mountNotificationsPanel = (
 
   const refreshRows = (): Promise<void> => {
     if (disposed) return Promise.resolve();
+    const generation = ++channelLoadGeneration;
     listError = null;
     rowErrors.clear();
     bridgeRowErrors.clear();
     transitionTo('loading');
+    const devices = reloadBridgeRows();
     const promise = (async () => {
       try {
-        // D-169 P1 — fetch channel rows + per-bridge sub-rows in
-        // parallel when the bridge-roster caller is wired. A failure on
-        // the bridge fetch surfaces inline at the bridge row group (the
-        // channel rows still render); a failure on the channel fetch
-        // is the panel-wide error path.
-        const bridgeGen = opts.runDescribeBridges
-          ? ++bridgeLoadGeneration
-          : 0;
-        const bridgePromise = opts.runDescribeBridges
-          ? opts.runDescribeBridges().catch((err: unknown) => ({
-              __error__: humanizeRpcError(err),
-            }))
-          : null;
         const result = await opts.runDescribe();
-        if (disposed) return;
+        if (disposed || generation !== channelLoadGeneration) return;
         rows = [...result.rows];
         reachesPhone = result.reaches_phone;
         reminderIssues = result.reminder_issues ?? [];
-        // R31 — seed the phrase input from the authoritative record, but
-        // never over an unsaved user edit (a refresh mid-typing keeps the
-        // draft). Always advance the comparison baseline: if an external
-        // write happens to match the local draft, it is no longer unsaved.
         persistedVerificationPhrase = result.verification_phrase ?? '';
-        if (!phraseDirty) {
-          verificationPhrase = persistedVerificationPhrase;
-        } else {
-          phraseDirty = verificationPhrase !== persistedVerificationPhrase;
-        }
-        if (bridgePromise) {
-          const br = await bridgePromise;
-          if (disposed) return;
-          // Skip if an event-triggered `reloadBridgeRows` (or a newer
-          // refresh) superseded this read while it was in flight — don't
-          // clobber the fresher roster with our now-stale snapshot. This
-          // closes the mount/retry race where a `bridge_mode_changed`
-          // arriving mid-load would otherwise be lost + overwritten.
-          if (bridgeGen === bridgeLoadGeneration) {
-            if ('__error__' in br) {
-              bridgeRows = [];
-              // Surface as a list-error-shaped string but only on the
-              // bridge group — the channel rows render normally.
-              bridgeRowErrors.set('', br.__error__);
-            } else {
-              bridgeRows = [...br.rows];
-            }
-          }
-        } else {
-          bridgeRows = [];
-        }
+        if (!phraseDirty) verificationPhrase = persistedVerificationPhrase;
+        else phraseDirty = verificationPhrase !== persistedVerificationPhrase;
+        // Device reads own their loading/error state. Ready channels and the
+        // phrase editor do not wait for them or repaint when they settle.
         transitionTo('ready');
+        // Preserve the existing settled-load seam for callers and tests.
+        await devices;
       } catch (err) {
-        if (disposed) return;
+        if (disposed || generation !== channelLoadGeneration) return;
         listError = humanizeRpcError(err);
         transitionTo('error');
       }
@@ -678,35 +649,30 @@ export const mountNotificationsPanel = (
     return matched;
   };
 
-  /** D-169 P2 Slice 4 follow-on — re-read the authoritative bridge roster
-   *  out-of-band (no panel-wide loading flash; the channel rows stay put),
-   *  generation-guarded so the freshest read wins. Used by the live
-   *  `bridge_mode_changed` handler when the event names a bridge not in
-   *  the current roster — either the initial `refreshRows` load hasn't
-   *  resolved yet (so an in-place splice would be lost, then overwritten
-   *  by the in-flight stale read) or the bridge was paired after our last
-   *  fetch. Because this reload is initiated AFTER the event arrived, its
-   *  read reflects the event's change (and any later ones); the generation
-   *  bump discards any in-flight load so the stale snapshot can't clobber
-   *  it. The render is gated on `state` like every other painter — when a
-   *  channel load is still in flight (`state === 'loading'`) the fresh
-   *  rows land in memory + surface at the eventual `transitionTo('ready')`. */
-  const reloadBridgeRows = (): void => {
-    if (disposed || !opts.runDescribeBridges) return;
+  /** Read only the device roster. Every completion is fenced from a newer
+   * read, while the channel controls and their drafts remain mounted. */
+  const reloadBridgeRows = (): Promise<void> => {
+    if (disposed || !opts.runDescribeBridges) return Promise.resolve();
     const gen = ++bridgeLoadGeneration;
+    bridgeLoading = true;
+    bridgeRowErrors.delete('');
+    repaintBridgeRows();
     const run = opts.runDescribeBridges;
-    void (async () => {
+    return (async () => {
       try {
         const br = await run();
         if (disposed || gen !== bridgeLoadGeneration) return;
         bridgeRows = [...br.rows];
-        bridgeRowErrors.delete('');
-        render();
+        bridgeHasPairedDevices = bridgeRows.length > 0;
       } catch (err) {
         if (disposed || gen !== bridgeLoadGeneration) return;
         bridgeRows = [];
         bridgeRowErrors.set('', humanizeRpcError(err));
-        render();
+      } finally {
+        if (!disposed && gen === bridgeLoadGeneration) {
+          bridgeLoading = false;
+          repaintBridgeRows();
+        }
       }
     })();
   };
@@ -720,14 +686,15 @@ export const mountNotificationsPanel = (
     mode: BridgeModeName,
     nextEnabled: boolean,
   ): Promise<void> => {
-    if (disposed) return Promise.resolve();
+    if (disposed || bridgeLoading) return Promise.resolve();
     if (!opts.runSetBridgeMode) return Promise.resolve();
     const key = bridgeToggleKey(client_token_id, mode);
+    const eventVersion = bridgeEventVersions.get(client_token_id) ?? 0;
     const existing = pendingBridgeTogglePromises.get(key);
     if (existing !== undefined) return existing;
     bridgeRowToggling.add(key);
     bridgeRowErrors.delete(client_token_id);
-    render();
+    repaintBridgeRows();
     const setBridgeMode = opts.runSetBridgeMode;
     const promise = (async () => {
       try {
@@ -737,11 +704,19 @@ export const mountNotificationsPanel = (
         });
         if (disposed) return;
         if (result.ok === true) {
-          // Refresh bridge rows locally — the rpc result carries the
-          // new settings record; we can splice the new mode value into
-          // the matching row without a re-fetch.
+          // The response may predate another axis's completed save. Apply
+          // only the axis this request owns. A conflicting live event needs
+          // an authoritative read after this acknowledgement.
           const fresh = result.settings.bridges?.[client_token_id];
-          if (fresh) applyBridgeModes(client_token_id, fresh);
+          if (fresh) {
+            const current = bridgeRows.find(row => row.client_token_id === client_token_id);
+            const changed = eventVersion !== (bridgeEventVersions.get(client_token_id) ?? 0);
+            if (!current || changed && current.modes[mode] !== fresh[mode]) void reloadBridgeRows();
+            else {
+              applyBridgeModes(client_token_id, { [mode]: fresh[mode] });
+              if (bridgeLoading) void reloadBridgeRows();
+            }
+          } else void reloadBridgeRows();
           return;
         }
         // `ok: false` variants — surface inline on the bridge row.
@@ -757,12 +732,12 @@ export const mountNotificationsPanel = (
           client_token_id,
           humanizeRpcError(err),
         );
-      } finally {
-        bridgeRowToggling.delete(key);
-        pendingBridgeTogglePromises.delete(key);
-        if (!disposed) render();
       }
-    })();
+    })().finally(() => {
+      bridgeRowToggling.delete(key);
+      pendingBridgeTogglePromises.delete(key);
+      if (!disposed) repaintBridgeRows();
+    });
     pendingBridgeTogglePromises.set(key, promise);
     return promise;
   };
@@ -847,12 +822,12 @@ export const mountNotificationsPanel = (
         // Network drop / `bad_request` / `not_configured` — surface the
         // error message verbatim on the row chip (keyed per axis).
         rowErrors.set(key, humanizeRpcError(err));
-      } finally {
-        togglingAxes.delete(key);
-        pendingTogglePromises.delete(key);
-        if (!disposed) render();
       }
-    })();
+    })().finally(() => {
+      togglingAxes.delete(key);
+      pendingTogglePromises.delete(key);
+      if (!disposed) render();
+    });
     pendingTogglePromises.set(key, promise);
     return promise;
   };
@@ -885,12 +860,12 @@ export const mountNotificationsPanel = (
       } catch (err) {
         if (disposed) return;
         phraseError = humanizeRpcError(err);
-      } finally {
-        phraseSaving = false;
-        pendingPhrasePromise = null;
-        if (!disposed) render();
       }
-    })();
+    })().finally(() => {
+      phraseSaving = false;
+      pendingPhrasePromise = null;
+      if (!disposed) render();
+    });
     pendingPhrasePromise = promise;
     return promise;
   };
@@ -1090,7 +1065,7 @@ export const mountNotificationsPanel = (
       // paired. There, the row's own status line already says "Not set up —
       // Install Browser Bridge", which is the whole message; the axis cell
       // should not also imply there are devices to configure.
-      const paired = row.ready;
+      const paired = bridgeHasPairedDevices ?? row.ready;
       fixed.className = paired ? 'notif-axis-fixed' : 'notif-axis-fixed notif-axis-na';
       fixed.textContent = paired ? COPY.axis_per_device : COPY.axis_na;
       const hint = paired ? COPY.axis_per_device_hint : COPY.axis_none_paired_hint;
@@ -1161,10 +1136,14 @@ export const mountNotificationsPanel = (
   };
 
   const renderRow = (row: NotificationChannelToggleView): HTMLElement => {
+    // Pairing is separate from server readiness (which also checks the
+    // delivery adapter). A current roster must never promote that readiness.
+    const paired = hasPerInstanceRows(row.channel) ? bridgeHasPairedDevices : undefined;
     const item = doc.createElement('article');
     item.setAttribute(NOTIFICATIONS_ROW_ATTR, '');
     item.setAttribute(NOTIFICATIONS_ROW_CHANNEL_ATTR, row.channel);
     item.className = 'notif-row';
+    if (hasPerInstanceRows(row.channel)) renderedBridgeCard = item;
 
     // Header — name + capability badge
     const header = doc.createElement('header');
@@ -1257,16 +1236,16 @@ export const mountNotificationsPanel = (
     status.className = 'notif-row-status';
     if (row.channel === 'ui') {
       status.textContent = COPY.fixed_on_label;
-    } else if (!row.ready) {
-      status.textContent = COPY.not_ready_label;
+    } else if (!row.ready || paired === false) {
+      status.textContent = paired === true ? 'Not ready to deliver' : COPY.not_ready_label;
       status.classList.add('notif-row-status-not-ready');
-      const ctaLabel = NOT_READY_CTA_LABEL[row.channel];
+      const ctaLabel = paired === true ? undefined : NOT_READY_CTA_LABEL[row.channel];
       // Bridge ships an explicit external `install_url`; slack / telegram
       // deep-link the in-app `#connections` route (R31 defect #2 — the
       // stale "via Settings → Connections" text hint pointed at a route
       // that graduated to the top-level `#connections` in R13–R16). Email
       // renders the 3-step instruction block below instead of a CTA here.
-      if (row.install_url !== undefined) {
+      if (row.install_url !== undefined && paired !== true) {
         const link = doc.createElement('a');
         link.setAttribute(NOTIFICATIONS_ROW_INSTALL_LINK_ATTR, '');
         link.setAttribute('href', row.install_url);
@@ -1354,31 +1333,64 @@ export const mountNotificationsPanel = (
   // D-169 P1 — render the per-bridge sub-row group + its error chip
   // when the bridge fetch failed independently of the channel fetch.
   const renderBridgeRowGroup = (): HTMLElement => {
-    const groupContainer = doc.createElement('div');
-    groupContainer.className = 'notif-bridge-group';
+    const group = doc.createElement('div');
+    group.className = 'notif-bridge-group';
+    fillBridgeRowGroup(group);
+    return group;
+  };
+
+  const fillBridgeRowGroup = (group: HTMLElement): void => {
+    if (bridgeLoading) {
+      const status = doc.createElement('p');
+      status.setAttribute(NOTIFICATIONS_BRIDGE_LOADING_ATTR, '');
+      status.setAttribute('role', 'status');
+      status.className = 'notif-bridge-empty';
+      status.textContent = 'Loading devices…';
+      group.appendChild(status);
+      return;
+    }
     const fetchError = bridgeRowErrors.get('');
     if (fetchError !== undefined) {
       const err = doc.createElement('p');
       err.setAttribute(NOTIFICATIONS_BRIDGE_ROW_ERROR_ATTR, '');
       err.className = 'notif-row-error';
       err.setAttribute('role', 'alert');
-      err.textContent = `Recued could not list your Bridges: ${fetchError}`;
-      groupContainer.appendChild(err);
-      return groupContainer;
+      err.textContent = `Recued could not list your devices: ${fetchError}`;
+      group.appendChild(err);
+      const retry = doc.createElement('button');
+      retry.type = 'button';
+      retry.className = 'rx-btn rx-btn-sm rx-btn-secondary';
+      retry.setAttribute(NOTIFICATIONS_BRIDGE_RETRY_ATTR, '');
+      retry.textContent = 'Retry devices';
+      retry.addEventListener('click', () => { if (!bridgeLoading) void reloadBridgeRows(); });
+      group.appendChild(retry);
+      return;
     }
     if (bridgeRows.length === 0) {
       const empty = doc.createElement('p');
       empty.setAttribute(NOTIFICATIONS_BRIDGE_EMPTY_ATTR, '');
       empty.className = 'notif-bridge-empty';
-      empty.textContent =
-        'No Bridges yet. Install the Browser Bridge, then pair it from its own window.';
-      groupContainer.appendChild(empty);
-      return groupContainer;
+      empty.textContent = 'No Bridges yet. Install the Browser Bridge, then pair it from its own window.';
+      group.appendChild(empty);
+      return;
     }
-    for (const br of bridgeRows) {
-      groupContainer.appendChild(renderBridgeRow(br));
-    }
-    return groupContainer;
+    for (const br of bridgeRows) group.appendChild(renderBridgeRow(br));
+  };
+
+  /** Only the Bridge card changes, including its current pairing status.
+   * Other channels and the phrase input stay connected while it settles. */
+  const repaintBridgeRows = (): void => {
+    if (disposed || state !== 'ready' || !renderedBridgeCard) return;
+    const row = rows.find(entry => entry.channel === 'bridge');
+    if (!row) return;
+    const card = renderedBridgeCard;
+    retainBridgeFocus();
+    renderedBridgeButtons.clear();
+    const fresh = renderRow(row);
+    while (card.firstChild) card.removeChild(card.firstChild);
+    while (fresh.firstChild) card.appendChild(fresh.removeChild(fresh.firstChild));
+    renderedBridgeCard = card;
+    restoreBridgeFocus();
   };
 
   // D-169 P1 — render one paired bridge's row + its two mode toggles.
@@ -1559,6 +1571,31 @@ export const mountNotificationsPanel = (
     return section;
   };
 
+  const retainBridgeFocus = (): void => {
+    if (pendingBridgeFocus !== null) {
+      const focusDoc = doc as Document & {
+        activeElement?: Element | null;
+        body?: HTMLElement;
+      };
+      const active = focusDoc.activeElement;
+      const liveOwnerMoved = active !== null
+        && active !== undefined
+        && active !== focusDoc.body
+        && (active as HTMLElement).isConnected !== false
+        && focusedBridgeKey(active) !== pendingBridgeFocus;
+      if (liveOwnerMoved) pendingBridgeFocus = null;
+    }
+  };
+  const restoreBridgeFocus = (): void => {
+    if (pendingBridgeFocus !== null) {
+      const key = pendingBridgeFocus;
+      const replacement = renderedBridgeButtons.get(key);
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+      if (!bridgeRowToggling.has(key)) pendingBridgeFocus = null;
+    }
+  };
+
   const render = (): void => {
     if (disposed) return;
     if (pendingAxisFocus !== null) {
@@ -1574,19 +1611,7 @@ export const mountNotificationsPanel = (
         && focusedAxisKey(active) !== pendingAxisFocus;
       if (liveOwnerMoved) pendingAxisFocus = null;
     }
-    if (pendingBridgeFocus !== null) {
-      const focusDoc = doc as Document & {
-        activeElement?: Element | null;
-        body?: HTMLElement;
-      };
-      const active = focusDoc.activeElement;
-      const liveOwnerMoved = active !== null
-        && active !== undefined
-        && active !== focusDoc.body
-        && (active as HTMLElement).isConnected !== false
-        && focusedBridgeKey(active) !== pendingBridgeFocus;
-      if (liveOwnerMoved) pendingBridgeFocus = null;
-    }
+    retainBridgeFocus();
     if (pendingPhraseSaveFocus) {
       const focusDoc = doc as Document & {
         activeElement?: Element | null;
@@ -1615,6 +1640,7 @@ export const mountNotificationsPanel = (
     }
     renderedAxisButtons = new Map<string, HTMLButtonElement>();
     renderedBridgeButtons = new Map<string, HTMLButtonElement>();
+    renderedBridgeCard = undefined;
     renderedPhraseSave = undefined;
     renderedPhraseInput = undefined;
     renderedRetryButton = undefined;
@@ -1637,13 +1663,7 @@ export const mountNotificationsPanel = (
       replacement?.scrollIntoView?.({ block: 'nearest' });
       if (!togglingAxes.has(key)) pendingAxisFocus = null;
     }
-    if (pendingBridgeFocus !== null) {
-      const key = pendingBridgeFocus;
-      const replacement = renderedBridgeButtons.get(key);
-      replacement?.focus?.({ preventScroll: true });
-      replacement?.scrollIntoView?.({ block: 'nearest' });
-      if (!bridgeRowToggling.has(key)) pendingBridgeFocus = null;
-    }
+    restoreBridgeFocus();
     if (pendingPhraseSaveFocus) {
       // `renderPhraseField()` mutates this closure-owned reference; TS does
       // not follow that nested call through `renderReady()` above.
@@ -1700,10 +1720,13 @@ export const mountNotificationsPanel = (
     unsubscribes.push(
       opts.subscribe('notification.bridge_mode_changed', (event) => {
         if (disposed) return;
+        bridgeEventVersions.set(event.client_token_id, (bridgeEventVersions.get(event.client_token_id) ?? 0) + 1);
         // Fast path: the bridge is already in our roster → splice the
         // event's inline post-change modes in place (no round-trip).
         if (applyBridgeModes(event.client_token_id, event.modes)) {
-          render();
+          // A roster read begun before this event may contain older modes.
+          if (bridgeLoading) void reloadBridgeRows();
+          else repaintBridgeRows();
           return;
         }
         // Slow path: the bridge isn't in our current roster — either the
@@ -1713,7 +1736,7 @@ export const mountNotificationsPanel = (
         // fetch. Re-read the authoritative roster; the generation guard
         // makes this fresher read win over any in-flight load. Skipping
         // the refetch would leave the per-bridge row silently stale.
-        reloadBridgeRows();
+        void reloadBridgeRows();
       }),
     );
   }

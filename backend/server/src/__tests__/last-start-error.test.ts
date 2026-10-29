@@ -28,9 +28,9 @@ import {
 } from '../cli/last-start-error.js';
 import { createFileServerKeyStore, flushFileServerKeyStore } from '../keys/file-store.js';
 import { ensureServerIdentityKeys } from '../keys/index.js';
+import { serverEntry } from './helpers/server-bundle.js';
 
 const repoRoot = resolve(import.meta.dirname, '../../../..');
-const binPath = join(repoRoot, 'backend/server/src/bin.ts');
 const serverTsconfigPath = join(repoRoot, 'backend/server/tsconfig.json');
 
 let dir: string | undefined;
@@ -103,12 +103,12 @@ const freePort = async (): Promise<number> => {
 // ⚠ Since `updateLeasePathForInstall` (2026-10-09) an unpackaged boot on the default
 // channel neither claims nor reads that lease (`unpackaged-update-lease.test.ts`);
 // the bin dir stays because a boot that owns its install is the safe default.
-const runBin = (realm: string, args: string[], env: Record<string, string | undefined>) => {
+const runBin = async (realm: string, args: string[], env: Record<string, string | undefined>) => {
   const binDir = join(realm, 'bin');
   mkdirSync(binDir, { recursive: true });
-  return spawnSync(
+  const result = spawnSync(
     process.execPath,
-    ['--import', 'tsx', binPath, ...args],
+    [...await serverEntry(), ...args],
     {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -122,6 +122,10 @@ const runBin = (realm: string, args: string[], env: Record<string, string | unde
       timeout: 60_000,
     },
   );
+  if (result.status === null) {
+    throw new Error(`CLI did not finish: signal=${result.signal}, error=${result.error?.message ?? 'none'}\n${result.stderr}`);
+  }
+  return result;
 };
 
 describe('the last start error — end to end through the real CLI', () => {
@@ -140,12 +144,12 @@ describe('the last start error — end to end through the real CLI', () => {
     const port = String(await freePort());
     const noPassphrase = { RECUED_IDENTITY_PASSPHRASE: undefined };
 
-    const served = runBin(realm, ['serve', '--db', dbPath, '--port', port], noPassphrase);
+    const served = await runBin(realm, ['serve', '--db', dbPath, '--port', port], noPassphrase);
     expect(served.status, served.stderr).toBe(1);
     expect(served.stderr).toMatch(/sealed with a passphrase, and RECUED_IDENTITY_PASSPHRASE is not set/);
     expect(readLastStartError(dbPath)?.message).toMatch(/RECUED_IDENTITY_PASSPHRASE is not set/);
 
-    const status = runBin(realm, ['status', '--db', dbPath, '--port', port], noPassphrase);
+    const status = await runBin(realm, ['status', '--db', dbPath, '--port', port], noPassphrase);
     expect(status.status, status.stderr).toBe(0);
     expect(status.stdout).toContain('Status: stopped');
     expect(status.stdout).toMatch(/Its last start failed \(just now, /);
@@ -161,10 +165,10 @@ describe('the last start error — end to end through the real CLI', () => {
     const port = String(await freePort());
 
     // `--pair-code-ttl` is refused with an exit code, not a throw.
-    const served = runBin(realm, ['serve', '--db', dbPath, '--port', port, '--pair-code-ttl', 'bogus'], {});
+    const served = await runBin(realm, ['serve', '--db', dbPath, '--port', port, '--pair-code-ttl', 'bogus'], {});
     expect(served.status, served.stderr).toBe(1);
 
-    const status = runBin(realm, ['status', '--db', dbPath, '--port', port], {});
+    const status = await runBin(realm, ['status', '--db', dbPath, '--port', port], {});
     expect(status.stdout).toContain('Status: stopped');
     expect(status.stdout).not.toMatch(/last start failed/);
   }, 120_000);
@@ -175,11 +179,11 @@ describe('the last start error — end to end through the real CLI', () => {
     writeFileSync(dbPath, 'this is not a sqlite database at all, it is garbage');
     const port = String(await freePort());
 
-    const served = runBin(realm, ['serve', '--db', dbPath, '--port', port, '--require-enrolled'], {});
+    const served = await runBin(realm, ['serve', '--db', dbPath, '--port', port, '--require-enrolled'], {});
     expect(served.status, served.stderr).toBe(1);
     expect(served.stderr).toContain('cannot open the realm database');
 
-    const status = runBin(realm, ['status', '--db', dbPath, '--port', port], {});
+    const status = await runBin(realm, ['status', '--db', dbPath, '--port', port], {});
     expect(status.stdout).toMatch(/Its last start failed \(just now, /);
     expect(status.stdout).toContain(`cannot open the realm database ${dbPath}`);
   }, 120_000);

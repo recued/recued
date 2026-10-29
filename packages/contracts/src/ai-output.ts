@@ -50,6 +50,8 @@ export interface AIOutput {
    *  still emits something). The composer never fabricates a
    *  response — that's an AI provider concern. */
   readonly response: string;
+  /** Final deliverables selected from successful tool-returned file_artifact descriptors. */
+  readonly output_files?: ReadonlyArray<string>;
   /** Optional — empty array when AI detected nothing extractable.
    *  PB6's composer ordering rules + per-event dispatch run over
    *  this field. */

@@ -1705,7 +1705,7 @@ const dispatchResumedTier1Call = async (
     : {
         channel: 'internal_function_call',
         ...(session_id !== undefined ? { session_id } : {}),
-        ...(source.channel === 'chat' && source.turn_id !== undefined ? { turn_id: source.turn_id } : {}),
+        ...((source.channel === 'chat' || source.channel === 'schedule') && source.turn_id !== undefined ? { turn_id: source.turn_id } : {}),
         execution_source: source,
         ...snapshot,
         ...approved,

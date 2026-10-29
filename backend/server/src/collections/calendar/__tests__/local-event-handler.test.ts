@@ -147,10 +147,11 @@ it('rejects unexpected fields, invalid spans and oversized UTF-8 text before pro
   expect(update).not.toHaveBeenCalled();
 });
 
-it('requires a paired owner for both RPCs before reading or writing any calendar', async () => {
+it('requires a paired owner for calendar event RPCs before reading or writing any calendar', async () => {
   const registry = createCollectionRegistry(); registry.register(collection);
   const slice = makeCollectionHandlers({ registry })!;
   const client = { instance_id: null } as WsClient;
   await expect(slice.handlers['collection.calendar.event.get'](ref, client)).rejects.toMatchObject({ code: 'unauthorized' });
   await expect(slice.handlers['collection.calendar.event.update'](request({ summary: 'No' }), client)).rejects.toMatchObject({ code: 'unauthorized' });
+  await expect(slice.handlers['collection.calendar.event.respond']({ ...ref, response: 'accepted', expected_version: 'v1', expected_incarnation: 'i1' }, client)).rejects.toMatchObject({ code: 'unauthorized' });
 });

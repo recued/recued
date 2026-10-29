@@ -57,6 +57,9 @@ export interface RefPickerSearchPage {
   readonly options: readonly RefPickerOption[];
   /** The underlying read hit its page cap, so matches may be missing. */
   readonly truncated?: boolean;
+  /** A failed additional read left these options usable. The owner can retry
+   * the same query without clearing their selection or the cached page. */
+  readonly retryableError?: string;
 }
 
 export type RefPickerSearchCaller = (
@@ -85,6 +88,8 @@ export interface RefPickerState {
   loading: boolean;
   /** Last search error, surfaced inline in the dropdown. */
   error: string | null;
+  /** Recoverable failure alongside usable options, shown outside the list. */
+  retryableError: string | null;
   /** The committed id, or null when empty. */
   selectedId: string | null;
   /** The committed label (display text), or null when empty. */

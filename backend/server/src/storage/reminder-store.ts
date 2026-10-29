@@ -12,12 +12,14 @@
  *  and it is also what keeps a delivery and a cancel from both landing. */
 
 import type Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   REMINDER_PENDING_MAX,
   isReminderState,
   type Reminder,
   type ReminderOrigin,
+  type ReminderListPageInput,
+  type ReminderListCursor,
 } from '@recued/contracts';
 
 export const ensureReminderSchema = (db: Database.Database): void => {
@@ -45,6 +47,11 @@ export const ensureReminderSchema = (db: Database.Database): void => {
       outcome TEXT NOT NULL,
       at      INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS reminder_creation_requests (
+      creation_id TEXT PRIMARY KEY,
+      reminder_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL
+    );
   `);
   const columns = new Set((db.prepare('PRAGMA table_info(reminders)').all() as { name: string }[]).map(row => row.name));
   for (const name of ['clock_occurrence_id', 'clock_point_key', 'clock_ask_id']) {
@@ -65,7 +72,11 @@ export class ReminderLimitError extends Error {
   }
 }
 
+/** Retained creation receipts never re-arm a cancelled or pruned alarm. */
+export class ReminderCreationConflictError extends Error {}
+
 export interface ReminderCreateInput {
+  creation_id?: string;
   text: string;
   at: number;
   time_zone: string | null;
@@ -79,6 +90,7 @@ export interface ReminderCreateInput {
 export type ReminderTaskMoveOutcome = 'moved' | 'closed' | 'left_in_vendor';
 
 export interface ReminderStore {
+  findCreated(creationId: string, input: { text: string; at: number }): Reminder | undefined;
   /** ⛔ Throws `ReminderLimitError` at the cap, counted in the same transaction
    *  as the insert. `uncapped` is for moving D-193's tasks only (§6): the owner
    *  set those already, and leaving the overflow behind as tasks would leave it
@@ -91,6 +103,9 @@ export interface ReminderStore {
   countPending(): number;
   /** Waiting reminders, soonest first. */
   listPending(limit: number): Reminder[];
+  pagePending(input: ReminderListPageInput & { limit: number }): {
+    reminders: Reminder[]; matched_count: number; next_cursor: ReminderListCursor | null;
+  };
   /** Delivered and cancelled ones, most recent first. */
   listHistory(limit: number): Reminder[];
   /** Pending reminders whose time has come. The ones tried least recently come
@@ -171,6 +186,28 @@ const toReminder = (row: Row): Reminder => ({
 
 export const createReminderStore = (db: Database.Database): ReminderStore => {
   ensureReminderSchema(db);
+  const fold = (value: string): string => value.normalize('NFKC').toLowerCase();
+  db.function('recued_reminder_search', { deterministic: true }, (value: unknown) =>
+    typeof value === 'string' ? fold(value) : '');
+  const pagePending = db.transaction((input: ReminderListPageInput & { limit: number }) => {
+    const clauses = ["state = 'pending'"];
+    const values: Record<string, string | number> = {};
+    if (input.query?.trim()) { clauses.push('instr(recued_reminder_search(text), @query) > 0'); values.query = fold(input.query.trim()); }
+    if (input.from !== undefined) { clauses.push('at >= @from'); values.from = input.from; }
+    if (input.before !== undefined) { clauses.push('at < @before'); values.before = input.before; }
+    const where = clauses.join(' AND ');
+    const matched = db.prepare('SELECT COUNT(*) AS n FROM reminders WHERE ' + where).get(values) as { n: number };
+    if (input.cursor) {
+      clauses.push('(at > @cursor_at OR (at = @cursor_at AND reminder_id > @cursor_id))');
+      values.cursor_at = input.cursor.at; values.cursor_id = input.cursor.reminder_id;
+    }
+    const rows = db.prepare('SELECT * FROM reminders WHERE ' + clauses.join(' AND ')
+      + ' ORDER BY at ASC, reminder_id ASC LIMIT @limit').all({ ...values, limit: input.limit + 1 }) as Row[];
+    const visible = rows.slice(0, input.limit).map(toReminder);
+    const last = visible.at(-1);
+    return { reminders: visible, matched_count: matched.n,
+      next_cursor: rows.length > input.limit && last ? { at: last.at, reminder_id: last.reminder_id } : null };
+  });
   const countPendingStmt = db.prepare(`SELECT COUNT(*) AS n FROM reminders WHERE state = 'pending'`);
   const insertStmt = db.prepare(`
     INSERT INTO reminders (
@@ -228,8 +265,21 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
     return row ? toReminder(row) : null;
   };
   const countPending = (): number => (countPendingStmt.get() as { n: number }).n;
+  const fingerprint = (input: { text: string; at: number }): string =>
+    createHash('sha256').update(JSON.stringify([input.text, input.at])).digest('hex');
+  const findCreated = (creationId: string, input: { text: string; at: number }): Reminder | undefined => {
+    const receipt = db.prepare('SELECT reminder_id, fingerprint FROM reminder_creation_requests WHERE creation_id=?')
+      .get(creationId) as { reminder_id: string; fingerprint: string } | undefined;
+    if (!receipt) return undefined;
+    if (receipt.fingerprint !== fingerprint(input)) throw new ReminderCreationConflictError('This request already created an alarm with different details. Review your alarms before creating another.');
+    const existing = get(receipt.reminder_id);
+    if (!existing) throw new ReminderCreationConflictError('This alarm was already created and its history has expired. Start a new alarm to schedule it again.');
+    return existing;
+  };
 
   const create = db.transaction((input: ReminderCreateInput, now: number, uncapped: boolean): Reminder => {
+    const existing = input.creation_id ? findCreated(input.creation_id, input) : undefined;
+    if (existing) return existing;
     const pending = countPending();
     if (!uncapped && pending >= REMINDER_PENDING_MAX) throw new ReminderLimitError(pending);
     const reminder_id = `rem_${randomUUID()}`;
@@ -247,6 +297,8 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
       clock_point_key: input.clock?.point_key ?? null,
       clock_ask_id: input.clock?.ask_id ?? null,
     });
+    if (input.creation_id) db.prepare('INSERT INTO reminder_creation_requests VALUES (?, ?, ?)')
+      .run(input.creation_id, reminder_id, fingerprint(input));
     return get(reminder_id)!;
   });
 
@@ -261,6 +313,7 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
   );
 
   return {
+    findCreated,
     create: (input, now, opts) => create(input, now, opts?.uncapped === true),
     ensureClock: db.transaction((input, now) => {
       const old = db.prepare('SELECT * FROM reminders WHERE clock_occurrence_id=? AND clock_point_key=?')
@@ -278,6 +331,7 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
     },
     countPending,
     listPending: (limit) => (listPendingStmt.all(limit) as Row[]).map(toReminder),
+    pagePending,
     listHistory: (limit) => (listHistoryStmt.all(limit) as Row[]).map(toReminder),
     listDue: (now, limit) => (listDueStmt.all(now, limit) as Row[]).map(toReminder),
     update: (reminder_id, patch, now) => update(reminder_id, patch, now),

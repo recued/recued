@@ -30,6 +30,7 @@
 
 import {
   applyVisibilityPolicy,
+  formatToolProgress,
   classForTransparencyEventKind,
   DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
   defaultRedactionForKind,
@@ -121,9 +122,11 @@ const waitedCallRow = (
 
 const toolCallRow = (call: ToolCallLike, record?: ChatToolCallRecord): ChatActivityRow => {
   const waited = waitedCallRow(call, record);
+  const progress = call.status === 'started' && record?.state === 'running' && record.progress
+    ? ` · ${formatToolProgress(record.progress)}` : '';
   return {
     kind: 'tool',
-    text: waited?.text ?? toolCallText(call),
+    text: (waited?.text ?? toolCallText(call)) + progress,
     status: waited?.status ?? call.status,
     ...(call.run_id !== undefined ? { run_id: call.run_id } : {}),
     ...(call.dish_id !== undefined ? { dish_id: call.dish_id } : {}),
@@ -197,13 +200,18 @@ export const projectTransparencyNote = (
 export const projectInFlightActivity = (
   turn: InFlightTurn,
   settings: TransparencyStreamSettings = DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
+  records?: Readonly<Record<string, ChatToolCallRecord>>,
 ): ChatActivityRow[] => {
   const rows: ChatActivityRow[] = [];
   for (const entry of turn.transparency) {
     const text = projectTransparencyNote(entry.payload, settings);
     if (text !== null) rows.push({ kind: 'note', text });
   }
-  for (const call of turn.tool_calls) rows.push(toolCallRow(call));
+  for (const call of turn.tool_calls) {
+    const record = call.call_id ? Object.values(records ?? {}).find(row =>
+      row.message_id === call.call_id && row.turn_id === turn.turn_id) : undefined;
+    rows.push(toolCallRow(call, record));
+  }
   return rows;
 };
 

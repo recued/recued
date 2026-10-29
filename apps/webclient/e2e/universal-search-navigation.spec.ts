@@ -16,6 +16,7 @@ const tab = (page: Page, name: string) => page.getByRole('tab', {
 });
 const settle = (page: Page) => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 const open = async (page: Page, platform: Platform = 'mail') => {
+  await page.clock.setFixedTime(new Date('2026-10-28T12:00:00Z'));
   await page.goto(`/universal-search-harness.html?navigation=${platform}`);
   await page.waitForFunction(() => window.__universalSearch?.ready === true);
   await page.getByRole('searchbox', { name: 'Search everything' }).fill('kestrel');
@@ -39,9 +40,34 @@ for (const platform of ['mail', 'calendar', 'file'] as const) {
         await button.focus();
         await page.keyboard.press('Enter');
         await expect.poll(() => calls(page, 'instances')).toEqual([platform]);
-        await expect(page.getByRole('status').filter({ hasText: 'Loading sources…' })).toBeVisible();
+        await expect(page.getByRole('status').filter({ hasText: platform === 'calendar' ? 'Loading calendars…' : 'Loading sources…' })).toBeVisible();
         expect(await calls(page, 'list')).toEqual([]);
         await release(page, 'instances');
+        if (platform === 'calendar') {
+          if (action === 'record') {
+            await expect.poll(() => calls(page, 'get')).toEqual(['calendar/work/work-1']);
+            expect(await calls(page, 'list')).toEqual([]);
+            await release(page, 'get');
+            await expect(page.locator('[data-recued-collection-detail-heading]')).toHaveText('work record');
+          } else {
+            await expect.poll(() => calls(page, 'list')).toEqual(['calendar/work', 'calendar/personal']);
+            await release(page, 'list', 0);
+            await release(page, 'list', 1);
+            await expect(row(page, 'work')).toBeVisible();
+            await expect(row(page, 'personal')).toHaveCount(0);
+            const destination = width === 390
+              ? page.getByRole('combobox', { name: 'Collection', exact: true })
+              : tab(page, 'calendar');
+            await expect(destination).toBeFocused();
+            await page.locator('[data-calendar-agenda-sources] summary').click();
+            await expect(page.getByRole('checkbox', { name: 'work', exact: true })).toBeChecked();
+            await expect(page.getByRole('checkbox', { name: 'personal', exact: true })).not.toBeChecked();
+            expect(await calls(page, 'get')).toEqual([]);
+          }
+          await expect(page.getByText(/Nothing connected for .+ yet/)).toHaveCount(0);
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          return;
+        }
         await expect.poll(() => calls(page, 'list')).toEqual([`${platform}/work`]);
         await expect(source(page, 'work')).toHaveAttribute('aria-pressed', 'true');
         await release(page, 'list');

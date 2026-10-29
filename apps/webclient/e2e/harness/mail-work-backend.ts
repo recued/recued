@@ -1,9 +1,11 @@
 /** Real storage, mail table, work service and RPC handlers; deterministic AI only. */
-import { TIER1_TOOL_DESCRIPTORS, type CollectionRecord, type ToolEntry } from '@recued/contracts';
+import { TIER1_TOOL_DESCRIPTORS, type CollectionRecord, type MailConversationRequest, type MailMessageRef, type ToolEntry } from '@recued/contracts';
 import { createStorageGate } from '@recued/storage-gate';
 import { buildChatTier1Handlers } from '../../../../backend/server/src/chat-tool-handlers.js';
 import { createCollectionRegistry } from '../../../../backend/server/src/collections/registry.js';
 import { createCollectionTable } from '../../../../backend/server/src/collections/table.js';
+import { getMailConversation } from '../../../../backend/server/src/collections/mail/conversation-read.js';
+import { getMailMessage } from '../../../../backend/server/src/collections/mail/message-read.js';
 import { createMailWorkStore } from '../../../../backend/server/src/storage/mail-work-store.js';
 import { createPreapprovalCodec } from '../../../../backend/server/src/storage/preapproval-codec.js';
 import { createMailWorkService } from '../../../../backend/server/src/mail-work-service.js';
@@ -35,6 +37,7 @@ export const createMailWorkFixture = (options: {
   if (!options.holdClosingBrief) chat.release();
   const table = createCollectionTable({ db: chat.db, platform: 'mail', slug: 'work',
     ftsTextFor: row => `${row.hot_fields.subject} ${row.hot_fields.from} ${row.body_inline ?? ''}` });
+  const reader = { get: table.get, list: table.list, accountEmail: 'owner@example.test', provider: {} };
   collections.register({ platform: 'mail', slug: 'work', get: table.get, list: table.list, search: table.search,
     upsert: table.upsert, delete: id => table.delete(id) !== null,
     gate: createStorageGate({ quota: 1_000_000, reservePct: 0, surface: 'mail-work-browser' }),
@@ -80,6 +83,14 @@ export const createMailWorkFixture = (options: {
       if (method === 'collection.list') return { records: table.list({ platform: 'mail', slug: 'work', limit: 100 }) };
       if (method === 'mail_fact.email.get') return { fact_count: 0, security_notice: false };
       if (method === 'data.timeline') return { entries: [], timeline: [] };
+      if (method === 'collection.mail.conversation.get') return getMailConversation({
+        getCollection: slug => slug === 'work' ? reader : undefined,
+        getIncarnation: () => 'work-fixture-v1',
+      }, args as unknown as MailConversationRequest);
+      if (method === 'collection.mail.message.get') return getMailMessage({
+        getCollection: slug => slug === 'work' ? reader : undefined,
+        getIncarnation: () => 'work-fixture-v1', listMailInstances: async () => ({ instances: [] }),
+      }, args as unknown as MailMessageRef);
       if (method === 'collection.mail.list') return { instances: [] };
       if (method === 'collection.contract.session_grant.list') return { grants: [] };
       if (method === 'mail.drafts.list') return { drafts: [], next_cursor: null };

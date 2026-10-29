@@ -1,3 +1,10 @@
+import Database from 'better-sqlite3';
+import { createContactStore } from '../../../backend/server/src/storage/contact-store.js';
+import { createProactiveHistoryStore } from '../../../backend/server/src/storage/proactive-history-store.js';
+import { createProactiveProposalStore } from '../../../backend/server/src/storage/proactive-proposal-store.js';
+import { handleContactGet, handleContactList, handleContactSearchLocal } from '../../../backend/server/src/contact-handler.js';
+import { applyContactFileImport, planContactFileImport } from '../../../backend/server/src/contact-import-file.js';
+import type { ContactImportOccasionSelection, YoursCommand, YoursSnapshot } from '@recued/contracts';
 import { installProjectOverviewFixture } from './helpers/project-overview-fixture.js';
 import { expect, test, type Page } from '@playwright/test';
 import type { MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView, WorkEntity } from '@recued/contracts';
@@ -101,10 +108,10 @@ const openReminderFocusFixture = async (page: Page, holdRead = false): Promise<v
           pending.resolve({ error: { code: 'unavailable', message: 'Fixture reminder request interrupted.' } });
         } else if (pending.method === 'reminder.update') {
           if (outcome === 'success') reminder = { ...reminder, at: pending.args.at!, when: 'Moved to the chosen time' };
-          pending.resolve({ result: { updated: outcome === 'success', message: outcome === 'success' ? 'Reminder time changed.' : 'Reminder time could not be changed.' } });
+          pending.resolve({ result: { updated: outcome === 'success', reminder: { ...reminder }, message: outcome === 'success' ? 'Reminder time changed.' : 'Reminder time could not be changed.' } });
         } else {
           if (outcome === 'success') reminder = { ...reminder, state: 'cancelled' };
-          pending.resolve({ result: { cancelled: outcome === 'success', message: outcome === 'success' ? 'Reminder cancelled.' : 'Reminder could not be cancelled.' } });
+          pending.resolve({ result: { cancelled: outcome === 'success', reminder: { ...reminder }, message: outcome === 'success' ? 'Reminder cancelled.' : 'Reminder could not be cancelled.' } });
         }
       },
       releaseRead(outcome) {
@@ -137,7 +144,7 @@ const openReminderFocusFixture = async (page: Page, holdRead = false): Promise<v
 
 const startReminderWrite = async (page: Page, action: 'save' | 'cancel', scripted = false): Promise<void> => {
   const row = page.locator('.reminders-row[data-reminder-id="rem_1"]');
-  await row.getByRole('button', { name: action === 'save' ? 'Change time' : 'Cancel', exact: true }).click();
+  await row.getByRole('button', { name: action === 'save' ? 'Edit reminder' : 'Cancel', exact: true }).click();
   if (action === 'save') await row.locator('[data-recued-reminders-field="at"]').fill('2030-10-17T20:30');
   const button = row.getByRole('button', { name: action === 'save' ? 'Save' : 'Cancel it', exact: true });
   if (scripted) {
@@ -733,7 +740,7 @@ test('Data hands collection focus between tabs and picker at the breakpoint', as
 
   await page.keyboard.press('Home');
   await expect(contacts).toBeFocused();
-  const search = page.getByPlaceholder('Search contacts');
+  const search = page.getByRole('searchbox', { name: 'Search contacts' });
   await search.focus();
   await page.setViewportSize({ width: 640, height: 900 });
   await expect(search).toBeFocused();
@@ -1098,7 +1105,7 @@ test('Data contact search retains its keyboard query while refreshing', async ({
   const search = page.getByRole('searchbox', { name: 'Search contacts' });
   await expect(search).toBeVisible();
   const contactsBefore = await page.evaluate(
-    () => window.__app.rpcCallCount('contact.list'),
+    () => window.__app.rpcCallCount('contact.search.local'),
   );
   const sourcesBefore = await page.evaluate(
     () => window.__app.rpcCallCount('contact.source.list'),
@@ -1110,7 +1117,7 @@ test('Data contact search retains its keyboard query while refreshing', async ({
   await expect(search).toHaveValue('mary');
   await expect(search).toBeFocused();
   await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('contact.list')),
+    () => page.evaluate(() => window.__app.rpcCallCount('contact.search.local')),
   ).toBe(contactsBefore + 1);
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('contact.source.list')),
@@ -4399,6 +4406,7 @@ test('Data keeps file download visible, focused, and single-flight', async ({ pa
 });
 
 test('Data preserves calendar reschedule ownership', async ({ page }) => {
+  await page.clock.setFixedTime(new Date(1_700_000_000_000));
   await page.goto(`${HARNESS_URL}?journey=verification&recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/calendar'));
@@ -4768,7 +4776,8 @@ for (const action of ['save', 'cancel'] as const) {
         await page.evaluate(() => window.__reminderFocus.releaseWrite('success'));
         await expect.poll(() => page.evaluate(() => window.__reminderFocus.waitingForRead)).toBe(true);
         const notice = page.locator('[data-recued-reminders-focus="notice"]');
-        await expect(notice).toBeFocused();
+        await expect(notice).toHaveText(action === 'save' ? 'Reminder time changed.' : 'Reminder cancelled.');
+        await expect(action === 'save' ? page.locator('[data-recued-reminders-focus="edit:rem_1"]') : notice).toBeFocused();
         const neighbor = page.locator('[data-recued-reminders-focus="edit:rem_2"]');
         if (moveAway) await neighbor.focus();
         await page.evaluate(outcome => window.__reminderFocus.releaseRead(outcome), readOutcome);
@@ -5219,4 +5228,220 @@ test('project live refresh preserves focus and drafts, and editing rechecks sour
   await expect(page.getByRole('dialog', { name: 'Edit Project', exact: true })).toHaveCount(0);
   await expect(overview.getByRole('button', { name: 'Edit project', exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => window.__projectOverview.writes)).toEqual([]);
+});
+
+
+test('saved contact lookup is shared by Contacts, global Search and task contact pickers', async ({ page }, testInfo) => {
+  const db = new Database(':memory:');
+  const store = createContactStore(db);
+  const alex = store.upsertManual({ email: 'alex@example.test', name: 'Alex Example',
+    phone: '+14155550123', company: 'Northwind' }, 1);
+  store.upsertContactAlias({ contact_id: alex.contact_id!, kind: 'chat_alias', alias_pattern: 'The desk', source: 'manual' }, 2);
+  for (let index = 0; index < 7; index++)
+    store.upsertManual({ email: `person${index}@example.test`, name: `Person ${index}`, company: 'Northwind' }, 1);
+  const aliases = db.prepare('SELECT * FROM contact_alias ORDER BY id').all();
+  let holdBrowse = false;
+  let holdNextGet = false;
+  let getHeld = false;
+  const release: { browse?: () => void; get?: () => void } = {};
+  const browseRead = new Promise<void>(resolve => { release.browse = resolve; });
+  const profileRead = new Promise<void>(resolve => { release.get = resolve; });
+  try {
+    await page.route('**/__contact-search-fixture', async route => {
+      const { method, args } = route.request().postDataJSON();
+      const result = method === 'recipe.list' ? { recipes: [] } : method === 'packs.list' ? { packs: [] }
+        : method === 'contact.search.local' ? await handleContactSearchLocal({ store }, args)
+        : method === 'contact.get' ? await handleContactGet({ store }, args)
+          : await handleContactList({ store }, args);
+      if (holdBrowse && (method === 'contact.list' || method === 'contact.search.local' && args.with_rollups))
+        await browseRead;
+      if (method === 'contact.get' && holdNextGet) {
+        holdNextGet = false; getHeld = true;
+        await profileRead;
+      }
+      await route.fulfill({ json: { result } });
+    });
+    await page.addInitScript(() => Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
+      if (!['contact.search.local', 'contact.get', 'contact.list', 'recipe.list', 'packs.list'].includes(method)) return undefined;
+      return await (await fetch('/__contact-search-fixture', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method, args }) })).json();
+    } }));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${HARNESS_URL}?data=contacts&settle_reads=1#data/contact`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const rows = page.locator('[data-recued-data-contact-row]');
+    const contactQuery = page.getByRole('searchbox', { name: 'Search contacts' });
+    for (const query of ['alex@example', '(415) 555-0123', 'The desk']) {
+      await contactQuery.fill(query);
+      await expect(rows).toHaveCount(1);
+      await expect(rows).toContainText(alex.email);
+    }
+    await page.evaluate(() => window.__app.setHash('#data/search'));
+    const search = page.getByRole('searchbox', { name: 'Search everything' });
+    await search.fill('Northwind');
+    const group = page.getByRole('region', { name: 'Contact search results' });
+    const results = group.locator('[data-search-contact-email]');
+    await expect(results).toHaveCount(5);
+    await group.getByRole('button', { name: 'More contacts', exact: true }).click();
+    await expect(results).toHaveCount(8);
+    await expect(group.getByRole('button', { name: 'More contacts', exact: true })).toHaveCount(0);
+    const result = group.locator('[data-search-contact-email="person6@example.test"]');
+    // Opening an addressed profile must not depend on the list behind it.
+    holdBrowse = true;
+    await result.click();
+    const heading = page.locator('[data-recued-data-contact-detail-heading]');
+    await expect(heading).toContainText('Person 6');
+    await expect(heading).toBeFocused();
+    await page.getByRole('button', { name: /Back to search/ }).click();
+    await expect(search).toHaveValue('Northwind');
+    await expect(results).toHaveCount(8);
+    await expect(result).toBeFocused();
+
+    // Return and reopen the same identity while its older profile read is held.
+    holdNextGet = true;
+    await result.click();
+    await expect.poll(() => getHeld).toBe(true);
+    await page.getByRole('button', { name: /Back to search/ }).click();
+    db.prepare('UPDATE contacts SET name=?, updated_at=? WHERE email=?').run('Person 6 updated', 2, 'person6@example.test');
+    await result.click();
+    await expect(heading).toHaveText('Person 6 updated');
+    const staleRead = page.waitForResponse(response => response.url().endsWith('/__contact-search-fixture')
+      && response.request().postDataJSON().method === 'contact.get');
+    release.get?.();
+    await staleRead;
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    await expect(heading).toHaveText('Person 6 updated');
+    await page.goBack();
+    await expect(search).toHaveValue('Northwind');
+    await expect(result).toBeFocused();
+    await search.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('contact-search-mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.screenshot({ path: testInfo.outputPath('contact-search-desktop.png'), fullPage: true });
+
+    await page.goto(`${HARNESS_URL}?data=work-entities-paged&settle_reads=1#data/task`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.getByRole('button', { name: '+ New Task', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'New Task', exact: true });
+    await dialog.getByRole('button', { name: 'More details', exact: true }).click();
+    const picker = dialog.locator('[data-ref-picker="form-ref-assigned_contact"]');
+    await picker.getByRole('combobox').fill('The desk');
+    await picker.getByRole('option').filter({ hasText: alex.email }).click();
+    await expect(picker.locator('[data-ref-picker-value]')).toHaveValue(alex.email);
+    expect(db.prepare('SELECT * FROM contact_alias ORDER BY id').all()).toEqual(aliases);
+  } finally {
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    release.browse?.(); release.get?.(); db.close();
+  }
+});
+
+test('VCF import selects contact-linked dates, retains a failed review, and edits a one-time Occasion', async ({ page }, testInfo) => {
+  const db = new Database(':memory:');
+  const store = createContactStore(db);
+  const history = createProactiveHistoryStore(db, createProactiveProposalStore(db));
+  const deps = { store, history, transaction: <T>(work: () => T): T => db.transaction(work)() };
+  let failApply = true;
+  try {
+    const fixtureRpc = async (method: string, raw: unknown) => {
+      if (method === 'contact.get') return { result: await handleContactGet({ store }, raw as { email: string }) };
+      if (method === 'contact.list') return { result: { contacts: store.list(), total: store.list().length } };
+      if (method === 'contact.import.file_preview') return { result: planContactFileImport(deps, (raw as { text: string }).text) };
+      if (method === 'contact.import.file_apply') {
+        if (failApply) { failApply = false; return { error: { code: 'unavailable', message: 'The import was interrupted. Try again.' } }; }
+        const args = raw as { text: string; apply_changes: boolean; occasions?: ContactImportOccasionSelection[] };
+        return { result: applyContactFileImport(deps, args.text, args.apply_changes, args.occasions) };
+      }
+      if (method === 'yours.read') {
+        const snapshot: YoursSnapshot = { assets: [], related_assets: [], total_assets: 0, classes: [], proposals: [], total_proposals: 0,
+          occurrences: [], occasions: history.occasions(), episodes: [], sources: [], suppressions: [],
+          intake: { emails_read: 0, receipts_found: 0, likely_assets: 0, last_scan_at: null }, unmatched_replies: [], phone_ready: false,
+          settings: { digest: 'off', last_time: 'off', measures: false }, sphere_placements: [] };
+        return { result: snapshot };
+      }
+      if (method === 'yours.change') {
+        const args = raw as YoursCommand;
+        if (args.action === 'occasion.save') {
+          const saved = history.saveOccasion(args.occasion, Date.now());
+          return { result: { id: saved.id, message: 'Occasion saved.' } };
+        }
+        return { result: { message: 'Recorded.' } };
+      }
+      return undefined;
+    };
+    await page.route('**/__vcf-import-fixture', async route => {
+      const { method, args } = route.request().postDataJSON() as { method: string; args: unknown };
+      await route.fulfill({ json: await fixtureRpc(method, args) ?? null });
+    });
+    await page.addInitScript(() => Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
+      if (!['contact.get', 'contact.list', 'contact.import.file_preview', 'contact.import.file_apply', 'yours.read', 'yours.change'].includes(method)) return undefined;
+      const response = await fetch('/__vcf-import-fixture', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method, args }) });
+      return await response.json();
+    } }));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${HARNESS_URL}?data=contact-import&vcf_import=1&settle_reads=1#data/contact/import`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const upload = { name: 'alex.vcf', mimeType: 'text/vcard',
+      buffer: Buffer.from(['BEGIN:VCARD', 'VERSION:4.0', 'FN:Alex', 'EMAIL;PREF=2:work@example.test', 'EMAIL;PREF=1:home@example.test',
+        'TEL;PREF=1:+15550101', 'TEL:+15550102', 'item1.X-ABDATE:2030-06-01', 'item1.X-ABLabel:Graduation',
+        'item2.X-ABDATE:--04-15', 'item2.X-ABLabel:First met', 'END:VCARD'].join('\n')) };
+    await page.getByLabel('Choose a vCard or CSV file').setInputFiles(upload);
+    const graduation = page.getByRole('group', { name: 'Alex · Graduation', exact: true });
+    const firstMet = page.getByRole('group', { name: 'Alex · First met', exact: true });
+    await expect(graduation.getByRole('checkbox')).not.toBeChecked();
+    await page.getByRole('button', { name: 'Select all dates', exact: true }).click();
+    await expect(graduation.getByRole('checkbox')).toBeChecked();
+    await expect(firstMet.getByRole('checkbox')).toBeChecked();
+    await page.getByRole('button', { name: 'Clear dates', exact: true }).click();
+    await expect(graduation.getByRole('checkbox')).not.toBeChecked();
+    await expect(firstMet.getByRole('checkbox')).not.toBeChecked();
+    await expect(firstMet.getByRole('combobox', { name: 'Repeat First met for Alex' }).locator('option[value="once"]')).toHaveAttribute('disabled', '');
+    await graduation.getByRole('checkbox').check();
+    await graduation.getByLabel('Repeat Graduation for Alex').selectOption('once');
+    await graduation.getByLabel('Remind Graduation for Alex').selectOption('1');
+    await page.screenshot({ path: testInfo.outputPath('vcf-import-review.png'), fullPage: true });
+    const apply = page.locator('[data-recued-data-action="contact-import-file-apply"]');
+    await apply.click();
+    await expect(page.getByText('The import was interrupted. Try again.', { exact: true })).toBeVisible();
+    await expect(graduation.getByRole('checkbox')).toBeChecked();
+    await expect(graduation.getByLabel('Repeat Graduation for Alex')).toHaveValue('once');
+    await expect(graduation.getByLabel('Remind Graduation for Alex')).toHaveValue('1');
+    expect(store.get('home@example.test')).toBeNull();
+    await apply.click();
+    await expect(page.locator(`[${DATA_CONTACT_IMPORT_RESULT}]`)).toContainText('1 added · 0 changed · 1 occasion saved');
+    const contact = store.get('home@example.test')!;
+    expect(contact.phone).toBe('+15550101');
+    expect(store.resolveCanonicalEmail('work@example.test').canonical_email).toBe(contact.email);
+    expect(store.listContactAliases(contact.contact_id!).filter(alias => alias.kind === 'phone_alias')).toHaveLength(2);
+    expect(history.occasions()).toHaveLength(1);
+    expect(history.occasions()[0]).toMatchObject({ people: [contact.contact_id], source_next_on: '2030-06-01' });
+
+    await page.getByRole('button', { name: 'Back to contacts', exact: true }).click();
+    await page.locator('[data-recued-data-contact-row]').filter({ hasText: 'home@example.test' }).click();
+    const identifiers = page.getByRole('region', { name: 'Additional contact details' });
+    await expect(identifiers).toContainText('work@example.test');
+    await expect(identifiers).toContainText('+15550102');
+    await page.goto(`${HARNESS_URL}?yours=demo&vcf_import=2&settle_reads=1#yours/occasions`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.getByRole('button', { name: 'Edit occasion', exact: true }).click();
+    const form = page.locator('[data-yours-editor]');
+    await expect(form.getByLabel('Repeat', { exact: true })).toHaveValue('once');
+    await expect(form.getByLabel('Date', { exact: true })).toHaveValue('2030-06-01');
+    await expect(form.getByLabel('Annual date (MM-DD)', { exact: true })).toBeHidden();
+    await form.getByLabel('Date', { exact: true }).fill('2031-06-02');
+    await form.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    expect(history.occasions()[0]).toMatchObject({ month_day: '06-02', source_next_on: '2031-06-02', people: [contact.contact_id] });
+    await page.goto(`${HARNESS_URL}?data=contact-import&vcf_import=3&settle_reads=1#data/contact/import`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.getByLabel('Choose a vCard or CSV file').setInputFiles(upload);
+    await expect(graduation).toContainText('2031-06-02');
+    await expect(graduation.getByRole('checkbox')).not.toBeChecked();
+    await graduation.getByRole('checkbox').check();
+    await expect(apply).toHaveText('Import 1 occasion');
+    await apply.click();
+    await expect(page.locator(`[${DATA_CONTACT_IMPORT_RESULT}]`)).toContainText('1 occasion saved');
+    expect(history.occasions()).toHaveLength(1);
+    expect(history.occasions()[0]).toMatchObject({ source_next_on: '2030-06-01', people: [contact.contact_id] });
+    expect(history.occasions()[0]?.rules[0]?.schedule).toEqual({ before: [{ amount: 1, unit: 'days' }], on_day: true });
+  } finally { db.close(); }
 });

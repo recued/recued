@@ -155,9 +155,12 @@ export const renderStopPublishing = (props: { tag: string; withdrawing: boolean 
  *  🔑 TWO STEPS, AND § D7 REQUIRES THE ORDER. *"The publish dialog carries the whole
  *  payload … before any of it leaves."* So: name the tag, SEE the exact bytes, then confirm.
  *  A one-click publish would send a number the owner never saw. */
+export interface PublishDraftValues { readonly tag: string; readonly season_id: string }
+
 export const renderPublishStart = (props: {
   readonly metric: MetricReadEntry;
-  readonly pending?: { readonly tag: string; readonly season_id: string };
+  readonly pending?: PublishDraftValues;
+  readonly draft?: PublishDraftValues;
 }): string => {
   const { metric } = props;
   // ⛔ A non-publishable metric offers no entry at all — § D2 refuses it at the rpc, and a
@@ -169,7 +172,7 @@ export const renderPublishStart = (props: {
   }
   if (props.pending !== undefined) {
     return `
-      <div class="publish-confirm" data-recued-publish-confirm="${e(metric.metric_id)}">
+      <div class="publish-confirm" data-recued-publish-confirm="${e(metric.metric_id)}" tabindex="-1" role="region" aria-label="Review publishing ${e(metric.label)}">
         ${renderPublishDialog({
           metric,
           tag: props.pending.tag,
@@ -185,10 +188,10 @@ export const renderPublishStart = (props: {
   return `
     <form class="publish-start" data-recued-publish-start="${e(metric.metric_id)}">
       <label>Publish ${e(metric.label)} to
-        <input type="text" data-recued-publish-tag placeholder="tag" required>
+        <input type="text" data-recued-publish-tag value="${e(props.draft?.tag ?? '')}" placeholder="tag" required>
       </label>
       <label>season
-        <input type="text" data-recued-publish-season value="1" required>
+        <input type="text" data-recued-publish-season value="${e(props.draft?.season_id ?? '1')}" required>
       </label>
       <button type="button" data-recued-publish-preview-action
         data-metric="${e(metric.metric_id)}">Preview what would be sent</button>
@@ -219,7 +222,7 @@ const SUBMIT_OUTCOME_TEXT: Readonly<Record<MetricSubmitSkipReason, string>> = {
   // ⛔ DO NOT SAY "the next send will retry". There is no next send — this button is the
   // only caller of the submit path, which is exactly the false promise removed from the
   // note above. Telling the owner to press it again is both true and actionable.
-  send_failed: 'Could not reach the board. Nothing changed — press send again in a moment.',
+  send_failed: 'Could not confirm delivery to the board — press send again to retry.',
 };
 
 const plural = (n: number, one: string, many: string): string =>
@@ -272,8 +275,10 @@ export const renderSubmitNow = (props: {
       }
     | { readonly sent: false; readonly reason: MetricSubmitSkipReason };
 }): string => {
-  if (props.publications === 0) return '';
   const { outcome } = props;
+  // A confirmed withdrawal can remove the last publication. Keep its result
+  // visible after that refresh, without offering another empty send.
+  if (props.publications === 0 && outcome === undefined) return '';
   // ⛔ A SEND WHERE NOTHING LANDED GETS ITS OWN STATUS VALUE, not `sent`. The attribute is
   // what styling and tests key on, so folding it into `sent` would hide the case in both.
   const state = outcome === undefined
@@ -285,13 +290,15 @@ export const renderSubmitNow = (props: {
         : 'sent';
   const status = outcome === undefined
     ? ''
-    : `<p class="publish-submit-status" data-recued-submit-status="${e(state)}">${
+    : `<p class="publish-submit-status" data-recued-submit-status="${e(state)}" role="status">${
         outcome.sent
           ? e(submitSentText(outcome))
-          : e(SUBMIT_OUTCOME_TEXT[outcome.reason])
+          : e(outcome.reason === 'send_failed' && props.publications === 0
+            ? 'Could not confirm delivery to the board. Nothing is currently set to publish from Stats.'
+            : SUBMIT_OUTCOME_TEXT[outcome.reason])
       }</p>`;
   return `<div class="publish-submit">
-        <button type="button" data-recued-submit-action>Send today’s scores now</button>
+        ${props.publications > 0 ? '<button type="button" data-recued-submit-action>Send today’s scores now</button>' : ''}
         ${status}
       </div>`;
 };

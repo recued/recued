@@ -826,8 +826,11 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   function onClick(ev: Event): void {
     const start = ev.target as Element | null;
     if (start === null || typeof start.closest !== 'function') return;
-    const actor = start.closest(`[${RUN_MODAL_ACTION_ATTR}]`);
+    const actor = start.closest<HTMLElement>(`[${RUN_MODAL_ACTION_ATTR}]`);
     if (actor === null) return;
+    // Pointer activation need not focus a button. Capture the action's own
+    // identity before any repaint, just as keyboard activation does.
+    actor.focus?.({ preventScroll: true });
     const action = actor.getAttribute(RUN_MODAL_ACTION_ATTR) ?? '';
     if (action === 'close') {
       close();

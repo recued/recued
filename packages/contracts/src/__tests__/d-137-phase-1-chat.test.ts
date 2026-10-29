@@ -127,9 +127,15 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // schedule another recipe any more; chat schedules through this, granted by
     // its contract's `core.schedule.recipe`.
     'recipe.schedule',
+    'schedule.run_prompt',
+    'schedule.list',
+    'schedule.update',
+    'schedule.pause',
+    'schedule.resume',
+    'schedule.remove',
   ];
 
-  it('lists exactly twenty-four canonical primitives in spec order (P1 six + contact.read + mail.read/document.read + deal/account.search + work.search/read/type/create/update + calendar.create/update + memory.write/forget + file.search + recipe.stop + recipe.schedule)', () => {
+  it('lists the canonical primitives in spec order, including scheduled prompt controls', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 
@@ -181,6 +187,10 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     expect(TIER1_CLASSIFICATIONS['memory.write']).toBe('write');
     expect(TIER1_CLASSIFICATIONS['memory.forget']).toBe('write');
     expect(TIER1_CLASSIFICATIONS['recipe.schedule']).toBe('write');
+    expect(TIER1_CLASSIFICATIONS['schedule.list']).toBe('read');
+    for (const name of ['schedule.run_prompt', 'schedule.update', 'schedule.pause', 'schedule.resume', 'schedule.remove'] as const) {
+      expect(TIER1_CLASSIFICATIONS[name]).toBe('write');
+    }
     expect(TIER1_CLASSIFICATIONS['work.create']).toBe('write');
   });
 
@@ -205,7 +215,8 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // same main dish, which the first may make: shared identity again.
     // `memory.forget` walks an entry's earlier versions, so two forgets of one
     // lineage in one turn address the same rows: shared identity once more.
-    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'memory.forget']);
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'memory.forget',
+      'schedule.run_prompt', 'schedule.update', 'schedule.pause', 'schedule.resume', 'schedule.remove']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
     }
@@ -410,6 +421,14 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.delivery.skip',
       'chat.messenger.connect',
       'chat.messenger.status',
+      'chat.schedules.list',
+      'chat.schedule.create',
+      'chat.schedule.update',
+      'chat.schedule.pause',
+      'chat.schedule.resume',
+      'chat.schedule.remove',
+      'chat.schedule.run_now',
+      'chat.schedule.preview',
       'chat.turns.list',
       'chat.turn.withdraw',
       'chat.turn.cancel',

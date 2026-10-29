@@ -152,6 +152,7 @@ export interface GcalEventConferenceEntryPoint {
 }
 
 export interface GcalEvent {
+  privateCopy?: boolean;
   etag?: string;
   id: string;
   iCalUID?: string;
@@ -508,6 +509,7 @@ export const createGcalProvider = (
     body: unknown,
     operation: string,
     expected_etag?: string,
+    beforeSend?: () => void,
   ): Promise<T | null> => {
     let token = await ensureToken(false);
     const headers: Record<string, string> = {
@@ -519,6 +521,7 @@ export const createGcalProvider = (
       headers['Content-Type'] = 'application/json';
       payload = JSON.stringify(body);
     }
+    beforeSend?.();
     let res = await fetcher(url, { method, headers, body: payload });
     if (res.status === 401 && !opts.managedFetcher) {
       token = await ensureToken(true);
@@ -527,6 +530,7 @@ export const createGcalProvider = (
         ...(expected_etag ? { 'If-Match': expected_etag } : {}),
       };
       if (payload) retryHeaders['Content-Type'] = 'application/json';
+      beforeSend?.();
       res = await fetcher(url, { method, headers: retryHeaders, body: payload });
     }
     if (!res.ok) {
@@ -1124,18 +1128,28 @@ export const createGcalProvider = (
       );
     },
 
+    async readInvitation(calendar_id, source_id) {
+      const calendars = await listCalendars();
+      const calendar = calendars.find(cal => cal.id === calendar_id || calendar_id === 'primary' && cal.primary);
+      const primary = calendars.find(cal => cal.primary)?.id;
+      const current = await fetchEvent(calendar_id, source_id);
+      return { payload: await payloadOf(current, calendar_id),
+        notification_supported: Boolean(primary?.includes('@'))
+          && (calendar?.accessRole === 'owner' || calendar?.accessRole === 'writer')
+          && current.privateCopy !== true && current.organizer?.self !== true };
+    },
+
     async rsvpEvent(input) {
       requireCalendarId(input.calendar_id, 'events.rsvp');
       const eventId = resolveTargetId(input);
       const current = await fetchEvent(input.calendar_id, eventId);
-      const selfEmail = input.self_email?.toLowerCase() ?? '';
+      if (!accountEmail) await listCalendars();
+      const selfEmail = accountEmail.toLowerCase();
       const attendees = current.attendees ?? [];
-      const selfIdx = attendees.findIndex((a) => {
-        if (a.self) return true;
-        if (selfEmail && a.email && a.email.toLowerCase() === selfEmail)
-          return true;
-        return false;
-      });
+      // Google's self marker describes the calendar's owner, including shared
+      // calendars. Bind every caller, including recipes, to the signed-in account.
+      const selfIdx = selfEmail && (!input.self_email || input.self_email.toLowerCase() === selfEmail)
+        ? attendees.findIndex(a => a.email?.toLowerCase() === selfEmail) : -1;
       if (selfIdx === -1) {
         throw new CalendarAdapterError(
           'attendee_not_self',
@@ -1148,20 +1162,23 @@ export const createGcalProvider = (
           : input.response === 'declined'
             ? 'declined'
             : 'accepted';
-      const nextAttendees = attendees.map((a, i) =>
-        i === selfIdx
-          ? {
-              ...a,
-              responseStatus: gcalResponse,
-              ...(input.comment ? { comment: input.comment } : {}),
-            }
-          : a,
-      );
+      if (input.expected_etag && current.etag !== input.expected_etag) {
+        throw new CalendarAdapterError('version_conflict', 'The invitation changed before responding.');
+      }
+      if (input.before_send && (current.privateCopy === true || current.organizer?.self === true)) {
+        throw new CalendarAdapterError('permission_denied', 'This copy cannot notify the organizer.');
+      }
+      // Google propagates the attendee response to the organizer. Update only
+      // our entry; a full attendee array could overwrite another guest's RSVP.
+      const nextAttendees = [{ ...attendees[selfIdx], responseStatus: gcalResponse,
+        ...(input.comment ? { comment: input.comment } : {}) }];
       const data = await gcalMutate<GcalEvent>(
         eventUrl(input.calendar_id, eventId),
         'PATCH',
-        { attendees: nextAttendees },
+        { attendees: nextAttendees, attendeesOmitted: true },
         'events.rsvp',
+        current.etag,
+        input.before_send,
       );
       if (!data) {
         throw new CalendarAdapterError(
@@ -1169,7 +1186,10 @@ export const createGcalProvider = (
           'gcal events.rsvp: empty response',
         );
       }
-      return payloadOf(data, input.calendar_id);
+      // Participant-only PATCH replies may omit other guests. Every caller
+      // mirrors the full event, including recipes without an owner UI fence.
+      const verified = await fetchEvent(input.calendar_id, eventId);
+      return payloadOf(verified, input.calendar_id);
     },
   };
 };

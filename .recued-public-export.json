@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "1ba3af0ec586831d827fe79355040b9d848e1379",
-    "tree": "3f14bfde715990857489304010855f1269ab664f",
-    "committed_at": "2026-10-28T07:00:49-07:00"
+    "commit": "6bf42e822ed8b429c326665e16bbf882d96acb6d",
+    "tree": "9c9cab4e967f6620a31e2e6d05e62ec86dd7b6dd",
+    "committed_at": "2026-10-29T15:30:26-07:00"
   },
-  "export_manifest_sha256": "286ff3a4148b1b28a26ee331d3426d1026f04efecc486b76aaa6b7c8e0b50e0b",
-  "version": "26.10.28",
+  "export_manifest_sha256": "5042b98747ef43dea4454f1af0e848210eb94705d38e8e38486f5f2fe9592579",
+  "version": "26.10.29",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -114,6 +114,7 @@
       "backend/server/src/__tests__/connection-replacement-fixture.ts",
       "backend/server/src/__tests__/connection-replacement-rpc.test.ts",
       "backend/server/src/__tests__/connection-replacement.test.ts",
+      "backend/server/src/__tests__/csv-toolkit-pack.test.ts",
       "backend/server/src/__tests__/customer-account-contact-defaults.test.ts",
       "backend/server/src/__tests__/customer-account-payment-correction-workflow.test.ts",
       "backend/server/src/__tests__/customer-account-payment-corrections.test.ts",
@@ -871,7 +872,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "6f84a65320fef1236f38f6479c1283e963eddfdc80109a1f2b8acbece49ecac3",
+    "sha256": "da7512a6c32a5d2583b6e3b235315a0e134ff4402cb5a6d759b217047080d99e",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -921,8 +922,8 @@
       "id": "foundation-packs",
       "root": "community",
       "derivation": "foundation_pack_closure",
-      "file_count": 54,
-      "sha256": "313301e8951481d80e3c93d87a03f87f5888f07e593d41700d9e2c1e32f8e7fe",
+      "file_count": 55,
+      "sha256": "4a99054f0a0348336f0b23c37bd820355102880234c4c91b3ebf0b217d60786e",
       "paths": [
         "community/packs/home-assistant.json",
         "community/packs/paperless-ngx-api.json",
@@ -940,6 +941,7 @@
         "community/recipes/check-house-before-leaving-home-assistant.json",
         "community/recipes/configure-paperless-sync.json",
         "community/recipes/control-device-home-assistant.json",
+        "community/recipes/draft-composed-mail.json",
         "community/recipes/extract-commitments-from-mail.json",
         "community/recipes/extract-tasks-from-mail.json",
         "community/recipes/find-paperless-documents.json",
@@ -1018,7 +1020,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 7890,
-    "sha256": "1ffa7fc138d0ff19426c1400039e4d0d7cbe2954ba1ee04da040ce0a2aea558d"
+    "file_count": 7964,
+    "sha256": "ee78cdacb781f3d8ee64e006258e571352b7d9fe882e61412b27bbfd540479f5"
   }
 }

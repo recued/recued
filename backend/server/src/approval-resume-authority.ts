@@ -437,6 +437,17 @@ export const createApprovalResumeAuthorityResolver = (
         if (client.revoked_at !== null) return deny('bearer_inactive', 'The original owner credential is revoked.');
       }
 
+      if (source.channel === 'schedule' && source.prompt_schedule !== undefined
+        && source.contract_id === undefined) {
+        // The scheduler is host-authored. Current grants still gate the resumed
+        // call; the saved occurrence is provenance, never a permission snapshot.
+        if (!deps.opAdmissionGate) return deny('authority_resolution_failed', 'Current tool grants are unavailable.');
+        if (input.required_raw_op_id && !deps.opAdmissionGate.isOpGranted(source, input.required_raw_op_id)) {
+          return deny('contract_grant_revoked', 'This operation is no longer granted.');
+        }
+        return { admitted: true, execution_source: source };
+      }
+
       if (executionSourceContractId(source) !== undefined) {
         return deny(
           'unsupported_source',

@@ -204,6 +204,8 @@ describe('ordinary version-reviewed local mutation receipts', () => {
     expect(raw).toEqual({ ...(before as { execution_status: string; execution_blob_encrypted: string | null }), execution_status: 'unknown' });
     const result = (await recovered.listForSession!(chat.session_id))[0]!.execution!;
     expect(result.status).toBe(variant === 'valid' ? 'completed' : 'unknown');
+    expect((await recovered.listForTurn(chat.session_id, chat.proposal.turn_id)).map(row => row.execution)).toEqual([result]);
+    expect(await recovered.listForTurn(chat.session_id, 'another-turn')).toEqual([]);
     if (variant === 'valid') {
       expect(result).toMatchObject({ local_receipt: { kind: 'local_calendar' }, recovered_from: 'unknown' });
       await expect(recovered.put({ ...chat.proposal, plan_id: randomUUID(), turn_id: 'retry',

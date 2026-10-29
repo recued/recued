@@ -140,6 +140,17 @@ describe('its empty and error states', () => {
     expect(renderUniversalSearch({ ...base, query: '   ' }, NOW)).toContain('Type to search');
   });
 
+  // A server before 26.10.28 answers `work_entity.search` with `unknown_method`. A retry cannot
+  // help, so it is not a failure: the box names what it searched and the search completes.
+  it('on a server that cannot search tasks and notes, says what it searched and completes the search', () => {
+    const html = renderUniversalSearch({ ...base, query: 'zzz', groups: [], workUnsupported: true, marketplaceOffered: true }, NOW);
+    expect(html).toContain('Mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects and commitments too.');
+    expect(html).toContain('No matches in the searched sources');
+    expect(html).toContain(SEARCH_MARKETPLACE_ACTION);
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain('universal-search-retry');
+  });
+
   it('keeps failed searches retryable without claiming an empty result or offering the cloud', () => {
     for (const error of [{ error: 'server unreachable' }, { workError: 'server unreachable' }, { capabilitiesError: 'server unreachable' }]) {
       const html = renderUniversalSearch({ ...base, query: 'k', ...error, marketplaceOffered: true }, NOW);

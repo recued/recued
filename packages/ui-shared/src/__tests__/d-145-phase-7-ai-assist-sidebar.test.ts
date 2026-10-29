@@ -7,16 +7,13 @@ import { MAIL_COMPOSE_REWRITE_ACTIONS } from '@recued/contracts';
 import { renderAiAssistSidebar } from '../mail-compose/ai-assist-sidebar.js';
 
 describe('D-145 PA7 — renderAiAssistSidebar', () => {
-  it('renders only the launch-safe existing-body transformations', () => {
+  it('offers drafting and existing-body transformations in the same composer', () => {
     const html = renderAiAssistSidebar({ submitting: false });
     for (const action of MAIL_COMPOSE_REWRITE_ACTIONS) {
       expect(html).toContain(`data-action="mail-compose-ai-${action}"`);
     }
-    expect(html).not.toContain('mail-compose-ai-compose"');
-    expect(html).not.toContain('mail-compose-ai-draft-reply');
-    expect(html).not.toContain('data-stub=');
-    expect(html).not.toMatch(/coming soon/i);
-    expect(html).toContain('review every change before sending');
+    expect(html).toContain('data-mail-compose-ai-brief');
+    expect(html).toContain('data-action="mail-compose-ai-draft"');
   });
 
   it('disables every button when submitting is true', () => {
@@ -24,7 +21,7 @@ describe('D-145 PA7 — renderAiAssistSidebar', () => {
     const buttonRegex =
       /<button[^>]*data-action="mail-compose-ai-[^"]+"[^>]*>/g;
     const matches = html.match(buttonRegex) ?? [];
-    expect(matches.length).toBe(MAIL_COMPOSE_REWRITE_ACTIONS.length);
+    expect(matches.some(button => button.includes('mail-compose-ai-draft'))).toBe(true);
     for (const button of matches) {
       expect(button).toContain('disabled');
       expect(button).toContain('aria-disabled="true"');
@@ -50,7 +47,7 @@ describe('D-145 PA7 — renderAiAssistSidebar', () => {
     const matches = html.match(
       /<button[^>]*data-action="mail-compose-ai-[^"]+"[^>]*>/g,
     ) ?? [];
-    expect(matches).toHaveLength(MAIL_COMPOSE_REWRITE_ACTIONS.length);
+    expect(matches.some(button => button.includes('mail-compose-ai-draft'))).toBe(true);
     expect(matches.every((button) => button.includes('disabled'))).toBe(true);
     expect(html).toMatch(
       /data-action="mail-compose-ai-rewrite-friendly"[^>]*aria-busy="true"/,

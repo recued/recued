@@ -207,7 +207,7 @@ describe('D-249 — kernel op scope classification', () => {
   it('⛔ the CSV ops are fenced as data.file — a door without files cannot read one through them', () => {
     const csv = rows().filter((r) => r.op.startsWith('core.storage.csv.'));
     expect(csv.map((r) => r.op).sort()).toEqual([
-      'core.storage.csv.columns', 'core.storage.csv.filter', 'core.storage.csv.rows', 'core.storage.csv.stats',
+      'core.storage.csv.columns', 'core.storage.csv.filter', 'core.storage.csv.inspect', 'core.storage.csv.rows', 'core.storage.csv.stats', 'core.storage.csv.transform',
     ]);
     for (const r of csv) expect(r.scope, r.op).toBe('data.file');
     const contactsOnly = scopeRestrictionsFromReadableCollections(new Set(['contact']));

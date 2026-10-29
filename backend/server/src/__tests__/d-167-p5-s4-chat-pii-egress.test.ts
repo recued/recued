@@ -1668,6 +1668,7 @@ describe('D-167 P5 S4 — session-delete ledger purge', () => {
         deleteSession: () => true,
       },
       selfSignature,
+      orchestrator: {},
       dropSessionPiiLedger: drop,
     } as unknown as ChatRpcDeps;
     await handleSessionDelete(deps, { session_id: 'sess-1' });

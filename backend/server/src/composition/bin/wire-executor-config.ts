@@ -28,6 +28,7 @@ import type { AuditLogStore } from '@recued/storage';
 import { IngredientError } from '@recued/ingredients';
 // D-207 slice 3d — the general no-resend fence.
 import {
+  CSV_TOOLKIT_LIMITS,
   contractPermitsDoorType,
   isContractActive,
   isMailSendClaimSettled,
@@ -522,6 +523,7 @@ const csvFileDeps = async (
   deps: ComposeExecutorConfigDeps,
   run_id?: string,
   step_id?: string,
+  maxBytes?: number,
 ): Promise<import('../../collections/file/csv-filter-handler.js').CsvFilterDeps> => {
   const { handleFileRead } = await import('../../collections/file/file-read-handler.js');
   const { createHash } = await import('node:crypto');
@@ -537,6 +539,8 @@ const csvFileDeps = async (
           ...(remote ? { remote } : {}),
         },
         readInput,
+        undefined,
+        maxBytes === undefined ? undefined : { maxBytes },
       ),
     },
     // D-245 — the `{slug, path}` address. ⛔ NEVER WIRED UNTIL 2026-09-23: the
@@ -785,6 +789,7 @@ export const composeExecutorConfig = async (
           // OAuth2-refresh gate persists a rotated token for MCP connections
           // too. Pool eviction uses `MCP_CLIENT_IDLE_TIMEOUT_MS` (5 min).
           connectionMcp: await (async (): Promise<ConnectionMcpHandlerDeps> => {
+            const { captureToolProgressReporter } = await import('../../execution/tool-progress.js');
             const { decodeAuthFromStorage, encodeAuthForStorage } = await import('../../connection-handler.js');
             const { createWsConnect } = await import('../../mcp-ws-connector.js');
             const { createStdioSpawn } = await import('../../mcp-stdio-spawner.js');
@@ -831,6 +836,7 @@ export const composeExecutorConfig = async (
               // spawner uses shell:false + a curated minimal env. The command
               // is user-enrolled (Settings → Connections), never pack-injected.
               spawnStdioMcp: createStdioSpawn(),
+              captureProgress: captureToolProgressReporter,
             };
           })(),
           // D-177 P2b / D-228 slice 4 — per-tool TIER gate for the kernel
@@ -1602,6 +1608,14 @@ export const composeExecutorConfig = async (
       // markdown renderer takes, so a stored CSV has one read path rather than
       // one per consumer. The parsing itself is `@recued/transforms` code shared
       // with `csv_parse` — the handler owns only the I/O.
+      csvInspect: async (input) => {
+        const { handleCsvInspect } = await import('../../collections/file/csv-toolkit-handler.js');
+        return handleCsvInspect(await csvFileDeps(deps, undefined, undefined, CSV_TOOLKIT_LIMITS.bytes), input);
+      },
+      csvTransform: async (input, scope) => {
+        const { handleCsvTransform } = await import('../../collections/file/csv-toolkit-handler.js');
+        return handleCsvTransform(await csvFileDeps(deps, scope.run_id, scope.step_id, CSV_TOOLKIT_LIMITS.bytes), input);
+      },
       csvFilter: async (input) => {
         const { handleCsvFilter } = await import('../../collections/file/csv-filter-handler.js');
         return handleCsvFilter(

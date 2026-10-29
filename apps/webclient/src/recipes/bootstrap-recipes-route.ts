@@ -5115,7 +5115,10 @@ export const bootstrapRecipesRoute = (
     }
     if (action === 'open-run') {
       const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
-      if (recipeId !== null) openRunModal(recipeId, 'run');
+      if (recipeId !== null) {
+        target.focus?.({ preventScroll: true });
+        openRunModal(recipeId, 'run');
+      }
       return;
     }
     if (action === 'run-defaults') {
@@ -5125,7 +5128,10 @@ export const bootstrapRecipesRoute = (
     }
     if (action === 'open-schedule') {
       const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
-      if (recipeId !== null) openRunModal(recipeId, 'schedule');
+      if (recipeId !== null) {
+        target.focus?.({ preventScroll: true });
+        openRunModal(recipeId, 'schedule');
+      }
       return;
     }
     if (action === 'run-result-action') {

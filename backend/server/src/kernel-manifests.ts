@@ -2610,6 +2610,95 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "csv-inspect",
+    "name": "Inspect a CSV file",
+    "description": "Inspect a stored file_ref: UTF-8 CSV headers, row count, empty-cell counts and a bounded preview. source is required; delimiter defaults to comma; preview_rows is 0..20 (default 5). Strict headers and rectangular rows; up to 32 MiB, 250000 rows, 256 columns and 2000000 cells. No write. Use the CSV Toolkit recipes for individual operations.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": false,
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "file",
+      "csv",
+      "table"
+    ],
+    "input": {
+      "source": null,
+      "delimiter": null,
+      "preview_rows": null
+    },
+    "output": {
+      "source": "source",
+      "columns": "columns",
+      "rows": "rows",
+      "preview": "preview",
+      "preview_truncated": "preview_truncated",
+      "empty_cells": "empty_cells"
+    }
+  },
+  {
+    "slug": "csv-transform",
+    "name": "Transform CSV files into a new file",
+    "description": "Apply an explicit operation to source (stored file_ref), save a new CSV and return file_ref, counts, bounded preview and source hashes. Original files remain unchanged. Prefer the individual CSV Toolkit recipes for argument documentation. operation=filter: conditions [{column,operator,value,comparison}], match=all|any; project: columns, names; concat: other_source, schema=strict|union; join: other_source, left_keys, right_keys, join_type=inner|left|full, duplicates=error|all, right_prefix; diff: other_source, keys, compare_columns; aggregate: group_by, aggregations [{op:count|sum|avg|min|max,column,as}], empty_numeric=error|skip, average_scale=0..12. delimiter and other_delimiter default comma. Exact text keys; blank join keys never match. Decimals require explicit comparison=decimal and plain decimal text. Strict UTF-8 input, 32 MiB per file, 250000 rows, 256 columns, 2000000 cells; fail before saving on errors or limits. Output uses comma delimiters.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": false,
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "file",
+      "csv",
+      "table"
+    ],
+    "input": {
+      "source": null,
+      "delimiter": null,
+      "operation": null,
+      "other_source": null,
+      "other_delimiter": null,
+      "conditions": null,
+      "match": null,
+      "columns": null,
+      "names": null,
+      "schema": null,
+      "left_keys": null,
+      "right_keys": null,
+      "join_type": null,
+      "duplicates": null,
+      "right_prefix": null,
+      "keys": null,
+      "compare_columns": null,
+      "group_by": null,
+      "aggregations": null,
+      "empty_numeric": null,
+      "average_scale": null
+    },
+    "output": {
+      "operation": "operation",
+      "file_ref": "file_ref",
+      "record_id": "record_id",
+      "filename": "filename",
+      "mime_type": "mime_type",
+      "content_hash": "content_hash",
+      "sha256": "sha256",
+      "size_bytes": "size_bytes",
+      "generated_at": "generated_at",
+      "bytes": "bytes",
+      "sources": "sources",
+      "columns": "columns",
+      "rows": "rows",
+      "preview": "preview",
+      "preview_truncated": "preview_truncated",
+      "counts": "counts",
+      "notes": "notes"
+    }
+  },
+  {
     "slug": "csv-filter",
     "name": "Save matching CSV rows as a new file",
     "description": "Save the rows of one stored CSV whose named column matches as a NEW data.file record, and return its file_ref. This writes: every run stores another record. To read the matching rows without saving anything, use csv-rows. The source bytes never enter recipe step state: reading a sheet to search it with data-file-read holds the base64, the decoded text AND the parsed rows for the rest of the run, which is what makes a large sheet unsearchable that way. Parsing is the same code csv_parse uses, so a file reads identically through either. Returns column_found separately from matched — zero rows because the column is missing and zero rows because nothing matched are the same count and completely different facts, and over a customer list conflating them answers 'no such customer' about a spelling mistake. No file_ref is returned when the column is absent, because a parseable empty file would be indistinguishable from a real miss. mode is 'contains' (default) or 'equal'; every cell is text, so contains matches numbers too.",

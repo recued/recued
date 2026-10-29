@@ -67,8 +67,8 @@ export interface ProviderEventPayload {
    *  event has no description. The collection uses this to decide
    *  inline-vs-CAS storage. */
   description_bytes: number;
-  /** CalDAV per-resource validator. Null for gcal / graph (their
-   *  cursor lives on `collection_instances.config.sync_cursor`). */
+  /** Provider resource validator when available. Independent of the
+   * account sync cursor; used to reject stale invitation responses. */
   etag?: string;
   /** The provider's copy did not change; Recued reads it differently now (a
    *  CalDAV time read in its zone, 2026-10-07). The row is corrected without
@@ -216,6 +216,9 @@ export interface DeleteEventInput {
 }
 
 export interface RsvpEventInput {
+  expected_etag?: string;
+  /** Owner UI revalidates its instance/version immediately before handoff. */
+  before_send?: () => void;
   calendar_id: string;
   source_id: string;
   response: 'accepted' | 'declined' | 'tentative';
@@ -262,7 +265,8 @@ export interface CalendarProvider {
 
   // ── Write-back mutations ──────────────────────────────────────────
   //
-  // Each returns a ProviderEventPayload on verified success. A failure
+  // Each returns a ProviderEventPayload on verified success (an acknowledged
+  // RSVP decline may instead report that the provider removed the event). A failure
   // (any 4xx / 5xx / timeout / malformed response) throws a typed
   // `CalendarAdapterError`. The dispatcher writes to the warehouse
   // only on verified success — the warehouse never holds a version
@@ -286,8 +290,20 @@ export interface CalendarProvider {
    *  Throws `attendee_not_self` when the user is not an attendee.
    *  CalDAV adapter may throw `permission_denied` when the server
    *  lacks iTIP support. */
-  rsvpEvent(input: RsvpEventInput): Promise<ProviderEventPayload>;
+  rsvpEvent(input: RsvpEventInput): Promise<ProviderRsvpResult>;
+  /** Fresh provider copy plus proof that its RSVP reaches the organizer.
+   * Absent for local/imported calendars and unqualified scheduling servers. */
+  readInvitation?(calendar_id: string, source_id: string): Promise<{
+    payload: ProviderEventPayload;
+    notification_supported: boolean;
+  }>;
 }
+
+export type ProviderRsvpResult = ProviderEventPayload | {
+  removed: true;
+  source_id: string;
+  response_status: 'declined';
+};
 
 /** One poll's outcome (`CalendarProvider.onSyncOutcome`), as mail's
  *  `MailSyncOutcome`. */

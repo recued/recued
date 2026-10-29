@@ -19,10 +19,10 @@ const recipe = (over: Record<string, unknown>) => ({
 
 type Issue = { severity: string; code: string; path: string };
 
-/** Every finding about a `fail_reason` field, as `severity code path`. */
+/** The fail-reason contract findings, as `severity code path`. */
 const reasonIssues = (r: Record<string, unknown>): string[] =>
   (validateRecipe(r).issues as Issue[])
-    .filter((i) => i.path.endsWith('.fail_reason'))
+    .filter((i) => i.path.endsWith('.fail_reason') && i.code.startsWith('fail_reason_'))
     .map((i) => `${i.severity} ${i.code} ${i.path}`);
 
 describe('fail_reason — validation', () => {

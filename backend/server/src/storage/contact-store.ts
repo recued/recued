@@ -765,6 +765,12 @@ export const ensureContactSchema = (db: Database.Database): void => {
       (r) => r.name,
     ),
   );
+  if (!aliasCols.has('is_primary')) {
+    db.exec(`ALTER TABLE ${CONTACT_ALIAS_TABLE} ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!aliasCols.has('primary_at')) {
+    db.exec(`ALTER TABLE ${CONTACT_ALIAS_TABLE} ADD COLUMN primary_at INTEGER`);
+  }
   if (!aliasCols.has('source_id')) {
     db.exec(`ALTER TABLE ${CONTACT_ALIAS_TABLE} ADD COLUMN source_id TEXT`);
   }
@@ -851,6 +857,8 @@ interface ContactAliasRow {
   // fabricating one.
   source_id: string | null;
   confidence: number;
+  is_primary: number;
+  primary_at: number | null;
   created_at: number;
   last_resolved_at: number | null;
 }
@@ -1025,6 +1033,8 @@ export interface ManualUpsertInput {
 }
 
 export interface ContactListQuery {
+  /** Owner search across saved identifiers; canonical survivors are paged once. */
+  search?: string;
   name_contains?: string;
   /** D-167 B3 — case-insensitive substring match on the `company` column,
    *  the org-scoped contact search (so a `pii.Org` alias the chat boundary
@@ -1208,6 +1218,11 @@ export interface ContactWriteOptions {
   origin_surface?: OriginSurface;
 }
 
+/** Manual writes can defer their events until a surrounding import commits. */
+export interface ManualContactWriteOptions extends ContactWriteOptions {
+  deferNotifications?: (notify: () => void) => void;
+}
+
 /** D-138 P1 — input shape for inserting a confirmed-linked platform
  *  record entry. Reconciler ingest emits `state: 'auto'` + `linked_by:
  *  'reconciler:<vendor>'`; user merge UI emits `state: 'confirmed'` +
@@ -1284,7 +1299,7 @@ export type ProjectionContribution = ContactContribution<unknown> & {
 export interface ContactStore {
   observe(obs: ContactObservation, now?: number, opts?: ContactWriteOptions): ContactRecord;
   observeBatch(obs: readonly ContactObservation[], now?: number, opts?: ContactWriteOptions): number;
-  upsertManual(input: ManualUpsertInput, now?: number, opts?: ContactWriteOptions): ContactRecord;
+  upsertManual(input: ManualUpsertInput, now?: number, opts?: ManualContactWriteOptions): ContactRecord;
   get(email: string): ContactRecord | null;
   list(query?: ContactListQuery): ContactRecord[];
   /** D-167 follow-on — the prompt-cache prefetch's whole-warehouse scan. Returns
@@ -1486,7 +1501,7 @@ export interface ContactStore {
    *  so the contacts table's email PK constraint stays satisfied
    *  while the contact has no real address. Promotion (`promoteMentionOnlyToVerified`)
    *  rewrites the email column to the supplied real value. */
-  createMentionOnlyContact(input: MentionOnlyContactInput, now?: number): ContactRecord;
+  createMentionOnlyContact(input: MentionOnlyContactInput, now?: number, opts?: ManualContactWriteOptions): ContactRecord;
   /** D-205 #4 — mint a contact ROW for an IMPORT, and **nothing else**.
    *
    *  The `full_import` create-on-miss path. Handles BOTH shapes a contact book
@@ -1518,6 +1533,7 @@ export interface ContactStore {
   promoteMentionOnlyToVerified(
     input: PromoteMentionOnlyInput,
     now?: number,
+    opts?: ManualContactWriteOptions,
   ): ContactRecord;
   /** Set / replace `network_domain` array on a contact. Validates
    *  every entry against the closed list. Empty array clears. */
@@ -1555,6 +1571,10 @@ export interface ContactStore {
     contact_id: string,
     kind?: ContactAliasKind,
   ): readonly ContactAliasRecord[];
+  /** All identifiers belonging to the resolved contact, including absorbed identities. */
+  listResolvedContactAliases(contact_id: string): readonly ContactAliasRecord[];
+  /** Stable identities represented by the same resolved person, including absorbed contacts. */
+  resolvedContactIds(contact_id: string): readonly string[];
   /** Resolver-friendly closure pack — the substrate provides the
    *  storage closures the pure resolver consumes. */
   resolveContactReference(
@@ -1897,6 +1917,18 @@ export const createContactStore = (
       at: nowFn(),
       ...(prev !== undefined ? { prev } : {}),
     });
+  };
+
+  const notifyContactWrite = (record: ContactRecord, kind: 'created' | 'updated', prev: Record<string, unknown> | undefined, opts: ManualContactWriteOptions): void => {
+    const publish = () => {
+      const row = record.contact_id ? getByContactIdStmt.get(record.contact_id) as ContactRow | undefined : undefined;
+      const current = row ? rowToRecord(row) : record;
+      if (!opts.silent) emitEvent(current.email, kind, prev);
+      if (storeOpts.onContactUpserted) {
+        try { storeOpts.onContactUpserted(current); } catch { /* best-effort observer */ }
+      }
+    };
+    if (opts.deferNotifications) opts.deferNotifications(publish); else publish();
   };
 
   const getStmt = db.prepare(`SELECT * FROM ${CONTACT_TABLE} WHERE email = ?`);
@@ -2295,7 +2327,7 @@ export const createContactStore = (
   const upsertManual = (
     input: ManualUpsertInput,
     nowOpt?: number,
-    opts: ContactWriteOptions = {},
+    opts: ManualContactWriteOptions = {},
   ): ContactRecord => {
     const email = canonicalizeEmail(input.email);
     if (!email) {
@@ -2312,10 +2344,7 @@ export const createContactStore = (
     // Emits + callbacks land OUTSIDE the transaction: a listener must never see a
     // contact the database is still free to roll back.
     const result = rowToRecord(getStmt.get(canonical_email) as ContactRow);
-    if (!opts.silent) emitEvent(canonical_email, kind, prev);
-    if (storeOpts.onContactUpserted) {
-      try { storeOpts.onContactUpserted(result); } catch { /* fire-and-forget */ }
-    }
+    notifyContactWrite(result, kind, prev, opts);
     return result;
   };
 
@@ -2514,6 +2543,7 @@ export const createContactStore = (
           kind: 'phone_alias',
           alias_pattern: suppliedPhone,
           source: 'manual',
+          primary: true,
           source_id: CONTACT_SOURCE_ID_MANUAL,
           created_at: now,
         },
@@ -2550,6 +2580,41 @@ export const createContactStore = (
   ): { whereClause: string; params: unknown[] } => {
     const where: string[] = [];
     const params: unknown[] = [];
+    if (query.search?.trim()) {
+      const text = query.search.trim();
+      const pattern = (value: string): string => `%${value.replace(/[\\%_]/g, '\\$&')}%`;
+      const literal = pattern(text);
+      const clauses = ["candidate.name LIKE ? ESCAPE '\\' COLLATE NOCASE",
+        "candidate.email LIKE ? ESCAPE '\\' COLLATE NOCASE",
+        "candidate.company LIKE ? ESCAPE '\\' COLLATE NOCASE",
+        `EXISTS (SELECT 1 FROM ${CONTACT_ALIAS_TABLE} alias
+          WHERE alias.contact_id=candidate.contact_id
+            AND alias.alias_pattern_normalized LIKE ? ESCAPE '\\' COLLATE NOCASE)`];
+      params.push(literal, literal, literal, pattern(normalizeAliasPattern(text)));
+      // A phone-shaped query can contain spaces, brackets and separators.
+      // Letters never turn a company/name query into an unrelated number hit.
+      const digits = /^[+\d\s().-]+$/.test(text) ? text.replace(/\D/g, '') : '';
+      if (digits) {
+        const phone = (column: string): string => `replace(replace(replace(replace(replace(replace(
+          coalesce(${column},''),'+',''),' ',''),'-',''),'(',''),')',''),'.','')`;
+        clauses.push(`${phone('candidate.phone')} LIKE ?`,
+          `EXISTS (SELECT 1 FROM ${CONTACT_ALIAS_TABLE} alias
+            WHERE alias.contact_id=candidate.contact_id AND alias.kind='phone_alias'
+              AND ${phone('alias.alias_pattern_normalized')} LIKE ?)`);
+        params.push(`%${digits}%`, `%${digits}%`);
+      }
+      // Alias rows can still name a merged identity. Follow redirects before
+      // limiting or counting; UNION also terminates corrupt redirect cycles.
+      where.push(`contact_id IN (
+        WITH RECURSIVE contact_search_matches(contact_id, merged_into) AS (
+          SELECT candidate.contact_id, candidate.merged_into FROM ${CONTACT_TABLE} candidate
+            WHERE ${clauses.join(' OR ')}
+          UNION
+          SELECT survivor.contact_id, survivor.merged_into FROM ${CONTACT_TABLE} survivor
+            JOIN contact_search_matches matched ON survivor.email=matched.merged_into
+        ) SELECT contact_id FROM contact_search_matches WHERE merged_into IS NULL
+      )`);
+    }
     if (query.name_contains) {
       where.push(`name LIKE ? COLLATE NOCASE`);
       params.push(`%${query.name_contains}%`);
@@ -3500,6 +3565,7 @@ export const createContactStore = (
   const createMentionOnlyContact = (
     input: MentionOnlyContactInput,
     nowOpt?: number,
+    opts: ManualContactWriteOptions = {},
   ): ContactRecord => {
     // Codex P1 fold — mention_only contacts must satisfy the spec
     // § A.4.1 validator gate: at least one of canonical_email, name,
@@ -3554,10 +3620,7 @@ export const createContactStore = (
     materializeContactProjection(contactId, now);
     const row = getStmt.get(placeholderEmail) as ContactRow;
     const record = rowToRecord(row);
-    emitEvent(placeholderEmail, 'created');
-    if (storeOpts.onContactUpserted) {
-      try { storeOpts.onContactUpserted(record); } catch { /* best-effort */ }
-    }
+    notifyContactWrite(record, 'created', undefined, opts);
     return record;
   };
 
@@ -3664,6 +3727,7 @@ export const createContactStore = (
   const promoteMentionOnlyToVerified = (
     input: PromoteMentionOnlyInput,
     nowOpt?: number,
+    opts: ManualContactWriteOptions = {},
   ): ContactRecord => {
     if (!input.contact_id) {
       throw new Error('promote_contact_id_required');
@@ -3819,10 +3883,7 @@ export const createContactStore = (
 
     const refreshed = getByContactIdStmt.get(input.contact_id) as ContactRow;
     const record = rowToRecord(refreshed);
-    emitEvent(targetEmail, 'updated', buildPrev(existing));
-    if (storeOpts.onContactUpserted) {
-      try { storeOpts.onContactUpserted(record); } catch { /* best-effort */ }
-    }
+    notifyContactWrite(record, 'updated', buildPrev(existing), opts);
     return record;
   };
 
@@ -4101,7 +4162,19 @@ export const createContactStore = (
     if (row.platform !== null) out.platform = row.platform;
     if (row.source_id !== null) out.source_id = row.source_id;
     if (row.last_resolved_at !== null) out.last_resolved_at = row.last_resolved_at;
+    if (row.is_primary === 1) out.primary = true;
     return out;
+  };
+
+  const setAliasPrimary = (id: string, input: ContactAliasInput, now: number): void => {
+    if (input.primary === undefined) return;
+    if (input.primary) {
+      db.prepare(`UPDATE ${CONTACT_ALIAS_TABLE} SET is_primary=CASE WHEN id=? THEN 1 ELSE 0 END,
+        primary_at=CASE WHEN id=? THEN ? ELSE primary_at END
+        WHERE contact_id=? AND kind='phone_alias' AND source='manual'`).run(id, id, now, input.contact_id);
+    } else {
+      db.prepare(`UPDATE ${CONTACT_ALIAS_TABLE} SET is_primary=0 WHERE id=?`).run(id);
+    }
   };
 
   const upsertContactAlias = (
@@ -4230,9 +4303,9 @@ export const createContactStore = (
           input.alias_pattern,
           existing.id,
         );
-        return rowToAlias(aliasGetByIdStmt.get(existing.id) as ContactAliasRow);
       }
-      return rowToAlias(existing);
+      setAliasPrimary(existing.id, input, now);
+      return rowToAlias(aliasGetByIdStmt.get(existing.id) as ContactAliasRow);
     }
 
     const id = input.id ?? `alias_${randomUUID().replace(/-/g, '')}`;
@@ -4260,6 +4333,7 @@ export const createContactStore = (
 
     // Read back by the id we just minted — kind-agnostic, so no future alias
     // kind can rot it (the old per-kind reconstruction is what C-2 broke).
+    setAliasPrimary(id, input, now);
     const fetched = aliasGetByIdStmt.get(id) as ContactAliasRow | undefined;
     if (!fetched) {
       throw new Error('contact_alias_persistence_failed');
@@ -4704,8 +4778,10 @@ export const createContactStore = (
    *  cascade to the six email-keyed tables — that is slice 4's job, not a side
    *  effect of materializing a title. `chat_alias` / `platform_id` have no
    *  column at all. */
-  const phoneContributionsFor = (contact_id: string): ProjectionContribution[] =>
-    (aliasListByContactKindStmt.all(contact_id, 'phone_alias') as ContactAliasRow[]).map(
+  const phoneContributionsFor = (contact_id: string, hasPrimary: boolean): ProjectionContribution[] => {
+    const aliases = aliasListByContactKindStmt.all(contact_id, 'phone_alias') as ContactAliasRow[];
+    // Alternatives remain resolvable aliases; an owner preference selects the displayed phone.
+    return aliases.filter(row => !hasPrimary || row.source !== 'manual' || row.is_primary === 1).map(
       (row) => ({
         kind: 'phone',
         // The original pattern, not the normalized one — `contacts.phone` holds
@@ -4714,13 +4790,15 @@ export const createContactStore = (
         value: row.alias_pattern,
         source: row.source as ContactContributionSource,
         confidence: row.confidence,
-        // Aliases carry no event time; their ingestion time is the best proxy.
-        as_of: row.created_at,
+        // An explicit phone choice has an owner assertion time. Other aliases
+        // have only their ingestion time as a proxy.
+        as_of: row.is_primary === 1 ? row.primary_at ?? row.created_at : row.created_at,
         // The REAL instance, or none. Never fabricated — a phone imported from
         // Google must not be reported as hand-typed.
         source_id: row.source_id ?? undefined,
       }),
     );
+  };
 
   // ── D-192 C-2 slice 4 — the MERGE GROUP ────────────────────────────────────
   //
@@ -4781,6 +4859,12 @@ export const createContactStore = (
     return [contact_id, ...absorbed.map((r) => r.contact_id)];
   };
 
+  const resolvedContactIds = (contact_id: string): readonly string[] => {
+    const target = getByContactIdStmt.get(contact_id) as ContactRow | undefined;
+    const survivor = target ? resolvedLiveContact(target.email) : null;
+    return survivor ? mergeGroupFor(survivor.contact_id, survivor.email) : [];
+  };
+
   const attributeContributionsFor = (contact_id: string): ProjectionContribution[] =>
     (attributeListByContactStmt.all(contact_id) as ContactAttributeRow[]).map((row) => ({
       kind: row.kind,
@@ -4825,9 +4909,11 @@ export const createContactStore = (
         : [];
     }
     const contributions: ProjectionContribution[] = [];
-    for (const member of mergeGroupFor(contact_id, existing.email)) {
+    const members = mergeGroupFor(contact_id, existing.email);
+    const hasPrimary = members.some(member => listContactAliases(member, 'phone_alias').some(row => row.source === 'manual' && row.primary));
+    for (const member of members) {
       contributions.push(...attributeContributionsFor(member));
-      contributions.push(...phoneContributionsFor(member));
+      contributions.push(...phoneContributionsFor(member, hasPrimary));
     }
     return contributions;
   };
@@ -5037,15 +5123,15 @@ export const createContactStore = (
   // unknown identifiers return an empty result without throwing —
   // both helpers are read-side resolvers, never write.
   //
-  // LIMIT 5 on the phone lookup is generous enough to surface every
-  // transitional collision in practice while still being a strict
-  // upper bound the caller can rely on; the merge candidate queue
-  // resolves the long tail.
+  // Phone aliases participate even when another number is displayed. Resolve
+  // merged identities before bounding the result, so duplicate alias rows for
+  // one person cannot hide a genuinely shared number.
   const findByPhoneListStmt = db.prepare(
-    `SELECT * FROM ${CONTACT_TABLE}
-       WHERE phone = ? AND merged_into IS NULL
-       ORDER BY last_interaction DESC, email ASC
-       LIMIT 5`,
+    `SELECT * FROM ${CONTACT_TABLE} WHERE phone = ?
+     UNION
+     SELECT c.* FROM ${CONTACT_TABLE} c JOIN ${CONTACT_ALIAS_TABLE} a ON a.contact_id=c.contact_id
+       WHERE a.kind='phone_alias' AND a.alias_pattern_normalized=?
+     ORDER BY last_interaction DESC, email ASC`,
   );
 
   /** Forward a hydrated row through its `merged_into` redirect chain.
@@ -5084,16 +5170,19 @@ export const createContactStore = (
     if (typeof phone !== 'string' || !phone.length) {
       return { contact: null, confidence: 0, alternatives: [] };
     }
-    const rows = findByPhoneListStmt.all(phone) as ContactRow[];
-    if (rows.length === 0) return { contact: null, confidence: 0, alternatives: [] };
-    if (rows.length === 1) {
-      const row = rows[0]!;
-      return { contact: rowToRecord(row), confidence: 1.0, alternatives: [] };
+    const rows = findByPhoneListStmt.all(phone, normalizeAliasPattern(phone)) as ContactRow[];
+    const contacts = new Map<string, ContactRecord>();
+    for (const row of rows) {
+      const contact = followMergeChain(rowToRecord(row));
+      if (contact) contacts.set(contact.email, contact);
+      if (contacts.size === 5) break;
     }
+    if (contacts.size === 0) return { contact: null, confidence: 0, alternatives: [] };
+    if (contacts.size === 1) return { contact: [...contacts.values()][0]!, confidence: 1.0, alternatives: [] };
     return {
       contact: null,
       confidence: 0,
-      alternatives: rows.map(rowToRecord),
+      alternatives: [...contacts.values()],
     };
   };
 
@@ -5429,6 +5518,9 @@ export const createContactStore = (
     deleteContactAlias,
     deleteContactAliasesForSource,
     listContactAliases,
+    /** Identifier reads follow the same merge group as the visible contact. */
+    resolvedContactIds,
+    listResolvedContactAliases: (contact_id: string): ContactAliasRecord[] => resolvedContactIds(contact_id).flatMap(member => listContactAliases(member)),
     // D-192 C-2 — the contribution substrate.
     upsertContactAttribute,
     listContactAttributes,

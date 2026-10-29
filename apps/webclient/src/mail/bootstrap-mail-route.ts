@@ -31,7 +31,7 @@
  *  `packs.uninstall` refuses to remove it. The branch stays, because a dispatch
  *  error is still the honest place for any other run failure to land. */
 
-import { MAIL_COMPOSE_STYLES, FORM_RENDERER_STYLES } from '@recued/ui-shared';
+import { MAIL_COMPOSE_STYLES, FORM_RENDERER_STYLES, formatClientDateTime } from '@recued/ui-shared';
 
 import {
   FILE_PICK_STYLES,
@@ -71,9 +71,23 @@ ${FILE_PICK_STYLES}
   [${MAIL_ROUTE_HOST_ATTR}] .mail-route-header > a { display: inline-flex; align-items: center; min-height: 44px; }
 }
 [${MAIL_ROUTE_HOST_ATTR}] a { color: var(--accent); }
-[${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] { display: grid; gap: 12px; justify-items: start; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] { display: grid; gap: 12px; }
 [${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] h2 { margin: 0; font-size: 18px; }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-drafts-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-drafts-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; min-width: 0; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft { min-width: 0; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-summary { flex: 1 1 240px; min-width: 0; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-open { display: block; max-width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; color: var(--accent); text-align: left; font: inherit; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-context { margin: 0; color: var(--fg-muted); font-size: 13px; overflow-wrap: anywhere; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-draft-action] { min-height: 44px; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-draft-action][aria-disabled="true"] { opacity: .6; cursor: default; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-draft-action]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-basis: 100%; border-top: 1px solid var(--border); padding-top: 8px; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-confirm p { flex: 1 1 240px; margin: 0; overflow-wrap: anywhere; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-draft-action="confirm-delete"] { color: var(--danger, #b42318); }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-draft-feedback] { margin: 0; overflow-wrap: anywhere; }
+
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-mailboxes {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px;
 }
@@ -155,7 +169,17 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   let draftGeneration = 0;
   let draftRows: MailDraftSummary[] = [];
   let draftCursor: string | null = null;
-  let draftBusy = false;
+  let draftLoading = false;
+  let deletingDraftId: string | null = null;
+  let deleteCandidate: MailDraftSummary | null = null;
+  let draftListError: string | null = null;
+  let retryDraftsMore = false;
+  let draftActionError: string | null = null;
+  let draftNotice: string | null = null;
+  let deletionNeedsCheck = false;
+  type DraftFocus = { action: string; id: string | null };
+  const sameDraft = (a: MailDraftSummary, b: MailDraftSummary): boolean =>
+    a.draft_id === b.draft_id && a.incarnation === b.incarnation && a.revision === b.revision;
 
   // The file half is wired ONLY when a search caller exists, so a host without
   // one leaves the Attach control inert instead of opening an empty chooser.
@@ -176,45 +200,152 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     ...fileDeps,
     ...(options.drafts ? { drafts: { ...options.drafts, changed: () => { options.drafts?.changed?.(); void refreshDrafts(); } } } : {}),
   });
-  const paintDrafts = (error?: string): void => {
+  const paintDrafts = (returnTo?: DraftFocus): void => {
     if (disposed || !options.drafts) return;
+    const active = doc.activeElement as HTMLElement | null;
+    const held = active && draftsHost.contains(active) ? active : null;
+    const action = held?.getAttribute('data-mail-draft-action');
+    const origin = returnTo ?? (action ? {
+      action, id: held?.closest('[data-mail-draft-id]')?.getAttribute('data-mail-draft-id') ?? null,
+    } : null);
+    const priorOrder = Array.from(draftsHost.querySelectorAll<HTMLElement>('[data-mail-draft-id]'))
+      .map(row => row.getAttribute('data-mail-draft-id')!);
+    const busy = draftLoading || deletingDraftId !== null;
+    draftsHost.setAttribute('aria-busy', String(busy));
     draftsHost.replaceChildren();
-    const title = doc.createElement('h2'); title.textContent = 'Saved drafts'; draftsHost.append(title);
-    const button = (label: string, run: () => Promise<unknown>): HTMLButtonElement => {
-      const el = doc.createElement('button'); el.type = 'button'; el.textContent = label; el.disabled = draftBusy;
-      el.className = 'wc-button';
-      el.onclick = () => { if (draftBusy) return; void run().catch(caught => paintDrafts(humanizeRpcError(caught))); }; return el;
+    const button = (label: string, key: string, run: () => void | Promise<unknown>, blocked = busy): HTMLButtonElement => {
+      const el = doc.createElement('button'); el.type = 'button'; el.textContent = label; el.className = 'wc-button';
+      el.setAttribute('data-mail-draft-action', key);
+      if (blocked) el.setAttribute('aria-disabled', 'true');
+      const failed = (error: unknown): void => {
+        if (!disposed) { draftActionError = humanizeRpcError(error); paintDrafts(); }
+      };
+      el.onclick = () => {
+        if (disposed || !el.isConnected || blocked) return;
+        try { void Promise.resolve(run()).catch(failed); } catch (error) { failed(error); }
+      };
+      return el;
     };
-    draftsHost.append(button('Refresh drafts', () => refreshDrafts()));
-    if (error) { const message = doc.createElement('p'); message.setAttribute('role', 'alert'); message.textContent = error; draftsHost.append(message); }
+    const header = doc.createElement('div'); header.className = 'mail-route-drafts-header';
+    const title = doc.createElement('h2'); title.textContent = 'Saved drafts';
+    const refresh = button(draftLoading ? 'Refreshing…' : 'Refresh drafts', 'refresh', () => refreshDrafts());
+    refresh.setAttribute('aria-label', 'Refresh drafts');
+    header.append(title, refresh); draftsHost.append(header);
+    for (const [text, alert] of [[draftNotice, false], [draftActionError, true], [draftListError, true]] as const) {
+      if (!text) continue;
+      const message = doc.createElement('p'); message.setAttribute('data-mail-draft-feedback', ''); message.textContent = text;
+      if (alert) message.setAttribute('role', 'alert');
+      draftsHost.append(message);
+    }
+    if (draftListError || deletionNeedsCheck) draftsHost.append(button('Retry', 'retry', () => refreshDrafts(deletionNeedsCheck ? false : retryDraftsMore)));
+    const list = doc.createElement('ul'); list.className = 'mail-route-drafts-list'; draftsHost.append(list);
+    const readiness = compose.readiness();
+    const mailboxes = 'mailboxes' in readiness ? readiness.mailboxes : [];
     for (const row of draftRows) {
-      const item = doc.createElement('div'); item.dataset.mailDraftId = row.draft_id; item.className = 'mail-route-draft';
-      const open = button(row.subject || 'Untitled draft', async () => {
+      const subject = row.subject || 'Untitled draft';
+      const item = doc.createElement('li'); item.dataset.mailDraftId = row.draft_id; item.className = 'mail-route-draft';
+      const summary = doc.createElement('div'); summary.className = 'mail-route-draft-summary';
+      const open = button(subject, 'open', async () => {
         if (!await compose.openSaved(row.draft_id)) throw new Error('Close the message you have open before you open another draft.');
       });
-      open.classList.add('wc-button--wrap');
-      item.append(open, button('Delete draft', async () => {
-        draftBusy = true; paintDrafts();
-        try { await options.drafts!.delete({ draft_id: row.draft_id, expected_revision: row.revision }); await refreshDrafts(); }
-        finally { draftBusy = false; paintDrafts(); }
-      }));
-      const sender = doc.createElement('span'); sender.textContent = ` ${row.sender_mail_instance}`; item.append(sender); draftsHost.append(item);
+      open.className = 'mail-route-draft-open'; open.id = `mail-draft-title-${row.draft_id}`;
+      const context = doc.createElement('p'); context.className = 'mail-route-draft-context'; context.id = `mail-draft-context-${row.draft_id}`;
+      const sender = mailboxes.find(mailbox => mailbox.mail_instance_slug === row.sender_mail_instance);
+      context.append(`From ${sender?.account_email || row.sender_mail_instance} · Edited `);
+      const edited = doc.createElement('time'); const date = new Date(row.updated_at);
+      if (!Number.isNaN(date.getTime())) edited.dateTime = date.toISOString();
+      edited.textContent = formatClientDateTime(row.updated_at, { includeSeconds: false }); context.append(edited);
+      open.setAttribute('aria-describedby', context.id);
+      const describeAction = (control: HTMLButtonElement): HTMLButtonElement => {
+        control.setAttribute('aria-describedby', `${open.id} ${context.id}`); return control;
+      };
+      summary.append(open, context); item.append(summary);
+      if (deleteCandidate?.draft_id === row.draft_id) {
+        const candidate = deleteCandidate;
+        const confirm = doc.createElement('div'); confirm.className = 'mail-route-draft-confirm';
+        confirm.setAttribute('role', 'group'); confirm.setAttribute('aria-label', 'Delete saved draft');
+        const question = doc.createElement('p'); question.textContent = `Delete “${subject}”?`;
+        confirm.append(question, describeAction(button(deletingDraftId === row.draft_id ? 'Deleting…' : 'Delete draft', 'confirm-delete', () => deleteDraft(candidate))),
+          describeAction(button('Cancel', 'cancel-delete', () => {
+            deleteCandidate = null; paintDrafts({ action: 'delete', id: row.draft_id });
+          }, deletingDraftId !== null)));
+        item.append(confirm);
+      } else item.append(describeAction(button('Delete', 'delete', () => {
+        draftActionError = null; draftNotice = null; deleteCandidate = { ...row };
+        paintDrafts({ action: 'cancel-delete', id: row.draft_id });
+      }, busy || deletionNeedsCheck)));
+      list.append(item);
     }
-    if (!draftRows.length && !error) { const empty = doc.createElement('p'); empty.textContent = draftBusy ? 'Loading drafts…' : 'No saved drafts.'; draftsHost.append(empty); }
-    if (draftCursor) draftsHost.append(button('More drafts', () => refreshDrafts(true)));
+    if (!draftRows.length && !draftListError && !draftActionError) {
+      const empty = doc.createElement('p'); empty.textContent = draftLoading ? 'Loading drafts…' : 'No saved drafts.'; draftsHost.append(empty);
+    }
+    if (draftCursor) draftsHost.append(button('More drafts', 'more', () => refreshDrafts(true)));
+    if (origin) {
+      const controls = Array.from(draftsHost.querySelectorAll<HTMLElement>('[data-mail-draft-action]'));
+      const rowId = (control: HTMLElement): string | null => control.closest('[data-mail-draft-id]')?.getAttribute('data-mail-draft-id') ?? null;
+      let target = controls.find(control => control.getAttribute('data-mail-draft-action') === origin.action && rowId(control) === origin.id);
+      if (!target && origin.id !== null) {
+        const index = priorOrder.indexOf(origin.id);
+        const nearby = [origin.id, ...priorOrder.slice(index + 1), ...priorOrder.slice(0, Math.max(index, 0)).reverse()];
+        for (const id of nearby) {
+          target = controls.find(control => control.getAttribute('data-mail-draft-action') === 'open' && rowId(control) === id);
+          if (target) break;
+        }
+      }
+      (target ?? refresh).focus({ preventScroll: returnTo === undefined });
+    }
   };
   const refreshDrafts = async (more = false): Promise<void> => {
     if (!options.drafts || disposed) return;
-    const generation = ++draftGeneration; draftBusy = true; paintDrafts();
+    const generation = ++draftGeneration; draftLoading = true; draftListError = null; paintDrafts();
     try {
       const result = await options.drafts.list({ ...(more && draftCursor ? { cursor: draftCursor } : {}), limit: 25 });
       if (disposed || generation !== draftGeneration) return;
-      draftRows = more ? [...draftRows, ...result.drafts] : result.drafts; draftCursor = result.next_cursor;
-      draftBusy = false; paintDrafts();
+      const rows = more ? [...draftRows, ...result.drafts] : result.drafts;
+      draftRows = [...new Map(rows.map(row => [row.draft_id, row])).values()]; draftCursor = result.next_cursor;
+      if (deleteCandidate && deletingDraftId === null && !draftRows.some(row => sameDraft(row, deleteCandidate!))) {
+        deleteCandidate = null; draftActionError = 'The draft list changed. Choose the draft again before deleting.';
+      } else if (!deletionNeedsCheck || !more) draftActionError = null;
+      if (!more) deletionNeedsCheck = false;
     } catch (error) {
-      if (!disposed && generation === draftGeneration) { draftBusy = false; paintDrafts(humanizeRpcError(error)); }
+      if (!disposed && generation === draftGeneration) { draftListError = humanizeRpcError(error); retryDraftsMore = more; }
+    } finally {
+      if (!disposed && generation === draftGeneration) { draftLoading = false; paintDrafts(); }
     }
   };
+  const deleteDraft = async (candidate: MailDraftSummary): Promise<void> => {
+    if (!options.drafts || disposed || draftLoading || deletingDraftId !== null || deletionNeedsCheck || deleteCandidate !== candidate) return;
+    if (!draftRows.some(row => sameDraft(row, candidate))) {
+      deleteCandidate = null; draftActionError = 'The draft changed. Refresh drafts before deleting it.'; paintDrafts(); return;
+    }
+    let deleted = false;
+    deletingDraftId = candidate.draft_id; draftActionError = null; draftNotice = null; paintDrafts();
+    try {
+      const result = await options.drafts.delete({ draft_id: candidate.draft_id, expected_revision: candidate.revision });
+      if (disposed) return;
+      if (result.deleted !== true) throw new Error('The server did not confirm deletion.');
+      // The acknowledged write is authoritative even when the next list read
+      // fails. Invalidate older snapshots before removing this known row.
+      draftGeneration++; draftLoading = false;
+      draftRows = draftRows.filter(row => row.draft_id !== candidate.draft_id);
+      deleteCandidate = null; deleted = true; draftNotice = `Deleted “${candidate.subject || 'Untitled draft'}”.`;
+    } catch (error) {
+      if (!disposed) {
+        draftGeneration++; draftLoading = false; deleteCandidate = null; deletionNeedsCheck = true;
+        draftActionError = `Couldn’t confirm deletion. ${humanizeRpcError(error)} Refresh drafts to check before deleting again.`;
+      }
+    } finally {
+      if (!disposed) { deletingDraftId = null; paintDrafts(); }
+    }
+    // End this mutation before awaiting a read: that read may be superseded
+    // while another deletion starts, and must not clear its pending state.
+    if (deleted && !disposed) await refreshDrafts();
+  };
+  const cancelDraftDelete = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || !deleteCandidate || deletingDraftId !== null) return;
+    event.preventDefault(); const id = deleteCandidate.draft_id; deleteCandidate = null; paintDrafts({ action: 'delete', id });
+  };
+  draftsHost.addEventListener('keydown', cancelDraftDelete);
 
   const renderRoster = (): void => {
     const readiness = compose.readiness();
@@ -295,6 +426,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     await pending;
     await drafts;
     renderRoster();
+    paintDrafts();
   };
 
   // Render an explicit loading state immediately. An empty roster is a server
@@ -327,6 +459,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     dispose() {
       disposed = true; draftGeneration++;
       root.removeEventListener('click', onClick);
+      draftsHost.removeEventListener('keydown', cancelDraftDelete);
       compose.destroy();
       root.innerHTML = '';
     },

@@ -479,8 +479,12 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
   it('isReservedLocalRpc flags owner contact and calendar methods', () => {
     for (const m of [
       ...CONTACT_MERGE_RPC_METHODS,
+      'contact.search.local',
       'collection.calendar.event.get',
+      'collection.calendar.event.respond',
       'collection.calendar.event.update',
+      'collection.mail.message.get',
+      'collection.mail.conversation.get',
     ]) {
       expect(isReservedLocalRpc(m)).toBe(true);
     }
@@ -601,6 +605,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'chat.inbound_token.',
       'chat.messages.',
       'chat.messenger.',
+      // Paired-client schedule controls; model tools use governed schedule.* handlers.
+      'chat.schedule.',
+      'chat.schedules.',
       'chat.turn.',
       'chat.turns.',
       // D-182 §7.2 — cli reachability grid rpc (owner-only; authors a
@@ -615,7 +622,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'collection.hostname.',
       // D-318 step 1 — the email chat door's chat mailbox is the owner's door setting.
       'collection.mail.chat_door.',
+      'collection.mail.conversation.',
       'collection.mail.enrollManagedOAuth',
+      'collection.mail.message.',
       'collection.operation.',
       'contact.alias.',
       'contact.identity.',
@@ -626,6 +635,7 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // `data.contact` collection grant); it may not decide who is IN it.
       'contact.import.',
       'contact.merge.',
+      'contact.search.',
       // Grant-foundation slice 3 (D-187 amendment) — the unified (contract × grant)
       // matrix CRUD (operator-only; an agent must never self-widen its grants).
       'contract.grant.',

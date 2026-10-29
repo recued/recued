@@ -91,6 +91,34 @@ export const REF_PICKER_STYLES = `
   display: none;
 }
 
+.ref-picker-recovery {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 6px;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary, var(--fg-muted));
+}
+
+.ref-picker-recovery[hidden] {
+  display: none;
+}
+
+.ref-picker-retry {
+  font: inherit;
+  border: none;
+  background: transparent;
+  padding: 4px 0;
+  color: var(--color-accent, var(--accent));
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ref-picker-retry[aria-disabled="true"] {
+  cursor: progress;
+}
+
 .ref-picker-option {
   box-sizing: border-box;
   min-width: 0;

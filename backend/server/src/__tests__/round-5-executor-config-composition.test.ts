@@ -45,9 +45,20 @@ import { createAnnotationStore } from '../storage/annotation-store.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { createKernelAdapter } from '@recued/ingredients';
+import { createIngredientExecutor } from '@recued/ingredients';
+import { KERNEL_MANIFESTS } from '../kernel-manifests.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseRecipe } from '@recued/recipes';
+import { renderSection } from '@recued/renderer';
+import { createStorageGate } from '@recued/storage-gate';
+import { createWarehouseEventBus } from '@recued/warehouse-events';
+import { createCollectionRegistry } from '../collections/registry.js';
+import { createInboundFileCollection } from '../collections/file/inbound-file-collection.js';
+import { handleFileRead } from '../collections/file/file-read-handler.js';
+import { createServerRecipePath } from './helpers/server-recipe-path.js';
+import type { CsvTransformResult, CsvInspectResult } from '@recued/contracts';
 import type { CacheStore } from '@recued/cache';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { ContactStore } from '../storage/contact-store.js';
@@ -157,6 +168,8 @@ const alwaysKernelKeys = [
   // saves its matches as a new record, a write; `csvRows` is its reading twin.)
   'csvColumns',
   'csvFilter',
+  'csvInspect',
+  'csvTransform',
   'csvRows',
   'csvStats',
   // D-315 slice 7 — `ics-read`, wired with the CSV ops for their reason: it
@@ -1833,5 +1846,114 @@ describe('the CSV ops read a named file through the file stack', () => {
     await expect(adapter({
       slug: 'csv-rows', input: { slug: 'vault', path: 'a.csv', column: 'Name', match: '' },
     } as never)).rejects.toThrow(/named file instance/);
+  });
+});
+
+// Real boot wiring, file collection, CAS bytes and recipe execution. Only the
+// caller's choice of arguments stands in for a model; no table/files are mocked.
+describe('CSV operations through the composed server', () => {
+  const fixture = async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'csv-toolkit-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const blobs = createBlobStore(join(dir, 'blobs'));
+    const files = createInboundFileCollection({ db: makeDb(), blobs, slug: 'received', bus: createWarehouseEventBus(),
+      gate: createStorageGate({ quota: 200_000_000, reservePct: 10, surface: 'collection:file:received' }) });
+    const registry = createCollectionRegistry(); registry.register(files);
+    const { config } = await composeWith({ collectionRegistry: registry, cacheBlobs: blobs });
+    const dispatchers = kernelOf(config), path = createServerRecipePath({ dispatchers }); cleanups.push(() => path.close());
+    let seeded = 0;
+    const seed = async (text: string | Buffer) => (await files.ingest({ bytes: Buffer.from(text), filename: 'source.csv',
+      mime_type: 'text/csv', origin: 'webclient_upload', source_id: `seed-${++seeded}`, scan_status: 'clean' })).record_id;
+    const run = async (operation: string, args: Record<string, unknown>) => {
+      // Exercise public kernel composition without importing a private catalog
+      // recipe. The pack's generated recipe bodies have their own catalog test.
+      const inspect = operation === 'inspect';
+      const parsed = parseRecipe({ recipe_id: `csv-${operation}-fixture`, version: 1, ttl: 0,
+        metadata: { name: 'CSV composition fixture', description: 'Exercise the composed CSV kernel over saved files.',
+          author: 'fixture', supported_platforms: [], tags: ['csv', 'file'] },
+        variables: Object.fromEntries(Object.entries(args).map(([name, value]) =>
+          [name, { label: name, type: Array.isArray(value) ? 'array' : typeof value }])),
+        steps: [{ id: 'process', op: inspect ? 'core.storage.csv.inspect' : 'core.storage.csv.transform',
+          args: { ...Object.fromEntries(Object.keys(args).map(name => [name, `{{config.${name}}}`])),
+            ...(!inspect ? { operation } : {}) } }],
+        output: { render: [...(!inspect ? [{ type: 'file_artifact', source: 'step.process', label: 'Output CSV' }] : []),
+          { type: 'json', source: 'step.process', label: 'CSV result' }] },
+      });
+      if (!parsed.ok) throw new Error(JSON.stringify(parsed.issues));
+      const result = await path.run(parsed.recipe, args);
+      expect(result.success, JSON.stringify(result)).toBe(true);
+      const data = result.output.render.find(s => s.type === 'json')?.data;
+      expect(data).toEqual(result.stepResults.get('process'));
+      const artifact = result.output.render.find(s => s.type === 'file_artifact');
+      if (artifact) {
+        const html = renderSection({ kind: 'file_artifact', data: artifact.data });
+        expect(html).toContain('data-file-artifact-ref='); expect(html).not.toContain('invalid exact-file');
+      }
+      return data as CsvTransformResult & CsvInspectResult;
+    };
+    const read = async (record_id: string) => Buffer.from((await handleFileRead({ registry, blobs }, { record_id })).bytes_b64, 'base64').toString('utf8');
+    return { run, read, seed, files, blobs, dispatchers };
+  };
+
+  it('chains inspect and transform operations through durable files across independent runs', async () => {
+    const f = await fixture(); const csv = 'id,status,amount\n001,paid,0.1\n002,paid,0.2\n003,open,4\n';
+    const source = await f.seed(csv);
+    const inspect = await f.run('inspect', { source });
+    expect(inspect).toMatchObject({ rows: 3, columns: ['id', 'status', 'amount'], empty_cells: [0, 0, 0] });
+    const filtered = await f.run('filter', { source, conditions: [{ column: 'status', operator: 'eq', value: 'paid' }] });
+    expect(filtered.rows).toBe(2);
+    const selected = await f.run('project', { source: filtered.file_ref, columns: ['amount', 'status'], names: ['value', 'state'] });
+    const concatenated = await f.run('concat', { source: selected.file_ref, other_source: selected.file_ref });
+    expect(concatenated.rows).toBe(4);
+    const totals = await f.run('aggregate', { source: concatenated.file_ref, group_by: ['state'], aggregations: [{ op: 'sum', column: 'value', as: 'total' }] });
+    expect(await f.read(totals.file_ref)).toBe('state,total\npaid,0.6\n');
+    const other = await f.seed('state,label\npaid,Settled\n');
+    const joined = await f.run('join', { source: totals.file_ref, other_source: other, left_keys: ['state'], right_keys: ['state'] });
+    expect(joined.preview).toEqual([['paid', '0.6', 'paid', 'Settled']]);
+    const next = await f.seed('total,state\n0.9,paid\n');
+    const diff = await f.run('diff', { source: totals.file_ref, other_source: next, keys: ['state'] });
+    expect(diff.counts).toMatchObject({ changed: 1, added: 0, removed: 0 });
+    expect(diff.preview).toEqual([['changed', 'paid', '0.6', 'paid', '0.9']]);
+    expect(diff.sources.map(s => s.file_ref)).toEqual([totals.file_ref, next]);
+    expect(await f.read(source)).toBe(csv);
+    // A later run is a fresh write with its own provenance, not a cached result.
+    const again = await f.run('project', { source: filtered.file_ref, columns: ['amount', 'status'], names: ['value', 'state'] });
+    expect(again.content_hash).toBe(selected.content_hash); expect(again.file_ref).not.toBe(selected.file_ref);
+    const final = await f.run('inspect', { source: diff.file_ref });
+    expect(final.source.content_hash).toBe(diff.content_hash);
+  });
+
+  it('keeps a 100000-row file out of recipe state and returns a complete reusable result', async () => {
+    const f = await fixture();
+    const source = await f.seed('id,status,note\n' + Array.from({ length: 100000 }, (_, i) => `${i},${i % 2 ? 'keep' : 'drop'},${'x'.repeat(90)}\n`).join(''));
+    const result = await f.run('filter', { source, conditions: [{ column: 'status', operator: 'eq', value: 'keep' }] });
+    expect(result.rows).toBe(50000); expect(result.counts.input_rows).toBe(100000);
+    expect(result.preview_truncated).toBe(true); expect(JSON.stringify(result).length).toBeLessThan(20000);
+    const inspect = await f.run('inspect', { source: result.file_ref });
+    expect(inspect.rows).toBe(50000);
+  });
+
+  it('does not save on bad input, malformed bytes or missing columns', async () => {
+    const f = await fixture(); const source = await f.seed('id\n001\n');
+    const invalid = await f.seed(Buffer.from([0xff, 0xfe, 0xff]));
+    const ingest = vi.spyOn(f.files, 'ingest'); const adapter = createKernelAdapter(f.dispatchers);
+    const call = (input: Record<string, unknown>) => adapter({ slug: 'csv-transform', input, risk_tier: 'write', output: {} });
+    await expect(call({ operation: 'project', source, columns: ['missing'] })).rejects.toThrow(/does not exist/);
+    await expect(call({ operation: 'project', source: invalid, columns: ['id'] })).rejects.toThrow(/UTF-8/);
+    await expect(call({ operation: 'project', source, columns: ['id'], run_id: 'forged' })).rejects.toMatchObject({ code: 'BAD_INPUT' });
+    expect(ingest).not.toHaveBeenCalled(); expect(await f.read(source)).toBe('id\n001\n');
+  });
+
+  it('dispatches with manifest defaults and rejects oversized files before reading their blobs', async () => {
+    const f = await fixture(); const source = await f.seed('id\n001\n');
+    const execute = createIngredientExecutor({ manifestLoader: async slug => KERNEL_MANIFESTS.find(m => m.slug === slug) ?? null,
+      adapterRegistry: {}, kernelAdapter: createKernelAdapter(f.dispatchers) });
+    const saved = await execute('csv-transform', { source, operation: 'project', columns: ['id'] }, {}, {},
+      { run_id: 'dispatched', step_id: 'project' }) as CsvTransformResult;
+    expect(await f.read(saved.file_ref)).toBe('id\n001\n');
+    const large = await f.seed(Buffer.alloc(32 * 1024 * 1024 + 1, 97));
+    const ingest = vi.spyOn(f.files, 'ingest'); const get = vi.spyOn(f.blobs, 'get');
+    await expect(execute('csv-transform', { source: large, operation: 'project', columns: ['id'] })).rejects.toMatchObject({ code: 'file_too_large' });
+    expect(ingest).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
   });
 });

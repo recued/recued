@@ -12,7 +12,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { getCalendarEvent, updateCalendarEvent } from './calendar/local-event-handler.js';
+import { updateCalendarEvent } from './calendar/local-event-handler.js';
+import { getOwnerCalendarEvent, respondToCalendarEvent } from './calendar/invitation-handler.js';
+import { getMailMessage } from './mail/message-read.js';
+import { getMailConversation } from './mail/conversation-read.js';
 
 import { absentFromAll, applySpellingCorrections, mergeSpellingChecks, type FtsWordCheck } from '@recued/fts';
 
@@ -129,6 +132,7 @@ export interface CollectionHandlerDeps {
    *  `collection.mail.enrollImap` / `collection.mail.list` /
    *  `collection.mail.delete` return `not_configured` when absent. */
   mailEnroll?: MailEnrollDeps;
+  mailBodyBlobs?: import('../storage/blob-store.js').BlobStore;
   /** D-318 step 1 — the email chat door's settings: which mailbox is the chat
    *  mailbox. Absent ⇒ `collection.mail.chat_door.*` answers `not_configured`
    *  and no mailbox is flagged in `collection.mail.list`. */
@@ -1065,6 +1069,8 @@ export type CollectionMethods =
   | 'collection.mail.enrollSmtp'
   | 'collection.mail.updateCredentials'
   | 'collection.mail.list'
+  | 'collection.mail.message.get'
+  | 'collection.mail.conversation.get'
   | 'collection.mail.delete'
   | 'collection.mail.resync'
   // D-318 step 1 — the email chat door's chat mailbox.
@@ -1088,6 +1094,7 @@ export type CollectionMethods =
   | 'collection.calendar.list'
   | 'collection.calendar.event.get'
   | 'collection.calendar.event.update'
+  | 'collection.calendar.event.respond'
   | 'collection.calendar.update'
   | 'collection.calendar.delete'
   | 'collection.calendar.resync'
@@ -1156,7 +1163,7 @@ export const makeCollectionHandlers = (
 ): HandlerSlice<ServerRpcRegistry, CollectionMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   const calendarEventDeps = (client: WsClient) => {
-    if (!client.instance_id) throw new RpcError('unauthorized', 'Calendar event editing requires a registered paired client.', 401);
+    if (!client.instance_id) throw new RpcError('unauthorized', 'Calendar event access requires a registered paired client.', 401);
     return {
       instances: requireCalendarEnroll(deps).instances,
       ...(deps.now ? { now: deps.now } : {}),
@@ -1180,6 +1187,8 @@ export const makeCollectionHandlers = (
       'collection.mail.enrollSmtp',
       'collection.mail.updateCredentials',
       'collection.mail.list',
+      'collection.mail.message.get',
+      'collection.mail.conversation.get',
       'collection.mail.delete',
       'collection.mail.resync',
       'collection.mail.chat_door.get',
@@ -1201,6 +1210,7 @@ export const makeCollectionHandlers = (
       'collection.calendar.list',
       'collection.calendar.event.get',
       'collection.calendar.event.update',
+      'collection.calendar.event.respond',
       'collection.calendar.update',
       'collection.calendar.delete',
       'collection.calendar.resync',
@@ -1244,6 +1254,22 @@ export const makeCollectionHandlers = (
           ? listed
           : { instances: listed.instances.map((row) => (row.slug === chat ? { ...row, chat_mailbox: true as const } : row)) };
       },
+      'collection.mail.message.get': async (args, client) => {
+        if (!client.instance_id) throw new RpcError('unauthorized', 'Reading an email for reply requires a registered paired client.', 401);
+        return getMailMessage({
+          getCollection: slug => deps.registry.get('mail', slug) as import('./mail/mail-collection.js').MailCollection | undefined,
+          listMailInstances: () => handleMailList(requireMailEnroll(deps)),
+          getIncarnation: slug => requireMailEnroll(deps).instances.getIncarnation?.('mail', slug) ?? null,
+          ...(deps.mailBodyBlobs ? { blobs: deps.mailBodyBlobs } : {}),
+        }, args);
+      },
+      'collection.mail.conversation.get': async (args, client) => {
+        if (!client.instance_id) throw new RpcError('unauthorized', 'Reading a conversation requires a registered paired client.', 401);
+        return getMailConversation({
+          getCollection: slug => deps.registry.get('mail', slug) as import('./mail/mail-collection.js').MailCollection | undefined,
+          getIncarnation: slug => requireMailEnroll(deps).instances.getIncarnation?.('mail', slug) ?? null,
+        }, args);
+      },
       'collection.mail.chat_door.get': async () => handleMailChatDoorGet(requireMailChatDoor(deps)),
       'collection.mail.chat_door.set': async (args) => handleMailChatDoorSet(requireMailChatDoor(deps), args),
       'collection.mail.chat_door.check': async (args) => handleMailChatDoorCheck(requireMailChatDoor(deps), args),
@@ -1280,8 +1306,9 @@ export const makeCollectionHandlers = (
       'collection.calendar.updateCredentials': async (args) => repairCollectionPasswords('calendar', requireCalendarEnroll(deps), args),
       'collection.calendar.list': async () =>
         handleCalendarEnrollList(requireCalendarEnroll(deps)),
-      'collection.calendar.event.get': async (args, client) => getCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.get': async (args, client) => getOwnerCalendarEvent(calendarEventDeps(client), args),
       'collection.calendar.event.update': async (args, client) => updateCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.respond': async (args, client) => respondToCalendarEvent(calendarEventDeps(client), args),
       'collection.calendar.update': async (args) =>
         handleCalendarEnrollUpdate(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollUpdate>[1]),
       'collection.calendar.delete': async (args) =>

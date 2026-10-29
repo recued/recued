@@ -555,7 +555,7 @@ describe('D-170 install integration — validation + conflict guards', () => {
     expect(result.issues).toContainEqual(
       expect.objectContaining({
         code: 'vault_ref_in_recipe',
-        path: 'contents[0].composition.recipes[0]',
+        path: 'contents[0].composition.recipe_templates[0]',
       }),
     );
     expect(env.registry.get('acme')).toBeNull();

@@ -3,9 +3,10 @@ import {
   CALENDAR_EVENT_EDIT_LIMITS,
   type CalendarEventDetails, type CalendarEventPatch, type CalendarEventRef,
   type CalendarEventSnapshot, type CalendarEventUpdateRequest,
+  type CalendarEventRespondRequest, type CalendarEventRespondResult, type CalendarInvitationResponse,
 } from '@recued/contracts';
 import { e } from '@recued/ui-shared';
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export const CALENDAR_EVENT_ACTION_PREFIX = 'calendar-event-';
 export const CALENDAR_EVENT_FIELD = 'data-calendar-event-field';
@@ -16,6 +17,7 @@ export type CalendarEventDraft = Record<Field, string>;
 export interface CalendarEventCallers {
   get?: (ref: CalendarEventRef) => Promise<CalendarEventSnapshot>;
   update?: (request: CalendarEventUpdateRequest) => Promise<CalendarEventSnapshot>;
+  respond?: (request: CalendarEventRespondRequest) => Promise<CalendarEventRespondResult>;
 }
 export interface CalendarEventFocus { key: string; start?: number | null; end?: number | null; }
 
@@ -124,13 +126,20 @@ const confirmsDraft = (before: CalendarEventSnapshot, patch: CalendarEventPatch,
 export const createCalendarEventSurface = (deps: {
   callers: CalendarEventCallers; actionAttr: string; render: () => void;
   onSaved: (snapshot: CalendarEventSnapshot) => void;
+  onRemoved?: (recordId: string) => void;
 }) => {
   let ref: CalendarEventRef | null = null;
   let recordId = '';
   let snapshot: CalendarEventSnapshot | null = null;
   let draft: CalendarEventDraft | null = null;
-  let busy: 'read' | 'save' | null = null;
+  let busy: 'read' | 'save' | 'respond' | null = null;
+  let responseNeedsCheck = false;
+  let pendingResponse: CalendarInvitationResponse | null = null;
+  let removed = false;
+  const responseLabel = (value: string): string => ({ accepted: 'Accepted', tentative: 'Maybe', declined: 'Declined', needs_action: 'Awaiting response' })[value] ?? 'Unknown';
   let error = ''; let notice = '';
+  /** A server before 26.10.28 has no event read: the event's listed fields and Reschedule stand alone. */
+  let unsupported = false;
   let generation = 0; let disposed = false;
   let pendingLeave: (() => void) | null = null;
   let pendingFocus: (CalendarEventFocus & { onlyIfOwned?: true }) | null = null;
@@ -152,7 +161,7 @@ export const createCalendarEventSurface = (deps: {
     && deps.callers.update !== undefined && zoneAvailable(value.event);
   const viewFocus = (value: CalendarEventSnapshot) => editable(value) ? 'edit' : 'heading';
   const resumeEditing = () => { pendingLeave = null; repaint(editorFocus); };
-  const read = async (checkDraft = false, owner?: 'retry' | 'check' | 'heading'): Promise<void> => {
+  const read = async (checkDraft = false, owner?: 'retry' | 'check' | 'heading' | 'response-check' | 'response-refresh'): Promise<void> => {
     if (!ref || !deps.callers.get || busy || disposed) return;
     const seq = ++generation; const expectedRef = ref; const expectedRecord = recordId;
     busy = 'read'; notice = ''; repaint(owner);
@@ -167,15 +176,33 @@ export const createCalendarEventSurface = (deps: {
           snapshot = value; draft = null; error = ''; notice = 'Your changes are saved.'; deps.onSaved(value);
           pendingFocus = { key: viewFocus(value), onlyIfOwned: true };
         } else { error = 'The saved event differs from your draft. Your draft is kept. Reload saved values to start again.'; }
-      } else { snapshot = value; error = ''; notice = ''; }
-    } catch (err) { if (!disposed && seq === generation) error = humanizeRpcError(err); }
+      } else {
+        const checkingResponse = responseNeedsCheck;
+        if (checkingResponse && snapshot && value.incarnation !== snapshot.incarnation) throw new Error('This calendar connection was replaced. Reopen the event before responding.');
+        snapshot = value; error = value.refresh_error ?? ''; notice = '';
+        if (checkingResponse && value.provider_verified !== true) {
+          error = value.refresh_error ?? value.invitation?.unavailable_reason ?? 'Your calendar could not verify the response. Check again before sending.';
+        } else if (checkingResponse) {
+          responseNeedsCheck = false;
+          notice = value.invitation ? `Your calendar currently shows ${responseLabel(value.invitation.response)}. No response was sent again.` : 'This event no longer has a response available.';
+          if (value.invitation?.response !== pendingResponse) notice += ' The earlier request may still complete.';
+          pendingResponse = null;
+          deps.onSaved(value);
+        }
+        if (!error && owner === 'response-refresh' && value.provider_verified) notice = 'Response refreshed from your calendar.';
+      }
+    } catch (err) {
+      if (!disposed && seq === generation) {
+        if (classifyRpcError(err).code === 'unknown_method') unsupported = true; else error = humanizeRpcError(err);
+      }
+    }
     finally { if (!disposed && seq === generation) {
       busy = null;
-      if (owner && !pendingFocus) pendingFocus = { key: error ? (draft ? 'check' : 'retry') : 'heading', onlyIfOwned: true };
+      if (owner && !pendingFocus) pendingFocus = { key: error ? (responseNeedsCheck ? 'response-check' : snapshot?.refresh_error ? 'response-refresh' : draft ? 'check' : 'retry') : owner === 'response-refresh' ? 'response-refresh' : 'heading', onlyIfOwned: true };
       repaint();
     } }
   };
-  const reset = () => { generation++; ref = null; recordId = ''; snapshot = null; draft = null; busy = null; error = ''; notice = ''; pendingLeave = null; pendingFocus = null; editorFocus = { key: 'summary' }; };
+  const reset = () => { generation++; ref = null; recordId = ''; snapshot = null; draft = null; busy = null; responseNeedsCheck = false; pendingResponse = null; removed = false; error = ''; notice = ''; unsupported = false; pendingLeave = null; pendingFocus = null; editorFocus = { key: 'summary' }; };
   const save = async (): Promise<void> => {
     if (!snapshot || !draft || !ref || !deps.callers.update || busy || !editable(snapshot) || !snapshot.incarnation) return;
     const result = calendarEventPatch(snapshot.event, draft);
@@ -195,9 +222,41 @@ export const createCalendarEventSurface = (deps: {
     } catch (err) { if (!disposed && seq === generation) error = humanizeRpcError(err); }
     finally { if (!disposed && seq === generation) { busy = null; repaint(); } }
   };
+  const respond = async (response: CalendarInvitationResponse): Promise<void> => {
+    if (!ref || !snapshot?.invitation?.can_respond || snapshot.provider_verified !== true || !snapshot.incarnation || !deps.callers.respond
+      || busy || draft || removed || responseNeedsCheck || snapshot.invitation.response === response) return;
+    const before = snapshot;
+    const request = { ...ref, expected_version: before.resource_version, expected_incarnation: before.incarnation!, response };
+    const seq = ++generation; const expectedRecord = recordId;
+    busy = 'respond'; pendingResponse = response; error = ''; notice = ''; repaint(`respond-${response}`);
+    try {
+      const result = await deps.callers.respond(request);
+      if (disposed || seq !== generation) return;
+      if (result.removed) {
+        if (response !== 'declined' || result.source_id !== request.source_id) throw new Error('The response could not be confirmed.');
+        removed = true;
+        snapshot = { ...before, invitation: { ...before.invitation!, response: 'declined', can_respond: false } };
+        notice = 'Decline submitted for the organizer. Your calendar removed this event.';
+        deps.onRemoved?.(expectedRecord);
+      } else {
+        const value = result.snapshot;
+        if (!identityMatches(request, expectedRecord, value) || value.incarnation !== request.expected_incarnation
+          || value.provider_verified !== true || value.invitation?.response !== response) throw new Error('The response could not be confirmed.');
+        snapshot = value; notice = 'Response submitted to your calendar for the organizer.'; deps.onSaved(value);
+      }
+      pendingResponse = null; responseNeedsCheck = false;
+      pendingFocus = { key: 'heading', onlyIfOwned: true };
+    } catch (err) {
+      if (!disposed && seq === generation) {
+        responseNeedsCheck = true;
+        error = `${humanizeRpcError(err)} Check your response before sending again.`;
+        pendingFocus = { key: 'response-check', onlyIfOwned: true };
+      }
+    } finally { if (!disposed && seq === generation) { busy = null; repaint(); } }
+  };
   const beforeLeave = (effect: () => void): boolean => {
-    if (!draft && busy !== 'save') return true;
-    if (busy) { repaint(busy === 'save' ? 'save' : 'check'); return false; }
+    if (!draft && busy !== 'save' && busy !== 'respond') return true;
+    if (busy) { repaint(busy === 'respond' ? `respond-${pendingResponse}` : busy === 'save' ? 'save' : 'check'); return false; }
     if (!dirty()) { draft = null; return true; }
     if (!pendingLeave) pendingLeave = effect;
     repaint('keep'); return false;
@@ -226,10 +285,10 @@ export const createCalendarEventSurface = (deps: {
     isEditing: () => draft !== null,
     isLoading: () => busy === 'read' && draft === null,
     hasUnsavedChanges: dirty,
-    hasInFlightWork: () => busy === 'save' || (busy === 'read' && draft !== null),
+    hasInFlightWork: () => busy === 'save' || busy === 'respond' || (busy === 'read' && draft !== null),
     beforeLeave,
     render(): string {
-      if (!ref) return '';
+      if (!ref || (!snapshot && unsupported)) return '';
       if (!snapshot) return `<div class="calendar-event"><p ${error ? 'role="alert"' : 'role="status"'}>${e(error || 'Loading event details…')}</p>${error ? button('retry', busy ? 'Retrying…' : 'Retry event details') : ''}</div>`;
       const event = snapshot.event;
       const days = event.is_all_day ? allDayEventDays(event) : null;
@@ -250,14 +309,25 @@ ${e(draft.description)}</textarea></label>
         ${pendingLeave ? `<div class="calendar-event-discard" role="alertdialog" aria-modal="true" aria-labelledby="calendar-event-discard-title" aria-describedby="calendar-event-discard-copy"><h4 id="calendar-event-discard-title">Discard event changes?</h4><p id="calendar-event-discard-copy">Your unfinished changes will be lost.</p><div class="calendar-event-actions">${button('keep', 'Keep editing')}${button('discard', 'Discard changes')}</div></div>` : `<div class="calendar-event-actions">${button('save', busy === 'save' ? 'Saving…' : 'Save changes', true)}${button('cancel', 'Cancel')}</div>`}
       </div>` : '';
       const meta = (label: string, value: string) => `<div><dt>${e(label)}</dt><dd>${e(value)}</dd></div>`;
+      const errorHtml = error ? `<div class="calendar-event-error" role="alert"><p>${e(error)}</p>${responseNeedsCheck ? button('response-check', busy === 'read' ? 'Checking…' : 'Check response') : draft ? `<div class="calendar-event-actions">${button('check', busy === 'read' ? 'Checking…' : 'Check saved event')}${button('reload', 'Reload saved values')}</div>` : snapshot.refresh_error ? button('response-refresh', busy ? 'Refreshing…' : 'Retry refresh') : button('retry', busy ? 'Retrying…' : 'Retry event details')}</div>` : '';
+      const invitation = snapshot.invitation;
+      const invitationHtml = !draft && invitation ? `<section class="calendar-event-invitation" aria-label="Invitation response">
+        <div class="calendar-event-title-row"><h3>Invitation</h3>${!removed && !responseNeedsCheck && !snapshot.refresh_error && deps.callers.get ? button('response-refresh', busy === 'read' ? 'Refreshing…' : 'Refresh response') : ''}</div><dl class="calendar-event-meta">${meta('Organizer', invitation.organizer.display_name ? `${invitation.organizer.display_name} <${invitation.organizer.email}>` : invitation.organizer.email)}${meta('Responding as', invitation.attendee_email)}${meta(snapshot.provider_verified ? 'Your response' : 'Last synced response', responseLabel(invitation.response))}</dl>
+        ${!removed && snapshot.provider_verified === true && invitation.can_respond && deps.callers.respond ? `<p class="calendar-event-hint">Your calendar sends your response to the organizer.${invitation.scope === 'series' ? ' This response applies to the whole series.' : invitation.scope === 'occurrence' ? ' This response applies to this occurrence.' : ''}</p><div class="calendar-event-actions">${(['accepted', 'tentative', 'declined'] as const).map(response => {
+          const label = response === 'accepted' ? 'Accept' : response === 'tentative' ? 'Maybe' : 'Decline';
+          return button(`respond-${response}`, busy === 'respond' && pendingResponse === response ? 'Sending…' : label)
+            .replace('type="button"', `type="button" aria-pressed="${invitation.response === response}"${responseNeedsCheck || invitation.response === response ? ' disabled' : ''}`);
+        }).join('')}</div>` : !removed && invitation.unavailable_reason && !snapshot.refresh_error ? `<p class="calendar-event-hint">${e(invitation.unavailable_reason)}</p>` : ''}
+        ${responseNeedsCheck || snapshot.refresh_error ? errorHtml : ''}
+      </section>` : '';
       return `<div class="calendar-event">
         <header class="calendar-event-head"><div class="calendar-event-context"><span class="col-explorer-detail-scope">Calendar · ${e(event.calendar_name || event.calendar_id)}</span><span class="calendar-event-status">${e(event.status === 'cancelled' ? 'Cancelled' : event.status === 'tentative' ? 'Tentative' : 'Confirmed')}${event.is_recurring ? ' · Recurring' : ''}</span></div>
           <div class="calendar-event-title-row"><h2 class="col-explorer-detail-title" data-recued-collection-detail-heading ${FOCUS}="heading" tabindex="-1">${e(event.summary || 'Untitled event')}</h2>${!draft && editable(snapshot) ? button('edit', 'Edit event') : ''}</div>
         </header>
         ${notice ? `<p role="status" class="calendar-event-notice">${e(notice)}</p>` : ''}
-        ${busy === 'read' ? `<p role="status" class="calendar-event-hint">${draft ? 'Checking saved event…' : 'Reading event details…'}</p>` : ''}
-        ${!draft ? `<dl class="calendar-event-meta">${meta(days ? 'First day' : 'Start', days ? dayLabel(days.first) : timeLabel(event.start_at, zone))}${meta(days ? 'Last day' : 'End', days ? dayLabel(days.last) : timeLabel(event.end_at, zone))}${meta(days ? 'All day' : 'Time zone', days ? 'Yes' : zone)}${meta('Duration', durationLabel(event))}${event.location ? meta('Location', event.location) : ''}</dl>${event.description ? `<div><h3>Description</h3><p class="calendar-event-description">${e(event.description)}</p>${event.description_truncated ? '<p class="calendar-event-hint">Description preview. The full text is kept in the calendar.</p>' : ''}</div>` : ''}${readOnlyReason ? `<p class="calendar-event-hint">${e(readOnlyReason)}</p>` : ''}` : editor}
-        ${error ? `<div class="calendar-event-error" role="alert"><p>${e(error)}</p>${draft ? `<div class="calendar-event-actions">${button('check', busy === 'read' ? 'Checking…' : 'Check saved event')}${button('reload', 'Reload saved values')}</div>` : button('retry', busy ? 'Retrying…' : 'Retry event details')}</div>` : ''}
+        ${busy === 'read' ? `<p role="status" class="calendar-event-hint">${draft ? 'Checking saved event…' : responseNeedsCheck ? 'Checking your response…' : 'Reading event details…'}</p>` : ''}
+        ${!draft ? `<dl class="calendar-event-meta">${meta(days ? 'First day' : 'Start', days ? dayLabel(days.first) : timeLabel(event.start_at, zone))}${meta(days ? 'Last day' : 'End', days ? dayLabel(days.last) : timeLabel(event.end_at, zone))}${meta(days ? 'All day' : 'Time zone', days ? 'Yes' : zone)}${meta('Duration', durationLabel(event))}${event.location ? meta('Location', event.location) : ''}</dl>${invitationHtml}${event.description ? `<div><h3>Description</h3><p class="calendar-event-description">${e(event.description)}</p>${event.description_truncated ? '<p class="calendar-event-hint">Description preview. The full text is kept in the calendar.</p>' : ''}</div>` : ''}${readOnlyReason ? `<p class="calendar-event-hint">${e(readOnlyReason)}</p>` : ''}` : editor}
+        ${!invitation || (!responseNeedsCheck && !snapshot.refresh_error) ? errorHtml : ''}
         ${!draft ? `<details class="calendar-event-identities"><summary>Event identifiers</summary><dl class="calendar-event-meta">${meta('Record id', event.record_id)}${meta('Source id', event.source_id)}</dl></details>` : ''}
       </div>`;
     },
@@ -266,7 +336,10 @@ ${e(draft.description)}</textarea></label>
       const key = action.slice(CALENDAR_EVENT_ACTION_PREFIX.length);
       if (busy) return true;
       if (pendingLeave && key !== 'keep' && key !== 'discard') return true;
-      if (key === 'retry') void read(false, 'retry');
+      if (key === 'retry' && !removed) void read(false, 'retry');
+      if (key === 'response-check') void read(false, 'response-check');
+      if (key === 'response-refresh' && !removed) void read(false, 'response-refresh');
+      if (key === 'respond-accepted' || key === 'respond-tentative' || key === 'respond-declined') void respond(key.slice('respond-'.length) as CalendarInvitationResponse);
       if (key === 'edit' && snapshot && editable(snapshot)) { draft = calendarEventDraft(snapshot.event); editorFocus = { key: 'summary' }; error = ''; notice = ''; repaint('summary'); }
       if (key === 'save') void save();
       if (key === 'check') void read(true, 'check');
@@ -348,7 +421,9 @@ export const CALENDAR_EVENT_STYLES = `
 .calendar-event-head .col-explorer-detail-title { font-size: 1.125rem; line-height: 1.4; }
 .calendar-event h3 { font-size: 1rem; }
 .calendar-event-status, .calendar-event-hint, .calendar-event-identities { color: var(--fg-muted); font-size: .8125rem; overflow-wrap: anywhere; }
+.calendar-event-invitation { display: grid; gap: .75rem; border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; }
 .calendar-event-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 1.5rem; margin: 0; }
+.calendar-event-invitation .calendar-event-meta { grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)); }
 .calendar-event-meta dt { color: var(--fg-muted); font-size: .75rem; margin-bottom: .25rem; }
 .calendar-event-meta dd { margin: 0; font-size: .875rem; overflow-wrap: anywhere; }
 .calendar-event-description { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; line-height: 1.6; margin-top: .5rem !important; }
@@ -362,5 +437,5 @@ export const CALENDAR_EVENT_STYLES = `
 .calendar-event-error, .calendar-event-discard { display: grid; gap: .75rem; padding: .875rem; border: 1px solid var(--border); border-radius: .375rem; }
 .calendar-event-error { color: var(--danger); }
 .calendar-event-identities summary { cursor: pointer; margin-bottom: .75rem; }
-@media (max-width: 540px) { .calendar-event-meta, .calendar-event-dates { grid-template-columns: minmax(0, 1fr); } .calendar-event-editor { padding: .75rem; } }
+@media (max-width: 540px) { .calendar-event-meta, .calendar-event-invitation .calendar-event-meta, .calendar-event-dates { grid-template-columns: minmax(0, 1fr); } .calendar-event-editor { padding: .75rem; } }
 `;

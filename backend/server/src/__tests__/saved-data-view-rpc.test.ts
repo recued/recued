@@ -51,7 +51,7 @@ it('serves shared saved views over real paired webclient sockets and refuses unp
     const first = await connect('browser-one');
     const second = await connect('browser-two');
     const unpaired = await connect();
-    for (const method of ['list', 'get', 'create', 'update', 'rename', 'delete']) {
+    for (const method of ['list', 'get', 'create', 'create_once', 'creation.get', 'update', 'rename', 'delete']) {
       expect(await rpc(unpaired, `data_views.${method}`)).toMatchObject({ error: { code: 'unauthorized' } });
     }
     const response = await rpc(first, 'data_views.create', { name: 'Acme', definition: { tab: 'contact', query: 'Acme' } });
@@ -69,6 +69,23 @@ it('serves shared saved views over real paired webclient sockets and refuses unp
     expect(await rpc(first, 'data_views.get', { id: view.id })).toMatchObject({ result: { view: null } });
     expect(await rpc(first, 'data_views.create', { name: 'Wrong', definition: { tab: 'search', query: 'secret', rows: ['private'] } }))
       .toMatchObject({ error: { code: 'bad_request' } });
+    expect(store.list()).toEqual([]);
+    const safeRequest = { request_id: crypto.randomUUID(), name: 'Safe save', definition: { tab: 'contact', query: 'Acme' } };
+    expect(await rpc(first, 'data_views.list')).toMatchObject({ result: { create_once: true } });
+    const safe = await rpc(first, 'data_views.create_once', safeRequest);
+    expect(safe.error).toBeUndefined();
+    const creation = safe.result as { request_id: string; view_id: string; view: SavedDataView };
+    expect(await rpc(second, 'data_views.create_once', safeRequest)).toMatchObject({ result: creation });
+    expect(await rpc(second, 'data_views.creation.get', safeRequest)).toMatchObject({ result: { creation } });
+    expect(await rpc(first, 'data_views.create_once', { ...safeRequest, name: 'Different' }))
+      .toMatchObject({ error: { code: 'conflict' } });
+    for (const method of ['data_views.create_once', 'data_views.creation.get']) {
+      expect(await rpc(first, method, null)).toMatchObject({ error: { code: 'bad_request' } });
+    }
+    expect(store.list()).toHaveLength(1);
+    await rpc(second, 'data_views.delete', { id: creation.view_id, expected_revision: 1 });
+    expect(await rpc(first, 'data_views.create_once', safeRequest)).toMatchObject({ result: { ...creation, view: null } });
+    expect(await rpc(second, 'data_views.creation.get', safeRequest)).toMatchObject({ result: { creation: { ...creation, view: null } } });
     expect(store.list()).toEqual([]);
     const definition = { tab: 'task', query: 'invoice', source_id: 'recued.task', booking_lifecycle: 'all',
       task_filters: { completion: 'open', due: 'overdue', sort: 'due_asc' } };

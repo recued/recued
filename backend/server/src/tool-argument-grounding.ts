@@ -40,6 +40,7 @@
 /** ⛔ Form beats grounding. A packet that happens to contain `[email_1]` would
  *  GROUND the placeholder, and a model echoing a placeholder back is the
  *  failure being caught, not an excuse for it. */
+import { isCsvSchemaArgument } from './csv-schema-grounding.js';
 const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\[.+\]$/, 'bracketed placeholder'],
   [/^\{\{.+\}\}$/, 'template placeholder'],
@@ -413,6 +414,7 @@ export const groundingCorpusFromPacket = (body: string): string => {
 export const ungroundedArgumentsInCall = (
   args: unknown,
   packet: string,
+  context?: { tool: string; packet: string },
 ): UngroundedArgument[] => {
   const lower = packet.toLowerCase();
   const found: UngroundedArgument[] = [];
@@ -426,6 +428,8 @@ export const ungroundedArgumentsInCall = (
       continue;
     }
     const form = PLACEHOLDER_PATTERNS.find(([re]) => re.test(value))?.[1];
+    if (form === 'schema field as value' && context
+      && isCsvSchemaArgument(context.tool, args, path, value, context.packet)) continue;
     if (form !== undefined) {
       found.push({ path, value, why: form });
     } else if (isIdentifier(path, value) && !isGrounded(value, lower)) {

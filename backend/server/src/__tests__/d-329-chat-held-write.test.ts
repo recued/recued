@@ -73,6 +73,8 @@ const flush = async (): Promise<void> => {
 };
 
 const harness = (opts: {
+  tool?: string;
+  result?: unknown;
   hold?: 'raw' | 'not_wired' | 'throws';
   source?: (session_id: string, turn_id: string) => ExecutionSource;
   askStatus?: () => PendingAsk['status'];
@@ -98,13 +100,14 @@ const harness = (opts: {
   const activity: Array<{ action: string; target: string; detail?: string }> = [];
 
   const calls: Array<{ name: string; args: unknown; ctx: ChatDispatchContext }> = [];
+  const writeTool = opts.tool ?? 'calendar.create';
   const registry: InternalToolRegistry = {
-    list: () => [entry('calendar.create', 'write'), entry('calendar.search', 'read')],
-    listByTier: (tier) => (tier === 1 ? [entry('calendar.create', 'write'), entry('calendar.search', 'read')] : []),
-    getByName: (name) => (name === 'calendar.create' ? entry(name, 'write') : name === 'calendar.search' ? entry(name, 'read') : null),
+    list: () => [entry(writeTool, 'write'), entry('calendar.search', 'read')],
+    listByTier: (tier) => (tier === 1 ? [entry(writeTool, 'write'), entry('calendar.search', 'read')] : []),
+    getByName: (name) => (name === writeTool ? entry(name, 'write') : name === 'calendar.search' ? entry(name, 'read') : null),
     dispatch: async (name, args, ctx): Promise<ChatDispatchResult> => {
       calls.push({ name, args, ctx });
-      return { ok: true, result: { created: true, event_id: 'evt-1' } };
+      return { ok: true, result: opts.result ?? { created: true, event_id: 'evt-1' } };
     },
     ...(opts.check !== undefined ? { checkBeforeAsking: async (name: string, args: unknown) => opts.check!(name, args) } : {}),
     ...(opts.labels !== undefined ? { askValueLabels: async (name: string, args: unknown) => opts.labels!(name, args) } : {}),
@@ -225,11 +228,13 @@ const harness = (opts: {
   });
   const dispatch = (turn_id: string, args: Record<string, unknown> = EVENT) =>
     orchestrator.dispatch.dispatchTool({
-      session_id, turn_id, tool_name: 'calendar.create', arg_values: args, picker_target: 'self',
+      session_id, turn_id, tool_name: writeTool, arg_values: args, picker_target: 'self',
       ...(opts.source !== undefined ? { execution_source: opts.source(session_id, turn_id) } : {}),
     } as never);
   const rpcDeps: ChatRpcDeps = {
     store: chatStore,
+    orchestrator,
+    selfSignature: signature,
     planApprovalStore: plans,
     broadcast,
     now,
@@ -239,7 +244,7 @@ const harness = (opts: {
       await Promise.all(settling);
       return answer;
     },
-  } as ChatRpcDeps;
+  };
   /** The proposing turn answers: its assistant message, linked to its plans. */
   const answerTurn = async (turn_id: string) => {
     await chatStore.appendMessage({
@@ -392,6 +397,22 @@ describe('D-329 B — approving from the card runs it', () => {
     await h.runWaiting();
     expect(await h.reply(plan_id)).toMatchObject({ role: 'assistant', turn_id: 'turn-1', content: DONE });
     expect(h.broadcasted.filter((e) => e.kind === 'chat.message_complete')).toHaveLength(1);
+  });
+
+  it('links the dedicated conversation after approving schedule creation', async () => {
+    const h = harness({ tool: 'schedule.run_prompt', result: { session_id: 'scheduled-conversation' } });
+    const plan_id = planIdOf(await h.dispatch('turn-1', { title: 'Morning mail', prompt: 'Summarize work mail.' }));
+    await h.answerTurn('turn-1'); await handlePlanApprove(h.rpcDeps, { plan_id }); await flush();
+    expect((await h.reply(plan_id))?.content).toContain('[Open scheduled conversation](#chat/session/scheduled-conversation)');
+  });
+
+  it('holds a scheduled prompt write and resumes it with scheduled provenance', async () => {
+    const h = harness({ source: (session_id, turn_id) => ({ channel: 'schedule', actor: 'system', schedule_id: 'ps', cron: 'one_shot',
+      chat_session_id: session_id, turn_id, prompt_schedule: { schedule_id: 'ps', occurrence_id: 'ps:1:1', revision: 1, due_at: 1, cron: 'one_shot' } }) });
+    const plan_id = planIdOf(await h.dispatch('turn-1')); expect(h.calls).toHaveLength(0);
+    await handlePlanApprove(h.rpcDeps, { plan_id });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.ctx.execution_source).toMatchObject({ channel: 'schedule', actor: 'system', schedule_id: 'ps' });
   });
 
   it('replies at once when the turn has already answered, and once only', async () => {

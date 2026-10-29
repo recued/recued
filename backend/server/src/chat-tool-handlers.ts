@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   FTS_STOPWORDS,
   absentFromAll,
@@ -423,6 +424,7 @@ export interface ChatToolHandlerDeps {
    *  server's schedule store (`schedule-installed-recipe.ts`). Late-bound: the
    *  store composes after the chat substrate. Undefined ⇒ the tool says
    *  scheduling is unavailable. */
+  getPromptSchedules?: () => import('./prompt-schedules.js').PromptSchedules | undefined;
   getInstalledRecipeScheduler?: () => InstalledRecipeScheduler | undefined;
   /** D-255 — the canonical op tools reachable for this server's bound
    *  connections, already filtered by each connection's operation profile.
@@ -2125,13 +2127,20 @@ export const MEMORY_READ_OP_ID = 'core.memory.read';
  *  source ⇒ excluded (fail closed; the audit rows still flow, so no regression).
  *  Per-topic `scope_restrictions` (build-plan §D) ride the grant itself; v1
  *  gates the whole pool read per §3's separate-server-per-product curation. */
+type AiToolGrantGate = Pick<OpAdmissionGate, 'isOpGranted' | 'isOwnerGoverned'>;
+/** A scheduled prompt retains system provenance while using current owner
+ * grants. Ordinary recipe and housekeeping system sources stay excluded. */
+const isAiToolPrincipal = (gate: AiToolGrantGate, source: ExecutionSource): boolean =>
+  source.actor === 'user_self' || source.actor === 'contracted_user'
+  || source.channel === 'schedule' && source.prompt_schedule !== undefined && gate.isOwnerGoverned(source);
+
 const admitMemoryRead = (
-  gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
+  gate: AiToolGrantGate | undefined,
   source: ExecutionSource | undefined,
 ): boolean =>
   gate !== undefined
   && source !== undefined
-  && (source.actor === 'user_self' || source.actor === 'contracted_user')
+  && isAiToolPrincipal(gate, source)
   && gate.isOpGranted(source, MEMORY_READ_OP_ID);
 
 /** Bodies inlined per `memory.search` call. The budget is SERVER-side and is
@@ -3012,12 +3021,12 @@ export const MEMORY_WRITE_OP_ID = 'core.memory.write';
  *  origin-honesty — the AI writes under a contract; the owner's own direct
  *  webclient writes are the only `user_self` rows). */
 const admitMemoryWrite = (
-  gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
+  gate: AiToolGrantGate | undefined,
   source: ExecutionSource | undefined,
 ): boolean =>
   gate !== undefined
   && source !== undefined
-  && (source.actor === 'user_self' || source.actor === 'contracted_user')
+  && isAiToolPrincipal(gate, source)
   && gate.isOpGranted(source, MEMORY_WRITE_OP_ID);
 
 /** D-198 Slice 4 — the live `memory.write` path (Fork 2 = A). "Remember this" in
@@ -4156,12 +4165,12 @@ export const WORK_ENTITY_READ_OP_ID = 'core.work-entity.read';
  *  internal_function_call today" is STALE. If that fallback is ever removed,
  *  owner chat silently loses its work reads through this predicate. */
 const admitWorkEntityRead = (
-  gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
+  gate: AiToolGrantGate | undefined,
   source: ExecutionSource | undefined,
 ): boolean =>
   gate !== undefined
   && source !== undefined
-  && (source.actor === 'user_self' || source.actor === 'contracted_user')
+  && isAiToolPrincipal(gate, source)
   && gate.isOpGranted(source, WORK_ENTITY_READ_OP_ID);
 
 /** The per-kind create op the `work.create` tool gates on. Keyed by kind rather
@@ -4187,13 +4196,13 @@ export const ASSET_UPDATE_OP_ID = 'core.work-entity.asset.update';
  *  (it bypasses P3 plan-approval by design, see the note in `chat.ts`), so THIS
  *  is the enforcement boundary and nothing else stands behind it. */
 const admitWorkEntityCreate = (
-  gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
+  gate: AiToolGrantGate | undefined,
   source: ExecutionSource | undefined,
   kind: WorkCreateKind | 'asset',
 ): boolean =>
   gate !== undefined
   && source !== undefined
-  && (source.actor === 'user_self' || source.actor === 'contracted_user')
+  && isAiToolPrincipal(gate, source)
   && gate.isOpGranted(source, kind === 'asset' ? ASSET_CREATE_OP_ID : WORK_ENTITY_CREATE_OP_ID[kind]);
 
 /** The narrow slice of `KernelDispatchers` the two calendar write tools need.
@@ -4449,13 +4458,13 @@ export const CALENDAR_UPDATE_OP_ID = 'core.data.calendar.update';
  *  `'write'`, so the owner also sees a plan-approval card — two gates, not one.
  *  The grant still runs FIRST, so an ungranted door never gets to propose. */
 const admitWriteOp = (
-  gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
+  gate: AiToolGrantGate | undefined,
   source: ExecutionSource | undefined,
   opId: string,
 ): boolean =>
   gate !== undefined
   && source !== undefined
-  && (source.actor === 'user_self' || source.actor === 'contracted_user')
+  && isAiToolPrincipal(gate, source)
   && gate.isOpGranted(source, opId);
 
 /** Slice 2 — `calendar.create`. Defaults to the LOCAL calendar, which the boot
@@ -5697,7 +5706,7 @@ const recipeScheduleRefusal = (
   // Positively the owner's local client: anything else on the mcp channel is a
   // door (fail closed by construction — the sentinel is the only way in).
   if (source.channel === 'mcp' && !isDelegatedMcpToken(source.mcp_token_id)) return undefined;
-  if (!gate.isOwnerGoverned(source)) {
+  if (source.channel === 'schedule' || !gate.isOwnerGoverned(source)) {
     return "recipe.schedule is only for the owner's own chat and local MCP client (nothing was scheduled)";
   }
   if (!gate.isOpGranted(source, SCHEDULE_RECIPE_OP_ID)) {
@@ -5855,6 +5864,35 @@ const createRecipeScheduleHandler =
     }
   };
 
+
+const createPromptScheduleHandler = (deps: ChatToolHandlerDeps,
+  action: 'run_prompt' | 'list' | 'update' | 'pause' | 'resume' | 'remove', check = false): Tier1Handler => async (raw, ctx) => {
+  const args = asObject(raw);
+  if (!args) return invalidArgs('args must be an object');
+  const source = ctx.execution_source, gate = deps.getOpAdmissionGate?.();
+  const localMcp = source?.channel === 'mcp' && !isDelegatedMcpToken(source.mcp_token_id);
+  const ownerChat = source && (source.channel === 'chat' || source.channel === 'messenger') && source.actor === 'user_self';
+  if (!source || !gate || (!localMcp && (!ownerChat || !gate.isOwnerGoverned(source)))
+    || (!localMcp && !gate.isOpGranted(source, 'core.schedule.prompt'))) {
+    return { ok: false, reason: 'classification_blocked', detail: 'Scheduled prompts require your own chat or local MCP client and the Scheduled prompts grant.' };
+  }
+  const service = deps.getPromptSchedules?.();
+  if (!service) return executionError('Scheduled prompts are unavailable.');
+  try {
+    if (action === 'list') return { ok: true, result: await service.list(args.all === true ? undefined : ctx.session_id) };
+    let result;
+    if (action === 'run_prompt') {
+      const id = typeof args.creation_id === 'string' ? args.creation_id
+        : ctx.turn_id ? `tool:${ctx.turn_id}:${JSON.stringify(args)}` : undefined;
+      if (!id) return invalidArgs('An external MCP client must supply a stable creation_id.');
+      result = await service.create(args, createHash('sha256').update(id).digest('hex'), check);
+    } else if (action === 'update') result = await service.update(args, check);
+    else result = await service.control(action, args, check);
+    return check ? WOULD_RUN : { ok: true, result: result ? { ...result,
+      conversation_href: `#chat/session/${encodeURIComponent(result.session_id)}` } : { removed: true, schedule_id: args.schedule_id } };
+  } catch (error) { return refusalOf(error); }
+};
+
 export const buildChatTier1Handlers = (
   deps: ChatToolHandlerDeps,
 ): Record<string, Tier1Handler> => wrapSphereFence(wrapCollectionFence(wrapEmptyResults({
@@ -5895,6 +5933,12 @@ export const buildChatTier1Handlers = (
   'recipe.run': createRecipeRunHandler(deps),
   'recipe.stop': createRecipeStopHandler(deps),
   'recipe.schedule': createRecipeScheduleHandler(deps),
+  'schedule.run_prompt': createPromptScheduleHandler(deps, 'run_prompt'),
+  'schedule.list': createPromptScheduleHandler(deps, 'list'),
+  'schedule.update': createPromptScheduleHandler(deps, 'update'),
+  'schedule.pause': createPromptScheduleHandler(deps, 'pause'),
+  'schedule.resume': createPromptScheduleHandler(deps, 'resume'),
+  'schedule.remove': createPromptScheduleHandler(deps, 'remove'),
 }), deps), deps);
 
 /** No source-specific native reader can silently ignore an item boundary.
@@ -6342,6 +6386,11 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
     'memory.forget': checkedBy(createMemoryForgetHandler, deps),
     'recipe.stop': checkedBy(createRecipeStopHandler, deps),
     'recipe.schedule': checkedBy(createRecipeScheduleHandler, deps),
+    'schedule.run_prompt': checkedBy((d, check) => createPromptScheduleHandler(d, 'run_prompt', check), deps),
+    'schedule.update': checkedBy((d, check) => createPromptScheduleHandler(d, 'update', check), deps),
+    'schedule.pause': checkedBy((d, check) => createPromptScheduleHandler(d, 'pause', check), deps),
+    'schedule.resume': checkedBy((d, check) => createPromptScheduleHandler(d, 'resume', check), deps),
+    'schedule.remove': checkedBy((d, check) => createPromptScheduleHandler(d, 'remove', check), deps),
   },
   tier1AskLabels: {
     'work.create': (args: unknown) => workAskLabels(deps, args),

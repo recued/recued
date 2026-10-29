@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 const input = (page: Page) => page.getByRole('searchbox', { name: 'Search everything' });
 const calls = (page: Page, kind: string) => page.evaluate(kind =>
   window.__universalSearch.calls.filter(call => call.kind === kind).map(call => call.query), kind);
-const release = (page: Page, kind: 'records' | 'recipes' | 'packs' | 'marketplace' | 'work' | 'work-page', index = 0, outcome: 'empty' | 'match' | 'error' = 'empty') =>
+const release = (page: Page, kind: 'records' | 'recipes' | 'packs' | 'marketplace' | 'work' | 'work-page' | 'contacts' | 'contacts-page', index = 0, outcome: 'empty' | 'match' | 'error' | 'unsupported' = 'empty') =>
   page.evaluate(({ kind, index, outcome }) => window.__universalSearch.release(kind, index, outcome), { kind, index, outcome });
 const localEmpty = async (page: Page, index = 0) => {
   await release(page, 'records', index);
@@ -299,5 +299,60 @@ test('native work failures and late replies preserve other results without sendi
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.locator('.rq-empty')).toContainText('No matches in the searched sources');
   await expect(page.getByRole('button', { name: /Look for/ })).toBeVisible();
+  expect(await calls(page, 'marketplace')).toEqual([]);
+});
+
+// A server before 26.10.28 has no `work_entity.search`. A retry cannot help, so it is not a
+// failure: the box names what it searched, an empty search still offers the marketplace, and
+// the full scope returns once the server answers.
+test('a server that cannot search tasks and notes says what it searched and still completes the search', async ({ page }) => {
+  await page.goto('/universal-search-harness.html?native=manual');
+  await page.waitForFunction(() => window.__universalSearch?.ready === true);
+  const scope = page.locator('#rq-search-scope');
+  await input(page).fill('unfindable'); await expect.poll(() => calls(page, 'work')).toEqual(['unfindable']);
+  await release(page, 'work', 0, 'unsupported'); await localEmpty(page);
+  await expect(scope).toHaveText('Contacts, mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects and commitments too.');
+  await expect(page.locator('.rq-empty')).toContainText('No matches in the searched sources');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Try again', exact: true })).toHaveCount(0);
+  await input(page).fill('kestrel'); await expect.poll(() => calls(page, 'work')).toEqual(['unfindable', 'kestrel']);
+  await release(page, 'work', 1, 'match');
+  await expect(scope).toHaveText('Contacts, tasks, notes, projects, commitments, mail, calendar, files, installed recipes and packs.');
+  expect(await calls(page, 'marketplace')).toEqual([]);
+});
+
+test('contact search settles independently, retains failed pages, and retires late pages and old-server replies', async ({ page }) => {
+  await page.goto('/universal-search-harness.html?contacts=manual');
+  await page.waitForFunction(() => window.__universalSearch?.ready === true);
+  const group = page.getByRole('region', { name: 'Contact search results' });
+  const results = group.locator('[data-search-contact-email]');
+  await input(page).fill('Northwind');
+  await expect.poll(() => calls(page, 'contacts')).toEqual(['Northwind']);
+  await release(page, 'records', 0, 'match'); await release(page, 'recipes'); await release(page, 'packs');
+  await expect(page.getByRole('button', { name: /Record for Northwind/ })).toBeVisible();
+  await expect(group.getByText('Searching contacts…')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Look for/ })).toHaveCount(0);
+  await release(page, 'contacts', 0, 'match');
+  await expect(results).toHaveCount(5);
+  await group.getByRole('button', { name: 'More contacts', exact: true }).click();
+  await expect.poll(() => calls(page, 'contacts-page')).toEqual(['Northwind']);
+  await release(page, 'contacts-page', 0, 'error');
+  await expect(results).toHaveCount(5);
+  await expect(group.getByRole('alert')).toBeVisible();
+  await group.getByRole('button', { name: 'Retry contacts', exact: true }).click();
+  await expect.poll(() => calls(page, 'contacts')).toEqual(['Northwind', 'Northwind']);
+  await release(page, 'contacts', 1, 'match');
+  await expect(group.getByRole('alert')).toHaveCount(0);
+  await group.getByRole('button', { name: 'More contacts', exact: true }).click();
+  await expect.poll(() => calls(page, 'contacts-page')).toHaveLength(2);
+  await input(page).fill('new query');
+  await expect.poll(() => calls(page, 'contacts')).toHaveLength(3);
+  await release(page, 'contacts-page', 1, 'match');
+  await expect(results).toHaveCount(0);
+  await release(page, 'contacts', 2, 'unsupported');
+  await release(page, 'records', 1); await release(page, 'recipes', 1); await release(page, 'packs', 1);
+  await expect(group).toContainText('Update your Recued server');
+  await expect(group.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Look for/ })).toHaveCount(0);
   expect(await calls(page, 'marketplace')).toEqual([]);
 });

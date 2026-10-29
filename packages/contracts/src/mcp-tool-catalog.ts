@@ -79,6 +79,8 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   'chat.messages.',
   'chat.turn.',
   'chat.turns.',
+  // Paired-client schedule controls. AI tools use the governed schedule.* handlers.
+  'chat.schedule.', 'chat.schedules.',
   'chat.deliveries.', 'chat.delivery.', 'chat.messenger.',
   // Private owner-authored Data navigation, never an agent capability.
   'data_views.',
@@ -136,6 +138,7 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // `contact.identity.*` rpc family for local-UI only.
   'contact.alias.',
   'contact.identity.',
+  'contact.search.', // Paired-owner saved-contact search; contact.search remains a governed Tier-1 tool.
   // D-148 W3.FU — Per-path Exposure state mutators are operator-only.
   // External AI agents must never drive the LAN/public/MCP-exposure
   // toggle grid; channel-isolation invariant.
@@ -380,6 +383,9 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // owner's door setting: mail there starts chat turns with the owner's
   // authority once the door is built. An agent may neither read nor move it.
   'collection.mail.chat_door.',
+  // The interactive message reader and reply handoff belong to the owner UI.
+  'collection.mail.message.',
+  'collection.mail.conversation.',
   // D-166 override-write path — the `collection.contract.*` rpc family authors
   // user `contract.override` rows (the tightening policy layer the catalog
   // gateway reads). This is the user's restrict-what-agents-can-do surface; an

@@ -17,6 +17,7 @@ import {
   type Reminder,
   type ReminderCancelResult,
   type ReminderListResult,
+  type ReminderListRequest,
   type ReminderOrigin,
   type ReminderUpdateResult,
   type ReminderView,
@@ -42,16 +43,8 @@ export interface ReminderServiceDeps {
 }
 
 export interface ReminderDispatchers {
-  reminderCreate: (input: { text: string; at: number; origin?: ReminderOrigin }) => Promise<{
-    reminder: ReminderView;
-    when: string;
-    /** Set when the time falls in quiet hours: when it will really ring. */
-    quiet_hours_note?: string;
-    /** `when`, and the quiet-hours note after it when there is one: the line a
-     *  caller shows the owner. */
-    confirmation: string;
-  }>;
-  reminderList: (input: { include_delivered?: boolean; limit?: number }) => Promise<ReminderListResult>;
+  reminderCreate: (input: { text: string; at: number; origin?: ReminderOrigin; creation_id?: string }) => Promise<import('@recued/contracts').ReminderCreateResult>;
+  reminderList: (input: ReminderListRequest) => Promise<ReminderListResult>;
   reminderUpdate: (input: { reminder_id: string; text?: string; at?: number }) => Promise<ReminderUpdateResult>;
   reminderCancel: (input: { reminder_id: string }) => Promise<ReminderCancelResult>;
 }
@@ -68,15 +61,19 @@ const LIST_MAX = 200;
 export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDispatchers => {
   const now = deps.now ?? Date.now;
 
-  const view = (reminder: Reminder, at: number): ReminderView => ({
-    reminder_id: reminder.reminder_id,
-    text: reminder.text,
-    at: reminder.at,
-    when: formatReminderWhen(reminder.at, reminder.time_zone ?? deps.timeZone(), at),
-    state: reminder.state,
-    delivered_at: reminder.delivered_at,
-    time_zone: reminder.time_zone,
-  });
+  const view = (reminder: Reminder, at: number): ReminderView => {
+    const zone = reminder.time_zone ?? deps.timeZone();
+    return {
+      reminder_id: reminder.reminder_id,
+      text: reminder.text,
+      at: reminder.at,
+      when: formatReminderWhen(reminder.at, zone, at),
+      state: reminder.state,
+      delivered_at: reminder.delivered_at,
+      time_zone: zone,
+      ...(reminder.clock ? { managed_by: 'clock' as const } : {}),
+    };
+  };
 
   const cleanText = (raw: string): string => {
     const text = raw.replace(/\s+/gu, ' ').trim();
@@ -90,7 +87,7 @@ export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDi
   };
 
   const checkTime = (at: number, current: number, zone: string): void => {
-    if (!Number.isFinite(at)) throw new ReminderInputError('A reminder needs a time.');
+    if (!Number.isFinite(at) || !Number.isFinite(new Date(at).getTime())) throw new ReminderInputError('A reminder needs a valid time.');
     if (at < current - REMINDER_PAST_GRACE_MS) {
       throw new ReminderInputError(
         `That time has passed: ${formatReminderWhen(at, zone, current)}. Pick a time still to come.`,
@@ -113,28 +110,33 @@ export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDi
       const current = now();
       const zone = deps.timeZone();
       const text = cleanText(input.text);
-      checkTime(input.at, current, zone);
-      const reminder = deps.store.create(
-        { text, at: input.at, time_zone: zone, origin: input.origin ?? {} },
+      const previous = input.creation_id ? deps.store.findCreated(input.creation_id, { text, at: input.at }) : undefined;
+      if (!previous) checkTime(input.at, current, zone);
+      const reminder = previous ?? deps.store.create(
+        { text, at: input.at, time_zone: zone, origin: input.origin ?? {},
+          ...(input.creation_id ? { creation_id: input.creation_id } : {}) },
         current,
       );
       const shown = view(reminder, current);
-      const note = quietNote(reminder.at, zone, current);
+      const note = reminder.state === 'pending' ? quietNote(reminder.at, reminder.time_zone ?? zone, current) : undefined;
       return {
         reminder: shown,
         when: shown.when,
         ...(note !== undefined ? { quiet_hours_note: note } : {}),
-        confirmation: note !== undefined ? `${shown.when}. ${note}` : shown.when,
+        confirmation: reminder.state !== 'pending' ? `This alarm was already ${reminder.state}. It has not been scheduled again.`
+          : note !== undefined ? `${shown.when}. ${note}` : shown.when,
       };
     },
 
     reminderList: async (input) => {
       const current = now();
       const limit = Math.min(Math.max(Math.trunc(input.limit ?? LIST_DEFAULT), 1), LIST_MAX);
-      const reminders = deps.store.listPending(limit).map((r) => view(r, current));
+      const page = input.page === undefined ? undefined : deps.store.pagePending({ ...input.page, limit });
+      const reminders = (page?.reminders ?? deps.store.listPending(limit)).map((r) => view(r, current));
       return {
         reminders,
         count: deps.store.countPending(),
+        ...(page ? { page: { matched_count: page.matched_count, next_cursor: page.next_cursor } } : {}),
         ...(input.include_delivered === true
           ? { delivered: deps.store.listHistory(limit).map((r) => view(r, current)) }
           : {}),

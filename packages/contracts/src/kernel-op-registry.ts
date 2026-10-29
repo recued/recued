@@ -876,6 +876,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.storage.csv.rows', 'storage', 'csv-rows', 'read', 'file'),
   op('core.storage.csv.stats', 'storage', 'csv-stats', 'read', 'file'),
   op('core.storage.csv.columns', 'storage', 'csv-columns', 'read', 'file'),
+  op('core.storage.csv.inspect', 'storage', 'csv-inspect', 'read', 'file'),
+  op('core.storage.csv.transform', 'storage', 'csv-transform', 'write', 'file'),
   /** D-315 slice 7 (ruling 34) — read a stored iCalendar file (an invite, a
    *  guest's answer, a cancellation) into its method and events, the owner
    *  placed in each. Reads file content, so it is fenced as `data.file` with
@@ -896,6 +898,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    (`native_op_in_step`). D-261's pre-approval origin check keeps reading this id
   //    as the scheduling grant, for the owner and for a door alike, as before.
   nativeOp('core.schedule.recipe', 'schedule', 'write', 'schedule'),
+  nativeOp('core.schedule.prompt', 'schedule', 'write', 'schedule'),
   // ── Kitchen — ordinary kernel authoring operation; creates review drafts.
   op('core.kitchen.draft.import', 'kitchen', 'kitchen-draft-import', 'write', 'recipe'),
   op('core.kitchen.draft.list', 'kitchen', 'kitchen-draft-list', 'read', 'recipe'),

@@ -218,6 +218,9 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
 
 export const getTransform = (name: string): TransformFn | undefined => TRANSFORMS.get(name);
 
+export { parseCsvTable, summarizeCsvTable, serializeCsvTable, operateCsvTable } from './csv-toolkit.js';
+export type { CsvTable, CsvTableOperationResult } from './csv-toolkit.js';
+
 // D-193 — the absolute-instant rule `date_parse`'s `require_offset` applies.
 export { parseInstantWithOffset } from './date.js';
 // A calendar event on the owner's clock, as `event_when` renders it.

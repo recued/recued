@@ -242,7 +242,9 @@ describe('record_ref search — reaching past the page', () => {
     // 21 of 37 search bindings have no label to declare. An unusable server read
     // must not surface as an error, and must not be retried every keystroke.
     const search = vi.fn(async (args: { filters?: Record<string, unknown> }) => {
-      if (args.filters !== undefined) throw new Error("filter field 'name' is not admitted");
+      if (args.filters !== undefined) throw Object.assign(
+        new Error("filter field 'name' is not admitted"), { code: 'records_invalid' },
+      );
       return { records: [row('a', 'Alpha'), ...full(RECORDS_MAX_PAGE_SIZE - 1)] };
     });
     const caller = createRecordRefSearchCaller({ search: search as never })(OWNER, 'account');
@@ -250,6 +252,43 @@ describe('record_ref search — reaching past the page', () => {
     await caller('Alph'); await caller('Al');
     // one page read + exactly ONE failed probe, never repeated
     expect(search.mock.calls.filter(c => c[0].filters !== undefined)).toHaveLength(1);
+  });
+
+  it('retries a temporary remote failure while retaining cached matches and the equality scope', async () => {
+    let available = false;
+    const search = vi.fn(async (args: { filters?: Record<string, { op: string; value: string }> }) => {
+      if (args.filters?.name === undefined) {
+        return { records: [row('local', 'My Zebra'), ...full(RECORDS_MAX_PAGE_SIZE - 1)] };
+      }
+      if (!available) throw Object.assign(new Error('Request timed out'), { code: 'timeout' });
+      return { records: [row('past-page', 'Zebra Corp')] };
+    });
+    const caller = createRecordRefSearchCaller({ search })(OWNER, 'account', { status: 'active' });
+    const failed = await caller('Zebra');
+    expect(failed.options.map(option => option.id)).toEqual(['local']);
+    expect(failed.truncated).toBe(true);
+    expect(failed.retryableError).toBeTruthy();
+    available = true;
+    const recovered = await caller('Zebra');
+    expect(recovered.options.map(option => option.id)).toEqual(['local', 'past-page']);
+    expect(recovered.retryableError).toBeUndefined();
+    expect(search.mock.calls.filter(([args]) => args.filters?.name === undefined)).toHaveLength(1);
+    expect(search.mock.calls.at(-1)?.[0].filters).toEqual({
+      status: { op: 'eq', value: 'active' }, name: { op: 'prefix', value: 'Zebra' },
+    });
+  });
+
+  it('does not mistake an unrelated validation failure for an unsupported label filter', async () => {
+    const search = vi.fn(async (args: { filters?: Record<string, unknown> }) => {
+      if (args.filters !== undefined) throw Object.assign(
+        new Error("filter field 'other' is not admitted"), { code: 'records_invalid' },
+      );
+      return { records: full(RECORDS_MAX_PAGE_SIZE) };
+    });
+    const caller = createRecordRefSearchCaller({ search })(OWNER, 'account');
+    expect((await caller('Zebra')).retryableError).toBeTruthy();
+    await caller('Zeb');
+    expect(search.mock.calls.filter(([args]) => args.filters !== undefined)).toHaveLength(2);
   });
 
   it('⛔⛔ asks the server about the field it DISPLAYS, not literally `name`', async () => {

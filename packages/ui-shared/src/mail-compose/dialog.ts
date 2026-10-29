@@ -63,10 +63,13 @@ const ATTACHMENTS_FIELD_NAME = 'attachments';
 const DIALOG_OWNED_FIELD_NAMES = new Set([
   SENDER_SOURCE_FIELD_NAME,
   ATTACHMENTS_FIELD_NAME,
+  // Reply headers are verified metadata, not an editable record reference.
+  'in_reply_to',
 ]);
 const stripDialogOwnedFields = (definition: FormDefinition): FormDefinition => ({
   kind: definition.kind,
-  fields: definition.fields.filter((f) => !DIALOG_OWNED_FIELD_NAMES.has(f.name)),
+  fields: definition.fields.filter((f) => !DIALOG_OWNED_FIELD_NAMES.has(f.name))
+    .map(field => field.name === 'to' ? { ...field, description: 'Email addresses or contacts.' } : field),
 });
 
 export interface MailComposeDialogProps {
@@ -109,6 +112,9 @@ export interface MailComposeDialogProps {
      *  to be visible on the control itself. */
     mailboxStatus?: string;
   };
+  discardConfirm?: boolean;
+  copyRecipientsOpen?: boolean;
+  replySubject?: string;
 }
 
 const dialogTitle = (mode: MailComposeDialogState['mode']): string =>
@@ -121,10 +127,19 @@ export const SEND_UNAVAILABLE_ATTR = 'data-mail-compose-send-unavailable';
 export const renderMailComposeDialog = (
   props: MailComposeDialogProps,
 ): string => {
+  const definition = stripDialogOwnedFields(props.definition);
+  const recipientNames = new Set(['to', 'cc', 'bcc']);
+  const fields = (names: 'to' | 'copies' | 'message'): string => renderForm({
+    kind: definition.kind,
+    fields: definition.fields.filter(field => names === 'to' ? field.name === 'to'
+      : names === 'copies' ? field.name === 'cc' || field.name === 'bcc' : !recipientNames.has(field.name)),
+  }, { values: props.state.values as unknown as Record<string, unknown>, errors: props.state.errors });
+  const copyRecipientsOpen = props.copyRecipientsOpen ?? Boolean(props.state.values.cc.length || props.state.values.bcc.length);
+  const copyCount = [...props.state.values.cc, ...props.state.values.bcc].filter(value => value.trim()).length;
   // D-264 — the picker lists every Source this dialog can do ANYTHING with.
-  const composable = props.sources.filter(
-    (s) => s.send_capable === true || s.draft_capable === true,
-  );
+  const composable = props.sources.filter((s) => props.state.mode === 'reply'
+    ? (s.send_capable || s.draft_capable) && s.id === props.state.values.sender_source
+    : s.send_capable || s.draft_capable);
   const senderPicker = renderSenderSourcePicker(
     props.state.values.sender_source,
     composable,
@@ -200,6 +215,7 @@ export const renderMailComposeDialog = (
       <div
         class="mail-compose-dialog"
         role="dialog"
+        tabindex="-1"
         aria-modal="true"
         aria-labelledby="mail-compose-title"
         data-mode="${e(props.state.mode)}"
@@ -213,13 +229,18 @@ export const renderMailComposeDialog = (
             aria-label="Close"${closeLockAttr}
           >×</button>
         </header>
+        ${props.discardConfirm ? `<div class="mail-compose-discard" role="alert"><p>Discard this unsaved draft?</p><button type="button" data-action="keep-mail-compose">Keep editing</button><button type="button" data-action="discard-mail-compose">Discard draft</button></div>` : ''}
         <div class="mail-compose-body">
           <form class="mail-compose-form" data-form-kind="mail_message">
+            <fieldset class="mail-compose-fields" aria-label="Message details"${props.state.submitting ? ' disabled' : ''}>
             ${senderPicker}
-            ${renderForm(stripDialogOwnedFields(props.definition), {
-              values: props.state.values as unknown as Record<string, unknown>,
-              errors: props.state.errors,
-            })}
+            ${props.replySubject ? `<p class="mail-compose-reply-context">Replying to <strong>${e(props.replySubject)}</strong></p>` : ''}
+            ${fields('to')}
+            <details class="mail-compose-copy-recipients" data-mail-compose-copy-recipients${copyRecipientsOpen || props.state.errors.cc || props.state.errors.bcc ? ' open' : ''}>
+              <summary>Cc and Bcc${copyCount ? ` (${copyCount})` : ''}</summary>
+              ${fields('copies')}
+            </details>
+            ${fields('message')}
             ${renderMailComposeAttachmentPicker({
               attachment_ids: props.state.values.attachments,
               known: props.attachments ?? [],
@@ -261,9 +282,11 @@ export const renderMailComposeDialog = (
                 data-action="submit-mail-compose"${submittingAttr}
               >${e(submitLabel)}</button>
             </footer>
+            </fieldset>
           </form>
           ${renderAiAssistSidebar({
             submitting: props.state.submitting || attachmentBusy,
+            mode: props.state.mode,
             ...props.aiAssist,
           })}
         </div>

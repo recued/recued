@@ -2,10 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
-import type { ChatMessageAttachment } from '@recued/contracts';
+import type { ChatMessageAttachment, FileLifecycleMutation } from '@recued/contracts';
 import { createChatStore, encodeChatContentForStorage, ensureChatSchema } from '../storage/chat-store.js';
 import { createChatTurnQueueStore, type QueuedChatCommand } from '../storage/chat-turn-queue-store.js';
 import { createInboundFileCollection } from '../collections/file/inbound-file-collection.js';
@@ -43,7 +43,7 @@ const fixture = (path?: string, directory?: string) => {
     role: 'user', content: 'Original immutable message', attachments, target_server: 'self',
     picker_at_send: { display_name: 'Self', signature }, model_used: { provider: 'fixture', model_id: 'fixture' },
     ...(turn_id ? { turn_id } : {}), ...(ts !== undefined ? { ts } : {}) });
-  const mutate = (id: string, action: 'archive' | 'delete') => files.mutateLifecycle!({ record_id: id, action, revision: lifecycle.preview(id).revision });
+  const mutate = (id: string, action: FileLifecycleMutation['action']) => files.mutateLifecycle!({ record_id: id, action, revision: lifecycle.preview(id).revision });
   return { db, dir, key, store, blobs, files, lifecycle, queue, handlers, registry, ingest, command, append, mutate };
 };
 const client = { instance_id: 'paired' } as WsClient;
@@ -101,6 +101,8 @@ describe('conversation files', () => {
     const f = fixture(); const file = await f.ingest(); const message = await f.append('m', [{ file_id: file.record_id, media_class: 'document' }]);
     const list = () => f.handlers['data.file.attachments.conversation']({ session_id: 's' }, client);
     f.mutate(file.record_id, 'archive'); expect((await list()).files[0]).toMatchObject({ archived: true, availability: 'available' });
+    f.mutate(file.record_id, 'restore'); expect((await list()).files[0]).toMatchObject({ archived: false, availability: 'available' });
+    f.mutate(file.record_id, 'archive');
     f.mutate(file.record_id, 'delete'); expect((await list()).files[0]).toMatchObject({ filename: 'Original.txt', availability: 'deleted', last_message_id: 'm' });
     await expect(f.handlers['data.file.attachments.get']({ record_id: message.attachments![0]!.file_id }, client)).rejects.toThrow('no longer available');
     f.db.prepare('DELETE FROM chat_messages WHERE message_id=?').run('m'); expect((await list()).files).toEqual([]);
@@ -297,6 +299,8 @@ describe('retained file lifecycle', () => {
     expect(restarted.files.list({ platform: 'file', slug: 'received', filters: { archived: 1 } }))
       .toMatchObject([{ hot_fields: { filename: 'New.txt' } }]);
     expect((await restarted.files.readBytes(message.attachments![0]!.file_id)).bytes.toString()).toBe('original bytes');
+    restarted.mutate(file.record_id, 'restore');
+    expect(restarted.files.list({ platform: 'file', slug: 'received' })).toMatchObject([{ record_id: file.record_id, hot_fields: { archived: 0 } }]);
     restarted.store.deleteSession('s');
     expect((await restarted.files.readBytes(file.record_id)).bytes.toString()).toBe('new library bytes');
     expect(listCollectionReferencedBlobHashes(restarted.db).has(file.hot_fields.content_hash)).toBe(false);
@@ -313,6 +317,54 @@ describe('retained file lifecycle', () => {
     await handlers['data.file.mutate'](input, client);
     expect(changes).toEqual([file.record_id]);
     expect((await f.files.readBytes(file.record_id)).bytes.toString()).toBe('New upload');
+  });
+
+  it('restores the same library file with fresh revisions and never repeats an acknowledged restore over a later archive', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    try {
+      const f = fixture(); const file = await f.ingest();
+      const message = await f.append('restore', [{ file_id: file.record_id, media_class: 'document' }]);
+      const changed = vi.fn(), deleted = vi.fn();
+      const handlers = makeFileReadRpcHandlers({ getFileReadDeps: () => ({ registry: f.registry, blobs: f.blobs }), changed, deleted })!.handlers;
+      const initial = f.lifecycle.preview(file.record_id);
+      f.mutate(file.record_id, 'archive');
+      const archived = f.lifecycle.preview(file.record_id);
+      expect(archived).toMatchObject({ archived: true, can_restore: true });
+      const request = { record_id: file.record_id, action: 'restore' as const, revision: archived.revision };
+      const restored = await handlers['data.file.mutate'](request, client);
+      expect(restored).toMatchObject({ record_id: file.record_id, archived: false, deleted: false, can_restore: false, message_count: 1 });
+      expect(new Set([initial.revision, archived.revision, restored.revision]).size).toBe(3);
+      expect(f.files.list({ platform: 'file', slug: 'received' }).map(row => row.record_id)).toEqual([file.record_id]);
+      expect(f.files.list({ platform: 'file', slug: 'received', filters: { archived: 1 } })).toEqual([]);
+      expect(changed).toHaveBeenCalledExactlyOnceWith('s', file.record_id, false);
+      expect(deleted).not.toHaveBeenCalled();
+      expect((await f.files.readBytes(file.record_id)).bytes.toString()).toBe('original bytes');
+      expect((await f.files.readBytes(message.attachments![0]!.file_id)).bytes.toString()).toBe('original bytes');
+      f.mutate(file.record_id, 'archive');
+      expect(f.lifecycle.preview(file.record_id)).toMatchObject({ archived: true, can_restore: true });
+      await handlers['data.file.mutate'](request, client);
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(f.files.get(file.record_id)?.hot_fields.archived).toBe(1);
+      f.mutate(file.record_id, 'restore');
+      expect(f.files.get(file.record_id)?.hot_fields.archived).toBe(0);
+      expect((await f.store.listMessages('s'))[0]).toMatchObject({ content: message.content,
+        attachments: [{ file_id: message.attachments![0]!.file_id }] });
+    } finally { clock.mockRestore(); }
+  });
+
+  it('refuses a stale restore and cannot restore a permanently deleted file', async () => {
+    const f = fixture(); const file = await f.ingest();
+    await f.append('deleted', [{ file_id: file.record_id, media_class: 'document' }]);
+    f.mutate(file.record_id, 'archive');
+    const stale = f.lifecycle.preview(file.record_id);
+    await f.ingest('new library content', 'New.txt'); f.mutate(file.record_id, 'archive');
+    await expect(f.handlers['data.file.mutate']({ record_id: file.record_id, action: 'restore', revision: stale.revision }, client)).rejects.toThrow('usage changed');
+    expect(f.files.get(file.record_id)?.hot_fields.archived).toBe(1);
+    f.mutate(file.record_id, 'delete');
+    const removed = f.lifecycle.preview(file.record_id);
+    expect(removed).toMatchObject({ deleted: true, can_restore: false });
+    await expect(f.handlers['data.file.mutate']({ record_id: file.record_id, action: 'restore', revision: removed.revision }, client)).rejects.toThrow('permanently deleted');
+    expect(f.files.get(file.record_id)).toBeNull();
   });
 
   it('does not purge identical bytes retained by a different file and rejects released or changed read identities', async () => {
@@ -346,6 +398,8 @@ describe('retained file lifecycle', () => {
   it('holds read leases across database clients and releases them on errors', async () => {
     const f = fixture(); const file = await f.ingest();
     const release = f.lifecycle.lease(file.record_id);
+    f.mutate(file.record_id, 'archive'); f.mutate(file.record_id, 'restore');
+    expect(f.lifecycle.preview(file.record_id).in_use).toBe(true);
     expect(() => f.mutate(file.record_id, 'delete')).toThrow('currently in use'); release();
     const get = f.blobs.get; f.blobs.get = async () => { throw new Error('read failed'); };
     await expect(f.handlers['data.file.read']({ record_id: file.record_id }, client)).rejects.toThrow('read failed');
@@ -392,8 +446,27 @@ describe('retained file lifecycle', () => {
       await expect(f.handlers[method]({ record_id: file.record_id, action: 'delete', revision: 'x' }, {} as WsClient))
         .rejects.toMatchObject({ code: 'unauthorized' });
     }
+    await expect(f.handlers['data.file.mutate']({ record_id: file.record_id, action: 'restore', revision: 'x' }, { ...client, instance_id: null }))
+      .rejects.toMatchObject({ code: 'unauthorized' });
     await expect(f.handlers['data.file.usage']({ record_id: 'file:remote:any' }, client)).rejects.toMatchObject({ code: 'bad_request' });
     const preview = await f.handlers['data.file.usage']({ record_id: file.record_id }, client);
     expect(await f.handlers['data.file.mutate']({ record_id: file.record_id, revision: preview.revision, action: 'delete' }, client)).toMatchObject({ deleted: true });
   });
+});
+
+
+it('retains an output by its verified hash and preserves its metadata on reload', async () => {
+  const f = fixture(); const saved = await f.ingest('a,b\n1,2\n', 'Export.csv');
+  const hash = f.files.get(saved.record_id)!.hot_fields.content_hash;
+  await expect(f.append('changed-output', [{ file_id: saved.record_id, media_class: 'document', content_hash: '0'.repeat(64) }])).rejects.toThrow(/changed before delivery/);
+  const message = await f.store.appendMessage({ id: 'answer', session_id: 's', role: 'assistant', content: 'Attached.',
+    target_server: 'self', picker_at_send: { display_name: 'Self', signature }, model_used: { provider: 'test', model_id: 'test' },
+    attachments: [{ file_id: saved.record_id, media_class: 'document', content_hash: hash }] });
+  const attached = message.attachments![0]!;
+  expect(attached).toMatchObject({ filename: 'Export.csv', content_hash: hash, source_file_id: saved.record_id, availability: 'available' });
+  expect(attached.file_id).not.toBe(saved.record_id);
+  const reloaded = (await f.store.listMessages('s')).find(row => row.id === 'answer')!;
+  expect(reloaded.attachments).toEqual(message.attachments);
+  const read = await f.handlers['data.file.read']({ record_id: attached.file_id }, client);
+  expect(Buffer.from(read.bytes_b64, 'base64').toString()).toBe('a,b\n1,2\n');
 });

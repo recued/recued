@@ -30,30 +30,23 @@ describe('update lease — real cross-process exclusion', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   /** One racer: wait on the barrier, then attempt the claim once. */
-  const childSource = (leasePath: string, gate: string): string => `
+  const childSource = (leasePath: string, gate: string, release: string): string => `
 import { existsSync } from 'node:fs';
 import { acquireUpdateLease, UpdateLeaseHeldError } from ${JSON.stringify(LEASE_MODULE)};
-// Spin on the barrier so every child reaches the claim within the same tick-ish
-// window. Without it the parent's spawn order would decide the winner and the
-// race would never actually happen.
-while (!existsSync(${JSON.stringify(gate)})) {}
+const waitFor = async (path) => {
+  while (!existsSync(path)) await new Promise((done) => setTimeout(done, 5));
+};
+console.log('READY ' + process.pid);
+await waitFor(${JSON.stringify(gate)});
 try {
   acquireUpdateLease({ leasePath: ${JSON.stringify(leasePath)}, operation: 'apply' });
   console.log('WON ' + process.pid);
-  // Hold it. Exiting would release nothing (the file outlives us) but holding
-  // keeps this process ALIVE, so the losers see a live holder rather than a
-  // stale one they may reclaim — which would be a FALSE extra winner against a
-  // correct implementation.
-  //
-  // ⚠ 400ms, not 1500. The losers attempt within microseconds of the barrier, so
-  // this only has to outlive that; the original was ~20 spawned processes held
-  // 1.5s each on a 10-core box already running eight vitest workers, and this
-  // file's job is to prove a property, not to saturate the machine other tests
-  // are timing themselves against.
-  await new Promise((r) => setTimeout(r, 400));
 } catch (err) {
   console.log((err instanceof UpdateLeaseHeldError ? 'LOST ' : 'ERR ') + process.pid);
 }
+// Keep the winner alive until EVERY contender has attempted its claim. A
+// fixed hold duration can expire before a slower child runs on a busy host.
+await waitFor(${JSON.stringify(release)});
 `;
 
   /** Seed a lease held by a pid that cannot be alive, so every racer arrives at
@@ -69,19 +62,41 @@ try {
     const leasePath = join(dir, 'recued-update.lock');
     if (opts.stale) seedStaleLease(leasePath);
     const gate = join(dir, 'go');
+    const release = join(dir, 'release');
+    rmSync(gate, { force: true }); rmSync(release, { force: true });
     const kids = Array.from({ length: n }, (_, i) => {
       const f = join(dir, `racer-${i}.mjs`);
-      writeFileSync(f, childSource(leasePath, gate));
+      writeFileSync(f, childSource(leasePath, gate, release));
       const p = spawn(process.execPath, [f], { stdio: ['ignore', 'pipe', 'pipe'] });
-      let out = '';
-      p.stdout.on('data', (b) => { out += String(b); });
-      p.stderr.on('data', (b) => { out += String(b); });
-      return new Promise<string>((res) => p.on('close', () => res(out.trim())));
+      const child = { p, out: '', closed: false, done: Promise.resolve('') };
+      p.stdout.on('data', (b) => { child.out += String(b); });
+      p.stderr.on('data', (b) => { child.out += String(b); });
+      p.on('error', error => { child.out += `ERR ${error.message}`; });
+      child.done = new Promise<string>(res => p.once('close', () => {
+        child.closed = true;
+        res(child.out.split('\n').filter(line => !line.startsWith('READY ')).join('\n').trim());
+      }));
+      return child;
     });
-    // Let them all reach the spin, then release together.
-    await new Promise((r) => setTimeout(r, 250));
-    writeFileSync(gate, '');
-    return Promise.all(kids);
+    const deadline = Date.now() + 40_000;
+    const waitFor = async (marker: RegExp) => {
+      while (!kids.every(child => marker.test(child.out))) {
+        if (kids.some(child => child.closed) || Date.now() >= deadline) {
+          throw new Error(`Lease racers did not reach ${marker}: ${kids.map(child => child.out).join(' | ')}`);
+        }
+        await new Promise(done => setTimeout(done, 10));
+      }
+    };
+    try {
+      await waitFor(/^READY /m);
+      writeFileSync(gate, '');
+      await waitFor(/^(WON|LOST|ERR) /m);
+      writeFileSync(release, '');
+      return await Promise.all(kids.map(child => child.done));
+    } finally {
+      for (const child of kids) if (!child.closed) child.p.kill('SIGTERM');
+      await Promise.all(kids.map(child => child.done));
+    }
   };
 
   it('⛔⛔ EXACTLY ONE takes it when they all race a STALE lease', async () => {

@@ -59,6 +59,40 @@ const mkAssistantMessage = (id: string, session_id: string): ChatMessage => ({
 });
 
 describe('durable tool-call updates', () => {
+  it('settles progress without a run id even when the terminal record omits its caption', () => {
+    const call = { message_id: 'call', session_id: 's', turn_id: 't', tool_name: 'mail.search',
+      state: 'running' as const, started_at: 1, updated_at: 2 };
+    let state = hydrateThreadFromSnapshot(initialChatThreadState(), { ...mkSession('s'), messages: [] });
+    const event = (value: unknown): ServerEvent => ({
+      kind: 'chat.session_changed', session_id: 's', field: 'tool_call', value, cursor: 1,
+    });
+    const running = { ...call, progress: { kind: 'provider', current: 3 } };
+    state = reduceChatThreadEvent(state, event(running));
+    state = reduceChatThreadEvent(state, event({ ...call, state: 'succeeded', updated_at: 3 }));
+    expect(state.tool_call_records?.['call:call']?.state).toBe('succeeded');
+    expect(reduceChatThreadEvent(state, event({ ...running, updated_at: 4 }))).toBe(state);
+    // A final result can also arrive before any progress has been painted.
+    state = reduceChatThreadEvent(state, event({ ...call, message_id: 'early', state: 'failed', updated_at: 5 }));
+    expect(reduceChatThreadEvent(state, event({ ...running, message_id: 'early', updated_at: 4 }))).toBe(state);
+  });
+
+  it('does not reintroduce an unbound progress record after the call acquires a run id', () => {
+    const call = { message_id: 'call', session_id: 's', turn_id: 't', tool_name: 'recipe.run',
+      state: 'running' as const, started_at: 1, updated_at: 2,
+      progress: { kind: 'provider' as const, current: 3 } };
+    let state = hydrateThreadFromSnapshot(initialChatThreadState(), { ...mkSession('s'),
+      messages: [{ ...mkUserMessage('call', 's'), role: 'tool', tool_call: call }] });
+    const event = (value: unknown): ServerEvent => ({
+      kind: 'chat.session_changed', session_id: 's', field: 'tool_call', value, cursor: 1,
+    });
+    state = reduceChatThreadEvent(state, event(call));
+    state = reduceChatThreadEvent(state, event({ ...call, run_id: 'run', updated_at: 3 }));
+    expect(Object.keys(state.tool_call_records!)).toEqual(['run']);
+    expect(reduceChatThreadEvent(state, event(call))).toBe(state);
+    // Even a newer unbound snapshot cannot remove the established identity.
+    expect(reduceChatThreadEvent(state, event({ ...call, updated_at: 4 }))).toBe(state);
+  });
+
   it('updates the exact visible call and refuses stale or cross-session revival', () => {
     const call = { message_id: 'call', session_id: 's', turn_id: 't', tool_name: 'recipe.run',
       state: 'running' as const, started_at: 1, updated_at: 1 };

@@ -39,6 +39,12 @@ export const createReadScope = (access: SituationAccess, source: ExecutionSource
 export const assertKernelReadScope = (access: SituationAccess, slug: string, source: ExecutionSource | undefined): void => {
   const bare = stripCorePrefix(slug);
   const id = kernelOpForBackingSlug(bare); const op = id ? getKernelOp(id) : undefined;
+  // CSV transforms write a new artifact but also read whole source files. The
+  // write tier must not exempt that input read from a sphere restriction.
+  if (bare.startsWith('csv-')) {
+    if (createReadScope(access, source).limited) throw new IngredientError('INGREDIENT_SCOPE_INSUFFICIENT', SPHERE_READ_REFUSAL);
+    return;
+  }
   const sensitive = /^(?:email|mail|calendar|contact|file|memory|annotation|link|enrichment|work-entity|records|data)-/u.test(bare);
   if (!sensitive || (op && op.risk !== 'read') || ['work-entity-list', 'work-entity-get'].includes(bare)) return;
   if (createReadScope(access, source).limited) throw new IngredientError('INGREDIENT_SCOPE_INSUFFICIENT', SPHERE_READ_REFUSAL);

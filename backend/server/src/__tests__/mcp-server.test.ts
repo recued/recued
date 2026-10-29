@@ -70,6 +70,25 @@ const makeDeps = (): ExecuteHandlerDeps & Pick<McpDeps, 'inboundTokenAuthorize'>
 };
 
 describe('MCP tool: recued_runRecipe', () => {
+  it('streams passive requested progress from an admitted recipe and stays silent on grant denial', async () => {
+    const send = vi.fn();
+    const request = { jsonrpc: '2.0', id: 3, method: 'tools/call', params: {
+      name: 'recued_runRecipe', arguments: { recipe_id: 'mcp-test-recipe' },
+      _meta: { progressToken: 'progress-3' },
+    } };
+    const allowed = createMcpHttpDispatch({ ...makeDeps() });
+    await allowed(request, 'test-token', send);
+    expect(send.mock.calls).toEqual([[{ jsonrpc: '2.0', method: 'notifications/progress', params: {
+      progressToken: 'progress-3', progress: 1, message: 'Recipe steps: 1 of 1',
+    } }]]);
+    send.mockClear();
+    const denied = createMcpHttpDispatch({ ...makeDeps(), inboundTokenAuthorize: () => false });
+    await denied(request, 'test-token', send);
+    expect(send).not.toHaveBeenCalled();
+    const { _meta, ...plainParams } = request.params;
+    await allowed({ ...request, params: plainParams }, 'test-token', send);
+    expect(send).not.toHaveBeenCalled();
+  });
   it('runs a recipe by id (simulating MCP tool call)', async () => {
     const deps = makeDeps();
     const result = await handleExecute(deps, { recipe_id: 'mcp-test-recipe' });

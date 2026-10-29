@@ -230,6 +230,26 @@ export interface ContactImportFileChange {
   fields: ReadonlyArray<{ field: string; from: string; to: string }>;
 }
 
+/** A labelled date from the file. Values are always re-read from the file on apply. */
+export interface ContactImportOccasion {
+  key: string;
+  line: number;
+  name: string;
+  label: string;
+  date: string;
+  existing?: { title: string; date: string; recurrence: 'yearly' | 'once'; version: string };
+  unavailable?: string;
+}
+
+export interface ContactImportOccasionSelection {
+  key: string;
+  recurrence: 'yearly' | 'once';
+  /** The reviewed existing Occasion. Omitted means the Occasion must still be new. */
+  expected_version?: string;
+  /** Only used when creating an occasion. Existing reminder rules are preserved. */
+  reminder_days?: 0 | 1 | 7 | 30 | null;
+}
+
 /** The plan a `contact.import.file_preview` returns. Purely derived — no writes, no
  *  server state between the two rpcs: `apply` re-parses the SAME bytes and re-derives
  *  the SAME plan, so the client cannot hand back one it edited. */
@@ -247,9 +267,14 @@ export interface ContactImportFilePlan {
    *  know. */
   errors: ReadonlyArray<string>;
   /** Dates the file carries that could not be used as written: a birthday kept as
-   *  text, an anniversary left out, a labelled date with no field on a contact. The
+   *  text, an anniversary left out, an invalid or unlabelled custom date. The
    *  person still imports. Absent when there are none, and from an older server. */
   date_notes?: ReadonlyArray<string>;
+  /** Extra identifiers retained in addition to each card's preferred values. */
+  additional_emails?: number;
+  additional_phones?: number;
+  /** Optional, contact-linked Occasions; never imported without selection. */
+  occasions?: ReadonlyArray<ContactImportOccasion>;
 }
 
 /** One contact Source's health, as `contact.source.list` returns it: the registry

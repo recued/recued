@@ -176,11 +176,10 @@ export const createRecordRefSearchCaller = (deps: RecordRefSearchDeps) => (
   // keystroke would spend a failed round trip to learn the same thing.
   let serverSearchUnavailable = false;
 
-  /** Reach PAST the cached page. Returns [] when it cannot — an unusable
-   *  server read must degrade to the local answer, never to an error. */
+  /** Reach past the cached page without losing usable local matches. */
   const beyondPage = async (
     query: string, labelField: string | null, truncated: boolean,
-  ): Promise<RefPicker.RefPickerOption[]> => {
+  ): Promise<RefPicker.RefPickerSearchPage> => {
     // ⛔ ONLY when the page was capped. If the whole inventory fitted, the local
     // answer is already complete and a round trip per keystroke buys nothing —
     // which is the cost the cached page exists to avoid. This gate is why the
@@ -191,7 +190,7 @@ export const createRecordRefSearchCaller = (deps: RecordRefSearchDeps) => (
       || Object.prototype.hasOwnProperty.call(scopeFilters, labelField)
       || serverSearchUnavailable
       || query === ''
-    ) return [];
+    ) return { options: [] };
     try {
       const result = await deps.search({
         owner, entity, limit: RECORDS_MAX_PAGE_SIZE,
@@ -200,12 +199,21 @@ export const createRecordRefSearchCaller = (deps: RecordRefSearchDeps) => (
           [labelField]: { op: 'prefix', value: query },
         },
       });
-      return (result.records ?? [])
+      return { options: (result.records ?? [])
         .map(toOption)
-        .filter((o): o is RefPicker.RefPickerOption => o !== null);
-    } catch {
-      serverSearchUnavailable = true;
-      return [];
+        .filter((o): o is RefPicker.RefPickerOption => o !== null) };
+    } catch (error) {
+      // Only a confirmed refusal of this label query is permanent. Timeouts,
+      // disconnects and other failures must not disable search for this form.
+      if (error !== null && typeof error === 'object'
+        && 'code' in error && error.code === 'records_invalid'
+        && 'message' in error
+        && (error.message === `filter field '${labelField}' is not admitted`
+          || error.message === "predicate 'prefix' is not admitted")) {
+        serverSearchUnavailable = true;
+        return { options: [] };
+      }
+      return { options: [], retryableError: 'Couldn’t search beyond the first page.' };
     }
   };
 
@@ -222,8 +230,9 @@ export const createRecordRefSearchCaller = (deps: RecordRefSearchDeps) => (
     // records may legitimately share a name.
     const seen = new Set(local.map((o) => o.id));
     return {
-      options: [...local, ...remote.filter((o) => !seen.has(o.id))],
+      options: [...local, ...remote.options.filter((o) => !seen.has(o.id))],
       truncated,
+      ...(remote.retryableError !== undefined ? { retryableError: remote.retryableError } : {}),
     };
   };
 };

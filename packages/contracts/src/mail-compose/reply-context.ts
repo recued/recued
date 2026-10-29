@@ -27,9 +27,10 @@ export const addReReplyPrefix = (subject: string): string => {
 /** Pure: derive the prepopulated values for a reply-mode compose. */
 export const deriveReplyValues = (
   context: MailReplyContext,
-): Pick<MailComposeValues, 'to' | 'subject' | 'in_reply_to' | 'sender_source'> => ({
-  to: [context.original_message.from],
+): Pick<MailComposeValues, 'to' | 'subject' | 'in_reply_to' | 'sender_source' | 'references'> => ({
+  to: [...(context.original_message.reply_to?.length ? context.original_message.reply_to : [context.original_message.from])],
   subject: addReReplyPrefix(context.original_message.subject),
   in_reply_to: context.original_message.id,
   sender_source: context.original_source_id,
+  references: [...new Set([...(context.original_message.references ?? []), context.original_message.id])],
 });

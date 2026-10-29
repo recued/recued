@@ -12,6 +12,7 @@
  *  whether it is still in the page, and a textarea has a caret. */
 
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../automation/prompt-schedules-panel.js', () => import('./fixtures/prompt-schedules-panel-stub.js'));
 import type { BroadcastEventKind, ServerEvent } from '@recued/contracts';
 
 import {

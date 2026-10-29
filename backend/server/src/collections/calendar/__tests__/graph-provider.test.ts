@@ -1619,6 +1619,37 @@ describe('GraphCalProvider — deleteEvent', () => {
 });
 
 describe('GraphCalProvider — rsvpEvent', () => {
+  it('uses the connected account and its live response when qualifying an invitation', async () => {
+    let organizer = false;
+    let canEdit = true;
+    let etag = 'version-1';
+    let submissions = 0;
+    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig,
+      fetcher: async (url, init) => {
+        if (init?.method === 'POST') submissions++;
+        return new URL(url).pathname === '/v1.0/me/calendars'
+        ? mkJson(200, { value: [{ id: 'cal-1', isDefaultCalendar: true, canEdit, owner: { address: 'me@x.com' } }] })
+        : mkJson(200, { id: 'meeting', '@odata.etag': etag, isOrganizer: organizer, organizer: { emailAddress: { address: 'host@x.com' } },
+          start: { dateTime: '2026-10-28T16:00:00', timeZone: 'UTC' }, end: { dateTime: '2026-10-28T17:00:00', timeZone: 'UTC' },
+          responseStatus: { response: 'tentativelyAccepted' },
+          attendees: [{ emailAddress: { address: 'me@x.com' }, status: { response: 'notResponded' } }] });
+      },
+      scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    const context = await provider.readInvitation!('cal-1', 'meeting');
+    expect(context.notification_supported).toBe(true);
+    expect(context.payload.event.attendees).toEqual([{ email: 'me@x.com', is_self: true, response_status: 'tentative' }]);
+    etag = 'version-2';
+    await expect(provider.rsvpEvent({ calendar_id: 'cal-1', source_id: 'meeting', response: 'accepted', expected_etag: context.payload.etag! }))
+      .rejects.toMatchObject({ code: 'version_conflict' });
+    expect(submissions).toBe(0);
+    canEdit = false;
+    expect((await provider.readInvitation!('cal-1', 'meeting')).notification_supported).toBe(false);
+    canEdit = true;
+    organizer = true;
+    expect((await provider.readInvitation!('cal-1', 'meeting')).notification_supported).toBe(false);
+  });
+
   it('POSTs /accept and then GETs the refreshed event', async () => {
     const store = seedStore();
     let acceptBody: unknown;
@@ -1638,14 +1669,14 @@ describe('GraphCalProvider — rsvpEvent', () => {
     };
     const fetcher: HttpFetcher = async (url, init) => {
       if (
-        url.endsWith('/me/events/evt-rsvp/accept') &&
+        url.endsWith('/me/calendars/cal-1/events/evt-rsvp/accept') &&
         init?.method === 'POST'
       ) {
         acceptBody = JSON.parse((init.body as string) ?? '{}');
         return mkJson(202, '');
       }
       if (
-        url.endsWith('/me/events/evt-rsvp') &&
+        url.endsWith('/me/calendars/cal-1/events/evt-rsvp') &&
         (init?.method ?? 'GET') === 'GET'
       ) {
         return mkJson(200, refreshed);
@@ -1667,6 +1698,7 @@ describe('GraphCalProvider — rsvpEvent', () => {
       response: 'accepted',
       comment: 'Cya',
     });
+    if ('removed' in payload) throw new Error('Expected a retained event.');
     expect(payload.event.attendees?.[0].response_status).toBe('accepted');
     expect((acceptBody as { comment: string }).comment).toBe('Cya');
     expect((acceptBody as { sendResponse: boolean }).sendResponse).toBe(true);
@@ -1677,23 +1709,17 @@ describe('GraphCalProvider — rsvpEvent', () => {
     let declined = false;
     const fetcher: HttpFetcher = async (url, init) => {
       if (
-        url.endsWith('/me/events/evt-rsvp/decline') &&
+        url.endsWith('/me/calendars/cal-1/events/evt-rsvp/decline') &&
         init?.method === 'POST'
       ) {
         declined = true;
         return mkJson(202, '');
       }
       if (
-        url.endsWith('/me/events/evt-rsvp') &&
+        url.endsWith('/me/calendars/cal-1/events/evt-rsvp') &&
         (init?.method ?? 'GET') === 'GET'
       ) {
-        return mkJson(200, {
-          id: 'evt-rsvp',
-          iCalUId: 'u',
-          subject: 's',
-          start: { dateTime: '2026-04-23T10:00:00', timeZone: 'UTC' },
-          end: { dateTime: '2026-04-23T11:00:00', timeZone: 'UTC' },
-        });
+        return mkJson(404, { error: { code: 'ErrorItemNotFound' } });
       }
       return mkJson(404, { error: 'unmapped', url });
     };
@@ -1706,12 +1732,13 @@ describe('GraphCalProvider — rsvpEvent', () => {
       scheduler: () => () => undefined,
     });
     cleanup.push(() => provider.close());
-    await provider.rsvpEvent({
+    const result = await provider.rsvpEvent({
       calendar_id: 'cal-1',
       source_id: 'evt-rsvp',
       response: 'declined',
     });
     expect(declined).toBe(true);
+    expect(result).toEqual({ removed: true, source_id: 'evt-rsvp', response_status: 'declined' });
   });
 
   it('POSTs /tentativelyAccept for response=tentative', async () => {
@@ -1719,14 +1746,14 @@ describe('GraphCalProvider — rsvpEvent', () => {
     let hit = false;
     const fetcher: HttpFetcher = async (url, init) => {
       if (
-        url.endsWith('/me/events/evt-rsvp/tentativelyAccept') &&
+        url.endsWith('/me/calendars/cal-1/events/evt-rsvp/tentativelyAccept') &&
         init?.method === 'POST'
       ) {
         hit = true;
         return mkJson(202, '');
       }
       if (
-        url.endsWith('/me/events/evt-rsvp') &&
+        url.endsWith('/me/calendars/cal-1/events/evt-rsvp') &&
         (init?.method ?? 'GET') === 'GET'
       ) {
         return mkJson(200, {

@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../automation/prompt-schedules-panel.js', () => import('./fixtures/prompt-schedules-panel-stub.js'));
 import type {
   BroadcastEventKind,
   ChatSession,
@@ -356,6 +357,7 @@ describe('streamed-token painting', () => {
       tool_name: 'core.data.mail.list',
       tier: 1,
       args: {},
+      call_id: 'live-call',
       cursor: 2,
     } as unknown as ServerEvent);
     await tick();
@@ -368,6 +370,18 @@ describe('streamed-token painting', () => {
     // …and its INSIDE moved, carrying the new activity row and keeping the text.
     expect(after.querySelectorAll(`[${CHAT_ROUTE_ACTIVITY_ROW_ATTR}]`).length)
       .toBeGreaterThan(0);
+    expect(contentNode(h.root)?.textContent).toBe('thinking');
+
+    h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'tool_call', cursor: 3,
+      value: { message_id: 'live-call', session_id: 'chat_1', turn_id: 't1',
+        tool_name: 'core.data.mail.list', state: 'running', started_at: 1, updated_at: 2,
+        progress: { kind: 'provider', current: 3, total: 10 } } });
+    await tick();
+    const progressed = h.root.querySelectorAll(`[${CHAT_ROUTE_MESSAGE_ATTR}]`)
+      .find(r => r.getAttribute(CHAT_ROUTE_MESSAGE_ATTR) === 't1')!;
+    expect(progressed).toBe(row);
+    expect(progressed.querySelectorAll(`[${CHAT_ROUTE_ACTIVITY_ROW_ATTR}]`)
+      .some(node => node.textContent.includes('Tool progress: 3 of 10'))).toBe(true);
     expect(contentNode(h.root)?.textContent).toBe('thinking');
 
     h.route.dispose();

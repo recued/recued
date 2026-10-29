@@ -230,6 +230,8 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.storage.csv.rows': t('Search a spreadsheet', 'Returns the rows of a CSV file that match, and saves nothing.'),
   'core.storage.csv.stats': t('Sum up a spreadsheet', 'Counts the rows of a CSV file and sums up each column.'),
   'core.storage.csv.columns': t('Read spreadsheet columns', 'Reads the column names of a CSV file.'),
+  'core.storage.csv.inspect': t('Inspect a spreadsheet', 'Reads column names, row counts and a small sample from a CSV file. Saves nothing.'),
+  'core.storage.csv.transform': t('Create a spreadsheet from other files', 'Filters, joins, compares or sums up CSV files and saves a new file. The source files stay the same.'),
   'core.storage.ics.read': t('Read a calendar file', 'Reads a calendar file, like an emailed invitation, and saves nothing.'),
   'core.storage.data-file-read': t('Read a received file', 'Reads a file your server received, like an email attachment.'),
 
@@ -239,6 +241,7 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.kitchen.draft.get': t('Read Kitchen draft source', 'Reads source from a draft created through this connection.'),
   'core.kitchen.draft.update': t('Update Kitchen draft source', 'Saves edited source to a draft created through this connection, checking its revision. It does not install or run it.'),
   // ── Schedules
+  'core.schedule.prompt': t('Scheduled prompts', 'Lets your own chat create and manage scheduled AI requests.'),
   'core.schedule.recipe': t('Schedule recipes', 'Lets your own chat set a recipe to run later or on a timer. An AI app cannot schedule recipes.'),
 
   // ── Selling
@@ -491,6 +494,12 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
     summary: 'Stops a recipe run that the same conversation started.',
     needs: [],
   },
+  'schedule.run_prompt': { title: 'Schedule an AI request', summary: 'Runs a saved request later in its own conversation.', needs: [{ entry: 'core.schedule.prompt' }] },
+  'schedule.list': { title: 'Read scheduled requests', summary: 'Lists saved requests and their timing.', needs: [{ entry: 'core.schedule.prompt' }] },
+  'schedule.update': { title: 'Edit a scheduled request', summary: 'Changes the saved request or its timing.', needs: [{ entry: 'core.schedule.prompt' }] },
+  'schedule.pause': { title: 'Pause a scheduled request', summary: 'Stops future and queued occurrences. A turn already running can finish.', needs: [{ entry: 'core.schedule.prompt' }] },
+  'schedule.resume': { title: 'Resume a scheduled request', summary: 'Starts future occurrences of a paused request.', needs: [{ entry: 'core.schedule.prompt' }] },
+  'schedule.remove': { title: 'Remove a scheduled request', summary: 'Removes future and queued occurrences. The conversation and its history remain.', needs: [{ entry: 'core.schedule.prompt' }] },
   'recipe.schedule': {
     title: 'Schedule a recipe',
     summary: 'Sets a recipe to run later or on a timer.',

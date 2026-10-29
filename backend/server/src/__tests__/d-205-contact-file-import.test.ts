@@ -20,12 +20,18 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { handleContactGet } from '../contact-handler.js';
 import { parseContactFile } from '../contact-import-parse.js';
 import {
   applyContactFileImport,
   planContactFileImport,
 } from '../contact-import-file.js';
 import { createContactStore, type ContactStore } from '../storage/contact-store.js';
+import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
+import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
+import { declaredOccasions } from '../situations/declared-occasions.js';
+import { occasionNextDate } from '@recued/contracts';
+import { createWarehouseEventBus } from '@recued/warehouse-events';
 
 let dir: string;
 let db: Database.Database;
@@ -54,7 +60,7 @@ describe('D-205 #5c — the parser reads what real exports actually emit', () =>
       'FN:Bob Smith',
       'N:Smith;Bob;;;',
       'EMAIL;TYPE=WORK:bob@work.test',
-      'EMAIL;TYPE=HOME;TYPE=PREF:bob@home.test', // ← PREF wins even though it is second
+      'EMAIL;TYPE="HOME,PREF":bob@home.test', // ← PREF wins even though it is second
       'TEL;TYPE=CELL:+1 555 0100',
       'ORG:Acme Inc;Engineering', // ← the org is the FIRST component
       'TITLE:Staff Engineer',
@@ -146,6 +152,9 @@ describe('D-205 #5c — the parser reads what real exports actually emit', () =>
       'EMAIL:ana@x.test',
       'item1.X-ABDATE;type=pref:2004-06-15',
       'item1.X-ABLabel:_$!<Anniversary>!$_',
+      'BDAY:--04-15',
+      'item4.X-ABDATE:1990-04-16',
+      'item4.X-ABLabel:Birthday',
       'item2.X-ABLabel:Graduation',
       'item2.X-ABDATE:2015-06-01',
       'item3.X-ABDATE;X-APPLE-OMIT-YEAR=1604:1604-09-09',
@@ -169,12 +178,9 @@ describe('D-205 #5c — the parser reads what real exports actually emit', () =>
     ].join('\r\n');
     const out = parseContactFile(vcf);
     expect(out.entries.map((entry) => entry.anniversary)).toEqual(['2004-06-15', '2010-05-01', '--07-04']);
-    expect(out.date_notes).toEqual([
-      'line 1 (Ana Silva): "Graduation" (2015-06-01) has no field on a contact and was not imported. '
-        + 'Add it in Yours → Occasions to be reminded.',
-      'line 1 (Ana Silva): "Other" (--09-09) has no field on a contact and was not imported. '
-        + 'Add it in Yours → Occasions to be reminded.',
-    ]);
+    expect(out.entries[0]?.birthday).toBe('--04-15');
+    expect(out.entries[0]?.dates).toEqual([{ label: 'Graduation', date: '2015-06-01' }, { label: 'Other', date: '--09-09' }]);
+    expect(out.date_notes).toEqual([]);
   });
 
   it('D-325 CSV: a Google Contacts export’s Event columns bring the anniversary and name the rest', () => {
@@ -184,10 +190,8 @@ describe('D-205 #5c — the parser reads what real exports actually emit', () =>
       'Ana,Silva,ana@x.test,--03-04,Anniversary,2004-06-15,Graduation,2015-06-01',
     ].join('\n'));
     expect(labelled.entries[0]).toMatchObject({ name: 'Ana Silva', birthday: '--03-04', anniversary: '2004-06-15' });
-    expect(labelled.date_notes).toEqual([
-      'row 2 (Ana Silva): "Graduation" (2015-06-01) has no field on a contact and was not imported. '
-        + 'Add it in Yours → Occasions to be reminded.',
-    ]);
+    expect(labelled.entries[0]?.dates).toEqual([{ label: 'Graduation', date: '2015-06-01' }]);
+    expect(labelled.date_notes).toEqual([]);
 
     const typed = parseContactFile([
       'Name,E-mail 1 - Value,Anniversary,Event 1 - Type,Event 1 - Value,Event 2 - Type,Event 2 - Value',
@@ -405,8 +409,8 @@ describe('D-205 #5c — apply', () => {
     expect(store.listContactAttributes(bob.contact_id!, 'org')).toHaveLength(1);
   });
 
-  it('🔑 THE DENTIST in a vCard — no email, and he is not created twice', () => {
-    const dentist = vcard(['FN:Dr. Smith', 'TEL:+15550100']);
+  it('🔑 THE DENTIST in a vCard — no email, and he is not created twice', async () => {
+    const dentist = vcard(['FN:Dr. Smith', 'TEL;TYPE=PREF:+15550100', 'TEL:+15550109']);
 
     const first = applyContactFileImport(deps(), dentist, true);
     expect(first.added).toBe(1);
@@ -418,5 +422,166 @@ describe('D-205 #5c — apply', () => {
     const second = applyContactFileImport(deps(), dentist, true);
     expect(second.added).toBe(0);
     expect(store.list({ limit: 10 })).toHaveLength(1);
+    const id = store.list()[0]!.contact_id;
+    expect(applyContactFileImport(deps(), vcard(['FN:Dr. Smith', 'TEL:+15550109']), true)).toMatchObject({ added: 0, changed: 1, failures: [] });
+    expect(store.list()[0]).toMatchObject({ contact_id: id, phone: '+15550109' });
+    const emailed = vcard(['FN:Dr. Smith', 'EMAIL:doctor@example.test', 'TEL:+15550100']);
+    expect(planContactFileImport(deps(), emailed).changes[0]?.fields).toContainEqual({ field: 'email', from: '', to: 'doctor@example.test' });
+    expect(applyContactFileImport(deps(), emailed, false).skipped).toBe(1);
+    expect(store.get('doctor@example.test')).toBeNull();
+    expect(applyContactFileImport(deps(), emailed, true).failures).toEqual([]);
+    expect(store.get('doctor@example.test')).toMatchObject({ contact_id: id, identity_status: 'verified' });
+    expect((await handleContactGet({ store }, { email: 'doctor@example.test' })).identifiers).toEqual({ emails: [], phones: ['+15550109'] });
+    expect(store.list()).toHaveLength(1);
+  });
+});
+
+
+describe('VCF identifiers and selected Occasions', () => {
+  const card = (...props: string[]) => ['BEGIN:VCARD', 'VERSION:4.0', ...props, 'END:VCARD'].join('\n');
+  const dateDeps = () => ({ ...deps(), history: createProactiveHistoryStore(db, createProactiveProposalStore(db)),
+    transaction: <T>(work: () => T): T => db.transaction(work)() });
+
+  it('keeps every identifier, numeric PREF order and primary phones across review and re-import', async () => {
+    const text = card('FN:Alex', 'EMAIL;PREF=10:work@example.test', 'EMAIL;PREF=1:home@example.test',
+      'EMAIL:HOME@example.test', 'TEL;PREF=2:tel:+15550102', 'TEL;PREF=1:tel:+15550101');
+    const parsed = parseContactFile(text).entries[0]!;
+    expect(parsed.emails).toEqual(['home@example.test', 'work@example.test']);
+    expect(parsed.phones).toEqual(['+15550101', '+15550102']);
+    expect(applyContactFileImport(deps(), text, false)).toMatchObject({ added: 1, failures: [] });
+    const alex = store.get('home@example.test')!;
+    expect(alex.phone).toBe('+15550101');
+    expect(store.listContactAliases(alex.contact_id!).filter(row => row.kind === 'phone_alias')).toHaveLength(2);
+    const next = card('FN:Alex', 'EMAIL;PREF=1:new@example.test', 'EMAIL:work@example.test', 'TEL;PREF=1:+15550102', 'TEL:+15550103');
+    expect(planContactFileImport(deps(), next)).toMatchObject({ adds: 0, changes: [{ email: alex.email }] });
+    applyContactFileImport(deps(), next, false);
+    expect(store.get(alex.email)?.phone).toBe('+15550101');
+    expect(store.listContactAliases(alex.contact_id!).some(row => row.alias_pattern === 'new@example.test')).toBe(false);
+    applyContactFileImport(deps(), next, true);
+    store.materializeContactProjection(alex.contact_id!, 6000);
+    expect(store.get(alex.email)).toMatchObject({ contact_id: alex.contact_id, phone: '+15550102' });
+    expect(store.resolveCanonicalEmail('new@example.test').canonical_email).toBe(alex.email);
+    expect(planContactFileImport(deps(), next)).toMatchObject({ adds: 0, unchanged: 1, changes: [] });
+    expect(applyContactFileImport(deps(), next, true)).toMatchObject({ added: 0, changed: 0, skipped: 1 });
+    const absorbed = store.upsertManual({ email: 'old@example.test', name: 'Alex', phone: '+15550104' }, 8000);
+    store.upsertContactAlias({ contact_id: absorbed.contact_id!, kind: 'phone_alias', alias_pattern: '+15550105', source: 'manual' }, 8100);
+    store.materializeContactProjection(absorbed.contact_id!, 8200);
+    expect(store.get(absorbed.email)?.phone).toBe('+15550104');
+    store.setMergedInto([absorbed], alex.email, 8500);
+    const mergedCard = card('FN:Alex', 'EMAIL:old@example.test', 'EMAIL:home@example.test', 'TEL;PREF=1:+15550101', 'TEL:+15550104');
+    expect(applyContactFileImport({ ...deps(), now: () => 9000 }, mergedCard, true).failures).toEqual([]);
+    expect(store.get(alex.email)?.phone).toBe('+15550101');
+    expect(store.findByPhone('+15550104').contact?.contact_id).toBe(alex.contact_id);
+    expect((await handleContactGet({ store }, { email: alex.email })).identifiers?.phones.filter(phone => phone === '+15550104')).toHaveLength(1);
+    expect(planContactFileImport(deps(), mergedCard).changes).toEqual([]);
+    store.setMergedInto([store.get(absorbed.email)!], null, 10000);
+    expect(store.get(absorbed.email)?.phone).toBe('+15550104');
+    // A later manual edit chooses an already-known phone, rather than whichever alias is newest.
+
+    store.upsertManual({ email: alex.email, phone: '+15550101' }, 9000);
+    expect(store.get(alex.email)?.phone).toBe('+15550101');
+  });
+
+  it('refuses a card whose addresses identify different people before writing either person', () => {
+    store.upsertManual({ email: 'a@example.test', name: 'A' }, 1000);
+    store.upsertManual({ email: 'b@example.test', name: 'B' }, 1000);
+    const text = card('FN:Wrong', 'EMAIL:a@example.test', 'EMAIL:b@example.test', 'EMAIL:new@example.test');
+    expect(planContactFileImport(deps(), text).errors[0]).toMatch(/more than one contact/);
+    expect(applyContactFileImport(deps(), text, true)).toMatchObject({ added: 0, changed: 0, skipped: 1 });
+    expect(store.get('a@example.test')?.name).toBe('A');
+    expect(store.get('b@example.test')?.name).toBe('B');
+    expect(store.get('new@example.test')).toBeNull();
+  });
+
+  it('imports only selected labelled dates, reuses contact Occasions and preserves owner reminder edits', () => {
+    const d = dateDeps();
+    const text = card('FN:Alex', 'EMAIL:alex@example.test', 'BDAY:--04-15', 'ANNIVERSARY:20101020',
+      'item1.X-ABDATE:2030-06-01', 'item1.X-ABLabel:Graduation', 'item2.X-ABDATE:--09-09', 'item2.X-ABLabel:First met');
+    const dates = planContactFileImport(d, text).occasions!;
+    applyContactFileImport(d, text, false);
+    expect(d.history.occasions()).toEqual([]);
+    const alex = store.get('alex@example.test')!;
+    expect(declaredOccasions({ contacts: store, calendars: () => [], timeZone: () => 'UTC' }).map(o => o.source?.field).sort()).toEqual(['anniversary', 'birthday']);
+    const result = applyContactFileImport(d, text, false, [{ key: dates[0]!.key, recurrence: 'once', reminder_days: 1 }]);
+    expect(result).toMatchObject({ added: 0, changed: 0, occasions_saved: 1, failures: [] });
+    const occasion = d.history.occasions()[0]!;
+    expect(occasion).toMatchObject({ people: [alex.contact_id], month_day: '06-01', source_next_on: '2030-06-01' });
+    expect(occasion.rules[0]?.schedule).toEqual({ before: [{ amount: 1, unit: 'days' }], on_day: true });
+    expect(occasionNextDate(occasion, '2030-06-02')).toBeNull();
+    d.history.saveOccasion({ ...occasion, title: 'My graduation', muted: true, rules: [{ ...occasion.rules[0]!, enabled: false }] }, 6000);
+    const revised = text.replace('2030-06-01', '2031-06-02');
+    const preview = planContactFileImport(d, revised);
+    expect(preview.occasions?.[0]?.existing).toMatchObject({ title: 'My graduation', date: '2030-06-01', recurrence: 'once' });
+    const selection = { key: preview.occasions![0]!.key, recurrence: 'yearly' as const, reminder_days: 30 as const, expected_version: preview.occasions![0]!.existing!.version };
+    d.history.saveOccasion({ ...d.history.occasion(occasion.id)!, title: 'Owner correction' }, 7000);
+    expect(() => applyContactFileImport(d, revised, true, [selection])).toThrow(/changed since this review/);
+    expect(d.history.occasion(occasion.id)?.title).toBe('Owner correction');
+    const refreshed = planContactFileImport(d, revised);
+    selection.expected_version = refreshed.occasions![0]!.existing!.version;
+    applyContactFileImport(d, revised, false, [selection]);
+    const updated = d.history.occasion(occasion.id)!;
+    expect(d.history.occasions()).toHaveLength(1);
+    expect(updated).toMatchObject({ title: 'Owner correction', muted: true, month_day: '06-02', rules: [{ enabled: false }] });
+    expect(updated.source_next_on).toBeUndefined();
+    expect(updated.rules[0]?.schedule).toEqual(occasion.rules[0]?.schedule);
+    expect(occasionNextDate(updated, '2031-06-03')).toBe('2032-06-02');
+    const survivor = store.upsertManual({ email: 'survivor@example.test', name: 'Alex' }, 9000);
+    store.setMergedInto([store.get(alex.email)!], survivor.email, 10000);
+    const merged = planContactFileImport(d, revised).occasions![0]!;
+    expect(merged.existing?.title).toBe('Owner correction');
+    expect(applyContactFileImport(d, revised, false, [{ ...selection, expected_version: merged.existing!.version }]).failures).toEqual([]);
+    expect(d.history.occasions()).toHaveLength(1);
+    expect(d.history.occasion(occasion.id)?.people).toEqual([survivor.contact_id]);
+
+    const otherText = card('FN:Chris', 'EMAIL:chris@example.test', 'item1.X-ABDATE:--06-02', 'item1.X-ABLabel:Graduation');
+    const other = planContactFileImport(d, otherText).occasions![0]!;
+    applyContactFileImport(d, otherText, false, [{ key: other.key, recurrence: 'yearly' }]);
+    store.setMergedInto([store.get('chris@example.test')!], survivor.email, 11000);
+    const conflicted = planContactFileImport(d, revised).occasions![0]!;
+    expect(conflicted.unavailable).toMatch(/more than one occasion/);
+    expect(() => applyContactFileImport(d, revised, false, [{ ...selection, expected_version: conflicted.existing!.version }])).toThrow(/more than one occasion/);
+    expect(d.history.occasions()).toHaveLength(2);
+  });
+
+  it('publishes contact writes only after their Occasions commit, including phone-only creation and promotion', () => {
+    const history = createProactiveHistoryStore(db, createProactiveProposalStore(db));
+    const notifications: Array<{ inTransaction: boolean; hasDate: boolean }> = [];
+    const bus = createWarehouseEventBus();
+    const events: Array<{ inTransaction: boolean; persisted: boolean }> = [];
+    bus.subscribe('**', event => { events.push({ inTransaction: db.inTransaction, persisted: !!store.get(event.record_id) }); });
+    store = createContactStore(db, { bus, onContactUpserted: record => {
+      notifications.push({ inTransaction: db.inTransaction, hasDate: history.forPerson('occasion', record.contact_id!).length > 0 });
+    } });
+    const d = { ...deps(), history, transaction: <T>(work: () => T): T => db.transaction(work)() };
+    const identities = [
+      ['FN:Emailed', 'EMAIL:emailed@example.test'],
+      ['FN:Phone only', 'TEL:+15550111'],
+      ['FN:Promoted', 'EMAIL:promoted@example.test', 'TEL:+15550112'],
+    ];
+    for (const props of identities) {
+      if (props[0] === 'FN:Promoted') applyContactFileImport(d, card('FN:Promoted', 'TEL:+15550112'), false);
+      notifications.length = 0; events.length = 0;
+      const text = card(...props, 'item1.X-ABDATE:--04-15', 'item1.X-ABLabel:First met');
+      const choice = { key: planContactFileImport(d, text).occasions![0]!.key, recurrence: 'yearly' as const };
+      const before = store.list(); const aliases = db.prepare('SELECT * FROM contact_alias ORDER BY id').all();
+      const failed = applyContactFileImport({ ...d, history: { ...history, saveOccasion: () => { throw new Error('disk write failed'); } } }, text, true, [choice]);
+      expect(failed).toMatchObject({ added: 0, changed: 0, occasions_saved: 0, failures: ['line 1: disk write failed'] });
+      expect(store.list()).toEqual(before); expect(db.prepare('SELECT * FROM contact_alias ORDER BY id').all()).toEqual(aliases);
+      expect(events).toEqual([]); expect(notifications).toEqual([]);
+      expect(applyContactFileImport(d, text, true, [choice]).failures).toEqual([]);
+      expect(events.length).toBeGreaterThan(0); expect(events.every(event => !event.inTransaction && event.persisted)).toBe(true);
+      expect(notifications.length).toBeGreaterThan(0); expect(notifications.every(event => !event.inTransaction && event.hasDate)).toBe(true);
+    }
+  });
+
+  it('rejects forged or unusable date choices before writing contacts', () => {
+    const d = dateDeps();
+    const text = card('FN:Alex', 'EMAIL:alex@example.test', 'item1.X-ABDATE:--04-15', 'item1.X-ABLabel:First met');
+    const key = planContactFileImport(d, text).occasions![0]!.key;
+    expect(() => applyContactFileImport(d, text, false, [{ key, recurrence: 'once' }])).toThrow(/Invalid occasion selection/);
+    expect(() => applyContactFileImport(d, text, false, [{ key: 'forged', recurrence: 'yearly' }])).toThrow(/Invalid occasion selection/);
+    expect(store.get('alex@example.test')).toBeNull();
+    const duplicate = text.replace('END:VCARD', 'item2.X-ABDATE:--05-15\nitem2.X-ABLabel:First met\nEND:VCARD');
+    expect(planContactFileImport(d, duplicate).occasions?.every(date => date.unavailable?.includes('distinct names'))).toBe(true);
   });
 });

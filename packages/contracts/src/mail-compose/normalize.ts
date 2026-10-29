@@ -39,7 +39,10 @@ export interface NormalizedMailSend {
   run_id?: string;
 }
 
-export const normalizeMailSend = (input: Record<string, unknown>): NormalizedMailSend => {
+/** `storedRecipients` is for one caller only: a saved draft read back as it was saved
+ *  (`readStoredMailDraftContent`). It skips the one-address-per-entry rule, which is newer than
+ *  some saved drafts. Every send, mailbox export and review of a draft runs this again without it. */
+export const normalizeMailSend = (input: Record<string, unknown>, options: { storedRecipients?: true } = {}): NormalizedMailSend => {
   const bad = (message: string): never => { throw new RpcError('BAD_INPUT', `mail-send: ${message}`, 400); };
   const strings = (value: unknown, name: string): string[] => typeof value === 'string' ? [value]
     : Array.isArray(value) && value.every(item => typeof item === 'string') ? [...value]
@@ -47,6 +50,7 @@ export const normalizeMailSend = (input: Record<string, unknown>): NormalizedMai
   // One address per entry, bounded before anything parses it (`mailRecipientInvalidReason`).
   const recipients = (value: unknown, name: string): string[] => {
     const list = strings(value, name);
+    if (options.storedRecipients) return list;
     list.forEach((recipient, index) => {
       const problem = mailRecipientInvalidReason(recipient);
       if (problem !== null) bad(`${typeof value === 'string' ? name : `${name}[${index}]`} ${problem}`);

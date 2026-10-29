@@ -79,7 +79,7 @@ export const deriveChannelSessionId = (source: ExecutionSource): string => {
     case 'webhook':
       return `webhook:${source.webhook_secret_id}`;
     case 'schedule':
-      return `schedule:${source.source_recipe}`;
+      return `schedule:${source.prompt_schedule?.schedule_id ?? source.source_recipe}`;
     case 'reactive':
       return `reactive:${source.source_recipe}`;
     case 'housekeeping':

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { RpcError } from '@recued/contracts';
+import { RpcError, FILE_READ_CHUNK_MAX_BYTES, type FileContentReadRequest, type FileContentReadResponse } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 
 import type { BlobStore } from '../../storage/blob-store.js';
@@ -36,18 +36,8 @@ export type FileReadErrorCode =
  *  the other read that does not come from the CAS. */
 export const LOCAL_FILE_READ_MAX_BYTES = REMOTE_FILE_READ_MAX_BYTES;
 
-export interface FileReadRequest {
-  record_id: string;
-}
-
-export interface FileReadResponse {
-  record_id: string;
-  bytes_b64: string;
-  mime_type: string;
-  filename: string;
-  size_bytes: number;
-  blob_hash: string;
-}
+export type FileReadRequest = FileContentReadRequest;
+export type FileReadResponse = FileContentReadResponse;
 
 export interface FileReadDeps {
   registry: CollectionRegistry;
@@ -98,13 +88,30 @@ const readStorageRef = (
 
 export const handleFileRead = async (
   deps: FileReadDeps,
-  args: { record_id?: unknown },
+  args: { record_id?: unknown; offset?: unknown; length?: unknown; expected_hash?: unknown },
   reviewedAccess?: object,
   limits?: { maxBytes: number },
 ): Promise<FileReadResponse> => {
   if (typeof args.record_id !== 'string' || args.record_id.length === 0) {
     throw new RpcError('bad_request', 'file.read: record_id is required', 400);
   }
+  const ranged = args.offset !== undefined || args.length !== undefined || args.expected_hash !== undefined;
+  if (ranged && (!Number.isSafeInteger(args.offset) || Number(args.offset) < 0
+    || !Number.isSafeInteger(args.length) || Number(args.length) < 1 || Number(args.length) > FILE_READ_CHUNK_MAX_BYTES
+    || (args.expected_hash !== undefined && (typeof args.expected_hash !== 'string' || !/^[a-f0-9]{64}$/.test(args.expected_hash))))) {
+    throw new RpcError('bad_request', 'file.read: chunks require a nonnegative offset, length 1..4194304 and an optional SHA-256 expected_hash', 400);
+  }
+  const respond = (meta: Omit<FileReadResponse, 'bytes_b64'>, bytes: Buffer): FileReadResponse => {
+    if (!ranged) return { ...meta, bytes_b64: bytes.toString('base64') };
+    const offset = Number(args.offset), content_hash = meta.blob_hash || createHash('sha256').update(bytes).digest('hex');
+    if (args.expected_hash !== undefined && args.expected_hash !== content_hash) {
+      throw new RpcError('file_changed', 'The file changed during download. Start again.', 409);
+    }
+    if (offset > bytes.length) throw new RpcError('bad_request', 'file.read: offset exceeds the file size', 400);
+    const end = Math.min(bytes.length, offset + Number(args.length)), chunk = bytes.subarray(offset, end);
+    return { ...meta, bytes_b64: chunk.toString('base64'), offset, next_offset: end < bytes.length ? end : null,
+      content_hash, chunk_hash: createHash('sha256').update(chunk).digest('hex') };
+  };
   const retained = deps.registry.get('file', DATA_FILE_RECEIVED_SLUG) as InboundFileCollection | undefined;
   const checkSize = (size: unknown): void => {
     if (limits && typeof size === 'number' && size > limits.maxBytes) {
@@ -141,7 +148,7 @@ export const handleFileRead = async (
         action: 'file_content_read', target: args.record_id,
         detail: JSON.stringify({ collection: 'data.file.received', posture: 'reviewed_snapshot',
           blob_hash: snapshot.blob_hash, mime_type: snapshot.mime_type, size_bytes: bytes.length }) });
-      return { ...snapshot, bytes_b64: bytes.toString('base64') };
+      return respond(snapshot, bytes);
     }
 
     // A `file:remote:*` id is a mirrored vendor file (the FileMetaStore posture) —
@@ -174,15 +181,14 @@ export const handleFileRead = async (
           size_bytes: remote.size_bytes,
         }),
       });
-      return {
+      return respond({
         record_id: args.record_id,
-        bytes_b64: remote.bytes.toString('base64'),
         mime_type: remote.mime_type,
         filename: remote.filename,
         size_bytes: remote.size_bytes,
         // Uncached (stream-through, v1) — no CAS blob backs a remote read.
         blob_hash: '',
-      };
+      }, Buffer.from(remote.bytes));
     }
 
     // D-106 follow-up — a `file:local:*` id is a watched folder's file: its bytes
@@ -223,15 +229,14 @@ export const handleFileRead = async (
           size_bytes: bytes.length,
         }),
       });
-      return {
+      return respond({
         record_id: args.record_id,
-        bytes_b64: bytes.toString('base64'),
         mime_type: file.mime_type,
         filename: file.filename,
         size_bytes: bytes.length,
         // Not in the CAS: the hash of what was read, for a caller that pins it.
         blob_hash: createHash('sha256').update(bytes).digest('hex'),
-      };
+      }, bytes);
     }
 
     const collection = deps.registry.get('file', DATA_FILE_RECEIVED_SLUG);
@@ -312,13 +317,12 @@ export const handleFileRead = async (
       }),
     });
 
-    return {
+    return respond({
       record_id: args.record_id,
-      bytes_b64: bytes.toString('base64'),
       mime_type,
       filename,
       size_bytes: bytes.length,
       blob_hash: storageRef.blob_hash,
-    };
+    }, bytes);
   } finally { release?.(); }
 };

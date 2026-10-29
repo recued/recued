@@ -131,6 +131,19 @@ it('guards internal navigation, keeps drafts on Escape, and discards only after 
   expect(leave).toHaveBeenCalledTimes(1); expect(surface.hasUnsavedChanges()).toBe(false);
 });
 
+it('stands aside on a server with no event read, so the listed fields and Reschedule show without an alert', async () => {
+  const older = Object.assign(new Error('Unknown rpc method: collection.calendar.event.get'), { code: 'unknown_method' });
+  const { surface } = setup({ get: async () => { throw older; } });
+  await open(surface);
+  expect(surface.render()).toBe('');
+  // The Data route offers Reschedule exactly when the surface is neither loading, editable nor editing.
+  expect([surface.isLoading(), surface.isEditable(), surface.isEditing(), surface.hasSnapshot()]).toEqual([false, false, false, false]);
+  // Any other failure is still shown, with a retry.
+  const failing = setup({ get: async () => { throw new Error('Server unreachable'); } });
+  await open(failing.surface);
+  expect(failing.surface.render()).toContain('Retry event details');
+});
+
 it('ignores a late read after a different event is opened or the surface is disposed', async () => {
   let resolve: (value: CalendarEventSnapshot) => void = () => {};
   const get = vi.fn().mockImplementationOnce(() => new Promise<CalendarEventSnapshot>(done => { resolve = done; }))

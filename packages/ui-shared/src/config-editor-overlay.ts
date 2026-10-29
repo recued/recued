@@ -213,6 +213,8 @@ const CONFIG_EDITOR_STYLES = `
 .config-editor-panel .config-editor-name input:focus,
 .config-editor-panel .config-editor-connection select:focus,
 .config-editor-panel .config-editor-schedule select:focus { outline: none; border-color: var(--accent); }
+/* Native WebKit menus need height rather than min-height. */
+.config-editor-panel select:not([multiple]) { height: 44px; }
 .config-editor-panel .config-editor-lead { margin: 0; overflow-wrap: anywhere; font-size: 13px; color: var(--fg); }
 ${FILE_REF_ARRAY_STYLES}
 `;

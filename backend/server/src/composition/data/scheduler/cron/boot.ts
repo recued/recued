@@ -34,6 +34,7 @@ export const bootCronScheduler = (
   const start = (): void => {
     handle = createScheduler({
       store: scheduleStore,
+      ...(ctx.promptScheduleTick ? { promptScheduleTick: ctx.promptScheduleTick } : {}),
       executeDeps,
       // D-269 — the declared server zone, so `0 9 * * *` means 9am to the
       // OWNER rather than 9am wherever this process happens to run. Read per

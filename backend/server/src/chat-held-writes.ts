@@ -245,7 +245,15 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
       console.error(`[chat] held write settlement for plan ${plan.plan_id} was not recorded`, error);
     }
     if (source !== undefined) {
-      replyOnceAnswered(plan, mailChatFollowUpText(outcome, title, detail), source);
+      let content = mailChatFollowUpText(outcome, title, detail);
+      if (outcome === 'succeeded' && plan.tool === 'schedule.run_prompt') {
+        const envelope = settled.result as { result?: { session_id?: unknown } } | undefined;
+        const session = envelope?.result?.session_id;
+        if (typeof session === 'string' && session.length > 0) {
+          content += `\n\n[Open scheduled conversation](#chat/session/${encodeURIComponent(session)})`;
+        }
+      }
+      replyOnceAnswered(plan, content, source);
     }
     return true;
   };

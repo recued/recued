@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildStepGraph, findForwardReferences } from '../graph.js';
+import { buildStepGraph, findForwardReferences, isStepOutputAvailable } from '../graph.js';
 import { validateRecipe } from '../validate.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -7,6 +7,23 @@ import { validateRecipe } from '../validate.js';
 // ────────────────────────────────────────────────────────────────
 
 describe('buildStepGraph — basics', () => {
+  it('places trigger outputs before prefetch and main inputs while keeping trigger steps sequential', () => {
+    expect(isStepOutputAvailable({ phase: 'trigger', index: 1 }, { phase: 'trigger', index: 0 })).toBe(true);
+    expect(isStepOutputAvailable({ phase: 'trigger', index: 1 }, { phase: 'trigger', index: 1 })).toBe(false);
+    expect(isStepOutputAvailable({ phase: 'trigger', index: 0 }, { phase: 'trigger', index: 1 })).toBe(false);
+    expect(isStepOutputAvailable({ phase: 'prefetch', index: 0 }, { phase: 'trigger', index: 9 })).toBe(true);
+    expect(isStepOutputAvailable({ phase: 'sequential', index: 0 }, { phase: 'trigger', index: 9 })).toBe(true);
+    expect(isStepOutputAvailable({ phase: 'trigger', index: 9 }, { phase: 'prefetch', index: 0 })).toBe(false);
+    expect(isStepOutputAvailable({ phase: 'trigger', index: 9 }, { phase: 'sequential', index: 0 })).toBe(false);
+  });
+  it('shares output availability without treating the current step as already computed', () => {
+    expect(isStepOutputAvailable({ phase: 'sequential', index: 1 }, { phase: 'sequential', index: 1 })).toBe(false);
+    expect(isStepOutputAvailable({ phase: 'sequential', index: 1 }, { phase: 'sequential', index: 0 })).toBe(true);
+    expect(isStepOutputAvailable({ phase: 'sequential', index: 1 }, { phase: 'sequential', index: 2 })).toBe(false);
+    expect(isStepOutputAvailable({ phase: 'sequential', index: 0 }, { phase: 'prefetch', index: 9 })).toBe(true);
+    expect(isStepOutputAvailable({ phase: 'prefetch', index: 1 }, { phase: 'prefetch', index: 0 })).toBe(false);
+    expect(isStepOutputAvailable({ phase: 'prefetch', index: 1 }, { phase: 'sequential', index: 0 })).toBe(false);
+  });
   it('empty recipe → empty graph', () => {
     const g = buildStepGraph({});
     expect(g).toEqual({ nodes: {}, prefetch_ids: [], sequential_order: [] });
@@ -318,7 +335,8 @@ describe('validator: forward_step_ref integration', () => {
     const errors = result.issues.filter((i) => i.code === 'forward_step_ref');
     expect(errors.length).toBe(1);
     expect(errors[0].message).toMatch(/declared later/);
-    expect(errors[0].path).toBe('steps[0]');
+    expect(errors[0].path).toBe('steps[0].template');
+    expect(errors[0].reference_span).toEqual({ offset: 0, length: 14, target: 'value' });
     expect(result.valid).toBe(false);
   });
 
@@ -338,7 +356,8 @@ describe('validator: forward_step_ref integration', () => {
     const errors = result.issues.filter((i) => i.code === 'forward_step_ref');
     expect(errors.length).toBe(1);
     expect(errors[0].message).toMatch(/prefetch/i);
-    expect(errors[0].path).toBe('prefetch_steps[0]');
+    expect(errors[0].path).toBe('prefetch_steps[0].input.fromB');
+    expect(errors[0].reference_span).toEqual({ offset: 0, length: 10, target: 'value' });
   });
 
   it('prefetch referencing a sequential step → forward_step_ref error', () => {
@@ -355,7 +374,8 @@ describe('validator: forward_step_ref integration', () => {
     const result = validateRecipe(recipe);
     const errors = result.issues.filter((i) => i.code === 'forward_step_ref');
     expect(errors.length).toBe(1);
-    expect(errors[0].path).toBe('prefetch_steps[0]');
+    expect(errors[0].path).toBe('prefetch_steps[0].input.seq');
+    expect(errors[0].reference_span).toEqual({ offset: 0, length: 10, target: 'value' });
   });
 
   it('valid ordering (sequential → earlier seq or prefetch) → no forward_step_ref', () => {

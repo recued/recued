@@ -14,6 +14,7 @@ import { createReadScope, assertKernelReadScope, SPHERE_READ_REFUSAL } from './s
 
 import { currentPreapprovalIo } from './preapproval-io-context.js';
 import { bindChatToolCallRun, observeResumedChatToolCall } from './chat-tool-call-context.js';
+import { reportToolProgress } from './execution/tool-progress.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { connectionBaseUrlFromConfig } from './connection-base-url.js';
 import { createRecordOutputSources } from './record-output-source.js';
@@ -6276,13 +6277,14 @@ const handleExecuteInner = async (
       // liveness. Store only a contract + timestamp for the next concurrent
       // turn; individual CLI heartbeat/file-growth signals replace this with
       // their more specific contract inside the CLI executor.
-      ...(registerLiveRun
-        ? {
-            onProgress: () => {
-              deps.inFlightRegistry!.reportProgress(run_id, 'provider-event');
-            },
-          }
-        : {}),
+      onProgress: (event) => {
+        if (registerLiveRun) deps.inFlightRegistry!.reportProgress(run_id, 'provider-event');
+        if (event.type === 'prefetch_arrived' || event.type === 'sequential_step_finished') {
+          reportToolProgress({ kind: 'steps',
+            current: event.index + (event.type === 'sequential_step_finished' ? 1 : 0),
+            total: event.total });
+        }
+      },
       // D-181 Slice 2 — bound heavy calls inline through the two-lane governor.
       ...(deps.laneGovernor ? { laneGovernor: deps.laneGovernor } : {}),
       // D-181 §10 — the duration-threshold classifier (default-gated fast-lane demotion).

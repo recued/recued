@@ -43,6 +43,7 @@ import {
 } from './automation-failure-reporter.js';
 
 export interface SchedulerConfig {
+  promptScheduleTick?: (closed: () => boolean) => Promise<void>;
   store: ScheduleStore;
   executeDeps: ExecuteHandlerDeps;
   /** D-269 — the server's declared IANA zone, for schedules that carry none.
@@ -537,7 +538,9 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     /** Asked before each schedule: a stop (or the drain) that landed while an
      *  earlier one ran ends the tick there, so stopping waits for at most the
      *  schedule already firing. What is left stays due for the next boot. */
-    const closed = (): boolean => stopEpoch !== epoch || draining();
+    const closed = (): boolean => stopEpoch !== epoch || draining() || (config.isVaultUnlocked?.() === false);
+    if (config.promptScheduleTick) await config.promptScheduleTick(closed);
+    if (closed()) return [];
 
     // Drop the previous tick's inventory memo — an install or uninstall since
     // then must be visible to this tick's pack gate.

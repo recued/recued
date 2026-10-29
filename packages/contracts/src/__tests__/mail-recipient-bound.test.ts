@@ -13,6 +13,7 @@ import {
   mailRecipientUnsafeReason,
 } from '../mail.js';
 import { normalizeMailSend } from '../mail-compose/normalize.js';
+import { parseMailDraftContent, readStoredMailDraftContent } from '../mail-drafts.js';
 
 /** An address exactly at the bound: a 64-character local part and a 255-character domain. */
 const longest = `${'a'.repeat(64)}@${'b'.repeat(251)}.com`;
@@ -87,5 +88,25 @@ describe('normalizeMailSend', () => {
       to: ['Ann Lee <ann@example.com>'], cc: ['bob@example.com'], reply_to: 'desk@example.com',
       references: ['<m1@example.com>', 'not-an-address'],
     });
+  });
+});
+
+describe('a saved draft read back', () => {
+  /** What a server before the rule could save: a list in one entry, and a name with no address. */
+  const stored = { sender_mail_instance: 'work', to: ['ann@example.com, bob@example.com'], cc: ['the desk'],
+    subject: 'Hello', body: 'Hi.', body_format: 'text' };
+
+  it('reads a draft saved before one address per entry exactly as it was saved', () => {
+    expect(readStoredMailDraftContent(stored)).toEqual(stored);
+    // Everything else about a saved draft is still checked.
+    expect(refusal(() => readStoredMailDraftContent({ ...stored, body_format: 'rtf' })).message)
+      .toBe('Body format must be text or html.');
+  });
+
+  it('⛔ still refuses it wherever it would be saved, sent or exported', () => {
+    expect(refusal(() => parseMailDraftContent(stored)).message)
+      .toBe('mail-send: to[0] holds more than one address; give each recipient its own entry');
+    expect(refusal(() => normalizeMailSend(readStoredMailDraftContent(stored))).message)
+      .toBe('mail-send: to[0] holds more than one address; give each recipient its own entry');
   });
 });

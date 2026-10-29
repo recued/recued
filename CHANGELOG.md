@@ -7,6 +7,74 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.29 — 2026-10-29
+
+Run a saved request once or repeatedly from Automation, move a pending one-time run to another
+time, and create an alarm without a recipe. Mail can draft a new message or a reply with AI and
+opens retained conversations to read. Calendar shows a week at a time, Tasks changes several
+selected items together, and reminders can be created, searched and edited in Data. File results
+can be downloaded from Chat, and the optional CSV Toolkit pack provides ten operations that keep
+the original files unchanged.
+
+### Added
+
+- **Schedule a complete request.** Automation → Add schedule → Prompt saves a request in its own
+  conversation, to run once or on a recurring schedule. Chat and Automation share Pause, Resume,
+  Edit, Remove, Run now, timing previews and links to the last run or a waiting approval. Run now
+  keeps the next scheduled time. Scheduled requests use current owner permissions and normal
+  write review; they cannot create more schedules themselves.
+- **A failed scheduled request raises one notice per unresolved failure episode.** Quiet hours
+  defer delivery, a locked vault defers checking, and a restart does not replay a claimed notice.
+  The notice links to the conversation or failed action without including the request, results
+  or provider diagnostics. A later successful run clears the episode silently.
+- **Move a pending one-time recipe run.** Change its future date and time, with its time zone
+  shown, while keeping the recipe instance, settings and history. An execution already admitted
+  cannot be moved, and a review tied to the old time is invalidated.
+- **Create alarms and manage reminders.** Automation also offers Alarm, and Data → Reminders can
+  create an alarm, change its wording and time together, search it, and load more waiting items.
+  Retrying an unanswered creation does not make another alarm.
+- **See a seven-day calendar agenda.** Move between weeks and filter calendars without losing
+  the date or place when an event is opened. A source that fails does not hide the others. Eligible
+  remote invitations offer a response after the calendar and invitation are verified.
+- **Change selected tasks together.** Select up to 100 loaded, visible tasks to complete them,
+  set a due date or clear due dates. Results distinguish confirmed changes, failures and changes
+  still waiting for their source; checking an unanswered change does not repeat it blindly.
+- **Restore an archived file to the library.** Chat also retains verified output files beside an
+  answer, with Preview and Download available after reload. Downloads verify the complete file
+  and use bounded chunks rather than one large response.
+- **Work with CSV files.** The optional CSV Toolkit version 2 pack provides inspection, filtering,
+  column selection, concatenation, joins, differences, aggregation, column mapping, sorting and
+  deduplication. Operations save new files, preserve their sources and can pass results to another
+  operation. Install the pack or individual recipes from the community catalog.
+
+### Changed
+
+- **Draft and reply with AI in the mail composer.** Describe the message, review the generated
+  body and edit it before sending. Drafting does not send. Data → Mail opens a retained conversation
+  with a desktop message index or expandable cards on a phone, and can load older messages while
+  keeping the selected email and reading position.
+- **Contacts share saved lookup between Data and Search.** VCF imports retain contact identifiers
+  and significant dates.
+- **Chat and connected AI apps show passive tool progress** while a request is being processed.
+- **Update the server for the new controls.** The hosted web app needs 26.10.29 for the new
+  scheduling, reminder and file methods. CSV Toolkit and Mail — Compose catalog changes require
+  their pack updates; the server build does not publish the marketplace.
+
+### Fixed
+
+- **A provider refusal no longer makes a scheduled request look finished.** A diagnostic reply is
+  retained as a failure, and deferred history cannot appear as a second notice after quiet hours.
+- **Scheduled requests can read saved work and reach write review** under their current owner
+  permissions, while keeping their system provenance and respecting revoked permissions.
+- **Mail drafts saved before the one-address rule open, list and delete again.** Saving or sending
+  still requires each recipient to have its own valid address entry.
+- **An older server gets useful update guidance.** Search keeps its supported results and empty
+  results can still offer the marketplace; project lists and event details explain what needs a
+  server update instead of presenting an unknown-method error with an ineffective retry.
+- **Temporary read failures can recover** in permission catalogs, recipe record search and saved
+  view creation. Notification device lists load independently, and a failed saved draft deletion
+  can be checked without deleting a replacement draft.
+
 ## 26.10.28 — 2026-10-28
 
 Kitchen keeps what you are working on: it opens on a page of its own with New recipe, New pack and

@@ -643,6 +643,8 @@ export type ServerEvent =
        *  renderer style each tier consistently (e.g., Tier 3 carries
        *  the connection name prefix). */
       kind: 'chat.tool_call_started';
+      /** Correlates passive progress with this exact invocation. */
+      call_id?: string;
       session_id: string;
       turn_id: string;
       tool_name: string;

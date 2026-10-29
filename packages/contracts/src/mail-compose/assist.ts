@@ -6,9 +6,28 @@
  * Subject, sender choice, attachments, and reply linkage never enter the AI
  * input and therefore cannot be changed by this action. */
 
-import type { MailComposeRewriteAction, MailComposeValues } from './types.js';
+import type { MailComposeRewriteAction, MailComposeValues, MailReplyContext } from './types.js';
 
 export const REWRITE_COMPOSED_MAIL_RECIPE_ID = 'rewrite-composed-mail';
+export const DRAFT_COMPOSED_MAIL_RECIPE_ID = 'draft-composed-mail';
+export const MAIL_DRAFT_BRIEF_MAX = 8_000;
+export const MAIL_DRAFT_SOURCE_MAX = 65_536;
+
+/** Only text and privacy seeds enter the model; routing stays with the host. */
+export const composeDraftRecipeConfig = (input: ComposeRewriteRecipeInput & {
+  brief: string;
+  reply?: MailReplyContext | null;
+}): Record<string, unknown> => ({
+  brief: input.brief.trim(),
+  body: input.values.body,
+  sender_email: input.sender_email,
+  to: [...input.values.to], cc: [...input.values.cc], bcc: [...input.values.bcc],
+  original_from: input.reply?.original_message.from ?? '',
+  original_to: [...(input.reply?.original_message.to ?? [])],
+  original_cc: [...(input.reply?.original_message.cc ?? [])],
+  original_subject: input.reply?.original_message.subject ?? '',
+  original_body: input.reply?.original_message.body ?? '',
+});
 
 export interface ComposeRewriteRecipeInput {
   values: Pick<MailComposeValues, 'body' | 'to' | 'cc' | 'bcc'>;

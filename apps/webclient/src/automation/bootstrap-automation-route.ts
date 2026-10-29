@@ -1,3 +1,5 @@
+import { mountPromptSchedulesPanel, promptScheduleChip, type PromptScheduleClient, type PromptSchedulesPanelState } from './prompt-schedules-panel.js';
+import { mountAlarmScheduleForm } from './alarm-schedule-form.js';
 import { mountAutomationRehearsalPanel } from './automation-rehearsal-panel.js';
 import type { Conn, ServerRpcRegistry, RehearsalTarget } from '@recued/contracts';
 /** Reactive-substrate slice 1 — top-level Automation route.
@@ -45,6 +47,7 @@ import type {
   PreapprovalActivation,
   PreapprovalCapabilities,
 } from '@recued/contracts';
+import { mountOneOffReschedule, type OneOffRescheduleCaller } from './one-off-reschedule.js';
 import { openPreapprovalActivation } from '../approvals/preapproval-activation.js';
 import { preapprovalHref } from '../approvals/preapproval-route.js';
 import {
@@ -82,6 +85,7 @@ import {
   type MissedRunsAnswer,
 } from '@recued/ui-shared';
 import { bindRecordRefSearchToRecipe } from '../record-ref-search.js';
+import { serializeChatSessionAddress } from '../shell/route.js';
 import {
   AUTOMATION_ACTION_ATTR as ACTION_ATTR,
   AUTOMATION_CHIP_ATTR,
@@ -339,6 +343,7 @@ export interface BootstrapAutomationRouteOptions {
   document?: Document;
   schedulesListCaller?: SchedulesListCaller;
   schedulesUpdateCaller?: SchedulesUpdateCaller;
+  schedulesRescheduleCaller?: OneOffRescheduleCaller;
   schedulesDeleteCaller?: SchedulesDeleteCaller;
   /** D-266 — soft enhancement. Absent ⇒ no missed-run card, and no load
    *  error: a host that has not opted in is not a failure. */
@@ -504,39 +509,44 @@ const AUTOMATION_ROUTE_STYLES = `
   min-width: 0;
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
-  padding: 16px;
+  padding: 28px 24px 48px;
   color: var(--fg);
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-header {
-  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
 }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-header > a { gap: 6px; flex: 0 0 auto; }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-title {
   margin: 0;
-  font-size: 20px;
+  font-size: 28px;
   font-weight: 650;
+  letter-spacing: -.035em;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subtitle {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   color: var(--muted);
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.6;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-filter {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 16px;
-  max-width: 760px;
+  gap: 12px;
+  margin: 20px 0;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-filter > .ref-picker {
   flex: 1 1 240px;
   min-width: 220px;
-  max-width: 360px;
+  max-width: 320px;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-filter-label {
   flex: none;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--muted);
 }
 /* A label and its select wrap as one. Apart, the row broke between them:
@@ -688,6 +698,15 @@ const AUTOMATION_ROUTE_STYLES = `
   gap: 6px;
   align-items: center;
 }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-actions [${ACTION_ATTR}^="delete:"] {
+  color: var(--fg-muted);
+  border-color: transparent;
+  background: transparent;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-actions [${ACTION_ATTR}^="delete:"]:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
 @media (max-width: 560px) {
   [${AUTOMATION_ROUTE_ROW_ATTR}] {
     grid-template-columns: minmax(0, 1fr);
@@ -827,11 +846,67 @@ const AUTOMATION_ROUTE_STYLES = `
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-note {
   overflow-wrap: anywhere;
 }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-recued-one-off-reschedule] label {
+  display: grid;
+  gap: 8px;
+  max-width: 28rem;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-recued-one-off-reschedule] input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
 [${AUTOMATION_ROUTE_HOST_ATTR}] .scheduled-local-writes pre {
   max-width: 100%;
   max-height: 24rem;
   overflow: auto;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form],
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-schedule-kind {
+  display: grid;
+  gap: 18px;
+  width: 100%;
+  max-width: 760px;
+  min-width: 0;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] { margin-top: 24px; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] h3 { font-size: 17px; letter-spacing: -.02em; margin: 0; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] p { font-size: 13px; color: var(--fg-muted); line-height: 1.6; margin: 0; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] [role="alert"]:empty { display: none; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] [role="alert"]:not(:empty) { color: var(--danger); }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] label {
+  display: grid;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] :is(input, textarea),
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-schedule-kind] {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-automation-alarm-form] textarea { min-height: 100px; resize: vertical; line-height: 1.6; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-schedule-kind { gap: 7px; max-width: 360px; font-size: 12px; font-weight: 600; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-alarm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] :is([data-alarm-create-slot], [data-prompt-create-slot], .automation-alarm-notice) {
+  width: 100%;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail :is(button, a) {
@@ -1086,15 +1161,44 @@ const AUTOMATION_ROUTE_STYLES = `
   max-width: 100%;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  margin: 4px 0 8px;
+  gap: 12px;
+  margin: 4px 0 16px;
 }
-[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-adds {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 0 8px;
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 16px 10px;
+  margin-bottom: 28px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-toolbar .automation-chips { margin: 0; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-toolbar .automation-section-actions,
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-adds { display: contents; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-surface {
+  box-sizing: border-box;
+  grid-column: 1 / -1;
+  order: 1;
+  width: 100%;
   min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-heading { margin: 0 0 6px; font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-description { margin: 0 0 20px; font-size: 13px; color: var(--fg-muted); line-height: 1.6; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-surface [data-prompt-schedules] { margin-top: 24px; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-surface .prompt-schedule-toolbar { margin-bottom: 0; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-group-heading { margin: 0 0 14px; font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [data-recued-automation-section-panel] > [data-prompt-schedules] { margin-top: 32px; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-alarm-notice { box-sizing: border-box; grid-column: 1/-1; order: 2; margin: 0; padding: 14px 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 13px; line-height: 1.6; }
+@media (max-width: 680px) {
+  [${AUTOMATION_ROUTE_HOST_ATTR}] { padding: 20px 16px 32px; }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-header { flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-toolbar { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-toolbar .automation-chips { grid-column: 1/-1; }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-surface { padding: 18px 16px; }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-filter > .ref-picker { min-width: 0; }
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-add-picker {
   box-sizing: border-box;
@@ -1160,7 +1264,7 @@ const recipeHref = (recipe_id: string): string =>
 
 /** R21 sub-nav labels, in render order (treemap §4: Auto-run first). */
 const SECTION_LABEL: Record<AutomationSectionToken, string> = {
-  all: 'By recipe',
+  all: 'Overview',
   'coming-up': 'Coming up',
   'auto-run': 'Auto-run',
   triggers: 'Triggers',
@@ -1400,6 +1504,27 @@ export const bootstrapAutomationRoute = (
   routeRoot.setAttribute(AUTOMATION_ROUTE_HOST_ATTR, '');
   opts.root.appendChild(routeRoot);
 
+  let scheduleCreateKind: 'alarm' | 'prompt' | 'recipe' | null = null;
+  let lastAlarm: import('@recued/contracts').ReminderCreateResult | undefined;
+  const closeScheduleCreate = (result?: import('@recued/contracts').ReminderCreateResult) => {
+    const ownsFocus = doc.activeElement === doc.body || alarmHost.contains?.(doc.activeElement) || promptHost.contains?.(doc.activeElement);
+    if (result) lastAlarm = result;
+    addPickerFor = null; scheduleCreateKind = null; render();
+    if (ownsFocus) routeRoot.querySelector<HTMLElement>(`[${AUTOMATION_ROUTE_ADD_ATTR}="schedules"]`)?.focus();
+  };
+  const alarmHost = doc.createElement('div');
+  const alarmForm = opts.rehearsalCall ? mountAlarmScheduleForm({ host: alarmHost,
+    create: args => opts.rehearsalCall!('reminder.create', args), onClose: closeScheduleCreate,
+    ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}) }) : undefined;
+  const promptHost = doc.createElement('div');
+  let promptState: PromptSchedulesPanelState = { rows: [], loaded: false, error: '' };
+  let renderPromptOverview = (): void => {};
+  const promptPanel = opts.rehearsalCall ? mountPromptSchedulesPanel({ host: promptHost, call: opts.rehearsalCall as PromptScheduleClient,
+    hideCreate: true, onCreateClosed: closeScheduleCreate,
+    onStateChange: state => { promptState = state; renderPromptOverview(); },
+    ...(opts.subscribe ? { subscribe: opts.subscribe } : {}) }) : undefined;
+  promptPanel?.setSession();
+
   let schedules: ReadonlyArray<ServerSchedule> = [];
   // D-266 — the missed-run card. Null until read (or when the host has
   // not wired the caller); the report itself is recomputed server-side,
@@ -1503,8 +1628,10 @@ export const bootstrapAutomationRoute = (
   let pendingRetryFocus: AutomationSectionToken | null = null;
   const rehearsalPanels = new Map<string, { host: HTMLDetailsElement; panel: ReturnType<typeof mountAutomationRehearsalPanel> | null }>();
   const localWritePanels = new Map<string, { host: HTMLDetailsElement; panel: ReturnType<typeof mountScheduledLocalWritesPanel> | null }>();
+  let oneOffEditor: { id: string; host: HTMLElement; panel: ReturnType<typeof mountOneOffReschedule> } | null = null;
   let disposed = false;
   let loadSeq = 0;
+  let scheduleReadEpoch = 0;
   /** Rule ids with an in-flight mutation — their actions remain focusable but
    *  are guarded by the delegated busy check. */
   const busy = new Set<string>();
@@ -1852,7 +1979,8 @@ export const bootstrapAutomationRoute = (
   const canCreate = (
     section: AutomationCreateSectionToken,
   ): boolean =>
-    opts.recipeEntriesCaller !== undefined
+    (section === 'schedules' && opts.rehearsalCall !== undefined)
+    || opts.recipeEntriesCaller !== undefined
     && (section === 'schedules'
       ? opts.schedulesCreateCaller !== undefined
       : section === 'dishes'
@@ -1945,6 +2073,7 @@ export const bootstrapAutomationRoute = (
     tab: 'schedule' | 'trigger',
   ): void => {
     openModal?.destroy();
+    scheduleCreateKind = null;
     pendingModalReturnFocus = null;
     const returnSection = tab === 'schedule' ? 'schedules' : 'triggers';
     const handle = RunModal.wireRunModal({
@@ -2010,7 +2139,8 @@ export const bootstrapAutomationRoute = (
   /** (Re-)attach the Add recipe picker after a paint, mirroring
    *  `mountRecipePicker`; torn down whenever the disclosure closes. */
   const mountAddPicker = (): void => {
-    if (addPickerFor === null || recipeEntries === null) {
+    if (addPickerFor === null || recipeEntries === null
+      || (addPickerFor === 'schedules' && opts.rehearsalCall && scheduleCreateKind !== 'recipe')) {
       addPicker?.destroy();
       addPicker = null;
       return;
@@ -2652,7 +2782,8 @@ export const bootstrapAutomationRoute = (
         name: nameFor(recipe_id),
         href: recipeHref(recipe_id),
         lines,
-        strayRows: strays.map((item) => item.html),
+        strayRows: strays.map((item) => ({ html: item.html,
+          chip: item.armed === 'waiting' ? 'needs-you' : item.armed === 'tripped' ? 'failing' : item.armed })),
         // The contracts' rule: the server's one-time notice names the recipes
         // it matches, so the two cannot disagree.
         notSwitchedOn: !shippedOnly && isNotSwitchedOn({
@@ -2709,7 +2840,25 @@ export const bootstrapAutomationRoute = (
         what: `${cadence.charAt(0).toUpperCase()}${cadence.slice(1)}`,
       });
     }
+    for (const prompt of overviewPrompts()) {
+      if (!prompt.enabled || prompt.next_run_at === null) continue;
+      out.push({ at: prompt.next_run_at, recipe_name: prompt.title,
+        href: serializeChatSessionAddress({ sessionId: prompt.session_id }), dish_name: null,
+        what: `Prompt · ${prompt.mode === 'one_shot' ? 'Once' : describeCron(prompt.cron_expression!)} · ${prompt.time_zone}` });
+    }
     return out;
+  };
+
+  // Prompts belong to conversations, so selecting one Recipe narrows them out.
+  const overviewPrompts = () => recipeFilter === null ? promptState.rows : [];
+  const promptCountsKnown = () => !promptPanel || recipeFilter !== null || promptState.loaded;
+  const promptViewFilter = (): AutomationChip | null => activeSection === 'all' ? chipFilter
+    : activeSection === 'schedules' ? ({ all: null, on: 'on', off: 'off', tripped: 'failing', waiting: 'needs-you' } as const)[statusFilter] : null;
+  const shownPrompts = () => overviewPrompts().filter(row => promptViewFilter() === null || promptScheduleChip(row) === promptViewFilter());
+  const overviewCounts = (groups: readonly ByRecipeGroup[]) => {
+    const counts = chipCounts(groups);
+    for (const row of overviewPrompts()) counts[promptScheduleChip(row)]++;
+    return counts;
   };
 
   // Recipe-filter combobox — names the recipe the view is narrowed to
@@ -2719,7 +2868,7 @@ export const bootstrapAutomationRoute = (
     <div class="automation-filter"${busy.size > 0
       ? ' inert aria-disabled="true"'
       : ''}>
-      <span class="automation-filter-label">Show only one Recipe</span>
+      <span class="automation-filter-label">Recipe</span>
       ${RefPicker.renderRefPicker(
         RefPicker.initialRefPickerState(resolveRecipeSelection()),
         RECIPE_PICKER_CONFIG,
@@ -2771,7 +2920,7 @@ export const bootstrapAutomationRoute = (
     switch (token) {
       case 'all':
         return byRecipeGroups().reduce((sum, group) =>
-          sum + group.lines.length + (group.notSwitchedOn ? 1 : 0), 0);
+          sum + group.lines.length + group.strayRows.length + (group.notSwitchedOn ? 1 : 0), 0) + overviewPrompts().length;
       case 'coming-up':
         return comingUpEntries().length;
       case 'auto-run':
@@ -2779,7 +2928,7 @@ export const bootstrapAutomationRoute = (
       case 'triggers':
         return triggers.filter((t) => matchesFilter(t.recipe_id)).length;
       case 'schedules':
-        return schedules.filter((s) => matchesFilter(s.recipe_id)).length;
+        return schedules.filter((s) => matchesFilter(s.recipe_id)).length + overviewPrompts().length;
       case 'dishes':
         return dishes.filter((d) => matchesFilter(d.recipe_id)).length;
     }
@@ -2828,7 +2977,7 @@ export const bootstrapAutomationRoute = (
           tabindex="${activeSection === token || (!isViewToken(activeSection) && token === 'all') ? '0' : '-1'}"
           ${busy.size > 0 ? 'aria-disabled="true"' : ''}
           data-active="${activeSection === token ? 'true' : 'false'}">
-          ${e(SECTION_LABEL[token])}${loading ? '' : ` <span class="automation-subnav-count">${sectionCount(token)}</span>`}
+          ${e(SECTION_LABEL[token])}${loading || !promptCountsKnown() ? '' : ` <span class="automation-subnav-count">${sectionCount(token)}</span>`}
         </button>`).join('')}
     </nav>
   `;
@@ -2842,6 +2991,10 @@ export const bootstrapAutomationRoute = (
   ): string => {
     const addAvailable = canCreate(section);
     const open = addPickerFor === section;
+    const chooseKind = section === 'schedules' && opts.rehearsalCall !== undefined;
+    const showRecipePicker = open && (!chooseKind || scheduleCreateKind === 'recipe');
+    const creationDraft = scheduleCreateKind === 'alarm' ? alarmForm?.hasDraft()
+      : scheduleCreateKind === 'prompt' ? promptPanel?.hasDraft() : false;
     // Dishes consumes the same inventory for Config buttons even when this
     // host has no create caller. Surface a failed background read there so
     // configuration does not silently disappear with no recovery path.
@@ -2866,15 +3019,32 @@ export const bootstrapAutomationRoute = (
     return `
       <div class="automation-section-actions">
         ${addAvailable
-          ? `<button type="button" class="automation-button"
+          ? `<button type="button" class="automation-button${section === 'schedules' ? ' automation-button--primary' : ''}"
               ${AUTOMATION_ROUTE_ADD_ATTR}="${section}"
+              ${creationDraft ? 'disabled' : ''}
               aria-expanded="${open ? 'true' : 'false'}">
               ${section === 'schedules' ? 'Add schedule'
                 : section === 'dishes' ? 'Add dish'
                 : 'Add trigger'}
             </button>`
           : ''}
-        ${open
+        ${section === 'schedules' && lastAlarm
+          ? `<p class="automation-alarm-notice" role="status">${lastAlarm.reminder.state === 'pending' ? 'Alarm set' : 'Alarm history'}: ${e(lastAlarm.reminder.text)}. ${e(lastAlarm.confirmation)}
+              <a href="#data/reminder">View or change alarms</a></p>` : ''}
+        ${open ? `<div class="automation-create-surface">
+          <h2 class="automation-create-heading">${section === 'schedules' ? 'New schedule' : section === 'triggers' ? 'New trigger' : 'New dish'}</h2>
+          <p class="automation-create-description">${section === 'schedules' ? 'Choose what happens at the scheduled time.' : 'Choose the recipe you want to use.'}</p>` : ''}
+        ${open && chooseKind ? `<label class="automation-schedule-kind"><span id="automation-schedule-kind-label">Schedule type</span>
+          <select data-automation-schedule-kind aria-labelledby="automation-schedule-kind-label" ${creationDraft ? 'disabled' : ''}>
+            <option value="" ${scheduleCreateKind === null ? 'selected' : ''}>Choose what to schedule…</option>
+            <option value="alarm" ${scheduleCreateKind === 'alarm' ? 'selected' : ''}>Alarm — send a reminder</option>
+            <option value="prompt" ${scheduleCreateKind === 'prompt' ? 'selected' : ''}>Prompt — run an AI request</option>
+            ${opts.recipeEntriesCaller && opts.schedulesCreateCaller
+              ? `<option value="recipe" ${scheduleCreateKind === 'recipe' ? 'selected' : ''}>Recipe — run an installed recipe</option>` : ''}
+          </select></label>
+          ${scheduleCreateKind === 'alarm' ? '<div data-alarm-create-slot></div>' : ''}
+          ${scheduleCreateKind === 'prompt' ? '<div data-prompt-create-slot></div>' : ''}` : ''}
+        ${showRecipePicker
           ? recipeEntriesError !== null
             ? inventoryFailure
             : recipeEntries === null
@@ -2884,6 +3054,7 @@ export const bootstrapAutomationRoute = (
                   ADD_PICKER_CONFIG,
                 )}</div>`
           : showClosedDishesFailure ? inventoryFailure : ''}
+        ${open ? '</div>' : ''}
       </div>`;
   };
 
@@ -2909,8 +3080,8 @@ export const bootstrapAutomationRoute = (
           ?? mutationErrors.triggers ?? mutationErrors.auto_run;
         const adds = sectionActions('schedules') + sectionActions('triggers');
         return renderMissedRunsCard(missedRuns, { busy: missedRunsBusy, error: missedRunsError })
-          + renderChips(chipCounts(groups), chipFilter)
-          + (adds.trim() !== '' ? `<div class="automation-list-adds">${adds}</div>` : '')
+          + `<div class="automation-list-toolbar">${renderChips(overviewCounts(groups), chipFilter, promptCountsKnown())}
+            ${adds.trim() !== '' ? `<div class="automation-list-adds">${adds}</div>` : ''}</div>`
           + (loadError !== undefined
             ? `<div class="automation-load-error" ${AUTOMATION_ROUTE_ERROR_ATTR}="all" role="${loading ? 'status' : 'alert'}">
                 <span>${e(loadError)}</span>
@@ -2922,8 +3093,10 @@ export const bootstrapAutomationRoute = (
             ? `<p class="automation-row-error" role="alert">${e(mutationError)}</p>` : '')
           // A re-read keeps the list on screen (and what has focus in it).
           + (list !== ''
-            ? list
-            : loading
+            ? `<h2 class="automation-group-heading">Recipes</h2>${list}`
+            : shownPrompts().length > 0 || promptPanel?.hasDraft() || (recipeFilter === null && promptPanel && (!promptState.loaded || promptState.error))
+              ? ''
+              : loading
               ? '<p class="automation-section-hint" role="status">Loading…</p>'
               : `<p class="automation-section-hint" ${AUTOMATION_ROUTE_EMPTY_ATTR}>${e(chipFilter !== null
                 ? 'Nothing here right now.'
@@ -2937,9 +3110,14 @@ export const bootstrapAutomationRoute = (
       }
       case 'coming-up': {
         const entries = comingUpEntries();
-        return loading && entries.length === 0
-          ? '<p class="automation-section-hint" role="status">Loading…</p>'
-          : renderComingUp(entries);
+        const readingPrompts = promptPanel && recipeFilter === null && !promptState.loaded && !promptState.error;
+        const promptError = recipeFilter === null ? promptState.error : '';
+        return (entries.length > 0 ? renderComingUp(entries)
+          : loading || readingPrompts ? '<p class="automation-section-hint" role="status">Loading upcoming runs…</p>'
+            : promptError ? '' : renderComingUp([], filtered ? 'This Recipe has no upcoming runs.' : undefined))
+          + (readingPrompts && entries.length > 0 ? '<p class="automation-section-hint" role="status">Loading scheduled prompts…</p>' : '')
+          + (promptError ? `<div class="automation-load-error" role="alert">Could not refresh prompt schedules. ${e(promptError)}${promptState.loaded ? ' Showing the last loaded prompt schedules.' : ''}
+              <button type="button" class="automation-button" data-prompt-overview-retry>Retry</button></div>` : '');
       }
       case 'auto-run':
         return renderSection({
@@ -3095,6 +3273,8 @@ export const bootstrapAutomationRoute = (
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && s.lifecycle_revision !== undefined
                   && canPreapprove('next_schedule')
                 ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:schedule" ${ROW_ID_ATTR}="${e(s.schedule_id)}">Look at the next run</button>` : ''}
+            ${opts.schedulesRescheduleCaller && s.reschedule_revision && s.reschedule_identity
+              ? `<button type="button" class="automation-button" data-recued-reschedule-one-off="${e(s.schedule_id)}"${busy.has(s.schedule_id) || oneOffEditor?.id === s.schedule_id ? ' disabled' : ''}>Reschedule</button>` : ''}
             <span class="automation-detail-remove">${renderDeleteButtons('schedule', s.schedule_id)}</span>
           </div>`)}`;
       }
@@ -3239,6 +3419,8 @@ export const bootstrapAutomationRoute = (
         ${body ?? (loading
           ? '<p>Loading…</p>'
           : '<p>This rule no longer exists — it may have been removed.</p>')}
+        ${oneOffEditor && activeSection === 'schedules' && detailId === oneOffEditor.id
+          ? '<div data-recued-one-off-slot></div>' : ''}
         <p class="automation-section-hint">Runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>
       </section>`;
   };
@@ -3281,6 +3463,7 @@ export const bootstrapAutomationRoute = (
   };
 
   const mountRehearsal = (): void => {
+    if (activeSection === 'schedules' && schedules.find(s => s.schedule_id === detailId)?.mode === 'one_shot') return;
     if (opts.rehearsalCall && activeSection === 'schedules' && detailId !== null) {
       const scheduleId = detailId;
       let entry = localWritePanels.get(scheduleId);
@@ -3365,6 +3548,7 @@ export const bootstrapAutomationRoute = (
     const focusedAddRaw = activeElement?.getAttribute?.(
       AUTOMATION_ROUTE_ADD_ATTR,
     );
+    const focusedScheduleKind = activeElement?.hasAttribute?.('data-automation-schedule-kind') === true;
     const focusedAdd =
       focusedAddRaw !== null
       && focusedAddRaw !== undefined
@@ -3398,7 +3582,8 @@ export const bootstrapAutomationRoute = (
       const stillOwnsRequest =
         focusedRecipeEntriesRetry === pendingRecipeEntriesFocus
         || focusedAdd === pendingRecipeEntriesFocus
-        || (focusedAddPicker && addPickerFor === pendingRecipeEntriesFocus);
+        || (focusedAddPicker && addPickerFor === pendingRecipeEntriesFocus)
+        || (focusedScheduleKind && pendingRecipeEntriesFocus === 'schedules');
       const liveOwnerMovedElsewhere =
         activeElement !== null
         && activeElement !== undefined
@@ -3490,14 +3675,20 @@ export const bootstrapAutomationRoute = (
           end: (activeElement as HTMLInputElement).selectionEnd,
         };
     const focusedRehearsal = [...rehearsalPanels.values(), ...localWritePanels.values()].some(item => item.host.contains(activeElement ?? null)) ? activeElement : null;
+    oneOffEditor?.host.remove();
     for (const item of rehearsalPanels.values()) item.host.remove();
     for (const item of localWritePanels.values()) item.host.remove();
+    const promptFocus = promptHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
+    const alarmFocus = alarmHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
+    if (alarmForm) alarmHost.remove();
+    if (promptPanel) promptHost.remove();
     routeRoot.innerHTML = `
       <header class="automation-header">
-        <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
-        <p class="automation-subtitle">What runs on its own, by Recipe: each Recipe you
-        switched on, what starts it, and when it runs next. Switch any of them on or
-        off here; runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>
+        <div>
+          <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
+          <p class="automation-subtitle">Schedule reminders, run AI requests, and keep your recipes working for you.</p>
+        </div>
+        <a href="#logs">Run history <span aria-hidden="true">→</span></a>
       </header>
       ${lockBanner()}
       ${subNav()}
@@ -3507,7 +3698,23 @@ export const bootstrapAutomationRoute = (
         ${detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
       </div>
     `;
+    promptPanel?.setFilter(promptViewFilter());
+    if (promptPanel && detailId === null && (activeSection === 'all' || activeSection === 'schedules')
+      && (promptPanel.hasDraft() || scheduleCreateKind === 'prompt' || shownPrompts().length > 0
+        || recipeFilter === null && (!promptState.loaded || !!promptState.error))) {
+      const slot = routeRoot.querySelector('[data-prompt-create-slot]')
+        ?? routeRoot.querySelector(`[${AUTOMATION_ROUTE_SECTION_PANEL_ATTR}]`);
+      slot?.appendChild(promptHost);
+      promptFocus?.focus?.({ preventScroll: true });
+    }
+    if (alarmForm) routeRoot.querySelector('[data-alarm-create-slot]')?.appendChild(alarmHost);
+    alarmFocus?.focus?.({ preventScroll: true });
+    if (focusedScheduleKind) routeRoot.querySelector<HTMLElement>('[data-automation-schedule-kind]')?.focus?.({ preventScroll: true });
     mountRehearsal();
+    if (oneOffEditor && activeSection === 'schedules' && detailId === oneOffEditor.id) {
+      oneOffEditor.panel.update(schedules.find(s => s.schedule_id === oneOffEditor!.id) ?? null);
+      routeRoot.querySelector?.('[data-recued-one-off-slot]')?.replaceWith(oneOffEditor.host);
+    }
     if (focusedRehearsal?.isConnected && (doc.activeElement === doc.body || doc.activeElement == null)) focusedRehearsal.focus?.({ preventScroll: true });
     if (focusedSection !== null) {
       const replacement = routeRoot.querySelector(
@@ -3638,8 +3845,18 @@ export const bootstrapAutomationRoute = (
       }
     }
     if (!loading && pendingRetryFocus !== null) pendingRetryFocus = null;
+    if (focusedAdd !== null && doc.activeElement === doc.body) {
+      routeRoot.querySelector<HTMLElement>(`[${AUTOMATION_ROUTE_ADD_ATTR}="${focusedAdd}"]`)?.focus?.({ preventScroll: true });
+    }
+    if (promptFocus !== null && !promptHost.isConnected && doc.activeElement === doc.body) {
+      const fallback = activeSection === 'all' && chipFilter !== null
+        ? routeRoot.querySelector<HTMLElement>(`[${AUTOMATION_CHIP_ATTR}="${chipFilter}"]`)
+        : routeRoot.querySelector<HTMLElement>(`[${AUTOMATION_ROUTE_ADD_ATTR}="schedules"]`) ?? navTabFor(activeSection);
+      fallback?.focus?.({ preventScroll: true });
+    }
     revealActiveSubnav();
   };
+  renderPromptOverview = () => { if (!disposed) render(); };
 
   /** The templates and kinds a fact trigger's words name, read again with
    *  every triggers list that has one: a template renamed, switched off or
@@ -3663,6 +3880,7 @@ export const bootstrapAutomationRoute = (
 
   const loadAll = async (): Promise<void> => {
     const seq = ++loadSeq;
+    const scheduleEpoch = scheduleReadEpoch;
     loading = true;
     render();
 
@@ -3729,10 +3947,11 @@ export const bootstrapAutomationRoute = (
     }
 
     const next: AutomationLoadErrors = {};
-    if (schedulesResult.status === 'fulfilled') {
-      schedules = schedulesResult.value.schedules;
-    } else {
-      next.schedules = messageForError(schedulesResult.reason);
+    // A reschedule receipt or reconciliation is newer than a list requested
+    // before it. Other sections can still finish their independent reads.
+    if (scheduleEpoch === scheduleReadEpoch) {
+      if (schedulesResult.status === 'fulfilled') schedules = schedulesResult.value.schedules;
+      else next.schedules = messageForError(schedulesResult.reason);
     }
     if (triggersResult.status === 'fulfilled') {
       triggers = triggersResult.value.triggers;
@@ -4290,6 +4509,36 @@ export const bootstrapAutomationRoute = (
   };
 
   const onClick = (ev: Event): void => {
+    if ((ev.target as Element | null)?.closest?.('[data-prompt-overview-retry]')) {
+      void promptPanel?.refresh(); return;
+    }
+    const rescheduleButton = (ev.target as Element | null)?.closest?.('[data-recued-reschedule-one-off]');
+    if (rescheduleButton) {
+      const id = rescheduleButton.getAttribute('data-recued-reschedule-one-off');
+      const schedule = schedules.find(s => s.schedule_id === id);
+      if (!schedule?.reschedule_revision || !schedule.reschedule_identity || !opts.schedulesRescheduleCaller || !opts.schedulesListCaller
+        || busy.has(schedule.schedule_id) || oneOffEditor?.panel.pending()) return;
+      oneOffEditor?.panel.dispose();
+      const host = doc.createElement('section');
+      const panel = mountOneOffReschedule({ host, schedule, save: opts.schedulesRescheduleCaller,
+        read: async () => (await opts.schedulesListCaller!()).schedules.find(s => s.schedule_id === schedule.schedule_id) ?? null,
+        now: opts.now ?? Date.now,
+        ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
+        ...(opts.beginRehearsalWork ? { beginWork: opts.beginRehearsalWork } : {}),
+        onBusy: pending => { if (pending) busy.add(schedule.schedule_id); else busy.delete(schedule.schedule_id); if (!disposed) render(); },
+        onCurrent: current => {
+          scheduleReadEpoch++;
+          const { schedules: _readError, ...otherErrors } = errors; errors = otherErrors;
+          schedules = current ? schedules.map(s => s.schedule_id === current.schedule_id ? current : s)
+            : schedules.filter(s => s.schedule_id !== schedule.schedule_id);
+          if (!disposed) render();
+        },
+        onClose: () => { if (oneOffEditor?.panel.pending()) return; oneOffEditor?.panel.dispose(); oneOffEditor = null; render(); },
+      });
+      oneOffEditor = { id: schedule.schedule_id, host, panel }; render();
+      host.scrollIntoView?.({ block: 'nearest' });
+      return;
+    }
     // D-266 — the missed-run card's two buttons. Probed first because
     // the card is outside the section's row machinery entirely.
     const missedRunsButton = (ev.target as (Element & {
@@ -4393,6 +4642,20 @@ export const bootstrapAutomationRoute = (
     }) | null)?.closest?.(`[${AUTOMATION_ROUTE_ADD_ATTR}]`);
     if (add) {
       const section = add.getAttribute(AUTOMATION_ROUTE_ADD_ATTR);
+      if (section === 'schedules' && opts.rehearsalCall) {
+        if (alarmForm?.pending() || promptPanel?.pending()) return;
+        if (promptPanel?.hasDraft()) { promptPanel.openCreate(); return; }
+        if (alarmForm?.hasDraft()) {
+          addPickerFor = section; scheduleCreateKind = 'alarm'; render(); alarmForm.open(); return;
+        }
+        const opening = addPickerFor !== section;
+        addPickerFor = opening ? section : null;
+        if (!alarmForm?.hasDraft() && !promptPanel?.hasDraft()) scheduleCreateKind = null;
+        pendingRecipeEntriesFocus = null; render();
+        routeRoot.querySelector<HTMLElement>(opening ? '[data-automation-schedule-kind]'
+          : `[${AUTOMATION_ROUTE_ADD_ATTR}="schedules"]`)?.focus();
+        return;
+      }
       if (section === 'triggers' || section === 'schedules' || section === 'dishes') {
         const opening = addPickerFor !== section;
         addPickerFor = opening ? section : null;
@@ -4655,6 +4918,20 @@ export const bootstrapAutomationRoute = (
   const onFilterChange = (ev: Event): void => {
     const target = ev.target as (Element & { value?: string }) | null;
     if (target === null || typeof target.hasAttribute !== 'function') return;
+    if (target.hasAttribute('data-automation-schedule-kind')) {
+      if (alarmForm?.hasDraft() || promptPanel?.hasDraft() || alarmForm?.pending() || promptPanel?.pending()) { render(); return; }
+      const kind = target.value;
+      scheduleCreateKind = kind === 'alarm' || kind === 'prompt' || kind === 'recipe' ? kind : null;
+      pendingRecipeEntriesFocus = scheduleCreateKind === 'recipe' ? 'schedules' : null;
+      if (scheduleCreateKind === 'recipe') loadRecipeEntries();
+      render();
+      if (scheduleCreateKind === 'alarm') { alarmForm?.open(); render(); }
+      if (scheduleCreateKind === 'prompt') {
+        recipeFilter = null; recipePicker?.setValue(null); chipFilter = null;
+        promptPanel?.openCreate(); render();
+      }
+      return;
+    }
     if (busy.size > 0) {
       focusPendingMutationOwner();
       return;
@@ -4694,6 +4971,9 @@ export const bootstrapAutomationRoute = (
   const initialLoad = loadAll();
   const hasAutomationInFlightWork = (): boolean =>
     busy.size > 0
+    || promptPanel?.pending() === true || promptPanel?.hasDraft() === true
+    || alarmForm?.pending() === true || alarmForm?.hasDraft() === true
+    || oneOffEditor?.panel.pending() === true
     || [...rehearsalPanels.values()].some(item => item.panel?.hasInFlightWork() || item.panel?.hasUnsavedChanges())
     || [...localWritePanels.values()].some(item => item.panel?.pending())
     || openModal?.hasInFlightWork() === true
@@ -4720,6 +5000,9 @@ export const bootstrapAutomationRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      promptPanel?.dispose();
+      alarmForm?.dispose();
+      oneOffEditor?.panel.dispose(); oneOffEditor = null;
       for (const item of rehearsalPanels.values()) { item.panel?.dispose(); item.host.remove(); }
       rehearsalPanels.clear();
       for (const item of localWritePanels.values()) { item.panel?.dispose(); item.host.remove(); }

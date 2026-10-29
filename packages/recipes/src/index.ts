@@ -13,8 +13,8 @@ export type {
 export { analyzeRecipe } from './analyze.js';
 export type { RecipeSummary } from './analyze.js';
 
-export { buildStepGraph, findForwardReferences } from './graph.js';
-export type { StepGraph, StepNode, StepPhase, ForwardRef } from './graph.js';
+export { buildStepGraph, findForwardReferences, isStepOutputAvailable } from './graph.js';
+export type { StepGraph, StepNode, StepPhase, StepPosition, RecipeStepPosition, ForwardRef } from './graph.js';
 
 export {
   normalizeRecipe,
@@ -80,6 +80,8 @@ export type {
 // Auto-PII posture summary (design § 7 surfacing slice) — the install /
 // save / Kitchen disclosure built from the validator + the applicator.
 export { summarizeRecipePiiPosture } from './summarize-pii.js';
+export { referencePath as formatReferencePath } from './validate/reference-locations.js';
+export { RESERVED_STEP_IDS } from './validate/constants.js';
 export type { SummarizePiiOptions } from './summarize-pii.js';
 
 // Phase 7 (D-110) — install-time caps validator for file-write /

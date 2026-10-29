@@ -146,6 +146,29 @@ describe('listing, changing and cancelling', () => {
       .rejects.toThrow('That time has passed');
   });
 
+  it('edits wording without moving the exact instant or resetting delivery attempts', async () => {
+    const at = Date.parse('2026-11-01T06:30:12.345Z');
+    const { reminder } = await reminders().reminderCreate({ text: 'Call', at });
+    store.recordAttempt(reminder.reminder_id, NOW);
+    const changed = await reminders().reminderUpdate({ reminder_id: reminder.reminder_id, text: 'Call Dr Patel' });
+    expect(changed).toMatchObject({ updated: true, reminder: { text: 'Call Dr Patel', at } });
+    expect(store.get(reminder.reminder_id)).toMatchObject({ text: 'Call Dr Patel', at, time_zone: NY, attempts: 1 });
+  });
+
+  it('exposes clock ownership and resolves legacy reminder display and edit times on the same zone', async () => {
+    const legacy = store.create({ text: 'Legacy reminder', at: FRIDAY_3PM, time_zone: null, origin: {} }, NOW);
+    const managed = store.ensureClock({ text: 'Clock reminder', at: FRIDAY_3PM, time_zone: NY, origin: {},
+      clock: { occurrence_id: 'occurrence-1', point_key: 'before-1', ask_id: 'ask-1' } }, NOW);
+    const list = await reminders().reminderList({});
+    expect(list.reminders.find(r => r.reminder_id === legacy.reminder_id)).toMatchObject({
+      time_zone: NY, when: 'Friday 16 October at 3:00 PM',
+    });
+    expect(list.reminders.find(r => r.reminder_id === managed.reminder_id)).toMatchObject({ managed_by: 'clock' });
+    await expect(reminders().reminderUpdate({ reminder_id: managed.reminder_id, text: 'New wording' }))
+      .rejects.toThrow('Edit its schedule in Yours');
+    expect(store.get(legacy.reminder_id)?.time_zone).toBeNull();
+  });
+
   it('changes and cancels nothing that has rung, and says why', async () => {
     const { reminder } = await reminders().reminderCreate({ text: 'call', at: NOW + MINUTE });
     store.markDelivered(reminder.reminder_id, NOW + MINUTE, ['in_app']);
@@ -366,6 +389,87 @@ describe('the Data → Reminders rpc', () => {
   const client = { instance_id: 'webclient-1', client_kind: 'webclient' } as never;
   const handlers = () => makeReminderHandlers({ dispatchers: reminders() })!.handlers;
 
+  it('pages past the normal cap with a stable cursor when many clock reminders share a time', async () => {
+    for (let index = 0; index < 235; index++) store.ensureClock({
+      text: 'Clock reminder ' + index, at: FRIDAY_3PM, time_zone: NY, origin: {},
+      clock: { occurrence_id: 'occ-' + index, point_key: 'point-' + index, ask_id: 'ask-' + index },
+    }, NOW);
+    const rpc = handlers()['reminder.list'];
+    const first = await rpc({ limit: 50, page: {} }, client);
+    expect(first).toMatchObject({ count: 235, page: { matched_count: 235 } });
+    expect(first.reminders).toHaveLength(50);
+    const ids = first.reminders.map(row => row.reminder_id);
+    let cursor = first.page!.next_cursor;
+    // A keyset cursor remains useful after the boundary row leaves the list.
+    store.cancel(ids.at(-1)!, NOW);
+    while (cursor) {
+      const next = await rpc({ limit: 50, page: { cursor } }, client);
+      ids.push(...next.reminders.map(row => row.reminder_id));
+      cursor = next.page!.next_cursor;
+    }
+    expect(ids).toHaveLength(235);
+    expect(new Set(ids).size).toBe(235);
+    expect(ids).toEqual([...ids].sort());
+    const legacy = await rpc({}, client);
+    expect(legacy.reminders).toHaveLength(50);
+    expect(legacy.page).toBeUndefined();
+  });
+
+  it('searches literal Unicode wording and date bounds before paging', async () => {
+    for (let index = 0; index < 60; index++) store.create({ text: 'Earlier unrelated reminder ' + index,
+      at: NOW + index * MINUTE, time_zone: NY, origin: {} }, NOW);
+    const wanted = store.create({ text: 'ÉCOLE %_ appointment', at: FRIDAY_3PM, time_zone: NY, origin: {} }, NOW);
+    store.create({ text: 'ÉCOLE %_ before', at: FRIDAY_3PM - 1, time_zone: NY, origin: {} }, NOW);
+    store.create({ text: 'ÉCOLE %_ after', at: FRIDAY_3PM + HOUR, time_zone: NY, origin: {} }, NOW);
+    store.create({ text: 'ÉCOLE other appointment', at: FRIDAY_3PM, time_zone: NY, origin: {} }, NOW);
+    const result = await handlers()['reminder.list']({ limit: 1,
+      page: { query: 'école %_', from: FRIDAY_3PM, before: FRIDAY_3PM + HOUR } }, client);
+    expect(result.reminders.map(row => row.reminder_id)).toEqual([wanted.reminder_id]);
+    expect(result).toMatchObject({ count: 64, page: { matched_count: 1, next_cursor: null } });
+  });
+
+  it('refuses malformed page criteria and keeps paging owner-only', async () => {
+    const rpc = handlers()['reminder.list'];
+    for (const page of [{ query: 7 }, { from: FRIDAY_3PM, before: NOW }, { cursor: { at: FRIDAY_3PM, reminder_id: '' } }]) {
+      await expect(rpc({ page } as never, client)).rejects.toMatchObject({ code: 'bad_request' });
+    }
+    await expect(rpc({ page: {} }, { instance_id: 'bridge', client_kind: 'bridge' } as never))
+      .rejects.toMatchObject({ code: 'unauthorized' });
+  });
+
+  it('creates an Automation alarm through the reminder service with host-stamped origin and quiet-hours guidance', async () => {
+    quiet = { ...quiet, enabled: true, from_minute: 22 * 60, to_minute: 7 * 60 };
+    const input = { text: '  Take the bins out  ', at: Date.UTC(2026, 9, 17, 3), creation_id: 'alarm-create', origin: { channel: 'chat' } };
+    const result = await handlers()['reminder.create'](input, client);
+    expect(result).toMatchObject({ reminder: { text: 'Take the bins out', state: 'pending', time_zone: NY },
+      quiet_hours_note: expect.stringContaining('quiet hours') });
+    expect(store.get(result.reminder.reminder_id)?.origin).toEqual({ channel: 'manual' });
+    expect((await handlers()['reminder.list']({}, client)).reminders[0]?.reminder_id).toBe(result.reminder.reminder_id);
+  });
+
+  it('refuses invalid alarm text and times without saving anything', async () => {
+    await expect(handlers()['reminder.create']({ text: '   ', at: FRIDAY_3PM, creation_id: 'invalid' }, client)).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(handlers()['reminder.create']({ text: 'Call', at: NOW - 5 * HOUR, creation_id: 'invalid' }, client)).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(handlers()['reminder.create']({ text: 'Call', at: Number.NaN, creation_id: 'invalid' }, client)).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(handlers()['reminder.create']({ text: 'Call', at: 1e20, creation_id: 'invalid' }, client)).rejects.toMatchObject({ code: 'bad_request' });
+    expect(store.countPending()).toBe(0);
+  });
+
+  it('rejoins an alarm creation after restart and never re-arms a cancelled or pruned receipt', async () => {
+    const input = { text: 'Call', at: FRIDAY_3PM, creation_id: 'lost-reply' };
+    const first = await handlers()['reminder.create'](input, client);
+    store = createReminderStore(db);
+    expect((await handlers()['reminder.create'](input, client)).reminder.reminder_id).toBe(first.reminder.reminder_id);
+    expect(store.countPending()).toBe(1);
+    await expect(handlers()['reminder.create']({ ...input, text: 'Different alarm' }, client)).rejects.toMatchObject({ code: 'conflict' });
+    store.cancel(first.reminder.reminder_id, NOW);
+    clock = FRIDAY_3PM + HOUR;
+    expect(await handlers()['reminder.create'](input, client)).toMatchObject({ reminder: { state: 'cancelled' }, confirmation: expect.stringContaining('not been scheduled again') });
+    store.prune(clock);
+    await expect(handlers()['reminder.create'](input, client)).rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('expired') });
+    expect(store.countPending()).toBe(0);
+  });
+
   it('lists, moves and cancels, answering as the ops do', async () => {
     const { reminder } = await reminders().reminderCreate({ text: 'call', at: FRIDAY_3PM });
     expect(await handlers()['reminder.list']({}, client)).toMatchObject({
@@ -389,8 +493,16 @@ describe('the Data → Reminders rpc', () => {
     await expect(handlers()['reminder.cancel']({} as never, client)).rejects.toMatchObject({ code: 'bad_request' });
   });
 
+  it('rejects an invalid combined edit without applying its other field', async () => {
+    const { reminder } = await reminders().reminderCreate({ text: 'Original words', at: FRIDAY_3PM });
+    await expect(handlers()['reminder.update']({ reminder_id: reminder.reminder_id, text: '   ', at: FRIDAY_3PM + HOUR }, client))
+      .rejects.toMatchObject({ code: 'bad_request' });
+    expect(store.get(reminder.reminder_id)).toMatchObject({ text: 'Original words', at: FRIDAY_3PM });
+  });
+
   it('answers the owner’s webclient only: not a Bridge, the CLI or MCP', async () => {
     for (const other of [{ instance_id: 'bridge-1', client_kind: 'bridge' }, { client_kind: 'webclient' }, {}]) {
+      await expect(handlers()['reminder.create']({ text: 'Call', at: FRIDAY_3PM, creation_id: 'unauthorized' }, other as never)).rejects.toMatchObject({ code: 'unauthorized' });
       await expect(handlers()['reminder.list']({}, other as never)).rejects.toMatchObject({ code: 'unauthorized' });
       await expect(handlers()['reminder.cancel']({ reminder_id: 'rem_1' }, other as never)).rejects.toMatchObject({ code: 'unauthorized' });
     }

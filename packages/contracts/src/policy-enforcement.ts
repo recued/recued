@@ -401,6 +401,8 @@ const STORED_FILE_PARSE_SLUGS: ReadonlySet<string> = new Set([
   'csv-filter',
   'csv-rows',
   'csv-stats',
+  'csv-inspect',
+  'csv-transform',
   'ics-read',
 ]);
 

@@ -1,13 +1,14 @@
 /** Real Data route; only its read callers are fixtures. Responses stay pending
  * until the browser test releases them, so latency and ordering are explicit. */
-import type { CollectionInstanceRow, CollectionPlatform, CollectionRecord, CollectionSearchGroup, ServerRecipeListEntry } from '@recued/contracts';
+import type { CollectionInstanceRow, CollectionPlatform, CollectionRecord, CollectionSearchGroup, ContactRecord, ServerRecipeListEntry } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { bootstrapDataRoute } from '../../src/data/bootstrap-data-route.js';
 import { WEBCLIENT_POLISH_STYLES } from '../../src/shell/webclient-polish-styles.js';
 import { createWorkSearchFixture } from './work-search-fixture.js';
 
-type Kind = 'records' | 'recipes' | 'packs' | 'marketplace' | 'instances' | 'list' | 'get' | 'work' | 'work-page';
-type Outcome = 'empty' | 'match' | 'error';
+type Kind = 'records' | 'recipes' | 'packs' | 'marketplace' | 'instances' | 'list' | 'get' | 'work' | 'work-page' | 'contacts' | 'contacts-page';
+/** `unsupported` answers as a server before the method existed does. */
+type Outcome = 'empty' | 'match' | 'error' | 'unsupported';
 const platformParameter = new URLSearchParams(location.search).get('navigation');
 const navigationPlatform: CollectionPlatform | null =
   platformParameter === 'mail' || platformParameter === 'calendar' || platformParameter === 'file' ? platformParameter : null;
@@ -20,7 +21,8 @@ const instance = (platform: CollectionPlatform, slug: string): CollectionInstanc
 let instances = navigationPlatform === null ? [] : ['work', 'personal'].map(slug => instance(navigationPlatform, slug));
 const record = (slug: string, recordId = `${slug}-1`): CollectionRecord => ({
   record_id: recordId, received_at: 1_700_000_000_000, modified_at: 1_700_000_000_000,
-  hot_fields: { subject: `${slug} record`, summary: `${slug} record`, path: `${slug}-file.txt` },
+  hot_fields: { subject: `${slug} record`, summary: `${slug} record`, path: `${slug}-file.txt`,
+    start_at: Date.parse('2026-10-28T16:00:00Z'), end_at: Date.parse('2026-10-28T17:00:00Z'), is_all_day: false },
   size_bytes: 0, source_id: recordId, body_inline: `Body from ${slug}`,
 });
 const navigationGroups: CollectionSearchGroup[] = instances.map(source => ({
@@ -38,12 +40,19 @@ const read = <T>(kind: Kind, query: string, result: (match: boolean) => T): Prom
       if (released) throw new Error('Fixture response was already released.');
       released = true;
       if (outcome === 'error') reject(new Error(`Failed ${kind} for ${query}`));
+      else if (outcome === 'unsupported') reject(Object.assign(new Error(`Unknown rpc method: ${kind}`), { code: 'unknown_method' }));
       else resolve(result(outcome === 'match'));
     } });
   });
 };
 const query = () => document.querySelector<HTMLInputElement>('[data-recued-universal-search-input]')?.value.trim() ?? '';
 const nativeMode = new URLSearchParams(location.search).get('native');
+const manualContacts = new URLSearchParams(location.search).get('contacts') === 'manual';
+const contact = (index: number): ContactRecord => ({
+  _id: `person${index}@example.test`, _collection: 'contact',
+  email: `person${index}@example.test`, name: `Contact ${index}`, company: 'Northwind',
+  first_seen: 1, last_interaction: 1, interaction_count: 0, source: 'manual', created_at: 1, updated_at: 1,
+});
 const nativeWork = createWorkSearchFixture((kind, query, result) => nativeMode === 'manual'
   ? read(kind, query, () => result())
   : (calls.push({ kind, query }), Promise.resolve(result())));
@@ -59,7 +68,11 @@ if (navigationPlatform !== null) {
 const mount = (initialTab: string) => bootstrapDataRoute({
   root: document.querySelector<HTMLElement>('#root')!, document, initialTab,
   universalSearchDebounceMs: 180,
-  contactListCaller: async () => ({ contacts: [], total: 0 }),
+  contactListCaller: args => !manualContacts || !args.query ? Promise.resolve({ contacts: [], total: 0 })
+    : read(args.offset ? 'contacts-page' : 'contacts', args.query, match => ({
+      contacts: match ? Array.from({ length: Math.max(0, Math.min(args.limit ?? 5, 8 - (args.offset ?? 0))) },
+        (_, index) => contact((args.offset ?? 0) + index)) : [], total: match ? 8 : 0,
+    })),
   ...(nativeMode ? nativeWork.callers : {}),
   collectionSearchAllCaller: ({ query }) => navigationPlatform !== null
     ? Promise.resolve({ groups: navigationGroups })
@@ -90,7 +103,8 @@ const mount = (initialTab: string) => bootstrapDataRoute({
   })),
   ...(navigationPlatform === null ? {} : {
     collectionListInstancesCaller: () => read('instances', navigationPlatform, () => ({ instances })),
-    collectionListCaller: ({ platform, slug }) => read('list', `${platform}/${slug}`, () => ({ records: [record(slug)] })),
+    collectionListCaller: ({ platform, slug, filters }) => platform === 'calendar' && filters?.is_all_day
+      ? Promise.resolve({ records: [] }) : read('list', `${platform}/${slug}`, () => ({ records: [record(slug)] })),
     collectionGetCaller: ({ platform, slug, record_id }) => read('get', `${platform}/${slug}/${record_id}`, () => ({ record: record(slug, record_id) })),
   } satisfies Partial<Parameters<typeof bootstrapDataRoute>[0]>),
 });

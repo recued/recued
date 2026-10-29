@@ -77,7 +77,9 @@ import type {
   McpTransport,
   McpToolDescriptor,
   ConnectionDispatchOutcome,
+  ToolProgress,
 } from '@recued/contracts';
+import { createMcpProgressReceiver, withMcpProgressToken } from './mcp-progress.js';
 import type { ConnectionHandlerCtx, ConnectionKindHandler } from './connection.js';
 import { IngredientError, type ResolvedCall } from './types.js';
 import { resolveTimeoutMs, isWriteRiskTier } from './timeout.js';
@@ -255,10 +257,12 @@ export const readMcpHttpEnvelope = async (
   response: Response,
   expectedId: number,
   onServerRequest?: (request: { id: string | number; method: string }) => void,
+  onProgress?: (params: unknown) => void,
 ): Promise<McpHttpEnvelopeRead> => {
   const isOurResponse = (candidate: JsonRpcResponse): boolean => {
     if (isMcpServerMessage(candidate)) {
       const { id, method } = candidate;
+      if (id === undefined && method === 'notifications/progress') onProgress?.(candidate.params);
       if (onServerRequest !== undefined && (typeof id === 'string' || typeof id === 'number')) {
         onServerRequest({ id, method });
       }
@@ -391,6 +395,7 @@ const envelopeToShape = (
 /** Per-dispatch params shared by the websocket + stdio paths (hoisted
  *  above the transport branch in the handler so both reuse one definition). */
 interface StreamDispatchParams {
+  onProgress?: (progress: ToolProgress) => void;
   method: string;
   jsonRpcParams: unknown;
   subject: string;
@@ -657,6 +662,7 @@ class McpStreamSession {
     resolve: (v: JsonRpcResponse) => void;
     reject: (e: Error) => void;
     timer: ReturnType<typeof setTimeout>;
+    progress?: (params: unknown) => void;
   }>();
   private closed = false;
   private closeError: Error | null = null;
@@ -721,6 +727,12 @@ class McpStreamSession {
     }
     if (isMcpServerMessage(msg)) {
       const { id, method } = msg;
+      if (id === undefined && method === 'notifications/progress') {
+        const params = msg.params as { progressToken?: unknown } | undefined;
+        if (typeof params?.progressToken === 'number') {
+          this.pending.get(params.progressToken)?.progress?.(params);
+        }
+      }
       if (typeof id === 'string' || typeof id === 'number') this.answerServerRequest(id, method);
       return;
     }
@@ -773,6 +785,7 @@ class McpStreamSession {
     method: string,
     params: unknown,
     timeoutMs: number,
+    onProgress?: (progress: ToolProgress) => void,
   ): Promise<JsonRpcResponse> {
     if (this.closed) {
       return Promise.reject(this.closeError ?? new Error('MCP session is closed'));
@@ -784,14 +797,16 @@ class McpStreamSession {
         err.name = 'AbortError';
         reject(err);
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer,
+        ...(onProgress ? { progress: createMcpProgressReceiver(id, onProgress) } : {}) });
       const rejectSend = (error: unknown): void => {
         if (!this.pending.delete(id)) return;
         clearTimeout(timer);
         reject(error);
       };
       try {
-        const sent = this.handle.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+        const sent = this.handle.send(JSON.stringify({ jsonrpc: '2.0', id, method,
+          params: onProgress ? withMcpProgressToken(params, id) : params }));
         if (sent) void sent.catch(rejectSend);
       } catch (e) {
         rejectSend(e);
@@ -805,6 +820,7 @@ class McpStreamSession {
     method: string,
     params: unknown,
     timeoutMs: number,
+    onProgress?: (progress: ToolProgress) => void,
   ): Promise<JsonRpcResponse> {
     if (this.selectedProtocolVersion === undefined) {
       return Promise.reject(new Error('MCP request attempted before version negotiation'));
@@ -816,6 +832,7 @@ class McpStreamSession {
         ? withModernMcpRequestMeta(params, MCP_CLIENT_INFO)
         : params,
       timeoutMs,
+      onProgress,
     );
   }
 
@@ -1260,6 +1277,9 @@ export const probeMcpLegacySseTools = async (
 };
 
 export interface ConnectionMcpHandlerDeps {
+  /** Captured once per invocation; pooled socket callbacks must not consult
+   * whichever request originally opened the connection's async context. */
+  captureProgress?: () => ((progress: ToolProgress) => void) | undefined;
   /** Host validation before credentials/connection setup. Process identity is
    * also part of a stdio pool key, preventing reuse of a different executable. */
   beforeConnect?: (call: ResolvedCall) => Promise<void>;
@@ -1966,7 +1986,7 @@ export const createConnectionMcpHandler = (
     await deps.beforeRequest?.(call);
     try {
       const reqId = nextRequestId++;
-      const envelope = await session.requestMcp(reqId, d.method, d.jsonRpcParams, d.timeoutMs);
+      const envelope = await session.requestMcp(reqId, d.method, d.jsonRpcParams, d.timeoutMs, d.onProgress);
       if (envelope.jsonrpc !== '2.0') {
         throw new IngredientError(
           'NETWORK_ERROR',
@@ -1975,9 +1995,10 @@ export const createConnectionMcpHandler = (
         );
       }
       // Bytes telemetry — request + response envelope sizes (mirrors sse).
-      const wireParams = session.protocolVersion === MCP_MODERN_PROTOCOL_VERSION
+      const baseWireParams = session.protocolVersion === MCP_MODERN_PROTOCOL_VERSION
         ? withModernMcpRequestMeta(d.jsonRpcParams, MCP_CLIENT_INFO)
         : d.jsonRpcParams;
+      const wireParams = d.onProgress ? withMcpProgressToken(baseWireParams, reqId) : baseWireParams;
       const requestBody = JSON.stringify({
         jsonrpc: '2.0', id: reqId, method: d.method, params: wireParams,
       });
@@ -2060,7 +2081,7 @@ export const createConnectionMcpHandler = (
     await deps.beforeRequest?.(call);
     try {
       const reqId = nextRequestId++;
-      const envelope = await session.requestMcp(reqId, d.method, d.jsonRpcParams, d.timeoutMs);
+      const envelope = await session.requestMcp(reqId, d.method, d.jsonRpcParams, d.timeoutMs, d.onProgress);
       if (envelope.jsonrpc !== '2.0') {
         throw new IngredientError(
           'NETWORK_ERROR',
@@ -2068,9 +2089,10 @@ export const createConnectionMcpHandler = (
           { name: record.name },
         );
       }
-      const wireParams = session.protocolVersion === MCP_MODERN_PROTOCOL_VERSION
+      const baseWireParams = session.protocolVersion === MCP_MODERN_PROTOCOL_VERSION
         ? withModernMcpRequestMeta(d.jsonRpcParams, MCP_CLIENT_INFO)
         : d.jsonRpcParams;
+      const wireParams = d.onProgress ? withMcpProgressToken(baseWireParams, reqId) : baseWireParams;
       const requestBody = JSON.stringify({
         jsonrpc: '2.0', id: reqId, method: d.method, params: wireParams,
       });
@@ -2364,6 +2386,7 @@ export const createConnectionMcpHandler = (
     // ────────────── transport dispatch ──────────────
     const streamParams: StreamDispatchParams = {
       method, jsonRpcParams, subject, subjectMeta, isWrite, timeoutMs,
+      onProgress: deps.captureProgress?.(),
     };
     const transport = requestDescription.transport;
     if (transport === 'websocket') {
@@ -2450,9 +2473,11 @@ export const createConnectionMcpHandler = (
           method,
           jsonRpcParams,
           timeoutMs,
+          streamParams.onProgress,
         );
         const requestBody = JSON.stringify({
-          jsonrpc: '2.0', id: requestId, method, params: jsonRpcParams,
+          jsonrpc: '2.0', id: requestId, method,
+          params: streamParams.onProgress ? withMcpProgressToken(jsonRpcParams, requestId) : jsonRpcParams,
         });
         ctx?.setBytes(
           new TextEncoder().encode(JSON.stringify(envelope)).byteLength,
@@ -2480,6 +2505,10 @@ export const createConnectionMcpHandler = (
         ? jsonRpcParams
         : withModernMcpRequestMeta(jsonRpcParams, MCP_CLIENT_INFO),
     };
+    if (streamParams.onProgress) {
+      request.params = withMcpProgressToken(request.params, requestId);
+      headers.Accept = 'application/json, text/event-stream';
+    }
     if (isLegacyEra) {
       headers.Accept = 'application/json, text/event-stream';
       if (client.httpSessionId !== undefined) {
@@ -2646,7 +2675,7 @@ export const createConnectionMcpHandler = (
           body: JSON.stringify(mcpServerRequestReply(serverRequest.id, serverRequest.method)),
           signal: AbortSignal.timeout(MCP_NEGOTIATION_PROBE_TIMEOUT_MS),
         }, url.origin).then(discardResponseBody, () => { /* best-effort */ });
-      });
+      }, createMcpProgressReceiver(requestId, streamParams.onProgress));
       measuredBytes = read.byteLength;
       envelope = read.envelope;
     } catch (e) {

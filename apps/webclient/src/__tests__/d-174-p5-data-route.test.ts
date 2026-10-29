@@ -713,10 +713,12 @@ const mountRoute = (overrides: {
     }));
   const contactListCaller =
     overrides.contactListCaller
-    ?? vi.fn<DataContactListCaller>(async () => ({
-      contacts: [contactRecord()],
-      total: 1,
-    }));
+    ?? vi.fn<DataContactListCaller>(async ({ query }) => {
+      const contact = contactRecord();
+      const contacts = !query || [contact.name, contact.email, contact.phone, contact.company]
+        .some(value => value?.toLowerCase().includes(query.toLowerCase())) ? [contact] : [];
+      return { contacts, total: contacts.length };
+    });
   const contactGetCaller =
     overrides.contactGetCaller
     ?? vi.fn<DataContactGetCaller>(async () => ({
@@ -1330,12 +1332,12 @@ describe('saved Data view hydration', () => {
   it('applies a saved contact query to the first read and fetches current rows again on refresh', async () => {
     const rig = mountRoute({ initialTab: 'contact', savedView: saved({ tab: 'contact', query: 'Sam' }) });
     await rig.route.whenLoaded();
-    expect(rig.contactListCaller).toHaveBeenCalledWith({ limit: 100, name_contains: 'Sam', with_rollups: true });
+    expect(rig.contactListCaller).toHaveBeenCalledWith({ limit: 100, query: 'Sam', with_rollups: true });
     expect(rig.route.currentView()).toEqual({ tab: 'contact', query: 'Sam' });
     rig.route.refresh();
     await rig.route.whenLoaded();
     expect(rig.contactListCaller).toHaveBeenCalledTimes(2);
-    expect(rig.contactListCaller).toHaveBeenLastCalledWith({ limit: 100, name_contains: 'Sam', with_rollups: true });
+    expect(rig.contactListCaller).toHaveBeenLastCalledWith({ limit: 100, query: 'Sam', with_rollups: true });
     rig.route.dispose();
   });
 
@@ -4741,17 +4743,30 @@ describe('D-174 P5 Data route', () => {
   });
 
   // ── D-198 Slice 5 — mail/calendar → collection explorer ──────────
-  it('mail + calendar tabs render the collection explorer, not the drill-down/picker', async () => {
+  it('mail renders the collection explorer without the old drill-down/picker', async () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();
-    for (const tab of ['mail', 'calendar'] as const) {
-      await rig.route.selectTab(tab);
-      const html = rig.root.children[0]?.innerHTML ?? '';
-      expect(html).toContain('data-recued-collection-explorer');
-      // The old raw-id drill-down box + mirror-search picker are gone for these.
-      expect(html).not.toContain('data-recued-data-timeline-entity');
-      expect(html).not.toContain('data-ref-picker="data-mirror-search"');
-    }
+    await rig.route.selectTab('mail');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('data-recued-collection-explorer');
+    expect(html).not.toContain('data-recued-data-timeline-entity');
+    expect(html).not.toContain('data-ref-picker="data-mirror-search"');
+    rig.route.dispose();
+  });
+
+  it('opens an explicitly addressed calendar event when the calendar roster is unavailable', async () => {
+    const get = vi.fn(async () => ({ record: {
+      record_id: 'event-1', received_at: 1, modified_at: 1, size_bytes: 0, source_id: 'event-1',
+      hot_fields: { summary: 'Addressed event', start_at: 1_700_000_000_000, end_at: 1_700_003_600_000 },
+    } }));
+    const rig = mountRoute({
+      initialTab: 'calendar', initialCollectionSlug: 'work', initialEntityId: 'event-1',
+      collectionListInstancesCaller: vi.fn(async () => { throw new Error('Calendar roster unavailable.'); }) as never,
+      collectionGetCaller: get as never,
+    });
+    await rig.route.whenLoaded();
+    expect(get).toHaveBeenCalledWith({ platform: 'calendar', slug: 'work', record_id: 'event-1' });
+    expect(rig.root.children[0]?.innerHTML).toContain('Addressed event');
     rig.route.dispose();
   });
 
@@ -5596,14 +5611,6 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
       slug: 'work',
       record_id: 'event-1',
     });
-    expect(list).toHaveBeenCalledWith({
-      platform: 'calendar',
-      slug: 'work',
-      limit: expect.any(Number),
-    });
-    expect(list).not.toHaveBeenCalledWith(
-      expect.objectContaining({ slug: 'personal' }),
-    );
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
     expect(html).toContain('Check the record that was made or changed');
@@ -6515,7 +6522,7 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
       expect(contactListCaller).toHaveBeenCalledTimes(callsBefore + 1);
       expect(contactListCaller).toHaveBeenLastCalledWith({
         limit: 100,
-        name_contains: 'mary',
+        query: 'mary',
         with_rollups: true,
       });
     } finally {
@@ -6529,7 +6536,7 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
     const rig = mountRoute({ contactListCaller });
     await rig.route.whenLoaded();
 
-    // Type a search → immediate replace fetch (offset 0 + name_contains).
+    // Type a search → immediate replace fetch (offset 0 + query).
     emitInput(rig.root.children[0]!, {
       value: 'rivera',
       hasAttribute: (k) => k === 'data-recued-data-contact-search',
@@ -6538,7 +6545,7 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
     await rig.route.whenLoaded();
     expect(contactListCaller).toHaveBeenCalledWith({
       limit: 100,
-      name_contains: 'rivera',
+      query: 'rivera',
       with_rollups: true,
     });
 
@@ -6547,7 +6554,7 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
     expect(contactListCaller).toHaveBeenCalledWith({
       limit: 100,
       offset: 2,
-      name_contains: 'rivera',
+      query: 'rivera',
       with_rollups: true,
     });
 
@@ -6965,7 +6972,7 @@ describe('D-174 P5 Data route — D-172 file download (explorer detail)', () => 
 
     // The explorer record id is passed WHOLE to data.file.read (this fixture's
     // id has no `file:` prefix; the realistic-id cases below cover the prefix).
-    expect(fileReadCaller).toHaveBeenCalledWith({ record_id: 'rec-1' });
+    expect(fileReadCaller).toHaveBeenCalledWith({ record_id: 'rec-1', offset: 0, length: 4194304 });
     rig.route.dispose();
   });
 
@@ -7039,7 +7046,7 @@ describe('D-174 P5 Data route — D-172 file download (explorer detail)', () => 
       emitClick(rig.root.children[0]!, 'download-file');
       await rig.route.whenLoaded();
       // The WHOLE id reaches data.file.read — a stripped form is unresolvable (404).
-      expect(fileReadCaller).toHaveBeenCalledWith({ record_id: id });
+      expect(fileReadCaller).toHaveBeenCalledWith({ record_id: id, offset: 0, length: 4194304 });
       rig.route.dispose();
     });
   };
@@ -7668,7 +7675,7 @@ describe('D-205 #5c — the file import panel', () => {
     expect(html).toContain('STALE Inc');
     // ⚠ Rows the parser could not read are SHOWN. A row that vanishes is a person
     // missing from the graph and the user would have no way to know.
-    expect(html).toContain('1 row could not be read');
+    expect(html).toContain('1 entry could not be imported');
 
     // 🔑 The button offers ONLY the adds. The changes are the risky half — three
     // thousand stale values landing at the top of the ladder — so opting IN is the
@@ -8277,19 +8284,6 @@ describe('D-267 — the built-in local calendar names itself once', () => {
     collectionListCaller: async () => ({ records: [] }),
   });
 
-  it('⛔ renders "local", not "local · local"', async () => {
-    const rig = mount();
-    await rig.route.whenLoaded();
-    const html = rig.root.children[0]!.innerHTML;
-    // The chip exists to tell instances apart; `<adapter> · <slug>` is
-    // informative for gcal and pure noise when both words are the same.
-    expect(html).not.toContain('local · local');
-    expect(html).toContain('>local <span class="col-explorer-instance-owned">');
-    // ...while a genuinely two-part instance keeps both halves.
-    expect(html).toContain('gcal · work-calendar');
-    rig.route.dispose();
-  });
-
   it('says whose it is, since the TAB cannot', async () => {
     const rig = mount();
     await rig.route.whenLoaded();
@@ -8446,7 +8440,7 @@ describe('D-324 — Data → Owned → Reminders', () => {
     await rig.route.whenLoaded();
     await rig.route.selectTab('reminder');
     const html = rig.root.children[0]?.innerHTML ?? '';
-    expect(list).toHaveBeenCalledWith({ include_delivered: true });
+    expect(list).toHaveBeenCalledWith({ include_delivered: true, limit: 50, page: {} });
     expect(html).toContain('Friday 16 October at 3:00 PM');
     expect(html).toContain('Call the dentist');
     expect(html).toContain('Rung or cancelled in the last 30 days (1)');

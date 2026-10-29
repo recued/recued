@@ -188,7 +188,7 @@ test('Saved views persist search settings through reload, rename, Back, and dele
   await page.reload();
   await ready(page);
   await expect(query(page)).toHaveValue('Acme');
-  expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.create'))).toBe(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.create_once'))).toBe(0);
 
   await query(page).fill('Changed search');
   await expect(page).toHaveURL(/#data\/contact$/);
@@ -300,7 +300,7 @@ test('Saved views keep a save single-flight and remain usable on a phone', async
   await tools(page).locator('[data-view-editor]').dispatchEvent('submit');
   await tools(page).locator('[data-view-editor]').dispatchEvent('submit');
   await expect(tools(page).getByRole('button', { name: 'Saving…' })).toBeDisabled();
-  expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.create'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.create_once'))).toBe(1);
   await expect(tools(page).locator('[data-view-notice]')).toContainText('Saved');
   await openViewsList(page);
   await openSavedViewList(page);

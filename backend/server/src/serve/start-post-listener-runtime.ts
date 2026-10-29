@@ -94,7 +94,8 @@ export type PostListenerRuntimeStorageContext =
   & Pick<StorageContext, 'recordsStore' | 'recipeStore' | 'serverInstanceId' | 'publicAddress'>;
 
 export type PostListenerRuntimeAppContext =
-  StartHousekeepingStartupOptions['app']
+  Partial<Pick<AppContext, 'chatOrchestratorRef'>>
+  & StartHousekeepingStartupOptions['app']
   & StartPostHousekeepingTailOptions['app']
   & Pick<
     AppContext,
@@ -398,6 +399,7 @@ export const startPostListenerRuntime = async (
   missedRunAsk?.register();
 
   const schedulersBundle = startSchedulers({
+    promptScheduleTick: async (closed) => { await options.app.chatOrchestratorRef?.promptSchedules?.tick(closed); },
     ...(options.unattendedBackups ? { unattendedBackups: options.unattendedBackups } : {}),
     ...(options.backupIntegrity ? { backupIntegrity: options.backupIntegrity } : {}),
     ...(options.backupHealth ? { backupHealth: options.backupHealth } : {}),

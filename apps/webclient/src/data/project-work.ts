@@ -1,5 +1,6 @@
 import type { WorkEntityGetRpcResponse, WorkEntity, ProjectWorkKind, WorkEntityProjectItem, WorkEntityProjectItemsRpcRequest, WorkEntityProjectItemsRpcResponse } from '@recued/contracts';
 import type { ProjectWorkSection } from '@recued/ui-shared/work-entity-page';
+import { classifyRpcError } from '../shell/rpc-error-copy.js';
 
 export type ProjectItemsCaller = (args: WorkEntityProjectItemsRpcRequest) => Promise<WorkEntityProjectItemsRpcResponse>;
 
@@ -16,7 +17,7 @@ export const createProjectWork = (project: Extract<WorkEntity, { _kind: 'project
     if (disposed || section.loading && !replace) return;
     const sequence = ++sequences[kind];
     const current = () => !disposed && sequence === sequences[kind];
-    section.loading = true; delete section.error; changed();
+    section.loading = true; delete section.error; delete section.unsupported; changed();
     let offset = replace ? 0 : offsets[kind];
     const goal = replace ? Math.max(10, section.items.length) : offset + 10;
     const items: WorkEntityProjectItem[] = replace ? [] : [...section.items];
@@ -43,7 +44,9 @@ export const createProjectWork = (project: Extract<WorkEntity, { _kind: 'project
       section.provider_only_sources = response.provider_only_sources;
       section.more = offset < response.total;
     } catch (error) {
-      if (current()) section.error = error instanceof Error ? error.message : 'Project work could not be loaded. Try again.';
+      if (!current()) return;
+      if (classifyRpcError(error).code === 'unknown_method') section.unsupported = true;
+      else section.error = error instanceof Error ? error.message : 'Project work could not be loaded. Try again.';
     } finally {
       if (current()) { section.loading = false; changed(); }
     }

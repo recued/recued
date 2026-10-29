@@ -1,6 +1,6 @@
 /** Step dependency graph for recipes.
  *
- *  The engine executes a recipe in two phases:
+ *  This graph indexes the two main phases after the optional trigger gate:
  *    - prefetch_steps[]: all dispatched in parallel, any order, race-safe
  *    - steps[]: strict JSON-declaration order, one at a time
  *
@@ -23,6 +23,15 @@
  */
 
 export type StepPhase = 'prefetch' | 'sequential';
+
+export interface StepPosition { phase: StepPhase; index: number }
+/** Authoring positions include the sequential trigger gate before the graph's two main phases. */
+export interface RecipeStepPosition { phase: StepPhase | 'trigger'; index: number }
+
+/** Outputs available before a step runs. Prefetch steps are independent and parallel. */
+export const isStepOutputAvailable = (from: RecipeStepPosition, to: RecipeStepPosition): boolean =>
+  to.phase === 'trigger' ? from.phase !== 'trigger' || to.index < from.index
+    : from.phase === 'sequential' && (to.phase === 'prefetch' || to.index < from.index);
 
 export interface StepNode {
   id: string;
@@ -209,13 +218,7 @@ export const findForwardReferences = (graph: StepGraph): ForwardRef[] => {
       const to = graph.nodes[toId];
       if (!to) continue;
 
-      const isForward =
-        // Sequential step referencing a later-declared sequential step
-        (from.phase === 'sequential' && to.phase === 'sequential' && to.index > from.index) ||
-        // Prefetch referencing another prefetch (parallel, no ordering)
-        (from.phase === 'prefetch' && to.phase === 'prefetch') ||
-        // Prefetch referencing a sequential step (sequential hasn't started)
-        (from.phase === 'prefetch' && to.phase === 'sequential');
+      const isForward = !isStepOutputAvailable(from, to);
 
       if (isForward) {
         forwards.push({

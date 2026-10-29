@@ -194,7 +194,7 @@ describe('D-170 N.18 workflow-family type registry', () => {
     expect(doubled.issues).toContainEqual(
       expect.objectContaining({
         code: 'recipe_invalid_from_test',
-        path: 'recipes[0].steps[1].input.source_id',
+        path: 'recipe_templates[0]',
       }),
     );
   });

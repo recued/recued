@@ -67,6 +67,26 @@ const flush = async (): Promise<void> => {
 };
 
 describe('createMcpPortHandler', () => {
+  it('delivers requested progress on the current SSE response, then ends with the final result', async () => {
+    const frame = { jsonrpc: '2.0' as const, method: 'notifications/progress' as const,
+      params: { progressToken: 'work', progress: 1, message: 'Recipe steps: 1 of 3' } };
+    const result = { jsonrpc: '2.0', id: 1, result: { ok: true } };
+    const handler = createMcpPortHandler({ verifier: () => true,
+      limiter: createRateLimiter({ capacity: 60, refill_window_ms: 60_000 }),
+      dispatch: async (_envelope, _token, send) => { send?.(frame); return result; } });
+    const res = new FakeRes();
+    await handler(buildReq({ headers: { authorization: 'Bearer mcp-progress', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'example' } }) }),
+    res as unknown as ServerResponse);
+    expect(res.headers['content-type']).toBe('text/event-stream');
+    expect(res.body).toBe(`data: ${JSON.stringify(frame)}\n\ndata: ${JSON.stringify(result)}\n\n`);
+    expect(res.writableEnded).toBe(true);
+    const jsonOnly = new FakeRes();
+    await handler(buildReq({ headers: { authorization: 'Bearer mcp-progress', accept: 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'example' } }) }),
+    jsonOnly as unknown as ServerResponse);
+    expect(json(jsonOnly)).toEqual(result);
+  });
   const buildHandler = (overrides: { capacity?: number } = {}) => {
     let t = 0;
     const limiter = createRateLimiter({

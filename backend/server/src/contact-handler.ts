@@ -1,6 +1,7 @@
 /** D-121 Phase 1 — rpc handlers for `contact.*`.
  *
- *  Six methods:
+ *  Seven methods:
+ *    - search.local: paired-owner saved-identifier search
  *    - upsert / list / get / delete: warehouse CRUD (D-121 P1)
  *    - resolve: identifier → contact_id resolver (D-145 PA8 follow-on)
  *    - contributions: the per-source value view (D-205 merge-review item 3) — every
@@ -17,6 +18,8 @@ import {
   isContactAliasPlatform,
   resolveContributionsByKind,
   sanitizeNetworkDomains,
+  normalizeAliasPattern,
+  canonicalizeEmail,
 } from '@recued/contracts';
 import type {
   Actor,
@@ -24,6 +27,9 @@ import type {
   ServerRpcRegistry,
   ContactContributionView,
   ContactRecord,
+  ContactSearchLocalRequest,
+  ContactSearchLocalResponse,
+  ContactAdditionalIdentifiers,
   ContactSource,
   MailingAddress,
   NetworkDomain,
@@ -32,7 +38,7 @@ import type {
   TimelineRollup,
 } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
-import type { ContactStore } from './storage/contact-store.js';
+import { isMentionOnlyEmail, type ContactStore } from './storage/contact-store.js';
 
 export interface ContactRpcDeps {
   store: ContactStore;
@@ -232,17 +238,51 @@ export const handleContactList = async (
   };
 };
 
+/** Owner search shares the list/count predicate, including canonical merge redirects. */
+export const handleContactSearchLocal = async (
+  deps: ContactRpcDeps, args: ContactSearchLocalRequest,
+): Promise<ContactSearchLocalResponse> => {
+  if (!args || typeof args.query !== 'string' || args.query.length > 512 || args.query.includes('\0')
+    || args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)
+    || args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 0)
+    || args.source !== undefined && !isValidSource(args.source)
+    || args.since !== undefined && !Number.isSafeInteger(args.since)
+    || args.phone_exact !== undefined && (typeof args.phone_exact !== 'string' || args.phone_exact.length > 128)
+    || args.with_rollups !== undefined && typeof args.with_rollups !== 'boolean') {
+    throw new RpcError('bad_request', 'Enter a contact search and a valid page of up to 100 results.');
+  }
+  const query = args.query.trim();
+  if (!query) return { contacts: [], total: 0 };
+  const filter = { search: query,
+    ...(args.source !== undefined ? { source: args.source } : {}),
+    ...(args.since !== undefined ? { since: args.since } : {}),
+    ...(args.phone_exact !== undefined ? { phone_exact: args.phone_exact } : {}),
+  };
+  const contacts = deps.store.list({ ...filter, limit: args.limit ?? 50, offset: args.offset ?? 0 });
+  const total = deps.store.count(filter);
+  const rollups = args.with_rollups === true && deps.rollupsForKeys
+    ? deps.rollupsForKeys(contacts.map(contact => contact.email)) : undefined;
+  return { contacts, total, ...(rollups !== undefined ? { rollups } : {}) };
+};
+
 export const handleContactGet = async (
   deps: ContactRpcDeps,
   args: { email: string },
-): Promise<{ contact: ContactRecord | null }> => {
+): Promise<{ contact: ContactRecord | null; identifiers?: ContactAdditionalIdentifiers }> => {
   if (typeof args.email !== 'string' || !args.email.trim()) {
     throw new RpcError('bad_request', 'contact.get: email is required');
   }
   // D-325 — a reference by contact id (Today, an occasion) reads the same
   // record as one by email.
-  if (!args.email.includes('@')) return { contact: deps.store.getByContactIdResolved(args.email.trim()) ?? deps.store.get(args.email) };
-  return { contact: deps.store.get(args.email) };
+  const contact = !args.email.includes('@') ? deps.store.getByContactIdResolved(args.email.trim()) ?? deps.store.get(args.email) : deps.store.get(args.email);
+  const aliases = contact?.contact_id ? deps.store.listResolvedContactAliases(contact.contact_id) : [];
+  const identifiers = {
+    emails: [...new Map(aliases.filter(row => row.kind === 'email_alias' && !isMentionOnlyEmail(row.alias_pattern)
+      && row.alias_pattern_normalized !== canonicalizeEmail(contact?.email ?? '')).map(row => [row.alias_pattern_normalized, row.alias_pattern])).values()],
+    phones: [...new Map(aliases.filter(row => row.kind === 'phone_alias' && row.alias_pattern_normalized !== normalizeAliasPattern(contact?.phone ?? ''))
+      .map(row => [row.alias_pattern_normalized, row.alias_pattern])).values()],
+  };
+  return { contact, ...(identifiers.emails.length || identifiers.phones.length ? { identifiers } : {}) };
 };
 
 /** D-205 merge-review item 3 — the PER-SOURCE value view.
@@ -443,6 +483,7 @@ export const handleContactResolve = async (
 
 type ContactMethods =
   | 'contact.upsert'
+  | 'contact.search.local'
   | 'contact.list'
   | 'contact.get'
   | 'contact.contributions'
@@ -470,12 +511,17 @@ export const makeContactHandlers = (
     methods: [
       'contact.upsert',
       'contact.list',
+      'contact.search.local',
       'contact.get',
       'contact.contributions',
       'contact.delete',
       'contact.resolve',
     ],
     handlers: {
+      'contact.search.local': async (args, client) => {
+        if (!client.instance_id) throw new RpcError('unauthorized', 'Searching saved contacts requires a paired client.', 401);
+        return handleContactSearchLocal(deps, args);
+      },
       'contact.upsert': async (args) =>
         handleContactUpsert(upsertDeps, args as Parameters<typeof handleContactUpsert>[1]),
       'contact.list': async (args) =>

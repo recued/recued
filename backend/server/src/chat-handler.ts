@@ -311,6 +311,14 @@ type ChatMethods =
   | 'chat.delivery.skip'
   | 'chat.messenger.connect'
   | 'chat.messenger.status'
+  | 'chat.schedules.list'
+  | 'chat.schedule.create'
+  | 'chat.schedule.update'
+  | 'chat.schedule.pause'
+  | 'chat.schedule.resume'
+  | 'chat.schedule.remove'
+  | 'chat.schedule.run_now'
+  | 'chat.schedule.preview'
   | 'chat.turns.list'
   | 'chat.turn.withdraw'
   | 'chat.turn.cancel'
@@ -836,6 +844,7 @@ export const handleSessionDelete = async (
   );
   const session = ensureSession(deps, session_id);
   const messageCount = (await deps.store.listMessages(session_id)).length;
+  await deps.orchestrator.promptSchedules?.beforeDeleteSession(session_id);
   await deps.deleteSessionExecutionCases?.(session_id);
   const deleted = deps.store.deleteSession(session_id);
   if (!deleted) {
@@ -3218,6 +3227,28 @@ export const handleChatQueue = async (
   return queue.retry(session, turn, submission);
 };
 
+
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'list', args: unknown): Promise<import('@recued/contracts').PromptSchedule[]>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'run_now', args: unknown): Promise<import('@recued/contracts').ChatTurnAcceptance>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'preview', args: unknown): Promise<import('@recued/contracts').PromptSchedulePreview>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'create' | 'update' | 'pause' | 'resume' | 'remove', args: unknown): Promise<import('@recued/contracts').PromptSchedule | null>;
+export async function handlePromptSchedule(deps: ChatRpcDeps,
+  action: 'list' | 'create' | 'update' | 'pause' | 'resume' | 'remove' | 'run_now' | 'preview', args: unknown,
+): Promise<import('@recued/contracts').PromptSchedule[] | import('@recued/contracts').PromptSchedule | import('@recued/contracts').ChatTurnAcceptance | import('@recued/contracts').PromptSchedulePreview | null> {
+  const service = deps.orchestrator.promptSchedules;
+  if (!service) throw new RpcError('not_configured', 'Scheduled prompts are unavailable.', 501);
+  const safe = ensureRecordArgs('chat.schedule', args);
+  if (action === 'list') {
+    const session = safe.session_id === undefined ? undefined : ensureNonEmptyString('chat.schedule', 'session_id', safe.session_id);
+    return service.list(session);
+  }
+  if (action === 'create') return service.create(safe, ensureNonEmptyString('chat.schedule.create', 'creation_id', safe.creation_id));
+  if (action === 'update') return service.update(safe);
+  if (action === 'run_now') return service.runNow(safe);
+  if (action === 'preview') return service.preview(safe);
+  return service.control(action, safe);
+}
+
 export const makeChatHandlers = (
   deps: ChatRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ChatMethods, WsClient> | undefined => {
@@ -3235,6 +3266,14 @@ export const makeChatHandlers = (
       'chat.egress.get',
       'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
       'chat.messenger.status',
+      'chat.schedules.list',
+      'chat.schedule.create',
+      'chat.schedule.update',
+      'chat.schedule.pause',
+      'chat.schedule.resume',
+      'chat.schedule.remove',
+      'chat.schedule.run_now',
+      'chat.schedule.preview',
       'chat.turns.list',
       'chat.turn.withdraw',
       'chat.turn.cancel',
@@ -3275,6 +3314,38 @@ export const makeChatHandlers = (
       'chat.inbound_token.tool_catalog',
     ],
     handlers: {
+      'chat.schedules.list': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'list', args);
+      },
+      'chat.schedule.create': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'create', args);
+      },
+      'chat.schedule.update': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'update', args);
+      },
+      'chat.schedule.pause': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'pause', args);
+      },
+      'chat.schedule.resume': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'resume', args);
+      },
+      'chat.schedule.remove': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'remove', args);
+      },
+      'chat.schedule.run_now': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'run_now', args);
+      },
+      'chat.schedule.preview': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Schedule previews require a paired client.', 401);
+        return handlePromptSchedule(deps, 'preview', args);
+      },
       'chat.sessions.list': async args => handleSessionsList(deps, args as ChatSessionListRequest | undefined),
       'chat.messages.search': async (args, client) => {
         if (!client?.instance_id) {

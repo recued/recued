@@ -628,7 +628,8 @@ describe('mountNotificationsPanel', () => {
       }),
       // ⚠ REQUIRED for the per-instance rule to apply: the toggle is suppressed
       // only where the sub-rows that replace it actually render (REV 28).
-      runDescribeBridges: (async () => ({ rows: [] })) as never,
+      runDescribeBridges: async () => ({ rows: [{ client_token_id: 'context-device', label: 'Desktop',
+        connected: true, modes: { notification: true, approval: false } }] }),
     });
     await panel.whenLoaded();
 

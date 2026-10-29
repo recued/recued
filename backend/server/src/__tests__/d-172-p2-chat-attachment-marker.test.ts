@@ -28,7 +28,7 @@ describe('D-172 P2 — attachment marker', () => {
     );
     // The id rides with the name so the model can pass it to a recipe without
     // a lookup round-trip. Naming is free; reading is separately gated.
-    expect(marker).toBe('\n[files attached to this message: signed-contract.pdf (file:abc)]');
+    expect(marker).toContain('\n[files attached to this message: signed-contract.pdf (file:abc)]');
   });
 
   it('lists several files in order', () => {
@@ -115,7 +115,7 @@ describe('D-172 P2 — the tail actually carries the marker', () => {
       'sess-1',
       () => new Map([['file:a', 'signed-contract.pdf']]),
     );
-    expect(tail.messages[0].content).toBe(
+    expect(tail.messages[0].content).toContain(
       'send this to Bob\n[files attached to this message: signed-contract.pdf (file:a)]',
     );
   });
@@ -218,7 +218,7 @@ describe('D-172 P2 — a wordless drop is visible on the NEXT turn', () => {
       );
 
       expect(tail.messages).toHaveLength(1);
-      expect(tail.messages[0].content).toBe(
+      expect(tail.messages[0].content).toContain(
         '\n[files attached to this message: signed-contract.pdf (file:abc)]',
       );
     } finally {

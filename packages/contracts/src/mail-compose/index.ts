@@ -47,7 +47,12 @@ export type { ComposeRewriteRecipeInput } from './assist.js';
 export {
   composeRewriteRecipeConfig,
   REWRITE_COMPOSED_MAIL_RECIPE_ID,
+  composeDraftRecipeConfig,
+  DRAFT_COMPOSED_MAIL_RECIPE_ID,
+  MAIL_DRAFT_BRIEF_MAX,
+  MAIL_DRAFT_SOURCE_MAX,
 } from './assist.js';
+export type { MailMessageRef, MailMessageSnapshot, MailConversationScope, MailConversationCursor, MailConversationRequest, MailConversationItem, MailConversationSnapshot } from './message.js';
 export {
   composeStateToSendPayload,
   composePayloadToSendRecipeConfig,

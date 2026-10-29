@@ -469,9 +469,8 @@ describe('Automation route — rendering', () => {
     expect(rig.host.attrs.has(AUTOMATION_ROUTE_HOST_ATTR)).toBe(true);
     expect(rig.doc.styleElements[0]?.attrs.has(AUTOMATION_ROUTE_STYLES_MARKER)).toBe(true);
     expect(rig.host.innerHTML).toContain(
-      '<a href="#logs">Logs<span aria-hidden="true">.</span></a>',
+      'href="#logs"',
     );
-    expect(rig.host.innerHTML).not.toContain('Logs</a>.');
     // D-319 §5.4 — the page is one list, grouped by recipe; its nav is the
     // two views. The lists by kind stay reachable (a rule's Details, links).
     expect(rig.route.getActiveSection()).toBe('all');
@@ -499,7 +498,7 @@ describe('Automation route — rendering', () => {
     expect(rig.host.innerHTML).toContain('data-recued-automation-recipe="daily-brief"');
     expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
     expect(rig.host.innerHTML).toContain('Not switched on. It runs every 5 minutes.');
-    expect(rig.host.innerHTML).toContain('By recipe <span class="automation-subnav-count">1</span>');
+    expect(rig.host.innerHTML).toContain('Overview <span class="automation-subnav-count">4</span>');
 
     clickSubnav(rig.host, 'auto-run');
     expect(rig.route.getActiveSection()).toBe('auto-run');
@@ -1117,6 +1116,36 @@ describe('Automation route — D-319 §5.4: one list, by recipe then dish', () =
     ));
   };
 
+  it('counts and filters rules made without a dish alongside the rest of the overview', async () => {
+    const rig = mountRoute({
+      dishesListCaller: async () => ({ dishes: [] }),
+      recipeEntriesCaller: async () => ({ recipes: [] }),
+      autoRunListCaller: async () => ({ entries: [] }),
+      schedulesListCaller: async () => ({ schedules: [
+        schedule({ schedule_id: 'legacy-on', recipe_id: 'legacy' }),
+        schedule({ schedule_id: 'legacy-off', recipe_id: 'legacy', enabled: false }),
+      ] }),
+      triggersListCaller: async () => ({ triggers: [
+        trigger({ trigger_id: 'legacy-failed', recipe_id: 'legacy', enabled: false, last_error: 'Provider unavailable' }),
+      ] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    expect(rig.host.innerHTML).toContain('Overview <span class="automation-subnav-count">3</span>');
+    chipCount(rig.host.innerHTML, 'on', 'On', 1);
+    chipCount(rig.host.innerHTML, 'off', 'Off', 1);
+    chipCount(rig.host.innerHTML, 'failing', 'Failing', 1);
+    for (const [chip, visible, hidden] of [
+      ['on', 'schedule:legacy-on', ['schedule:legacy-off', 'event_trigger:legacy-failed']],
+      ['off', 'schedule:legacy-off', ['schedule:legacy-on', 'event_trigger:legacy-failed']],
+      ['failing', 'event_trigger:legacy-failed', ['schedule:legacy-on', 'schedule:legacy-off']],
+    ] as const) {
+      clickChip(rig.host, chip);
+      expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="${visible}"`);
+      for (const other of hidden) expect(rig.host.innerHTML).not.toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="${other}"`);
+    }
+  });
+
   it('groups by recipe, then by dish: each dish its line, its rows under it', async () => {
     const rig = mountRoute({
       dishesListCaller: async () => ({
@@ -1528,7 +1557,7 @@ describe('Automation route — D-319 §5.4: one list, by recipe then dish', () =
 
     clickAction(rig.host, 'detail:dish', 'dsh_work');
     expect(rig.route.getActiveSection()).toBe('dishes');
-    expect(rig.host.innerHTML).toContain('Back to By recipe');
+    expect(rig.host.innerHTML).toContain('Back to Overview');
 
     clickBack(rig.host);
     expect(rig.route.getActiveSection()).toBe('all');

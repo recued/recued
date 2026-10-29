@@ -82,6 +82,62 @@ const mkCall = (overrides: Partial<ResolvedCall> = {}): ResolvedCall => ({
   ...(overrides.fallback ? { fallback: overrides.fallback } : {}),
 });
 
+describe('request-scoped MCP progress', () => {
+  it('reads numeric progress from HTTP SSE before the final response', async () => {
+    const report = vi.fn();
+    const { deps, calls } = mkDeps({ type: 'none' }, (call) => {
+      const req = JSON.parse(call.body!) as { id: number; params: { _meta: { progressToken: number } } };
+      expect(req.params._meta.progressToken).toBe(req.id);
+      const frames = [
+        { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: req.id, progress: 3, total: 10, message: 'private filename' } },
+        { jsonrpc: '2.0', id: req.id, result: { ok: true } },
+      ];
+      return new Response(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(''),
+        { headers: { 'content-type': 'text/event-stream' } });
+    }, { captureProgress: () => report });
+    const handler = createConnectionMcpHandler(deps);
+    await expect(handler(mkRow(), { tool: 'list' }, mkCall())).resolves.toMatchObject({ status: 'ok' });
+    expect(report.mock.calls).toEqual([[{ kind: 'provider', current: 3, total: 10 }]]);
+    expect(calls.at(-1)?.headers.accept).toContain('text/event-stream');
+  });
+
+  it('correlates concurrent pooled stream calls and ignores progress after a result', async () => {
+    let receive!: (data: string) => void;
+    const frames: Array<{ id: number; params: { _meta: { progressToken: number } } }> = [];
+    const handle: McpStreamHandle = {
+      send(data) {
+        const frame = JSON.parse(data);
+        if (frame.method === 'server/discover') queueMicrotask(() => receive(JSON.stringify({
+          jsonrpc: '2.0', id: frame.id, result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } },
+        })));
+        else if (frame.method === 'tools/call') frames.push(frame);
+      },
+      onMessage(listener) { receive = listener; }, onClose() {}, onError() {}, close() {},
+    };
+    const reports = [vi.fn(), vi.fn()];
+    let next = 0;
+    const handler = createConnectionMcpHandler({ decodeAuth: async () => ({ type: 'none' }),
+      wsConnect: async () => handle, captureProgress: () => reports[next++] });
+    const row = mkRow({ subtype: 'websocket', config_json: '{"transport":"websocket","endpoint":"wss://mcp.example/ws"}' });
+    const first = handler(row, { tool: 'one' }, mkCall());
+    const second = handler(row, { tool: 'two' }, mkCall());
+    await vi.waitFor(() => expect(frames).toHaveLength(2));
+    const progress = (id: number, value: number) => receive(JSON.stringify({ jsonrpc: '2.0',
+      method: 'notifications/progress', params: { progressToken: id, progress: value } }));
+    const finish = (id: number) => receive(JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true } }));
+    progress(frames[1]!.id, 20);
+    progress(frames[0]!.id, 10);
+    finish(frames[1]!.id);
+    await second;
+    progress(frames[1]!.id, 30);
+    finish(frames[0]!.id);
+    await first;
+    expect(reports[0]!.mock.calls).toEqual([[{ kind: 'provider', current: 10 }]]);
+    expect(reports[1]!.mock.calls).toEqual([[{ kind: 'provider', current: 20 }]]);
+    expect(frames.map(frame => frame.params._meta.progressToken)).toEqual(frames.map(frame => frame.id));
+  });
+});
+
 interface FetchCall {
   url: string;
   method: string;

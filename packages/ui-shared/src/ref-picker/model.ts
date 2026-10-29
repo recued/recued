@@ -24,6 +24,7 @@ export const initialRefPickerState = (
   truncated: false,
   loading: false,
   error: null,
+  retryableError: null,
   selectedId: initial?.id ?? null,
   selectedLabel: initial?.label ?? null,
 });
@@ -49,6 +50,7 @@ export const setQuery = (
   // keystroke and the async resolve).
   loading: true,
   error: null,
+  retryableError: null,
 });
 
 /** Async results landed (or a synchronous client-filter produced them).
@@ -58,12 +60,14 @@ export const setResults = (
   state: RefPickerState,
   options: readonly RefPickerOption[],
   truncated = false,
+  retryableError: string | null = null,
 ): RefPickerState => ({
   ...state,
   options,
   truncated,
   loading: false,
   error: null,
+  retryableError,
   activeIndex: state.activeIndex < options.length ? state.activeIndex : -1,
 });
 
@@ -86,6 +90,7 @@ export const setError = (
   truncated: false,
   loading: false,
   error: message,
+  retryableError: null,
   activeIndex: -1,
 });
 
@@ -137,6 +142,9 @@ export const commitOption = (
   activeIndex: -1,
   selectedId: option.id,
   selectedLabel: option.label,
+  retryableError: null,
+  loading: false,
+  error: null,
 });
 
 /** Clear the field entirely (the × affordance, or an empty-on-blur). */
@@ -148,6 +156,7 @@ export const clearSelection = (state: RefPickerState): RefPickerState => ({
   options: [],
   truncated: false,
   loading: false,
+  retryableError: null,
   error: null,
   selectedId: null,
   selectedLabel: null,

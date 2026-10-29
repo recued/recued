@@ -58,7 +58,7 @@ import type {
 } from '../saved-data-views.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
 import type { Dish, DishGroup, DishLastRun, DishRunRow, DishWebhookDoorChange } from '../dish.js';
-import type { CalendarEventRef, CalendarEventSnapshot, CalendarEventUpdateRequest } from '../calendar-event-rpc.js';
+import type { CalendarEventRef, CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult } from '../calendar-event-rpc.js';
 import type { CacheEntry } from '../cache.js';
 import type {
   RecipeDefinition,
@@ -183,6 +183,7 @@ import type {
   ContactSourceHealth,
   ContactImportCandidate,
   ContactImportFilePlan,
+  ContactImportOccasionSelection,
 } from '../contact-sources.js';
 import type {
   UpstreamMergeDescribeRequest,
@@ -714,6 +715,12 @@ export interface ServerSchedule {
   time_zone?: string;
   /** One-shot schedules fire once at this absolute Unix-ms timestamp. */
   run_at?: number;
+  /** Present only when this server can safely move this pending one-off run.
+   * Opaque incarnation + material revision; return it unchanged on reschedule. */
+  reschedule_revision?: string;
+  /** Stable identity for matching a lost reply to the same saved run. Remains
+   * available after admission even though reschedule_revision is withdrawn. */
+  reschedule_identity?: string;
   enabled: boolean;
   lifecycle_revision?: number;
   preapproval?: {
@@ -1560,9 +1567,11 @@ export type ServerRpcRegistry = {
   'preapproval.revoke': RpcMethodSpec<PreapprovalRevokeRequest, PreapprovalInspection>;
   /** `retired` (D-300): pack views an update stopped shipping that the owner had set up,
    *  waiting for the owner. Absent from a server that predates it. */
-  'data_views.list': RpcMethodSpec<void, { views: SavedDataView[]; retired?: SavedDataView[] }>;
+  'data_views.list': RpcMethodSpec<void, { views: SavedDataView[]; retired?: SavedDataView[]; create_once?: true }>;
   'data_views.get': RpcMethodSpec<{ id: string }, { view: SavedDataView | null }>;
   'data_views.create': RpcMethodSpec<SavedDataViewCreateRequest, { view: SavedDataView }>;
+  'data_views.create_once': RpcMethodSpec<import('../saved-data-views.js').SavedDataViewCreateOnceRequest, import('../saved-data-views.js').SavedDataViewCreation>;
+  'data_views.creation.get': RpcMethodSpec<import('../saved-data-views.js').SavedDataViewCreateOnceRequest, { creation: import('../saved-data-views.js').SavedDataViewCreation | null }>;
   'data_views.update': RpcMethodSpec<SavedDataViewUpdateRequest, { view: SavedDataView }>;
   'data_views.rename': RpcMethodSpec<SavedDataViewRenameRequest, { view: SavedDataView }>;
   'data_views.delete': RpcMethodSpec<SavedDataViewDeleteRequest, { deleted: boolean }>;
@@ -1734,6 +1743,10 @@ export type ServerRpcRegistry = {
       /** D-319 — move the schedule to another dish of its recipe. */
       dish_id?: unknown;
     },
+    { schedule: ServerSchedule }
+  >;
+  'schedules.reschedule': RpcMethodSpec<
+    { schedule_id: string; run_at: number; expected_revision: string },
     { schedule: ServerSchedule }
   >;
   'schedules.delete': RpcMethodSpec<{ schedule_id: string }, { deleted: true }>;
@@ -3223,6 +3236,11 @@ export type ServerRpcRegistry = {
     { contact: ContactRecord }
   >;
 
+  /** Paired-owner literal search across saved contact identifiers. */
+  'contact.search.local': RpcMethodSpec<
+    import('../contact-search.js').ContactSearchLocalRequest,
+    import('../contact-search.js').ContactSearchLocalResponse
+  >;
   /** List with optional filters. `name_contains` is case-insensitive
    *  substring; `source` filters by provenance discriminator; `since`
    *  bounds `last_interaction`; `phone_exact` matches the canonical
@@ -3280,7 +3298,7 @@ export type ServerRpcRegistry = {
   /** Fetch one contact or null. */
   'contact.get': RpcMethodSpec<
     { email: string },
-    { contact: ContactRecord | null }
+    { contact: ContactRecord | null; identifiers?: import('../contact.js').ContactAdditionalIdentifiers }
   >;
 
   /** D-205 merge-review item 3 — the PER-SOURCE value view.
@@ -3425,10 +3443,12 @@ export type ServerRpcRegistry = {
        *  export's new people are welcome, and its three thousand stale VALUES —
        *  which would land at the top of the ladder and freeze the graph — are not. */
       apply_changes: boolean;
+      occasions?: ReadonlyArray<ContactImportOccasionSelection>;
     },
     {
       added: number;
       changed: number;
+      occasions_saved?: number;
       /** Existing contacts left untouched (the user declined the changes), plus any
        *  entry whose phone matched more than one contact — never guessed. */
       skipped: number;
@@ -6251,15 +6271,8 @@ export type ServerRpcRegistry = {
   //    `data.timeline` owner-trusted pattern (registered-client boundary, no
   //    contract/egress gate). Reuses the backend `handleFileRead` verbatim.
   'data.file.read': RpcMethodSpec<
-    { record_id: string },
-    {
-      record_id: string;
-      bytes_b64: string;
-      mime_type: string;
-      filename: string;
-      size_bytes: number;
-      blob_hash: string;
-    }
+    import('../file-content-read.js').FileContentReadRequest,
+    import('../file-content-read.js').FileContentReadResponse
   >;
   'data.file.attachments.preview': RpcMethodSpec<import('../file-lifecycle.js').FilePreviewRequest, import('../file-lifecycle.js').FilePreviewResult>;
   'data.file.attachments.sources': RpcMethodSpec<undefined, { sources: import('../file-lifecycle.js').CloudFileSource[] }>;
@@ -6655,6 +6668,9 @@ export type ServerRpcRegistry = {
   /** D-127 wire-up — drop a `data.mail.<slug>` row + wipe the
    *  associated credentials. Compose root closes the live provider
    *  via `onDeleted`. */
+  /** Owner's bounded message reader and send-capable reply handoff. */
+  'collection.mail.message.get': RpcMethodSpec<import('../mail-compose/message.js').MailMessageRef, import('../mail-compose/message.js').MailMessageSnapshot>;
+  'collection.mail.conversation.get': RpcMethodSpec<import('../mail-compose/message.js').MailConversationRequest, import('../mail-compose/message.js').MailConversationSnapshot>;
   'collection.mail.delete': RpcMethodSpec<{ slug: string }, { ok: true }>;
 
   /** The owner's Re-sync on a mailbox: its live connection is rebuilt from the
@@ -6988,6 +7004,7 @@ export type ServerRpcRegistry = {
   /** Paired owner details and version-bound edits of single local events. */
   'collection.calendar.event.get': RpcMethodSpec<CalendarEventRef, CalendarEventSnapshot>;
   'collection.calendar.event.update': RpcMethodSpec<CalendarEventUpdateRequest, CalendarEventSnapshot>;
+  'collection.calendar.event.respond': RpcMethodSpec<CalendarEventRespondRequest, CalendarEventRespondResult>;
   /** Patch retention / quota / expansion / poll cadence. `reprobe:
    *  true` re-runs the cap probe + refreshes the cached caps. Does
    *  NOT re-auth (use `reauth` for that). */
@@ -7217,6 +7234,14 @@ export type ServerRpcRegistry = {
   'chat.delivery.skip': RpcMethodSpec<{ session_id: string; delivery_id: string; submission_id: string }, { ok: true }>;
   'chat.messenger.connect': RpcMethodSpec<{ session_id: string; vendor: string }, { session_id: string }>;
   'chat.messenger.status': RpcMethodSpec<import('../chat-delivery.js').ChatMessengerStatusRequest, import('../chat-delivery.js').ChatMessengerStatusResult>;
+  'chat.schedules.list': RpcMethodSpec<{ session_id?: string }, import('../prompt-schedule.js').PromptSchedule[]>;
+  'chat.schedule.create': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleInput & { creation_id: string }, import('../prompt-schedule.js').PromptSchedule | null>;
+  'chat.schedule.update': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleUpdate, import('../prompt-schedule.js').PromptSchedule | null>;
+  'chat.schedule.pause': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleTarget, import('../prompt-schedule.js').PromptSchedule | null>;
+  'chat.schedule.resume': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleTarget, import('../prompt-schedule.js').PromptSchedule | null>;
+  'chat.schedule.remove': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleTarget, import('../prompt-schedule.js').PromptSchedule | null>;
+  'chat.schedule.run_now': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleRunRequest, import('../chat-turn-queue.js').ChatTurnAcceptance>;
+  'chat.schedule.preview': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleTiming, import('../prompt-schedule.js').PromptSchedulePreview>;
   'chat.turns.list': RpcMethodSpec<{ session_id: string }, import('../chat-turn-queue.js').ChatTurnQueueSnapshot>;
   'chat.turn.withdraw': RpcMethodSpec<{ session_id: string; turn_id: string }, import('../chat-turn-queue.js').ChatWithdrawnDraft>;
   'chat.turn.cancel': RpcMethodSpec<{ session_id: string; turn_id: string }, { ok: true }>;
@@ -8426,8 +8451,12 @@ export type ServerRpcRegistry = {
   'yours.sphere': RpcMethodSpec<{ ref: import('../situation.js').SituationRef }, import('../yours.js').YoursSpherePlacement>;
   'yours.spheres': RpcMethodSpec<{ refs: import('../situation.js').SituationRef[] }, { placements: Array<import('../yours.js').YoursSpherePlacement & { ref: import('../situation.js').SituationRef }> }>;
   'yours.change': RpcMethodSpec<import('../yours.js').YoursCommand, import('../yours.js').YoursCommandResult>;
+  'reminder.create': RpcMethodSpec<
+    { text: string; at: number; creation_id: string },
+    import('../reminder.js').ReminderCreateResult
+  >;
   'reminder.list': RpcMethodSpec<
-    { include_delivered?: boolean; limit?: number },
+    import('../reminder.js').ReminderListRequest,
     import('../reminder.js').ReminderListResult
   >;
   'reminder.update': RpcMethodSpec<
@@ -8490,6 +8519,8 @@ export const SERVER_RPC_METHODS = [
   'data_views.list',
   'data_views.get',
   'data_views.create',
+  'data_views.create_once',
+  'data_views.creation.get',
   'data_views.update',
   'data_views.rename',
   'data_views.delete',
@@ -8537,6 +8568,7 @@ export const SERVER_RPC_METHODS = [
   'schedules.local_writes.review', 'schedules.local_writes.authorize', 'schedules.local_writes.revoke',
   'schedules.create',
   'schedules.update',
+  'schedules.reschedule',
   'schedules.delete',
   'schedules.missed',
   'schedules.answerMissed',
@@ -8703,6 +8735,7 @@ export const SERVER_RPC_METHODS = [
   // D-121 Phase 1 — contact warehouse rpc.
   'contact.upsert',
   'contact.list',
+  'contact.search.local',
   'contact.get',
   'contact.delete',
   // D-145 PA8 follow-on — identifier-keyed resolver (any of email /
@@ -9151,6 +9184,8 @@ export const SERVER_RPC_METHODS = [
   'collection.mail.enrollSmtp',
   'collection.mail.updateCredentials',
   'collection.mail.list',
+  'collection.mail.message.get',
+  'collection.mail.conversation.get',
   'collection.mail.delete',
   'collection.mail.resync',
   'collection.mail.chat_door.get',
@@ -9200,6 +9235,7 @@ export const SERVER_RPC_METHODS = [
   'collection.calendar.list',
   'collection.calendar.event.get',
   'collection.calendar.event.update',
+  'collection.calendar.event.respond',
   'collection.calendar.update',
   'collection.calendar.delete',
   'collection.calendar.resync',
@@ -9259,6 +9295,14 @@ export const SERVER_RPC_METHODS = [
   'chat.egress.get',
   'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
   'chat.messenger.status',
+  'chat.schedules.list',
+  'chat.schedule.create',
+  'chat.schedule.update',
+  'chat.schedule.pause',
+  'chat.schedule.resume',
+  'chat.schedule.remove',
+  'chat.schedule.run_now',
+  'chat.schedule.preview',
   'chat.turns.list',
   'chat.turn.withdraw',
   'chat.turn.cancel',
@@ -9510,6 +9554,7 @@ export const SERVER_RPC_METHODS = [
   'yours.sphere',
   'yours.spheres',
   'yours.change',
+  'reminder.create',
   'reminder.list',
   'reminder.update',
   'reminder.cancel',

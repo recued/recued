@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
-import { TIER1_TOOL_GUIDE } from '@recued/contracts';
+import { expect, test, type Page } from '@playwright/test';
+import { TIER1_TOOL_GUIDE, type CatalogIngredientView, type OverrideView } from '@recued/contracts';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 /** Contracts browser journeys against the deterministic full-app harness. */
@@ -842,4 +842,212 @@ test('Contracts keeps an operation grant toggle focused and single-flight', asyn
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(page).toHaveURL(/#data$/);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+interface ContractRuleRecoveryFixture {
+  mode: 'error' | 'hold' | 'ready';
+  replacementCatalog: boolean;
+  catalogReads: number;
+  inventoryReads: number;
+  upserts: unknown[];
+  deletes: number;
+  pending: number;
+  confirmations: number;
+  release(index: number): void;
+}
+declare global { interface Window { __contractRuleRecovery: ContractRuleRecoveryFixture } }
+
+const bootRuleRecovery = async (page: Page): Promise<void> => {
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts/view/others`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    const catalog: CatalogIngredientView[] = ['deals', 'contacts'].map(name => ({
+      ingredient_id: `hubspot.${name}`, name: `HubSpot ${name === 'deals' ? 'Deals' : 'Contacts'}`,
+      operations: [{ operation_id: `hubspot.${name}.read`, operation_key: 'read', risk_tier: 'read', groups: ['crm'] }],
+    }));
+    const existing: OverrideView = {
+      actor: 'user_self', ingredient_id: 'hubspot.contacts', operation_id: null,
+      policy: { approval: 'always' }, written_at: 1,
+    };
+    let rows = [existing];
+    type CatalogReply = { result: { ingredients: CatalogIngredientView[] } };
+    const pending: Array<{ resolve(reply: CatalogReply): void; reply: CatalogReply; released: boolean }> = [];
+    const fixture: ContractRuleRecoveryFixture = {
+      mode: 'error', replacementCatalog: false, catalogReads: 0, inventoryReads: 0,
+      upserts: [], deletes: 0, pending: 0, confirmations: 0,
+      release(index) {
+        const item = pending[index];
+        if (!item || item.released) throw new Error(`No pending catalog read ${index}`);
+        item.released = true; item.resolve(item.reply);
+      },
+    };
+    Object.assign(window, {
+      __contractRuleRecovery: fixture,
+      __connectionsFixture: async (method: string, raw: unknown) => {
+        if (method === 'collection.contract.listOverrides') {
+          fixture.inventoryReads++;
+          return { result: { overrides: rows } };
+        }
+        if (method === 'collection.contract.listCatalogOperations') {
+          fixture.catalogReads++;
+          if (fixture.mode === 'error') return { error: { code: 'unavailable', message: 'Connection was interrupted' } };
+          const reply = { result: { ingredients: fixture.replacementCatalog ? catalog.slice(1) : catalog } };
+          if (fixture.mode === 'ready') return reply;
+          fixture.pending++;
+          return new Promise<CatalogReply>(resolve => { pending.push({ resolve, reply, released: false }); });
+        }
+        if (method === 'collection.contract.upsertOverride') {
+          fixture.upserts.push(raw);
+          const created: OverrideView = {
+            actor: 'contracted_user', ingredient_id: 'hubspot.deals', operation_id: 'hubspot.deals.read',
+            policy: { denied: true, approval: 'always', max_risk_without_approval: 'write' }, written_at: 2,
+          };
+          rows = [existing, created];
+          return { result: created };
+        }
+        if (method === 'collection.contract.deleteOverride') {
+          fixture.deletes++;
+          return { error: { code: 'unexpected_write', message: 'Catalog recovery must not delete rules.' } };
+        }
+        return undefined;
+      },
+    });
+  });
+  const rules = page.locator('[data-recued-contracts-rules]');
+  await rules.locator('summary').click();
+  await expect(rules.locator('[data-recued-permissions-catalog-retry]')).toBeVisible();
+};
+
+test('Contracts retries its rule catalog without losing the draft or writing permissions', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await bootRuleRecovery(page);
+  const rules = page.locator('[data-recued-contracts-rules]');
+  const actor = rules.locator('[data-recued-permissions-create-actor]');
+  const ingredient = rules.locator('[data-recued-permissions-create-ingredient]');
+  const approval = rules.locator('[data-recued-permissions-create-approval]');
+  const retry = rules.locator('[data-recued-permissions-catalog-retry]');
+  await expect(ingredient).toBeDisabled();
+  await expect(rules.locator('[data-recued-permissions-create-save]')).toBeDisabled();
+  await expect(rules.locator('[data-recued-permissions-catalog-error]')).toContainText('Couldn’t load Ingredients.');
+  await actor.selectOption('user_self');
+  await rules.locator('[data-recued-permissions-create-denied]').check();
+  await rules.locator('[data-recued-permissions-create-maxrisk]').selectOption('write');
+  await page.evaluate(() => { window.__contractRuleRecovery.mode = 'hold'; });
+  await retry.click();
+  await expect.poll(() => page.evaluate(() => window.__contractRuleRecovery.pending)).toBe(1);
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(rules.locator('[data-recued-permissions-create-save]')).toBeDisabled();
+  await expect(retry).toBeFocused();
+  await retry.evaluate(button => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await actor.selectOption('contracted_user');
+  await approval.focus();
+  await approval.selectOption('always');
+  await expect(approval).toBeFocused();
+  expect(await page.evaluate(() => ({
+    reads: window.__contractRuleRecovery.catalogReads,
+    inventory: window.__contractRuleRecovery.inventoryReads,
+    writes: window.__contractRuleRecovery.upserts.length,
+    deletes: window.__contractRuleRecovery.deletes,
+  }))).toEqual({ reads: 2, inventory: 1, writes: 0, deletes: 0 });
+  await expect(rules.locator('[data-recued-permissions-row]')).toHaveCount(1);
+  await page.screenshot({ path: test.info().outputPath('rule-catalog-retry-mobile.png'), fullPage: true });
+  await page.evaluate(() => window.__contractRuleRecovery.release(0));
+  await expect(rules.locator('[data-recued-permissions-catalog-recovery]')).toBeHidden();
+  await expect(ingredient).toBeEnabled();
+  await expect(actor).toHaveValue('contracted_user');
+  await expect(approval).toHaveValue('always');
+  await expect(approval).toBeFocused();
+  await expect(rules.locator('[data-recued-permissions-create-denied]')).toBeChecked();
+  await expect(rules.locator('[data-recued-permissions-create-maxrisk]')).toHaveValue('write');
+  expect(await page.evaluate(() => window.__contractRuleRecovery.upserts)).toEqual([]);
+  expect(await page.evaluate(() => window.__contractRuleRecovery.inventoryReads)).toBe(1);
+  await ingredient.selectOption('hubspot.deals');
+  await rules.locator('[data-recued-permissions-create-operation]').selectOption('hubspot.deals.read');
+  await rules.locator('[data-recued-permissions-create-save]').click();
+  await expect(rules.locator('[data-recued-permissions-row]')).toHaveCount(2);
+  expect(await page.evaluate(() => window.__contractRuleRecovery.upserts)).toEqual([{
+    actor: 'contracted_user', ingredient_id: 'hubspot.deals', operation_id: 'hubspot.deals.read',
+    policy: { denied: true, approval: 'always', max_risk_without_approval: 'write' },
+  }]);
+});
+
+test('Contracts returns a completed catalog retry to its Ingredient picker', async ({ page }) => {
+  await bootRuleRecovery(page);
+  const rules = page.locator('[data-recued-contracts-rules]');
+  await page.evaluate(() => { window.__contractRuleRecovery.mode = 'hold'; });
+  const retry = rules.locator('[data-recued-permissions-catalog-retry]');
+  await retry.click();
+  await expect.poll(() => page.evaluate(() => window.__contractRuleRecovery.pending)).toBe(1);
+  await expect(retry).toBeFocused();
+  await page.evaluate(() => window.__contractRuleRecovery.release(0));
+  const ingredient = rules.locator('[data-recued-permissions-create-ingredient]');
+  await expect(ingredient).toBeEnabled();
+  await expect(ingredient).toBeFocused();
+  await expect(rules.locator('[data-recued-permissions-catalog-recovery]')).toBeHidden();
+  expect(await page.evaluate(() => window.__contractRuleRecovery.upserts)).toEqual([]);
+});
+
+test('Contracts keeps an existing rule confirmation in place while its catalog recovers', async ({ page }) => {
+  await bootRuleRecovery(page);
+  const rules = page.locator('[data-recued-contracts-rules]');
+  await page.evaluate(() => { window.__contractRuleRecovery.mode = 'hold'; });
+  await rules.locator('[data-recued-permissions-catalog-retry]').click();
+  await expect.poll(() => page.evaluate(() => window.__contractRuleRecovery.pending)).toBe(1);
+  const existing = rules.locator('[data-recued-permissions-row]');
+  await existing.getByRole('button', { name: 'Delete', exact: true }).click();
+  const confirm = existing.getByRole('button', { name: 'Confirm', exact: true });
+  await confirm.focus();
+  await expect(confirm).toBeFocused();
+  await page.evaluate(() => window.__contractRuleRecovery.release(0));
+  await expect(rules.locator('[data-recued-permissions-catalog-recovery]')).toBeHidden();
+  await expect(confirm).toBeFocused();
+  await expect(existing).toContainText('Remove this rule?');
+  await existing.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(existing.getByRole('button', { name: 'Delete', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => ({
+    reads: window.__contractRuleRecovery.catalogReads,
+    inventory: window.__contractRuleRecovery.inventoryReads,
+    writes: window.__contractRuleRecovery.upserts.length,
+    deletes: window.__contractRuleRecovery.deletes,
+  }))).toEqual({ reads: 2, inventory: 1, writes: 0, deletes: 0 });
+});
+
+test('Contracts discards a late catalog retry after leaving and reopening the rules', async ({ page }) => {
+  await bootRuleRecovery(page);
+  const rules = page.locator('[data-recued-contracts-rules]');
+  await page.evaluate(() => {
+    window.__contractRuleRecovery.mode = 'hold';
+    window.confirm = () => { window.__contractRuleRecovery.confirmations++; return true; };
+  });
+  await rules.locator('[data-recued-permissions-catalog-retry]').click();
+  await expect.poll(() => page.evaluate(() => window.__contractRuleRecovery.pending)).toBe(1);
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(rules).toHaveCount(0);
+  await page.evaluate(() => {
+    window.__contractRuleRecovery.mode = 'ready';
+    window.__contractRuleRecovery.replacementCatalog = true;
+    window.__app.setHash('#contracts/view/others');
+  });
+  await rules.locator('summary').click();
+  const ingredient = rules.locator('[data-recued-permissions-create-ingredient]');
+  const approval = rules.locator('[data-recued-permissions-create-approval]');
+  await expect(ingredient).toBeEnabled();
+  await rules.locator('[data-recued-permissions-create-actor]').selectOption('user_self');
+  await ingredient.selectOption('hubspot.contacts');
+  await approval.focus();
+  await approval.selectOption('ask');
+  await page.evaluate(() => window.__contractRuleRecovery.release(0));
+  await expect(ingredient.locator('option[value="hubspot.deals"]')).toHaveCount(0);
+  await expect(ingredient).toHaveValue('hubspot.contacts');
+  await expect(approval).toHaveValue('ask');
+  await expect(approval).toBeFocused();
+  await expect(rules.locator('[data-recued-permissions-catalog-recovery]')).toBeHidden();
+  expect(await page.evaluate(() => ({
+    confirmations: window.__contractRuleRecovery.confirmations,
+    writes: window.__contractRuleRecovery.upserts.length,
+    deletes: window.__contractRuleRecovery.deletes,
+  }))).toEqual({ confirmations: 0, writes: 0, deletes: 0 });
 });

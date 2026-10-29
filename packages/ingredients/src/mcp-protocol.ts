@@ -484,7 +484,7 @@ export const mergeMcpHttpHeaders = (
  *  them apart: matching by id let a server's `ping` stand in for the answer to Recued's own call. */
 export const isMcpServerMessage = (
   message: unknown,
-): message is { id?: string | number | null; method: string } => (
+): message is { id?: string | number | null; method: string; params?: unknown } => (
   message !== null && typeof message === 'object' && !Array.isArray(message)
   && typeof (message as { method?: unknown }).method === 'string'
 );
