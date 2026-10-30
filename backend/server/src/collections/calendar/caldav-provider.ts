@@ -234,6 +234,7 @@ export interface CalDavCalendarEntry {
   /** True when the `resourcetype` includes `<calendar/>` — filters
    *  out `addressbook` collections returned by the same PROPFIND. */
   isCalendar: boolean;
+  canCreate?: boolean;
 }
 
 export interface CalDavReportEntry {
@@ -255,19 +256,25 @@ export const parseCalendarHomePropfind = (
     const href = (innerOf(response, 'href') ?? '').trim();
     if (!href) continue;
     const propstat = allBlocks(response, 'propstat');
+    let entry: CalDavCalendarEntry | null = null;
     for (const ps of propstat) {
+      const status = innerOf(ps, 'status');
+      if (status && !/HTTP\/\S+ 2\d\d\b/.test(status)) continue;
       const prop = innerOf(ps, 'prop');
       if (!prop) continue;
+      entry ??= { href, displayname: '', isCalendar: false };
       const displayname = (innerOf(prop, 'displayname') ?? '').trim();
       const resourcetype = innerOf(prop, 'resourcetype') ?? '';
       const isCalendar = /<(?:\w+:)?calendar\s*\/>|<(?:\w+:)?calendar\s*>/i
         .test(resourcetype);
-      out.push({
-        href,
-        displayname: decodeXml(displayname),
-        isCalendar,
-      });
+      const privileges = innerOf(prop, 'current-user-privilege-set');
+      if (displayname) entry.displayname = decodeXml(displayname);
+      entry.isCalendar ||= isCalendar;
+      if (privileges !== null && status && /HTTP\/\S+ 2\d\d\b/.test(status)) {
+        entry.canCreate = /<(?:\w+:)?(?:all|write|bind)(?:\s*\/?>|\s[^>]*>)/i.test(privileges);
+      }
     }
+    if (entry) out.push(entry);
   }
   return out;
 };
@@ -1102,6 +1109,7 @@ const calendarHomePropfindBody = (): string =>
   <d:prop>
     <d:displayname/>
     <d:resourcetype/>
+    <d:current-user-privilege-set/>
   </d:prop>
 </d:propfind>`;
 
@@ -1248,7 +1256,7 @@ export const createCalDavProvider = (
   };
 
   const discoverCalendars = async (signal?: AbortSignal): Promise<
-    Array<{ id: string; href: string; displayname: string }>
+    Array<{ id: string; href: string; displayname: string; canCreate?: boolean }>
   > => {
     const res = await davRequest(
       opts.config.calendar_home_url,
@@ -1272,6 +1280,7 @@ export const createCalDavProvider = (
         id: calendarIdFromHref(e.href),
         href: e.href,
         displayname: e.displayname,
+        ...(e.canCreate !== undefined ? { canCreate: e.canCreate } : {}),
       }));
   };
 
@@ -1982,7 +1991,9 @@ export const createCalDavProvider = (
     operation: string,
     create = false,
     expected_etag?: string,
+    beforeSend?: () => void,
   ): Promise<string | undefined> => {
+    beforeSend?.();
     const res = await fetcher(absolute(cal.href, href), {
       method: 'PUT',
       headers: {
@@ -2191,7 +2202,39 @@ export const createCalDavProvider = (
       };
     },
 
-    async createEvent(calendarId: string, event: CreateEventInput) {
+    async readEventForEdit(calendar_id, source_id) {
+      const cal = await resolveCalendarHref(calendar_id, 'read-event');
+      const parts = source_id.split(':');
+      if (parts[0] !== cal.id || !parts[1]) throw new CalendarAdapterError('event_not_found', 'The event does not belong to this calendar.');
+      const href = `${cal.href.replace(/\/$/, '')}/${parts[1]}.ics`;
+      const existing = await fetchEventIcs(cal.href, href);
+      const object = readObject(existing.body);
+      const occurrence = object && occurrenceOf(object, occurrenceSuffix(parts, source_id, 'read') ?? null);
+      if (!object || !occurrence) throw new CalendarAdapterError('event_not_found', 'This event could not be read from CalDAV.');
+      const permission = await davRequest(absolute(cal.href, href), 'PROPFIND', { Depth: '0', 'Content-Type': 'application/xml; charset=utf-8' },
+        `<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:current-user-privilege-set/></d:prop></d:propfind>`, 'PROPFIND event privileges');
+      const canWrite = allBlocks(permission.text, 'response').some(response => {
+        const resource = decodeXml((innerOf(response, 'href') ?? '').trim());
+        if (!resource || absolute(cal.href, resource) !== absolute(cal.href, href)) return false;
+        return allBlocks(response, 'propstat').some(ps => {
+          const status = innerOf(ps, 'status');
+          if (!status || !/HTTP\/\S+ 2\d\d\b/.test(status)) return false;
+          const privileges = innerOf(innerOf(ps, 'prop') ?? '', 'current-user-privilege-set') ?? '';
+          return /<(?:\w+:)?(?:all|write|write-content)(?:\s*\/?>|\s[^>]*>)/i.test(privileges);
+        });
+      });
+      return { payload: payloadOf(object, occurrence, existing.etag ?? '', cal),
+        editable_fields: canWrite ? ['summary', 'description', 'location', 'start_at', 'end_at'] : [],
+        ...(!canWrite ? { read_only_reason: 'Write access to this CalDAV event could not be verified.' } : {}),
+        edit_notice: 'Changes are saved to this CalDAV calendar. Its existing invitation and provider details are kept.' };
+    },
+
+    async listWritableCalendars() {
+      return (await discoverCalendars()).filter(cal => cal.canCreate === true)
+        .map(cal => ({ calendar_id: cal.id, name: cal.displayname || cal.id }));
+    },
+
+    async createEvent(calendarId: string, event: CreateEventInput, beforeSend?: () => void) {
       const cal = await resolveCalendarHref(calendarId, 'PUT (create)');
       // D-315 slice 7 — an invite's own UID is kept when it can name the
       // `.ics` file and sit in a `source_id` (`<calendar>:<uid>`, split on
@@ -2203,7 +2246,7 @@ export const createCalDavProvider = (
           .digest('hex')}@recued`;
       const href = `${cal.href.replace(/\/$/, '')}/${uid}.ics`;
       const ics = buildCalendarObject(uid, event, nowOf());
-      await putEvent(cal, href, ics, 'PUT (create)', true);
+      await putEvent(cal, href, ics, 'PUT (create)', true, undefined, beforeSend);
       return payloadAfterWrite(ics, null, cal, 'PUT (create)');
     },
 
@@ -2261,7 +2304,7 @@ export const createCalDavProvider = (
         written = k;
       }
       const ics = ctx.editor.render();
-      const etag = await putEvent(cal, href, ics, 'PUT (update)', false, input.expected_etag);
+      const etag = await putEvent(cal, href, ics, 'PUT (update)', false, input.expected_etag, input.before_send);
       return { ...payloadAfterWrite(ics, written, cal, 'PUT (update)'), ...(etag ? { etag } : {}) };
     },
 

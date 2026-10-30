@@ -18,6 +18,7 @@ import type { ParamType } from '@recued/transforms';
 import type { AuthoringReferenceSpan } from '@recued/contracts';
 import type { ValidationSeverity } from '../validate.js';
 import { RESERVED_STEP_IDS } from './constants.js';
+import { conditionStringParts } from '../condition-source.js';
 
 export type AddFn = (
   severity: ValidationSeverity,
@@ -109,14 +110,15 @@ export const validateConditionField = (cond: unknown, path: string, add: AddFn):
 
 /** Parse and validate a condition STRING. Format: `{{ref}} operator value?` */
 export const validateConditionString = (cond: string, path: string, add: AddFn): void => {
+  const parsed = conditionStringParts(cond);
   // Forbidden compound keywords — recipes use any/all transform steps, not or/and inline
-  if (/\bor\b/i.test(cond) || /\band\b/i.test(cond)) {
+  if (parsed.compound) {
     add('error', 'condition_compound', path,
       'use any/all transform steps for compound conditions, not "or"/"and" in the condition string');
     return;
   }
 
-  const parts = cond.trim().split(/\s+/);
+  const parts = parsed.tokens.map(token => token.value);
   if (parts.length < 2) {
     add('error', 'condition_too_short', path,
       `condition "${cond}" has too few tokens — expected "{{ref}} operator [value]"`);

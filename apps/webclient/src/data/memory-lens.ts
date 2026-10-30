@@ -6,8 +6,11 @@
  *
  *  Reads `memory.list` (owner-trusted, whole-feed) and shows EVERY origin
  *  (D-198 §3 transparency), filterable by write-actor (You / Agents / System).
- *  Authorship is origin-scoped: you have full CRUD on your own `user_self`
- *  rows; engine / AI / contracted rows are view-only (no edit/delete rendered).
+ *  Authorship is origin-scoped: you have full CRUD on the memories you wrote
+ *  (`isOwnMemoryEntry`); engine / AI / contracted rows, and the record of a run
+ *  you started, are view + Forget only (no edit/delete rendered). An agent's
+ *  note can also be REPLACED with your own version (D-198 §12,
+ *  `isReplaceableEntry`): a new note of yours that takes its place in recall.
  *
  *  Pure render (returns HTML strings) + styles + click-/field-dispatch
  *  constants the route wires. Body previews are already clamped by the
@@ -60,6 +63,9 @@ export const MEMORY_ADD_ACTION = 'memory-add';
 export const MEMORY_OPEN_ACTION = 'memory-open';
 export const MEMORY_OPEN_RUN_ACTION = 'memory-open-run';
 export const MEMORY_EDIT_ACTION = 'memory-edit';
+/** D-198 §12 — the owner replaces an agent's entry with their own version
+ *  (`memory.replace`): the compose form opens prefilled from that entry. */
+export const MEMORY_REPLACE_ACTION = 'memory-replace';
 export const MEMORY_DELETE_ACTION = 'memory-delete';
 export const MEMORY_DELETE_CONFIRM_ACTION = 'memory-delete-confirm';
 export const MEMORY_DELETE_CANCEL_ACTION = 'memory-delete-cancel';
@@ -117,11 +123,13 @@ export const MEMORY_ROW_ID_ATTR = 'data-memory-id';
 export const MEMORY_FIELD_ATTR = 'data-memory-field';
 const MEMORY_LENS_HEADING_ID = 'recued-memory-lens-heading';
 
-/** Compose (create/edit) form state, owned by the route, rendered here. */
+/** Compose (create/edit/replace) form state, owned by the route, rendered here. */
 export interface MemoryComposeState {
   open: boolean;
-  mode: 'create' | 'edit';
-  /** The edited row's id (edit mode only). */
+  /** `replace` (D-198 §12) writes a NEW note of yours in an agent entry's place. */
+  mode: 'create' | 'edit' | 'replace';
+  /** The row the form acts on: the one edited, or the agent entry a replace
+   *  takes the place of. Absent when creating. */
   editId?: string;
   kind: string;
   summary: string;
@@ -319,6 +327,27 @@ const revisionNote = (
       ? '<p class="memory-row-revision">Corrects an earlier entry</p>'
       : '';
 
+/** A memory the owner WROTE — the only entry they can edit or delete. A run they
+ *  started is `user_self` too and shows under You, but it is the record of a run
+ *  (`run_id` — the contract's "audit-authored" marker): the server refuses to
+ *  edit it and forgets it rather than deleting it, so it gets Forget like the
+ *  rows others wrote. */
+export const isOwnMemoryEntry = (
+  entry: Pick<MemoryListEntry, 'origin_actor' | 'run_id'>,
+): boolean => entry.origin_actor === 'user_self' && entry.run_id === undefined;
+
+/** D-198 §12 — an entry the owner may replace with their own version: a note an
+ *  agent saved (not the record of a run), still live, and the current version
+ *  (one a newer version already replaced has that version to replace instead).
+ *  The server makes the same checks; this only decides which rows offer it. */
+export const isReplaceableEntry = (
+  entry: Pick<MemoryListEntry, 'origin_actor' | 'run_id' | 'redacted' | 'replaced_by'>,
+): boolean =>
+  entry.origin_actor === 'contracted_user'
+  && entry.run_id === undefined
+  && entry.redacted !== true
+  && entry.replaced_by === undefined;
+
 const renderFilterChip = (
   filter: MemoryOriginFilter,
   active: MemoryOriginFilter,
@@ -338,8 +367,9 @@ const renderFilterChip = (
 
 /** The per-row action foot: the audit run link, a "View" affordance for rows
  *  carrying a full body, and — when writes are wired (§3) — Edit + Delete on the
- *  owner's OWN rows, or **Forget** (redact) on others' rows (engine / AI /
- *  contracted). All destructive actions are an inline two-step confirm. A row
+ *  memories the owner WROTE, or **Forget** (redact) on everything else: others'
+ *  rows (engine / AI / contracted) and the record of a run, the owner's own runs
+ *  included. All destructive actions are an inline two-step confirm. A row
  *  that is ALREADY redacted keeps only its run link (nothing left to act on). */
 const renderRowFoot = (
   entry: MemoryListEntry,
@@ -355,7 +385,7 @@ const renderRowFoot = (
   restoringId: string | undefined,
   restoreError: { memoryId: string; message: string } | undefined,
 ): string => {
-  const isOwn = entry.origin_actor === 'user_self';
+  const isOwn = isOwnMemoryEntry(entry);
   const isRedacted = entry.redacted === true;
   const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
   const actionName = (label: string): string => memoryActionName(label, entry);
@@ -433,10 +463,25 @@ const renderRowFoot = (
           ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
           : ''}`;
     } else {
-      // Others' rows are view + redact only (§3) — no edit.
-      controls = `<button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${locked
+      // Others' rows, and the record of any run (yours too), are view + redact
+      // only (§3) — no edit. An agent's note can also be replaced with your own
+      // version (§12), which opens the form the way Edit does.
+      const replaceable = isReplaceableEntry(entry);
+      const openingReplace = replaceable && openingEditId === entry.memory_id;
+      const replace = replaceable
+        ? `<button type="button" class="memory-row-btn"
+          ${actionAttr}="${MEMORY_REPLACE_ACTION}" ${idAttr}${openingReplace
+            ? ' aria-disabled="true" aria-busy="true"'
+            : locked
+              ? ' aria-disabled="true"'
+            : ''} aria-label="${actionName(openingReplace ? 'Opening… memory' : 'Replace memory')}">${openingReplace ? 'Opening…' : 'Replace'}</button>`
+        : '';
+      controls = `${replace}<button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingReplace || locked
         ? ' aria-disabled="true"'
-        : ''} aria-label="${actionName('Forget memory')}">Forget</button>`;
+        : ''} aria-label="${actionName('Forget memory')}">Forget</button>${
+        replaceable && editError?.memoryId === entry.memory_id
+          ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
+          : ''}`;
     }
   }
   const inner = `${runLink}${openBtn}${controls}`;
@@ -499,13 +544,20 @@ const renderRow = (
   </li>`;
 };
 
-/** The create/edit compose form (an inline panel replacing the feed). */
+/** D-198 §12 — what a replace does, said where the owner decides to save it. */
+export const MEMORY_REPLACE_HINT =
+  'Saving puts your version in place of the agent’s: recall finds yours instead. '
+  + 'Delete yours later and the agent’s comes back.';
+
+/** The create/edit/replace compose form (an inline panel replacing the feed). */
 const renderComposeForm = (
   compose: MemoryComposeState,
   actionAttr: string,
   discardGuardOpen: boolean,
 ): string => {
-  const title = compose.mode === 'edit' ? 'Edit memory' : 'New memory';
+  const title = compose.mode === 'edit'
+    ? 'Edit memory'
+    : compose.mode === 'replace' ? 'Replace with your version' : 'New memory';
   const err = compose.error !== undefined
     ? `<p class="memory-compose-error" role="alert">${e(compose.error)}</p>`
     : '';
@@ -535,6 +587,7 @@ const renderComposeForm = (
     ${discardGuard}
     <div class="memory-compose-editor"${editorStateAttr}>
       <header class="memory-compose-head"><h3 class="memory-compose-title">${e(title)}</h3></header>
+      ${compose.mode === 'replace' ? `<p class="memory-field-hint">${e(MEMORY_REPLACE_HINT)}</p>` : ''}
       <label class="memory-field">
         <span class="memory-field-label">Kind</span>
         <input class="memory-input" type="text" placeholder="e.g. note, preference, fact"
@@ -646,7 +699,7 @@ const renderDetail = (
   } else {
     const entry = detail.entry;
     const when = formatRelativeTime(entry.event_at ?? entry.ts, now);
-    const isOwn = entry.origin_actor === 'user_self';
+    const isOwn = isOwnMemoryEntry(entry);
     const isRedacted = entry.redacted === true;
     const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
     const actionName = (label: string): string => memoryActionName(label, entry);
@@ -685,8 +738,22 @@ const renderDetail = (
              ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
              : ''}`;
       } else {
-        // Others' rows are view + redact only (§3).
-        controls = `<button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr} aria-label="${actionName('Forget memory')}">Forget</button>`;
+        // Others' rows, and the record of any run, are view + redact only (§3);
+        // an agent's note can also be replaced with your own version (§12).
+        const replaceable = isReplaceableEntry(entry);
+        const openingReplace = replaceable && openingEditId === entry.memory_id;
+        const replace = replaceable
+          ? `<button type="button" class="memory-btn"
+             ${actionAttr}="${MEMORY_REPLACE_ACTION}" ${idAttr}${openingReplace
+               ? ' aria-disabled="true" aria-busy="true"'
+               : ''} aria-label="${actionName(openingReplace ? 'Opening… memory' : 'Replace memory')}">${openingReplace ? 'Opening…' : 'Replace'}</button>`
+          : '';
+        controls = `${replace}<button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingReplace
+          ? ' aria-disabled="true"'
+          : ''} aria-label="${actionName('Forget memory')}">Forget</button>${
+          replaceable && editError?.memoryId === entry.memory_id
+            ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
+            : ''}`;
       }
     }
     const content = isRedacted

@@ -19,6 +19,7 @@ import { executeEmbedding } from '@recued/llm';
 import { createMemoryEmbedder } from '../memory-embedder.js';
 import type { AuditLogStore, Collection } from '@recued/storage';
 import type { MemoryRedactionRecord } from '../memory-rpc-handler.js';
+import { openMemoryRedactionStore } from '../memory-revision.js';
 import { createWarehouseEventBus, type WarehouseEventBus } from '@recued/warehouse-events';
 
 import type { AuthDeps } from '../auth-handler.js';
@@ -847,7 +848,9 @@ export const composeAppContext = (
       // (`memory.search`'s `query`). Absent → the store's substring fallback.
       { db },
     );
-    memoryRedactionStore = createSQLiteCollection<MemoryRedactionRecord>(db, 'memory_redactions');
+    // The same opener the run readers use on their own handle, so the marks the
+    // Memory lens writes are the marks `data.timeline` and run history honour.
+    memoryRedactionStore = openMemoryRedactionStore(db);
   }
 
   let sharedDeps: SharedRpcDeps | undefined;

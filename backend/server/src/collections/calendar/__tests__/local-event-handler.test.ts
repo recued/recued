@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { type CanonicalEvent, type CalendarEventUpdateRequest } from '@recued/contracts';
+import { type CanonicalEvent, type CalendarEventUpdateRequest, type CalendarEventCreateRequest } from '@recued/contracts';
 import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import { createBlobStore } from '../../../storage/blob-store.js';
@@ -14,6 +14,8 @@ import type { WsClient } from '../../../ws-server.js';
 import { createCalendarCollection, type CalendarCollection } from '../calendar-collection.js';
 import { createLocalCalendarProvider, LOCAL_CALENDAR_CAPS } from '../local-provider.js';
 import { getCalendarEvent, updateCalendarEvent } from '../local-event-handler.js';
+import { createOwnerCalendarEvent, listCalendarEventDestinations } from '../event-create-handler.js';
+import { createCalendarEventCreationStore } from '../../../storage/calendar-event-creations.js';
 
 const NOW = Date.parse('2026-10-28T16:00:00Z');
 const ref = { slug: 'local', source_id: 'event-1' };
@@ -152,6 +154,116 @@ it('requires a paired owner for calendar event RPCs before reading or writing an
   const slice = makeCollectionHandlers({ registry })!;
   const client = { instance_id: null } as WsClient;
   await expect(slice.handlers['collection.calendar.event.get'](ref, client)).rejects.toMatchObject({ code: 'unauthorized' });
+  await expect(slice.handlers['collection.calendar.event.destinations'](undefined, client)).rejects.toMatchObject({ code: 'unauthorized' });
+  await expect(slice.handlers['collection.calendar.event.create']({} as CalendarEventCreateRequest, client)).rejects.toMatchObject({ code: 'unauthorized' });
   await expect(slice.handlers['collection.calendar.event.update'](request({ summary: 'No' }), client)).rejects.toMatchObject({ code: 'unauthorized' });
   await expect(slice.handlers['collection.calendar.event.respond']({ ...ref, response: 'accepted', expected_version: 'v1', expected_incarnation: 'i1' }, client)).rejects.toMatchObject({ code: 'unauthorized' });
+});
+
+const newEvent = (): CalendarEventCreateRequest => ({ slug: 'local', calendar_id: 'local',
+  expected_incarnation: instances.getIncarnation!('calendar', 'local')!,
+  creation_id: '7865c879-d028-4093-bbd3-107986e7841d', summary: 'New planning', description: 'Agenda notes', location: 'Room 3',
+  start_at: NOW, end_at: NOW + 3_600_000, timezone: 'America/Los_Angeles', is_all_day: false });
+
+it('creates a canonical event once and recovers the same save through another receipt-store handle', async () => {
+  const input = newEvent(), write = vi.spyOn(collection.provider, 'createEvent');
+  const store = createCalendarEventCreationStore(db);
+  const result = await createOwnerCalendarEvent(deps(), store, input);
+  expect(result.snapshot.event).toMatchObject({ summary: input.summary, calendar_id: 'local', location: 'Room 3',
+    description: 'Agenda notes', start_at: NOW, end_at: input.end_at, is_all_day: false });
+  expect(collection.table.get(result.snapshot.event.source_id)?.event.summary).toBe(input.summary);
+  expect(events).toHaveLength(1);
+  const reloaded = createCalendarEventCreationStore(db);
+  expect(await createOwnerCalendarEvent(deps(), reloaded, input)).toEqual(result);
+  expect(write).toHaveBeenCalledTimes(1);
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, summary: 'Different draft' })).rejects.toMatchObject({ code: 'conflict' });
+  expect(write).toHaveBeenCalledTimes(1);
+});
+
+it('keeps an uncertain create claimed across retries and concurrent submissions', async () => {
+  const input = newEvent(), store = createCalendarEventCreationStore(db);
+  let fail!: (reason: Error) => void;
+  const write = vi.spyOn(collection.provider, 'createEvent').mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+  const first = createOwnerCalendarEvent(deps(), store, input);
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  fail(new Error('Provider response lost.'));
+  await expect(first).rejects.toMatchObject({ code: 'outcome_unknown' });
+  const reopenedDb = new Database(db.serialize());
+  try {
+    await expect(createOwnerCalendarEvent(deps(), createCalendarEventCreationStore(reopenedDb), input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  } finally { reopenedDb.close(); }
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(events).toHaveLength(0);
+});
+
+it('refuses unwritable destinations, changed connections and invalid dates before a create', async () => {
+  const store = createCalendarEventCreationStore(db), input = newEvent();
+  const write = vi.spyOn(collection.provider, 'createEvent');
+  for (const patch of [{ summary: ' ' }, { end_at: NOW }, { start_at: NaN }, { is_all_day: true },
+    { timezone: 'Invalid/Zone' }, { description: '💡'.repeat(70_000) }]) {
+    await expect(createOwnerCalendarEvent(deps(), store, { ...input, ...patch })).rejects.toMatchObject({ code: 'invalid_args' });
+  }
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, calendar_id: 'not-this-calendar' })).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, expected_incarnation: 'old' })).rejects.toMatchObject({ code: 'resource_changed' });
+  instances.updateAuthState('calendar', 'local', { auth_state: 'expired' });
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(write).not.toHaveBeenCalled();
+  expect(store.get(input.creation_id)).toBeUndefined();
+});
+
+it('lists live writable calendars and fences a connection replaced while its destinations load', async () => {
+  expect(await listCalendarEventDestinations(deps())).toMatchObject({ destinations: [{ slug: 'local', calendar_id: 'local', name: 'On this server' }], unavailable: [] });
+  vi.spyOn(collection.provider, 'listWritableCalendars').mockImplementationOnce(async () => {
+    instances.delete('calendar', 'local');
+    instances.upsert({ platform: 'calendar', slug: 'local', adapter_type: 'local', config: {}, caps: LOCAL_CALENDAR_CAPS, auth_state: 'healthy', last_synced_at: null });
+    return [{ calendar_id: 'local', name: 'Old calendar' }];
+  });
+  const result = await listCalendarEventDestinations(deps());
+  expect(result.destinations).toEqual([]);
+  expect(result.unavailable).toMatchObject([{ slug: 'local' }]);
+});
+
+it('honors disabled native writes even with stale writable caps, including at provider handoff', async () => {
+  const store = createCalendarEventCreationStore(db), input = newEvent();
+  const disable = () => instances.upsert({ ...instances.get('calendar', 'local')!, config: { native_write_enabled: false } });
+  const write = vi.spyOn(collection.provider, 'createEvent');
+  disable();
+  expect((await listCalendarEventDestinations(deps())).destinations).toEqual([]);
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(store.get(input.creation_id)).toBeUndefined(); expect(write).not.toHaveBeenCalled();
+  instances.upsert({ ...instances.get('calendar', 'local')!, config: {} });
+  let sent = false;
+  write.mockImplementationOnce(async (_id, _event, beforeSend) => {
+    disable(); beforeSend!(); sent = true; throw new Error('Must not send after writes are disabled.');
+  });
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  expect(sent).toBe(false); expect(events).toHaveLength(0);
+});
+
+it('does not mirror or resend a create whose provider response names another calendar', async () => {
+  const store = createCalendarEventCreationStore(db), input = newEvent();
+  const original = collection.provider.createEvent.bind(collection.provider);
+  const write = vi.spyOn(collection.provider, 'createEvent').mockImplementationOnce(async (...args) => {
+    const payload = await original(...args);
+    return { ...payload, event: { ...payload.event, calendar_id: 'another-calendar' } };
+  });
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  expect(write).toHaveBeenCalledTimes(1); expect(events).toHaveLength(0);
+  expect(collection.table.list({})).toHaveLength(1);
+});
+
+it('rechecks the calendar binding at provider handoff and leaves a replacement warehouse untouched', async () => {
+  const store = createCalendarEventCreationStore(db), input = newEvent();
+  let sent = false;
+  vi.spyOn(collection.provider, 'createEvent').mockImplementationOnce(async (_id, _event, beforeSend) => {
+    instances.delete('calendar', 'local');
+    instances.upsert({ platform: 'calendar', slug: 'local', adapter_type: 'local', config: {}, caps: LOCAL_CALENDAR_CAPS, auth_state: 'healthy', last_synced_at: null });
+    beforeSend!();
+    sent = true;
+    throw new Error('Must not reach the provider.');
+  });
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  expect(sent).toBe(false); expect(events).toHaveLength(0);
 });

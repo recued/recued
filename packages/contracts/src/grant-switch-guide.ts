@@ -376,6 +376,16 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
       { entry: `${COLLECTION_GRANT_PREFIX}file`, when: 'to list attachments' },
     ],
   },
+  'document.search': {
+    title: 'Search document contents',
+    summary: 'Finds words inside saved files and attachments, with excerpts and file links.',
+    needs: [
+      { entry: `${COLLECTION_GRANT_PREFIX}file` },
+      { entry: 'core.storage.data-file-read', when: 'to read text and verify saved matches' },
+      { entry: 'core.storage.file.read-temp', when: 'to read converted documents' },
+    ],
+    note: 'Uses installed MarkItDown or Docling when conversion is needed. Shows files it could not search.',
+  },
   'document.read': {
     title: 'Read a document',
     summary: 'Reads the text of a file, like an email attachment or a stored PDF.',

@@ -3353,7 +3353,7 @@ export const mountConnectionsEnrollPanel = (
           if (originatingEditorStillCurrent()) {
             state.dialog.saving = false;
             state.dialog.error = classified.code === 'unknown_method'
-              ? `This server cannot recover the interrupted receipt. Probe ${marker.kind}/${marker.name} before deciding whether to retry.`
+              ? `This server cannot tell how swapping the key went. Test ${marker.kind}/${marker.name} before you decide whether to try again.`
               : `The replacement outcome is not confirmed yet. Recued will check again after reconnecting; do not retry ${marker.kind}/${marker.name} meanwhile.`;
           }
           renderRecoveryPresentation();
@@ -3779,7 +3779,7 @@ export const mountConnectionsEnrollPanel = (
         if (originatingEditorStillCurrent()) {
           state.dialog.saving = false;
           state.dialog.credentialCorrection = null;
-          state.dialog.error = 'Your server has no receipt for this swap. It was not used on any Connection you have set up with this name. Look at the Connection before you try again.';
+          state.dialog.error = 'Your server has no record of this new key, so it was not used. Look at the connection before you try again.';
         }
       } else {
         state.credentialRotationRecovery = {
@@ -3921,7 +3921,7 @@ export const mountConnectionsEnrollPanel = (
     setDialogCredentialSafeStopClosure(
       'unsupported',
       acknowledgementToken === null
-        ? 'Your server can show this safe stop, but cannot write down that it is finished. Update it, or type a properly different key before you check again.'
+        ? 'Your server knows Recued stopped swapping this key, but cannot note that it is fixed. Update it, or type a different key before you check again.'
         : 'This browser cannot tell your server that it stopped safely. Update it, or type a properly different key before you check again.',
     );
   };
@@ -5743,7 +5743,7 @@ export const mountConnectionsEnrollPanel = (
             name,
             phase: 'safe_stop_unconfirmed',
             automaticTakeover: false,
-            error: 'This server cannot confirm the safe stop across tabs. Carry on in the tab you started in, or update the server.',
+            error: 'This server cannot confirm in other tabs that swapping the key stopped. Carry on in the tab you started in, or update the server.',
           };
         }
         renderPreservingActiveField();
@@ -5848,7 +5848,7 @@ export const mountConnectionsEnrollPanel = (
             name,
             phase: 'safe_stop_unconfirmed',
             automaticTakeover: false,
-            error: 'Recued could not reach the paired server to confirm the safe stop. Reconnect and check again; your draft stays only in this tab.',
+            error: 'Recued could not reach your server to check that swapping the key stopped. Reconnect and check again; your draft stays only in this tab.',
           };
         }
         renderPreservingActiveField();
@@ -6055,8 +6055,8 @@ export const mountConnectionsEnrollPanel = (
         ownership.error = unavailable
           ? 'This server cannot confirm whether the earlier provider check finished. Update the server before taking over.'
           : ownership.automaticTakeover
-            ? 'Recued could not reach the paired server to confirm ownership. It will check again after reconnecting.'
-            : 'Recued could not reach the paired server to confirm ownership. Reconnect, then check again.';
+            ? 'Recued could not reach your server to check which tab is in charge. It checks again after reconnecting.'
+            : 'Recued could not reach your server to check which tab is in charge. Reconnect, then check again.';
         renderPreservingActiveField();
         syncSubmitDisabled();
         return;
@@ -7421,7 +7421,7 @@ export const mountConnectionsEnrollPanel = (
           retireRotationMarker = true;
           rotationOwnedElsewhere = true;
           presentedError = new Error(
-            'Another tab or paired client is already checking a replacement for this connection.',
+            'Another tab or device is already checking a new key for this connection.',
           );
         } else if (classified.code === 'unknown_method') {
           retireRotationMarker = true;

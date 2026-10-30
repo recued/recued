@@ -126,6 +126,7 @@ export type {
   MemoryImportResult,
   MemoryRestoreRequest,
   MemoryRestoreResult,
+  MemoryReplaceRequest,
 } from './memory.js';
 export {
   MEMORY_LIST_MAX_PAGE_SIZE,

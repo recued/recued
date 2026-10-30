@@ -71,10 +71,13 @@ export const calendarEventPatch = (
   if (!draft.summary.trim()) return { error: 'Enter an event title.' };
   const patch: CalendarEventPatch = {};
   for (const key of ['summary', 'description', 'location'] as const) {
+    // Unedited provider fields can exceed this form's write limits. Keeping
+    // them intact must not prevent an edit to another supported field.
+    if (draft[key] === initial[key]) continue;
     if (new TextEncoder().encode(draft[key]).length > CALENDAR_EVENT_EDIT_LIMITS[key]) {
       return { error: `${key === 'summary' ? 'Title' : key === 'description' ? 'Description' : 'Location'} is too long.` };
     }
-    if (draft[key] !== initial[key]) patch[key] = draft[key];
+    patch[key] = draft[key];
   }
   const readTime = (key: 'start' | 'end'): number | string => {
     const old = key === 'start' ? event.start_at : event.end_at;
@@ -134,6 +137,7 @@ export const createCalendarEventSurface = (deps: {
   let draft: CalendarEventDraft | null = null;
   let busy: 'read' | 'save' | 'respond' | null = null;
   let responseNeedsCheck = false;
+  let saveNeedsCheck = false;
   let pendingResponse: CalendarInvitationResponse | null = null;
   let removed = false;
   const responseLabel = (value: string): string => ({ accepted: 'Accepted', tentative: 'Maybe', declined: 'Declined', needs_action: 'Awaiting response' })[value] ?? 'Unknown';
@@ -150,7 +154,7 @@ export const createCalendarEventSurface = (deps: {
     return (Object.keys(initial) as Field[]).some(key =>
       (key !== 'startChoice' && key !== 'endChoice' || draft![key] !== '') && draft![key] !== initial[key]);
   };
-  const button = (action: string, label: string, primary = false): string => `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}" ${deps.actionAttr}="calendar-event-${action}" ${FOCUS}="${action}"${busy ? ' aria-disabled="true" aria-busy="true"' : ''}>${e(label)}</button>`;
+  const button = (action: string, label: string, primary = false): string => `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}" ${deps.actionAttr}="calendar-event-${action}" ${FOCUS}="${action}"${busy || action === 'save' && saveNeedsCheck ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${e(label)}</button>`;
   const repaint = (focus?: string | CalendarEventFocus) => {
     if (focus) pendingFocus = typeof focus === 'string' ? { key: focus } : focus;
     deps.render();
@@ -158,7 +162,12 @@ export const createCalendarEventSurface = (deps: {
   const zoneAvailable = (event: CalendarEventDetails): boolean => event.is_all_day
     || Boolean(calendarWallClockValue(event.start_at, event.timezone) && calendarWallClockValue(event.end_at, event.timezone));
   const editable = (value: CalendarEventSnapshot | null): boolean => value?.editable === true
-    && deps.callers.update !== undefined && zoneAvailable(value.event);
+    && deps.callers.update !== undefined && (zoneAvailable(value.event)
+      || value.editable_fields !== undefined && !value.editable_fields.some(key => key === 'start_at' || key === 'end_at'));
+  const fieldAllowed = (key: Field): boolean => {
+    const field = key === 'start' || key === 'startChoice' ? 'start_at' : key === 'end' || key === 'endChoice' ? 'end_at' : key;
+    return snapshot?.editable_fields === undefined || snapshot.editable_fields.includes(field);
+  };
   const viewFocus = (value: CalendarEventSnapshot) => editable(value) ? 'edit' : 'heading';
   const resumeEditing = () => { pendingLeave = null; repaint(editorFocus); };
   const read = async (checkDraft = false, owner?: 'retry' | 'check' | 'heading' | 'response-check' | 'response-refresh'): Promise<void> => {
@@ -170,16 +179,24 @@ export const createCalendarEventSurface = (deps: {
       if (disposed || seq !== generation) return;
       if (!identityMatches(expectedRef, expectedRecord, value)) throw new Error('The calendar returned a different event. Refresh its details.');
       if (checkDraft && draft && snapshot) {
+        if (snapshot.editable_fields !== undefined && value.provider_verified !== true) {
+          throw new Error(value.refresh_error ?? 'The connected calendar could not verify the saved event. Your draft is kept.');
+        }
         const wanted = calendarEventPatch(snapshot.event, draft);
         const confirmed = wanted.patch && confirmsDraft(snapshot, wanted.patch, value);
         if (confirmed) {
-          snapshot = value; draft = null; error = ''; notice = 'Your changes are saved.'; deps.onSaved(value);
+          snapshot = value; draft = null; saveNeedsCheck = false; error = ''; notice = 'Your changes are saved.'; deps.onSaved(value);
           pendingFocus = { key: viewFocus(value), onlyIfOwned: true };
+        } else if (snapshot.editable_fields !== undefined && value.resource_version === snapshot.resource_version
+          && value.incarnation === snapshot.incarnation && editable(value)
+          && Object.keys(wanted.patch ?? {}).every(key => value.editable_fields?.includes(key as keyof CalendarEventPatch))) {
+          snapshot = value; saveNeedsCheck = false;
+          error = 'Your calendar still has the saved values. Your draft is kept; no changes were sent again.';
         } else { error = 'The saved event differs from your draft. Your draft is kept. Reload saved values to start again.'; }
       } else {
         const checkingResponse = responseNeedsCheck;
         if (checkingResponse && snapshot && value.incarnation !== snapshot.incarnation) throw new Error('This calendar connection was replaced. Reopen the event before responding.');
-        snapshot = value; error = value.refresh_error ?? ''; notice = '';
+        snapshot = value; saveNeedsCheck = false; error = value.refresh_error ?? ''; notice = '';
         if (checkingResponse && value.provider_verified !== true) {
           error = value.refresh_error ?? value.invitation?.unavailable_reason ?? 'Your calendar could not verify the response. Check again before sending.';
         } else if (checkingResponse) {
@@ -202,11 +219,14 @@ export const createCalendarEventSurface = (deps: {
       repaint();
     } }
   };
-  const reset = () => { generation++; ref = null; recordId = ''; snapshot = null; draft = null; busy = null; responseNeedsCheck = false; pendingResponse = null; removed = false; error = ''; notice = ''; unsupported = false; pendingLeave = null; pendingFocus = null; editorFocus = { key: 'summary' }; };
+  const reset = () => { generation++; ref = null; recordId = ''; snapshot = null; draft = null; busy = null; saveNeedsCheck = false; responseNeedsCheck = false; pendingResponse = null; removed = false; error = ''; notice = ''; unsupported = false; pendingLeave = null; pendingFocus = null; editorFocus = { key: 'summary' }; };
   const save = async (): Promise<void> => {
-    if (!snapshot || !draft || !ref || !deps.callers.update || busy || !editable(snapshot) || !snapshot.incarnation) return;
+    if (!snapshot || !draft || !ref || !deps.callers.update || busy || saveNeedsCheck || !editable(snapshot) || !snapshot.incarnation) return;
     const result = calendarEventPatch(snapshot.event, draft);
     if (!result.patch) { error = result.error!; repaint(); return; }
+    if (snapshot.editable_fields && Object.keys(result.patch).some(key => !snapshot!.editable_fields!.includes(key as keyof CalendarEventPatch))) {
+      error = 'Edit that field in the connected calendar. Your draft is kept.'; repaint(); return;
+    }
     if (Object.keys(result.patch).length === 0) { draft = null; error = ''; repaint('edit'); return; }
     const request = { ...ref, expected_version: snapshot.resource_version, expected_incarnation: snapshot.incarnation, patch: result.patch };
     const seq = ++generation; const expectedRecord = recordId;
@@ -219,7 +239,11 @@ export const createCalendarEventSurface = (deps: {
       }
       snapshot = value; draft = null; notice = 'Event saved.'; deps.onSaved(value);
       pendingFocus = { key: viewFocus(value), onlyIfOwned: true };
-    } catch (err) { if (!disposed && seq === generation) error = humanizeRpcError(err); }
+    } catch (err) { if (!disposed && seq === generation) {
+      saveNeedsCheck = snapshot.editable_fields !== undefined;
+      error = humanizeRpcError(err) + (saveNeedsCheck ? ' Check the saved event before trying again.' : '');
+      if (saveNeedsCheck) pendingFocus = { key: 'check', onlyIfOwned: true };
+    } }
     finally { if (!disposed && seq === generation) { busy = null; repaint(); } }
   };
   const respond = async (response: CalendarInvitationResponse): Promise<void> => {
@@ -271,7 +295,7 @@ export const createCalendarEventSurface = (deps: {
     const initialMinute = Math.floor((key === 'start' ? event.start_at : event.end_at) / 60_000) * 60_000;
     const choice = values.includes(current) ? String(current)
       : draft![key] === calendarEventDraft(event)[key] ? String(initialMinute) : '';
-    return `<label class="calendar-event-field">Repeated ${key} time<select class="data-input" ${CALENDAR_EVENT_FIELD}="${key}Choice" ${FOCUS}="${key}Choice"${busy || pendingLeave ? ' disabled' : ''}><option value="">Choose a reading</option>${values.map(at => `<option value="${at}"${String(at) === choice ? ' selected' : ''}>${e(timeLabel(at, zone))}</option>`).join('')}</select></label>`;
+    return `<label class="calendar-event-field">Repeated ${key} time<select class="data-input" ${CALENDAR_EVENT_FIELD}="${key}Choice" ${FOCUS}="${key}Choice"${busy || pendingLeave || saveNeedsCheck || !fieldAllowed(key) ? ' disabled' : ''}><option value="">Choose a reading</option>${values.map(at => `<option value="${at}"${String(at) === choice ? ' selected' : ''}>${e(timeLabel(at, zone))}</option>`).join('')}</select></label>`;
   };
   return {
     reset,
@@ -293,8 +317,8 @@ export const createCalendarEventSurface = (deps: {
       const event = snapshot.event;
       const days = event.is_all_day ? allDayEventDays(event) : null;
       const zone = event.timezone || 'Unknown time zone';
-      const readOnlyReason = snapshot.read_only_reason || (!zoneAvailable(event) ? 'The event’s time zone is unavailable in this browser’s editor.' : '');
-      const field = (key: Field, label: string, type = 'text'): string => `<label class="calendar-event-field">${e(label)}<input class="data-input" type="${type}" ${CALENDAR_EVENT_FIELD}="${key}" ${FOCUS}="${key}" value="${e(draft![key])}"${key === 'summary' ? ' required' : ''}${busy || pendingLeave ? ' disabled' : ''}${type === 'text' ? ` maxlength="${CALENDAR_EVENT_EDIT_LIMITS[key as 'summary' | 'location']}"` : ''}></label>`;
+      const readOnlyReason = snapshot.read_only_reason || (!editable(snapshot) && !zoneAvailable(event) ? 'The event’s time zone is unavailable in this browser’s editor.' : '');
+      const field = (key: Field, label: string, type = 'text'): string => `<label class="calendar-event-field">${e(label)}${!fieldAllowed(key) ? ' (read-only)' : ''}<input class="data-input" type="${type}" ${CALENDAR_EVENT_FIELD}="${key}" ${FOCUS}="${key}" value="${e(draft![key])}"${key === 'summary' ? ' required' : ''}${busy || pendingLeave || saveNeedsCheck || !fieldAllowed(key) && type !== 'text' ? ' disabled' : !fieldAllowed(key) ? ' readonly' : ''}${type === 'text' ? ` maxlength="${CALENDAR_EVENT_EDIT_LIMITS[key as 'summary' | 'location']}"` : ''}></label>`;
       const dateField = (key: 'start' | 'end', label: string): string => {
         const choices = repeatedTime(key);
         return `<div class="calendar-event-date-field">${field(key, label, event.is_all_day ? 'date' : 'datetime-local')}
@@ -302,9 +326,10 @@ export const createCalendarEventSurface = (deps: {
       };
       const editor = draft ? `<div class="calendar-event-editor" aria-label="Edit event">
         <h3>Edit event</h3><p class="calendar-event-hint">${event.is_all_day ? 'All-day dates include the first and last day.' : `Times use ${e(zone)}.`}</p>
+        ${snapshot.edit_notice ? `<p class="calendar-event-hint">${e(snapshot.edit_notice)}</p>` : ''}
         ${field('summary', 'Title')}${field('location', 'Location')}
         <div class="calendar-event-dates">${dateField('start', event.is_all_day ? 'First day' : 'Start')}${dateField('end', event.is_all_day ? 'Last day' : 'End')}</div>
-        <label class="calendar-event-field">Description<textarea class="data-input" rows="6" maxlength="${CALENDAR_EVENT_EDIT_LIMITS.description}" ${CALENDAR_EVENT_FIELD}="description" ${FOCUS}="description"${busy || pendingLeave ? ' disabled' : ''}>
+        <label class="calendar-event-field">Description${!fieldAllowed('description') ? ' (read-only)' : ''}<textarea class="data-input" rows="6" maxlength="${CALENDAR_EVENT_EDIT_LIMITS.description}" ${CALENDAR_EVENT_FIELD}="description" ${FOCUS}="description"${busy || pendingLeave || saveNeedsCheck ? ' disabled' : !fieldAllowed('description') ? ' readonly' : ''}>
 ${e(draft.description)}</textarea></label>
         ${pendingLeave ? `<div class="calendar-event-discard" role="alertdialog" aria-modal="true" aria-labelledby="calendar-event-discard-title" aria-describedby="calendar-event-discard-copy"><h4 id="calendar-event-discard-title">Discard event changes?</h4><p id="calendar-event-discard-copy">Your unfinished changes will be lost.</p><div class="calendar-event-actions">${button('keep', 'Keep editing')}${button('discard', 'Discard changes')}</div></div>` : `<div class="calendar-event-actions">${button('save', busy === 'save' ? 'Saving…' : 'Save changes', true)}${button('cancel', 'Cancel')}</div>`}
       </div>` : '';
@@ -340,7 +365,10 @@ ${e(draft.description)}</textarea></label>
       if (key === 'response-check') void read(false, 'response-check');
       if (key === 'response-refresh' && !removed) void read(false, 'response-refresh');
       if (key === 'respond-accepted' || key === 'respond-tentative' || key === 'respond-declined') void respond(key.slice('respond-'.length) as CalendarInvitationResponse);
-      if (key === 'edit' && snapshot && editable(snapshot)) { draft = calendarEventDraft(snapshot.event); editorFocus = { key: 'summary' }; error = ''; notice = ''; repaint('summary'); }
+      if (key === 'edit' && snapshot && editable(snapshot)) {
+        if (saveNeedsCheck) void read(false, 'heading');
+        else { draft = calendarEventDraft(snapshot.event); editorFocus = { key: 'summary' }; error = ''; notice = ''; repaint('summary'); }
+      }
       if (key === 'save') void save();
       if (key === 'check') void read(true, 'check');
       if (key === 'cancel') {
@@ -358,7 +386,7 @@ ${e(draft.description)}</textarea></label>
     handleInput(target: HTMLElement, _change = false): boolean {
       const key = target.getAttribute(CALENDAR_EVENT_FIELD) as Field | null;
       if (!key) return false;
-      if (!draft || busy || pendingLeave || !(key in draft)) return true;
+      if (!draft || busy || saveNeedsCheck || pendingLeave || !(key in draft) || !fieldAllowed(key)) return true;
       const control = target as HTMLInputElement;
       editorFocus = { key, start: control.selectionStart, end: control.selectionEnd };
       if (draft[key] === control.value) return true;

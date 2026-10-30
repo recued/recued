@@ -1145,6 +1145,46 @@ describe('GcalProvider — startSync', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('GcalProvider — createEvent', () => {
+  it('verifies organizer and guest modification permission and sends conditional owner edits without replacing guests', async () => {
+    const current: GcalEvent = { id: 'event', etag: '"e1"', iCalUID: 'same-uid', summary: 'Planning',
+      organizer: { email: 'owner@example.com', self: true }, attendees: [{ email: 'guest@example.com', responseStatus: 'accepted' }],
+      start: { dateTime: '2026-10-30T16:00:00Z', timeZone: 'UTC' }, end: { dateTime: '2026-10-30T17:00:00Z', timeZone: 'UTC' } };
+    let guardCalled = false;
+    const writes: Array<{ url: string; etag?: string; body: Record<string, unknown> }> = [];
+    const fetcher: HttpFetcher = async (url, init) => {
+      if (init?.method === 'PATCH') {
+        expect(guardCalled).toBe(true);
+        writes.push({ url, etag: init.headers?.['If-Match'], body: JSON.parse(init.body as string) });
+      }
+      const body = url.includes('/users/me/calendarList') ? { items: [{ id: 'team', summary: 'Team', accessRole: 'writer' }] } : current;
+      return { status: 200, ok: true, async json() { return body; }, async text() { return JSON.stringify(body); } };
+    };
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher });
+    cleanup.push(() => provider.close());
+    expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toContain('description');
+    current.organizer!.self = false;
+    expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toEqual([]);
+    current.guestsCanModify = true;
+    expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toContain('summary');
+    current.locked = true;
+    expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toEqual([]);
+    current.locked = false;
+    await provider.updateEvent({ calendar_id: 'team', source_id: 'event', patch: { summary: 'Review' }, expected_etag: '"e1"',
+      notify_attendees: true, before_send: () => { guardCalled = true; } });
+    expect(writes).toEqual([{ url: 'https://www.googleapis.com/calendar/v3/calendars/team/events/event?sendUpdates=all', etag: '"e1"', body: { summary: 'Review' } }]);
+  });
+
+  it('offers only selected calendars with a writable access role', async () => {
+    const { fetcher } = makeRouter([{ match: url => url.includes('/users/me/calendarList'), response: { status: 200, body: { items: [
+      { id: 'work', summary: 'Work', accessRole: 'writer' }, { id: 'shared', summary: 'Shared', accessRole: 'writerWithoutPrivateAccess' },
+      { id: 'read', accessRole: 'reader' }, { id: 'unknown' }, { id: 'outside', accessRole: 'owner' },
+    ] } } }]);
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig({ calendar_filter: ['work', 'shared', 'read', 'unknown'] }),
+      accountStore: seedStore(), providerConfig, fetcher });
+    cleanup.push(() => provider.close());
+    expect(await provider.listWritableCalendars!()).toEqual([{ calendar_id: 'work', name: 'Work' }, { calendar_id: 'shared', name: 'Shared' }]);
+  });
+
   it('POSTs events.insert and returns a canonical payload', async () => {
     const store = seedStore();
     const { fetcher, calls } = makeRouter([

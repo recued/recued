@@ -263,7 +263,7 @@ describe('D-125 P7.1 — dialog stages', () => {
     expect(html).toContain('data-connection-credential-correction');
     expect(html).toContain('role="alert"');
     expect(html).toContain('Replacement rejected');
-    expect(html).toContain('Review Bearer Token, then verify the replacement again.');
+    expect(html).toContain('Review Bearer Token, then verify the new key again.');
     expect(html).toContain('data-action="connections-focus-credential-correction"');
     expect(html).toContain('data-field-key="auth.token"');
     const tokenInput = html.match(
@@ -306,10 +306,10 @@ describe('D-125 P7.1 — dialog stages', () => {
     expect(html).toContain('data-connection-credential-triage');
     expect(html).toContain('data-stage="provider_probe"');
     expect(html).toContain(
-      'configured endpoint check rejected this replacement again',
+      'refused the new key again at the address it was sent to',
     );
     expect(html).toContain(
-      'credential and endpoint belong to the intended provider account or tenant',
+      'key and the address belong to the right provider account',
     );
     expect(html).toContain('data-action="connections-focus-credential-triage"');
     expect(html).toContain('data-field-key="config.base_url"');
@@ -348,10 +348,10 @@ describe('D-125 P7.1 — dialog stages', () => {
 
     expect(html).toContain('data-credential-safe-stop="true"');
     expect(html).toContain('Pause before retrying');
-    expect(html).toContain('Do not resend this replacement unchanged');
-    expect(html).toContain('>Create or rotate credential</button>');
-    expect(html).toContain('>Enter fresh Bearer Token</button>');
-    expect(html).toContain('>Provider/admin confirmed a fix</button>');
+    expect(html).toContain('Do not send this key again unchanged');
+    expect(html).toContain('>Make a new key</button>');
+    expect(html).toContain('>Enter a new Bearer Token</button>');
+    expect(html).toContain('>The provider setup is fixed</button>');
     expect(html).toContain('Safe details for the provider administrator');
     expect(html).toContain('Nothing is sent automatically');
     expect(html).toContain('data-credential-admin-handoff-summary');
@@ -379,8 +379,8 @@ describe('D-125 P7.1 — dialog stages', () => {
 
     state.dialog.values['auth.token'] = '';
     const withoutDraft = renderConnectionsPage(state);
-    expect(withoutDraft).toContain('No rejected credential was restored');
-    expect(withoutDraft).toContain('Provider/admin confirmed a fix');
+    expect(withoutDraft).toContain('The refused key was not kept');
+    expect(withoutDraft).toContain('The provider setup is fixed');
     expect(withoutDraft).toMatch(
       /data-action="connections-submit-form"[^>]*disabled/,
     );
@@ -429,9 +429,9 @@ describe('D-125 P7.1 — dialog stages', () => {
       error: null,
     };
     const ready = renderConnectionsPage(state);
-    expect(ready).toContain('Provider/admin confirmed a fix');
+    expect(ready).toContain('The provider setup is fixed');
     expect(ready).toContain(
-      'ask the paired server to record this fix before closing the recovery stop',
+      'asks your server to note the fix',
     );
     expect(ready).not.toMatch(
       /data-action="connections-confirm-credential-handoff"[^>]*disabled/,
@@ -489,8 +489,8 @@ describe('D-125 P7.1 — dialog stages', () => {
     );
 
     expect(html).toContain('data-stage="credential_exchange"');
-    expect(html).toContain('another rejection during credential exchange');
-    expect(html).toContain('credential details and exchange endpoint');
+    expect(html).toContain('refused the key again when your server tried to sign in with it');
+    expect(html).toContain('key and the sign-in address');
     expect(html).toContain('>Review Token Endpoint</button>');
     expect(html).not.toContain('configured provider check');
   });
@@ -521,9 +521,9 @@ describe('D-125 P7.1 — dialog stages', () => {
     );
 
     expect(html).toContain(
-      'configured provider check rejected this replacement again',
+      'provider refused the new key again. Check that it was made for the right provider account',
     );
-    expect(html).toContain('intended provider account, tenant, or workspace');
+    expect(html).toContain('right provider account or workspace');
     expect(html).not.toContain('connection endpoint is correct');
     expect(html).not.toContain('connections-focus-credential-triage');
     expect(html).not.toContain('Check provider setup');
@@ -585,7 +585,7 @@ describe('D-125 P7.1 — dialog stages', () => {
     );
 
     expect(html).toContain(
-      'Review this credential set together: Username, Password. Start with Username, then verify again.',
+      'Review these fields together: Username, Password. Start with Username, then verify again.',
     );
     expect(html).toContain('>Review Username</button>');
     expect(html).not.toContain('Username is wrong');
@@ -940,7 +940,7 @@ describe('D-125 P7.1 — dialog stages', () => {
     expect(resolved).toContain('data-post-safe-stop-verification="resolved"');
     expect(resolved).toContain('Checked, and it is sorted');
     expect(resolved).toContain('provider accepted it');
-    expect(resolved).toContain('no credential was changed or replayed');
+    expect(resolved).toContain('nothing was changed or sent again');
     expect(resolved).toContain('Server profile: Home NAS');
     expect(resolved).not.toContain('connections-recheck-post-safe-stop');
     expect(resolved).not.toContain('connections-review-post-safe-stop');
@@ -987,7 +987,7 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
     const unsupported = renderConnectionsPage(state);
     expect(unsupported).toContain('Your server needs updating before it can check this');
-    expect(unsupported).toContain('cannot prove which saved version it checked');
+    expect(unsupported).toContain('cannot say which saved version it checked');
     expect(unsupported).toContain('Check once it is updated');
   });
 
@@ -1087,7 +1087,7 @@ describe('D-125 P7.1 — dialog stages', () => {
     const html = renderConnectionsPage(state);
     expect(html).toContain('data-connection-credential-recovery="pending"');
     expect(html).toContain('aria-live="polite"');
-    expect(html).toContain('Do not retry while this outcome is pending');
+    expect(html).toContain('Wait for the result before you try again');
     expect(html).toContain('data-action="connections-check-credential-rotation"');
     expect(html).not.toContain('attempt_id');
   });
@@ -1114,7 +1114,7 @@ describe('D-125 P7.1 — dialog stages', () => {
     });
     expect(html).toContain('went from version 26.7.3 to 26.8.0');
     expect(html).toContain('still offers version 26.9.0');
-    expect(html).toContain('An update landed');
+    expect(html).toContain('An update was installed, but not the newest one');
     expect(html).toContain(
       'What the server said: running 26.8.0 · stable channel · update check update available · before update 26.7.3.',
     );
@@ -1145,8 +1145,8 @@ describe('D-125 P7.1 — dialog stages', () => {
       ...state,
       credentialRotationServerUpdateGuideAvailable: true,
     });
-    expect(html).toContain('rejected the release manifest signature');
-    expect(html).toContain('Do not apply from that feed');
+    expect(html).toContain('did not pass its signature check');
+    expect(html).toContain('Do not install from that update service');
     expect(html).toContain('update check bad signature');
     expect(html).not.toContain('Restart or redeploy the actual server');
   });
@@ -1167,7 +1167,7 @@ describe('D-125 P7.1 — dialog stages', () => {
       'data-connection-credential-recovery="restart_resolved"',
     );
     expect(html).toContain(
-      'A look-only check says this server can safely check a new key for api/hubspot',
+      'A safety check says this server can check a new key for api/hubspot',
     );
     expect(html).toContain('You stayed on this page');
     expect(html).toContain('Continue in this tab');
@@ -1193,11 +1193,11 @@ describe('D-125 P7.1 — dialog stages', () => {
       'data-connection-credential-recovery="editor_ready"',
     );
     expect(interrupted).toContain(
-      'fresh key editor for api/hubspot closed before any field changed',
+      'blank form for api/hubspot closed before anything was typed',
     );
-    expect(interrupted).toContain('Reopen the fresh editor');
+    expect(interrupted).toContain('Reopen the blank form');
     expect(interrupted).toContain(
-      'No field value, credential, or server-recovery receipt will be restored',
+      'Nothing typed before comes back',
     );
     expect(interrupted).not.toContain('All sorted');
     expect(interrupted).not.toContain('replacement-token');
@@ -1215,10 +1215,10 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
     const reopened = renderConnectionsPage(state);
     expect(reopened).toContain(
-      'read-only safety check finished and the fresh key editor',
+      'safety check finished and the blank form',
     );
-    expect(reopened).toContain('No field value or credential was restored');
-    expect(reopened).not.toContain('Reopen the fresh editor');
+    expect(reopened).toContain('Nothing typed before was kept');
+    expect(reopened).not.toContain('Reopen the blank form');
   });
 
   it('renders server-change progress as a busy passive state with no retry action', () => {
@@ -1241,12 +1241,10 @@ describe('D-125 P7.1 — dialog stages', () => {
     });
     expect(applying).toContain('aria-busy="true"');
     expect(applying).toContain(
-      'An open Recued tab is applying the server update',
+      'Recued is updating your server. This tab stays on api/hubspot and waits; nothing is sent twice.',
     );
-    expect(applying).toContain('wait instead of sending a duplicate action');
-    expect(applying).toContain(
-      'opaque ID for the selected server profile',
-    );
+    // What tabs pass each other is not the owner's to act on (2026-10-29).
+    expect(applying).not.toContain('opaque');
     expect(applying).not.toContain(
       'data-action="connections-start-fresh-credential-rotation"',
     );
@@ -1263,8 +1261,9 @@ describe('D-125 P7.1 — dialog stages', () => {
       operationId: 'server-ledger-receipt',
     };
     const waiting = renderConnectionsPage(state);
-    expect(waiting).toContain('server accepted the rollback');
-    expect(waiting).toContain('verifies the exact opaque receipt');
+    expect(waiting).toContain('Your server accepted the rollback and is restarting.');
+    expect(waiting).toContain('once the server confirms the rollback finished');
+    expect(waiting).not.toContain('opaque');
     expect(waiting).not.toContain('server-ledger-receipt');
     expect(waiting).not.toContain(
       'data-action="connections-start-fresh-credential-rotation"',
@@ -1278,9 +1277,9 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
     const unknown = renderConnectionsPage(state);
     expect(unknown).toContain('aria-busy="false"');
-    expect(unknown).toContain('did not recognize this rollback receipt');
-    expect(unknown).toContain('all server controls remain paused');
-    expect(unknown).toContain('privacy-safe diagnostic');
+    expect(unknown).toContain('Your server does not know about this rollback');
+    expect(unknown).toContain('Swapping the key for api/hubspot, and updates, stay paused.');
+    expect(unknown).toContain('copy the details to share');
     expect(unknown).not.toContain('server-ledger-receipt');
 
     state.credentialRotationRecovery.serverUpdateVerification = {
@@ -1291,10 +1290,10 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
     const closed = renderConnectionsPage(state);
     expect(closed).toContain('aria-busy="false"');
-    expect(closed).toContain('durably closed this receipt as unresolved');
-    expect(closed).toContain('without claiming the rollback succeeded or failed');
+    expect(closed).toContain('Your server wrote down that it could not tell how the rollback went');
+    expect(closed).toContain('It does not say it worked or failed');
     expect(closed).toContain(
-      'Confirm its current version, release posture, and api/hubspot activity',
+      'Check how the server is now, in Server Updates or the Account menu',
     );
     expect(closed).not.toContain('server-ledger-receipt');
 
@@ -1307,9 +1306,9 @@ describe('D-125 P7.1 — dialog stages', () => {
     const checkingBaseline = renderConnectionsPage(state);
     expect(checkingBaseline).toContain('aria-busy="true"');
     expect(checkingBaseline).toContain(
-      'freshly reading the selected server’s running version',
+      'Recued is reading how your server is now',
     );
-    expect(checkingBaseline).toContain('original rollback result is still unknown');
+    expect(checkingBaseline).toContain('How the rollback went is still unknown');
 
     state.credentialRotationRecovery.serverUpdateVerification = {
       phase: 'baseline_confirmed',
@@ -1330,16 +1329,16 @@ describe('D-125 P7.1 — dialog stages', () => {
     const confirmedBaseline = renderConnectionsPage(state);
     expect(confirmedBaseline).toContain('aria-busy="false"');
     expect(confirmedBaseline).toContain(
-      'Current state confirmed: running 26.8.1 on the stable channel',
+      'Your server now runs 26.8.1 on the stable channel',
     );
     expect(confirmedBaseline).toContain(
       'this is the newest version',
     );
     expect(confirmedBaseline).toContain(
-      'api/hubspot has no credential verification pending',
+      'api/hubspot has no key check waiting',
     );
     expect(confirmedBaseline).toContain(
-      'original rollback result is still unknown',
+      'How the rollback went is still unknown',
     );
     expect(confirmedBaseline).not.toContain('server-ledger-receipt');
 
@@ -1349,10 +1348,10 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
     const finishRetry = renderConnectionsPage(state);
     expect(finishRetry).toContain(
-      'exact browser latch could not be retired',
+      'This browser could not finish tidying up',
     );
-    expect(finishRetry).toContain('retry Finish recovery');
-    expect(finishRetry).toContain('No server action will repeat');
+    expect(finishRetry).toContain('choose Try finishing again');
+    expect(finishRetry).toContain('Nothing runs on the server twice');
 
     state.credentialRotationRecovery = {
       kind: 'api',
@@ -1379,13 +1378,13 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
     const completed = renderConnectionsPage(state);
     expect(completed).toContain(
-      'Server recovery is finished and server-change controls are unlocked',
+      'Recovery is finished, and update and roll back work again',
     );
     expect(completed).toContain(
-      'confirmed running 26.8.1 on the stable channel',
+      'Your server runs 26.8.1 on the stable channel',
     );
     expect(completed).toContain(
-      'original rollback result is still unknown',
+      'How the rollback went is still unknown',
     );
     expect(completed).toContain('Start fresh');
     expect(completed).not.toContain('server-ledger-receipt');
@@ -1408,9 +1407,9 @@ describe('D-125 P7.1 — dialog stages', () => {
     expect(html).toContain('data-action="connections-review-credential-rotation"');
     expect(html).toContain('data-kind="api"');
     expect(html).toContain('data-name="hubspot"');
-    expect(html).toContain('Correct replacement');
+    expect(html).toContain('Correct the new key');
     expect(html).toContain(
-      'aria-label="Correct the rejected credential replacement for api/hubspot"',
+      'aria-label="Correct the refused new key for api/hubspot"',
     );
   });
 
@@ -1433,11 +1432,11 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
 
     const html = renderConnectionsPage(state);
-    expect(html).toContain('Resolve repeated rejection');
+    expect(html).toContain('Fix the refused key');
     expect(html).toContain(
-      'aria-label="Resolve the repeated credential rejection for api/hubspot"',
+      'aria-label="Fix the key the provider keeps refusing for api/hubspot"',
     );
-    expect(html).not.toContain('>Correct replacement</button>');
+    expect(html).not.toContain('>Correct the new key</button>');
   });
 
   it('keeps a recovered regeneration safe stop explicit until its exact editor opens', () => {
@@ -1460,13 +1459,13 @@ describe('D-125 P7.1 — dialog stages', () => {
     };
 
     const html = renderConnectionsPage(state);
-    expect(html).toContain('Resume credential recovery');
+    expect(html).toContain('Carry on with the key');
     expect(html).toContain(
-      'aria-label="Resume safe credential recovery for api/hubspot"',
+      'aria-label="Carry on with the key for api/hubspot"',
     );
-    expect(html).toContain('saved credential remains active');
-    expect(html).toContain('no credential draft was stored');
-    expect(html).not.toContain('Resolve repeated rejection');
+    expect(html).toContain('saved key still works');
+    expect(html).toContain('no unfinished key was stored');
+    expect(html).not.toContain('Fix the refused key');
 
     state.dialog = {
       ...initialConnectionsDialogState(),
@@ -1481,9 +1480,9 @@ describe('D-125 P7.1 — dialog stages', () => {
       },
     };
     const exact = renderConnectionsPage(state);
-    expect(exact).toContain('Safe credential recovery is open');
-    expect(exact).toContain('Verify and replace stays paused');
-    expect(exact).not.toContain('>Resume credential recovery</button>');
+    expect(exact).toContain('Recovery is open');
+    expect(exact).toContain('Verify and replace waits until you enter a new key');
+    expect(exact).not.toContain('>Carry on with the key</button>');
   });
 
   it('does not promise an exact recovery landing before its row is available', () => {

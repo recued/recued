@@ -128,6 +128,7 @@ import {
   MEMORY_DELETE_ACTION,
   MEMORY_DELETE_CANCEL_ACTION,
   MEMORY_DELETE_CONFIRM_ACTION,
+  MEMORY_REPLACE_ACTION,
   MEMORY_RESTORE_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
   MEMORY_EDIT_ACTION,
@@ -617,6 +618,7 @@ const mountRoute = (overrides: {
   memoryDeleteCaller?: NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>;
   memoryImportCaller?: NonNullable<BootstrapDataRouteOptions['memoryImportCaller']>;
   memoryRestoreCaller?: NonNullable<BootstrapDataRouteOptions['memoryRestoreCaller']>;
+  memoryReplaceCaller?: NonNullable<BootstrapDataRouteOptions['memoryReplaceCaller']>;
   collectionListInstancesCaller?: BootstrapDataRouteOptions['collectionListInstancesCaller'];
   collectionListCaller?: BootstrapDataRouteOptions['collectionListCaller'];
   collectionGetCaller?: BootstrapDataRouteOptions['collectionGetCaller'];
@@ -860,6 +862,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.memoryRestoreCaller !== undefined
       ? { memoryRestoreCaller: overrides.memoryRestoreCaller }
+      : {}),
+    ...(overrides.memoryReplaceCaller !== undefined
+      ? { memoryReplaceCaller: overrides.memoryReplaceCaller }
       : {}),
     ...(overrides.collectionListInstancesCaller !== undefined
       ? { collectionListInstancesCaller: overrides.collectionListInstancesCaller }
@@ -1673,6 +1678,77 @@ describe('D-174 P5 Data route', () => {
     expect(routeRoot.innerHTML).toContain('Saved memory');
     expect(memoryUpdateCaller).not.toHaveBeenCalled();
     rig.route.dispose();
+  });
+
+  describe("replacing an agent's note with your own version (D-198 §12)", () => {
+    const agentNote = {
+      memory_id: 'umem_agent', origin_actor: 'contracted_user' as const, kind: 'chat_memory',
+      summary: 'Dana prefers phone calls', body_preview: 'Dana prefers phone calls', has_body: true, ts: NOW,
+    };
+    const mountReplace = (memoryReplaceCaller: NonNullable<BootstrapDataRouteOptions['memoryReplaceCaller']>) => {
+      const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+        async () => ({ memory_id: 'umem_unlinked', provenance_edges_written: 0 }),
+      );
+      const rig = mountRoute({
+        initialTab: 'memory',
+        memoryListCaller: vi.fn(async () => ({ entries: [agentNote] })),
+        memoryGetCaller: vi.fn(async ({ memory_id }) => ({
+          memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory',
+          summary: 'Dana prefers phone calls', body: 'Dana prefers phone calls, not texts', ts: NOW,
+        })),
+        memoryCreateCaller,
+        memoryUpdateCaller: vi.fn(async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 })),
+        memoryDeleteCaller: vi.fn(async ({ memory_id }) => ({ memory_id, deleted: false, redacted: true })),
+        memoryReplaceCaller,
+      });
+      return { rig, memoryCreateCaller };
+    };
+    const openAndSave = async (routeRoot: FakeEl): Promise<void> => {
+      emitClick(routeRoot, MEMORY_REPLACE_ACTION, { 'data-memory-id': 'umem_agent' });
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      expect(routeRoot.innerHTML).toContain('role="form" aria-label="Replace with your version"');
+      // prefilled from the FULL entry (`memory.get`), not the feed's preview
+      expect(routeRoot.innerHTML).toContain('Dana prefers phone calls, not texts');
+      emitMemoryInput(routeRoot, 'summary', 'Dana prefers email');
+      emitMemoryInput(routeRoot, 'body', 'Dana prefers email, never calls');
+      emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    };
+
+    it('opens the form prefilled from the agent note and saves through memory.replace, never memory.create', async () => {
+      const memoryReplaceCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryReplaceCaller']>>(
+        async () => ({ memory_id: 'umem_mine', provenance_edges_written: 0 }),
+      );
+      const { rig, memoryCreateCaller } = mountReplace(memoryReplaceCaller);
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+      await openAndSave(routeRoot);
+      await rig.route.whenLoaded();
+
+      expect(memoryReplaceCaller).toHaveBeenCalledWith({
+        memory_id: 'umem_agent', kind: 'chat_memory',
+        summary: 'Dana prefers email', body: 'Dana prefers email, never calls',
+      });
+      expect(memoryCreateCaller).not.toHaveBeenCalled();
+      expect(routeRoot.innerHTML).not.toContain('aria-label="Replace with your version"');
+      rig.route.dispose();
+    });
+
+    it('⛔ an older server without memory.replace: says it needs an update and saves nothing in its place', async () => {
+      const memoryReplaceCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryReplaceCaller']>>(async () => {
+        throw Object.assign(new Error('unknown method memory.replace'), { code: 'unknown_method' });
+      });
+      const { rig, memoryCreateCaller } = mountReplace(memoryReplaceCaller);
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+      await openAndSave(routeRoot);
+
+      expect(memoryReplaceCaller).toHaveBeenCalledTimes(1);
+      expect(routeRoot.innerHTML).toContain('needs an update to replace an agent’s note');
+      expect(routeRoot.innerHTML).toContain('aria-label="Replace with your version"');
+      expect(memoryCreateCaller).not.toHaveBeenCalled();
+      rig.route.dispose();
+    });
   });
 
   it('serializes Memory compose writes and keeps its owner visible while saving', async () => {

@@ -12,7 +12,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { updateCalendarEvent } from './calendar/local-event-handler.js';
+import { updateOwnerCalendarEvent } from './calendar/remote-event-handler.js';
+import { createOwnerCalendarEvent, listCalendarEventDestinations } from './calendar/event-create-handler.js';
+import type { CalendarEventCreationStore } from '../storage/calendar-event-creations.js';
 import { getOwnerCalendarEvent, respondToCalendarEvent } from './calendar/invitation-handler.js';
 import { getMailMessage } from './mail/message-read.js';
 import { getMailConversation } from './mail/conversation-read.js';
@@ -127,6 +129,7 @@ export interface CollectionHandlerDeps {
    *  wiring keep working; `collection.calendar.*` returns
    *  `not_configured` when absent. */
   calendarEnroll?: CalendarEnrollDeps;
+  calendarEventCreations?: CalendarEventCreationStore;
   /** D-127 wire-up — mail-adapter enroll family. Optional so
    *  test harnesses without the mail composition root keep working;
    *  `collection.mail.enrollImap` / `collection.mail.list` /
@@ -1093,6 +1096,8 @@ export type CollectionMethods =
   | 'collection.calendar.updateCredentials'
   | 'collection.calendar.list'
   | 'collection.calendar.event.get'
+  | 'collection.calendar.event.destinations'
+  | 'collection.calendar.event.create'
   | 'collection.calendar.event.update'
   | 'collection.calendar.event.respond'
   | 'collection.calendar.update'
@@ -1209,6 +1214,8 @@ export const makeCollectionHandlers = (
       'collection.calendar.updateCredentials',
       'collection.calendar.list',
       'collection.calendar.event.get',
+      'collection.calendar.event.destinations',
+      'collection.calendar.event.create',
       'collection.calendar.event.update',
       'collection.calendar.event.respond',
       'collection.calendar.update',
@@ -1307,7 +1314,13 @@ export const makeCollectionHandlers = (
       'collection.calendar.list': async () =>
         handleCalendarEnrollList(requireCalendarEnroll(deps)),
       'collection.calendar.event.get': async (args, client) => getOwnerCalendarEvent(calendarEventDeps(client), args),
-      'collection.calendar.event.update': async (args, client) => updateCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.destinations': async (_args, client) => listCalendarEventDestinations(calendarEventDeps(client)),
+      'collection.calendar.event.create': async (args, client) => {
+        const eventDeps = calendarEventDeps(client);
+        if (!deps.calendarEventCreations) throw new RpcError('not_configured', 'Event creation is unavailable on this server.', 503);
+        return createOwnerCalendarEvent(eventDeps, deps.calendarEventCreations, args);
+      },
+      'collection.calendar.event.update': async (args, client) => updateOwnerCalendarEvent(calendarEventDeps(client), args),
       'collection.calendar.event.respond': async (args, client) => respondToCalendarEvent(calendarEventDeps(client), args),
       'collection.calendar.update': async (args) =>
         handleCalendarEnrollUpdate(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollUpdate>[1]),

@@ -86,7 +86,7 @@ import {
   type McpRecipeCallbackNotificationParams,
   type McpRecipeCallbackPointer,
 } from './mcp-recipe-callback.js';
-import type { VaultStore } from '@recued/storage';
+import type { AuditEntry, VaultStore } from '@recued/storage';
 import type {
   ContractSnapshot,
   DependencyReadAdmission,
@@ -125,6 +125,7 @@ import {
   type TimelineDeps,
   type LoadCollectionRecord,
 } from './mcp/timeline.js';
+import { forgottenIds, openMemoryRedactionStore } from './memory-revision.js';
 import {
   handleRegistryDescribe,
   collectRegisteredProducerTopics,
@@ -2190,6 +2191,31 @@ const isFailedExecuteResponse = (value: unknown): boolean =>
 const mcpActionPrincipalId = (deps: McpDeps): string =>
   deps.mcpTokenId ?? STDIO_MCP_TOKEN_ID;
 
+/** D-198 — run history as an AI reads it, with the runs the owner forgot in the
+ *  Memory lens cut to the skeleton the lens keeps: that the run happened, when,
+ *  its kind and who started it. Never its config, context, errors or output. An
+ *  ALLOW-list, so a field added to `AuditEntry` later stays out of a forgotten
+ *  run by default. The owner's own run screens read the log, not this tool, and
+ *  still show the run in full; the signed log itself is never touched. */
+const withForgottenRunsCut = async (
+  deps: McpDeps,
+  entries: AuditEntry[],
+): Promise<Array<AuditEntry | Record<string, unknown>>> => {
+  if (!deps.db || entries.length === 0) return entries;
+  const forgotten = await forgottenIds(openMemoryRedactionStore(deps.db));
+  if (forgotten.size === 0) return entries;
+  return entries.map((e) => (forgotten.has(e.run_id)
+    ? {
+        run_id: e.run_id,
+        started_at: e.started_at,
+        ...(e.event_at !== undefined ? { event_at: e.event_at } : {}),
+        kind: e.commit_kind ?? 'run',
+        origin_actor: e.execution_source?.actor ?? 'system',
+        redacted: true,
+      }
+    : e));
+};
+
 const currentCheckpointId = async (
   deps: McpDeps,
   runId: string,
@@ -2895,8 +2921,9 @@ const handleToolCall = async (
       return err(
         deps.inboundTokenAuthorize === undefined
           ? `Tool '${params.name}' is not available: this connection presented no MCP token, `
-            + 'so it carries no per-tool checklist. Pass --token <bearer> or set '
-            + 'RECUED_MCP_TOKEN; create one on the Contracts page of the web app.'
+            + 'so it carries no per-tool checklist. Save a contract key for this app with '
+            + '"recued mcp-key set" on the computer Recued runs on, or pass --token <key> or set '
+            + 'RECUED_MCP_TOKEN; contract keys are on the Contracts page of the web app.'
           : MCP_KEY_TOOL_REFUSAL(params.name, deps),
       );
     }
@@ -3876,7 +3903,7 @@ const handleToolCall = async (
           : args.recipe_id
             ? await deps.auditLog.listByRecipe(args.recipe_id as string, limit)
             : await deps.auditLog.listRecent(limit);
-      return text(entries);
+      return text(await withForgottenRunsCut(deps, entries));
     }
 
     // ── dataTimeline ───────────────────────────────────────

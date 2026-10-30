@@ -3370,7 +3370,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       .toBe('active');
     expect(mount.getState().dialog.values['auth.token'])
       .toBe('memory-only-contender');
-    expect(getHtml()).toContain('Credential check active elsewhere');
+    expect(getHtml()).toContain('The key is being checked elsewhere');
     expect(submitBtn.hasAttribute('disabled')).toBe(true);
 
     click({ action: 'connections-submit-form' });
@@ -3455,7 +3455,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     expect(panel.mount.getState().dialog.values['auth.token'])
       .toBe('sibling-memory-only-secret');
-    expect(panel.getHtml()).toContain('same credential regeneration');
+    expect(panel.getHtml()).toContain('Make a new key at the provider');
     expect(panel.getHtml()).toContain('Safe details for the provider administrator');
     expect(panel.submitBtn.hasAttribute('disabled')).toBe(true);
 
@@ -3525,8 +3525,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().dialog.stage).toBe('closed');
     expect(panel.mount.getState().credentialRotationRecovery?.phase)
       .toBe('safe_stopped');
-    expect(panel.getHtml()).toContain('Resume credential recovery');
-    expect(panel.getHtml()).toContain('no draft crossed tabs');
+    expect(panel.getHtml()).toContain('Carry on with the key');
+    expect(panel.getHtml()).toContain('The saved key still works');
 
     panel.click({
       action: 'connections-review-credential-rotation',
@@ -3554,7 +3554,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.getHtml()).toContain(
       'Safe details for the provider administrator',
     );
-    expect(panel.getHtml()).toContain('Provider/admin confirmed a fix');
+    expect(panel.getHtml()).toContain('The provider setup is fixed');
     expect(panel.getHtml()).toMatch(
       /data-action="connections-submit-form"[^>]*disabled/,
     );
@@ -3612,7 +3612,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       phase: 'safe_stopped',
       outstandingSafeStopCount: 1,
     });
-    expect(panel.getHtml()).toContain('Resume credential recovery');
+    expect(panel.getHtml()).toContain('Carry on with the key');
     expect(panel.getHtml()).not.toContain(SAFE_STOP_TOKEN);
     expect(JSON.stringify(panel.mount.getState())).not.toContain(
       SAFE_STOP_TOKEN,
@@ -3624,7 +3624,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       name: 'cold-safe-stop',
     });
     expect(panel.mount.getState().dialog.values['auth.token']).toBeUndefined();
-    expect(panel.getHtml()).toContain('Provider/admin confirmed a fix');
+    expect(panel.getHtml()).toContain('The provider setup is fixed');
 
     panel.click({ action: 'connections-confirm-credential-handoff' });
     await tick();
@@ -3685,7 +3685,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     const reloaded = mountPanel({ connections: [saved] });
     await reloaded.mount.whenLoaded();
     expect(reloaded.mount.getState().credentialRotationRecovery).toBeNull();
-    expect(reloaded.getHtml()).not.toContain('Resume credential recovery');
+    expect(reloaded.getHtml()).not.toContain('Carry on with the key');
     expect(reloaded.getHtml()).not.toContain('Recovery stop closed');
     reloaded.mount.dispose();
   });
@@ -4448,7 +4448,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     expect(panel.mount.getState().dialog.credentialCorrection?.safeStopClosure)
       .toEqual({ phase: 'ready', error: null });
-    expect(panel.getHtml()).toContain('Provider/admin confirmed a fix');
+    expect(panel.getHtml()).toContain('The provider setup is fixed');
     expect(panel.getHtml()).not.toContain(SAFE_STOP_TOKEN);
     panel.mount.dispose();
   });
@@ -4622,7 +4622,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
 
     expect(continuity.store.read()).toBeNull();
     expect(panel.mount.getState().credentialRotationRecovery).toBeNull();
-    expect(panel.getHtml()).not.toContain('Resume credential recovery');
+    expect(panel.getHtml()).not.toContain('Carry on with the key');
     expect(panel.getHtml()).not.toContain('Recovery stop closed');
     expect(tabs.notifyCredentialRotationSafeStopResolved).toHaveBeenCalledWith({
       kind: 'api',
@@ -4763,7 +4763,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     await malformed.mount.whenLoaded();
     expect(malformed.mount.getState().credentialRotationRecovery).toBeNull();
-    expect(malformed.getHtml()).not.toContain('Resume credential recovery');
+    expect(malformed.getHtml()).not.toContain('Carry on with the key');
     malformed.mount.dispose();
   });
 
@@ -4933,7 +4933,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     await tick();
     expect(panel.mount.getState().dialog.credentialCorrection?.safeStopClosure)
       .toMatchObject({ phase: 'unconfirmed' });
-    expect(panel.getHtml()).toContain('Check server closure');
+    expect(panel.getHtml()).toContain('Check again');
     expect(panel.submitBtn.hasAttribute('disabled')).toBe(true);
     expect(panel.getHtml()).not.toContain(SAFE_STOP_TOKEN);
 
@@ -4985,13 +4985,13 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().dialog.values['auth.password'])
       .toBe('local-only-password');
     expect(panel.getHtml()).toContain(
-      'rejected sign-in method differs from this editor',
+      'sign-in method the provider refused differs from this draft',
     );
     expect(panel.getHtml()).toContain(
-      'rebuild the editor around the rejected sign-in method',
+      'set the form back to the refused sign-in method',
     );
     expect(panel.getHtml()).not.toContain('reload the saved sign-in method');
-    expect(panel.getHtml()).toContain('Resume credential recovery');
+    expect(panel.getHtml()).toContain('Carry on with the key');
     expect(panel.getHtml()).not.toContain(
       'Safe details for the provider administrator',
     );
@@ -5114,8 +5114,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().dialog.stage).toBe('closed');
     expect(panel.mount.getState().credentialRotationRecovery?.phase)
       .toBe('safe_stopped');
-    expect(panel.getHtml()).toContain('Resume credential recovery');
-    expect(panel.getHtml()).toContain('no draft crossed tabs');
+    expect(panel.getHtml()).toContain('Carry on with the key');
+    expect(panel.getHtml()).toContain('The saved key still works');
     panel.mount.dispose();
   });
 
@@ -5153,7 +5153,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
 
     expect(panel.mount.getState().connections).toEqual([]);
     expect(panel.mount.getState().credentialRotationRecovery).toBeNull();
-    expect(panel.getHtml()).not.toContain('Resume credential recovery');
+    expect(panel.getHtml()).not.toContain('Carry on with the key');
     expect(panel.getHtml()).not.toContain('removed-safe-stop');
     panel.mount.dispose();
   });
@@ -5247,7 +5247,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     expect(continuity.store.read()).toBeNull();
     expect(panel.mount.getState().credentialRotationRecovery).toBeNull();
-    expect(panel.getHtml()).not.toContain('Resume credential recovery');
+    expect(panel.getHtml()).not.toContain('Carry on with the key');
     panel.mount.dispose();
   });
 
@@ -5554,7 +5554,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       .toMatchObject({ phase: 'active' });
     expect(panel.mount.getState().dialog.values['auth.token'])
       .toBe('memory-only-contender');
-    expect(panel.getHtml()).toContain('Credential check active elsewhere');
+    expect(panel.getHtml()).toContain('The key is being checked elsewhere');
     expect(panel.getHtml()).not.toContain(
       'Safe details for the provider administrator',
     );
@@ -5604,7 +5604,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
 
       expect(panel.mount.getState().dialog.credentialRotationOwnership)
         .toMatchObject({ phase: 'active', automaticTakeover: true });
-      expect(panel.getHtml()).toContain('elect one safe successor automatically');
+      expect(panel.getHtml()).toContain('Recued picks one tab to carry on by itself');
       const waitingRenderCount = panel.getRenderCount();
 
       // The original owner still holds the Web Lock. A quiet failed election
@@ -5697,7 +5697,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       panel.field('auth.password', 'complete-memory-only-replacement');
       expect(panel.mount.getState().dialog.credentialRotationOwnership)
         .toMatchObject({ phase: 'active', automaticTakeover: true });
-      expect(panel.getHtml()).toContain('elect one safe successor automatically');
+      expect(panel.getHtml()).toContain('Recued picks one tab to carry on by itself');
       await vi.advanceTimersByTimeAsync(2_000);
 
       expect(tabs.claimCredentialRotationOwnership).toHaveBeenCalledOnce();
@@ -5757,7 +5757,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
 
       expect(panel.mount.getState().dialog.credentialRotationOwnership)
         .toMatchObject({ phase: 'unconfirmed', automaticTakeover: true });
-      expect(panel.getHtml()).toContain('will check again after reconnecting');
+      expect(panel.getHtml()).toContain('checks again after reconnecting');
       expect(successorLease.release).not.toHaveBeenCalled();
 
       reconnect.current?.();
@@ -6239,7 +6239,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.getState().dialog.credentialRotationOwnership?.phase)
       .toBe('pending');
     expect(getHtml()).toContain('server is still checking');
-    expect(getHtml()).toContain('This tab now holds the browser check');
+    expect(getHtml()).toContain('This tab is in charge now');
     expect(calls.runRotateCredentials).not.toHaveBeenCalled();
 
     click({ action: 'connections-check-credential-rotation-owner' });
@@ -6417,7 +6417,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.getState().dialog.error).toBeNull();
     expect(mount.getState().dialog.credentialRotationOwnership?.phase)
       .toBe('active');
-    expect(getHtml()).toContain('Credential check active elsewhere');
+    expect(getHtml()).toContain('The key is being checked elsewhere');
     mount.dispose();
   });
 
@@ -6666,8 +6666,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       phase: 'handoff',
       name: 'handoff-api',
     });
-    expect(getHtml()).toContain('Another tab has taken over the next credential check');
-    expect(getHtml()).toContain('Check handoff');
+    expect(getHtml()).toContain('another tab is checking the next one');
+    expect(getHtml()).toContain('Check again');
     expect(continuity.store.read()?.attemptId).toBe(
       'rotation-former-owner-0001',
     );
@@ -6690,7 +6690,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.getState().connections[0]?.display_name).toBe(
       'Successor version',
     );
-    expect(getHtml()).toContain('Recued kept the newer server version');
+    expect(getHtml()).toContain('Recued kept the newer one');
     expect(getHtml()).toContain('Look at the connection');
     expect(getHtml()).not.toContain('Recued kept the old key');
     expect(tabs.claimCredentialRotationOwnership).toHaveBeenCalledOnce();
@@ -6810,11 +6810,11 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       'data-connection-credential-recovery="resumable"',
     );
     expect(getHtml()).toContain('aria-atomic="true"');
-    expect(getHtml()).toContain('you can continue in this tab');
-    expect(getHtml()).toContain('No newer credential was saved');
-    expect(getHtml()).toContain('is still only here');
+    expect(getHtml()).toContain('you can carry on in this tab');
+    expect(getHtml()).toContain('No newer key was saved');
+    expect(getHtml()).toContain('Your new key is only here');
     expect(getHtml()).toContain(
-      'confirm that no other tab or server check owns this connection',
+      'checks that nothing else is swapping this key before it sends',
     );
     expect(submitBtn.hasAttribute('disabled')).toBe(false);
     expect(probeLease.release).toHaveBeenCalledOnce();
@@ -6827,7 +6827,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.getState().dialog.values['auth.token']).toBe(
       'memory-only-resume-secret',
     );
-    expect(getHtml()).toContain('you can continue in this tab');
+    expect(getHtml()).toContain('you can carry on in this tab');
 
     click({ action: 'connections-submit-form' });
     await tick(20);
@@ -6841,7 +6841,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(tabs.notifyCredentialRotationStarted).toHaveBeenCalledOnce();
     expect(submitLease.release).toHaveBeenCalledOnce();
     expect(mount.getState().credentialRotationRecovery).toBeNull();
-    expect(getHtml()).not.toContain('you can continue in this tab');
+    expect(getHtml()).not.toContain('you can carry on in this tab');
     mount.dispose();
   });
 
@@ -6888,7 +6888,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       'correction',
     );
     expect(getHtml()).toContain('Look at the connection');
-    expect(getHtml()).not.toContain('Correct replacement');
+    expect(getHtml()).not.toContain('Correct the new key');
     expect(getHtml()).not.toContain('data-connection-credential-correction');
     mount.dispose();
   });
@@ -6991,12 +6991,12 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(restored.getHtml()).toContain(
       'data-connection-credential-recovery="restart_ready"',
     );
-    expect(restored.getHtml()).toContain('unfinished credentials are never stored');
+    expect(restored.getHtml()).toContain('Recued never stores an unfinished key');
     expect(restored.getHtml()).toContain('Start fresh');
     expect(restored.getHtml()).toContain(
-      'aria-label="Start a fresh credential replacement for api/cleared-handoff-api"',
+      'aria-label="Start swapping the key for api/cleared-handoff-api again with a blank form"',
     );
-    expect(restored.getHtml()).toContain('recheck ownership before sending');
+    expect(restored.getHtml()).toContain('nothing else is swapping');
     expect(restored.getHtml()).not.toContain('Look at the connection');
     expect(probeLease.release).toHaveBeenCalledOnce();
 
@@ -7105,8 +7105,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().credentialRotationRecovery?.phase)
       .toBe('restart_handoff');
     expect(panel.mount.getState().dialog.stage).toBe('closed');
-    expect(panel.getHtml()).toContain('No credential entry is needed here yet');
-    expect(panel.getHtml()).toContain('Check handoff');
+    expect(panel.getHtml()).toContain('Nothing to enter here yet');
+    expect(panel.getHtml()).toContain('Check again');
     expect(panel.getHtml()).not.toContain('data-conn-field="auth.token"');
 
     panel.click({
@@ -7183,7 +7183,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().credentialRotationRecovery?.phase)
       .toBe('restart_waiting');
     expect(panel.mount.getState().dialog.stage).toBe('closed');
-    expect(panel.getHtml()).toContain('No credential was sent');
+    expect(panel.getHtml()).toContain('No key was sent');
     expect(panel.getHtml()).toContain('Try again');
     expect(panel.getFocusedSelector()).toBe(
       FRESH_START_SELECTOR,
@@ -7327,8 +7327,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().credentialRotationRecovery?.phase)
       .toBe('restart_unsupported');
     expect(panel.mount.getState().dialog.stage).toBe('closed');
-    expect(panel.getHtml()).toContain('cannot perform the activity preflight');
-    expect(panel.getHtml()).toContain('Update the server before trying again');
+    expect(panel.getHtml()).toContain('cannot do the safety check');
+    expect(panel.getHtml()).toContain('Update the server, then try again');
     expect(panel.getHtml()).toContain('Review update steps');
     expect(panel.getHtml()).toContain('Check again');
     expect(panel.getHtml()).toContain('Dismiss');
@@ -7393,7 +7393,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       phase: 'restart_triaging',
       returnedFromServerUpdate: true,
     });
-    expect(panel.getHtml()).toContain('Checking its running version');
+    expect(panel.getHtml()).toContain('Checking its version and updates');
     expect(panel.getFocusedSelector()).toBe(FRESH_START_TRIAGING_SELECTOR);
 
     triage.resolve({
@@ -7519,7 +7519,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     expect(panel.mount.getState().dialog.stage).toBe('closed');
     expect(panel.calls.runCredentialRotationActivity).not.toHaveBeenCalled();
-    expect(panel.getHtml()).toContain('A look-only check says');
+    expect(panel.getHtml()).toContain('A safety check says');
     expect(panel.getHtml()).toContain('You stayed on this page');
     expect(panel.getHtml()).toContain('Continue in this tab');
     expect(panel.getFocusedSelector()).toBeNull();
@@ -7589,7 +7589,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     expect(panel.mount.getState().dialog.stage).toBe('closed');
     expect(panel.getHtml()).toContain(
-      'An open Recued tab is applying the server update',
+      'Recued is updating your server. This tab stays on api/sibling-update-api and waits',
     );
     expect(panel.getHtml()).not.toContain(
       'data-action="connections-start-fresh-credential-rotation"',
@@ -7609,8 +7609,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       operation: 'update',
       startedAt: FIXED_NOW + 1,
     });
-    expect(panel.getHtml()).toContain('server accepted the update');
-    expect(panel.getHtml()).toContain('verify its own reconnect');
+    expect(panel.getHtml()).toContain('Your server accepted the update and is restarting.');
+    expect(panel.getHtml()).toContain('once it has reconnected');
 
     continuity.observeServerUpdateProgress(null);
     expect(panel.mount.getState().credentialRotationRecovery).toMatchObject({
@@ -7839,7 +7839,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       },
     });
     expect(panel.getHtml()).toMatch(
-      /server recovery is finished and server-change controls are unlocked.*original update result is still unknown.*enter a new replacement below/is,
+      /recovery is finished, and update and roll back work again.*how the update went is still unknown.*enter the new key below/is,
     );
     expect(panel.getFocusedSelector()).toBe(fieldSelector('auth.token'));
     expect(panel.calls.runRotateCredentials).not.toHaveBeenCalled();
@@ -7937,7 +7937,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       returnedFromServerUpdate: true,
     });
     expect(restored.getHtml()).toMatch(
-      /fresh key editor.*closed before any field changed.*reopen the fresh editor/is,
+      /blank form.*closed before anything was typed.*reopen the blank form/is,
     );
     expect(restored.getHtml()).not.toMatch(
       /server recovery is finished|running 26\./i,
@@ -8008,7 +8008,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().dialog.editingId).toBe('api/guided-api');
     expect(panel.mount.getState().dialog.values['auth.token']).toBeUndefined();
     expect(panel.getHtml()).not.toMatch(
-      /fresh key editor|server recovery is finished/i,
+      /blank form|server recovery is finished/i,
     );
 
     panel.mount.dispose();
@@ -8047,7 +8047,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       phase: 'restart_waiting',
       returnedFromServerUpdate: true,
     });
-    expect(panel.getHtml()).toContain('could not yet confirm the updated server');
+    expect(panel.getHtml()).toContain('could not yet check the updated server');
     expect(panel.getHtml()).toContain('Try again');
     expect(panel.calls.runCredentialRotationActivity).not.toHaveBeenCalled();
 
@@ -8340,7 +8340,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(panel.mount.getState().credentialRotationRecovery?.phase)
       .toBe('restart_handoff');
     expect(panel.mount.getState().dialog.stage).toBe('closed');
-    expect(panel.getHtml()).toContain('Another tab or paired client is checking');
+    expect(panel.getHtml()).toContain('Another tab or device is checking');
     expect(panel.calls.runRotateCredentials).not.toHaveBeenCalled();
     panel.mount.dispose();
   });
@@ -8405,7 +8405,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       .toBe('restart_handoff');
     expect(panel.mount.getState().dialog.stage).toBe('closed');
     expect(panel.calls.runList).toHaveBeenCalledTimes(listReadsBeforeStart);
-    expect(panel.getHtml()).toContain('Check handoff');
+    expect(panel.getHtml()).toContain('Check again');
 
     siblingLeaseReleased = true;
     panel.click({
@@ -8548,8 +8548,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.getState().credentialRotationRecovery?.phase)
       .toBe('restart_handoff');
     expect(mount.getState().dialog.stage).toBe('closed');
-    expect(getHtml()).toContain('Another tab or paired client is checking');
-    expect(getHtml()).toContain('Check handoff');
+    expect(getHtml()).toContain('Another tab or device is checking');
+    expect(getHtml()).toContain('Check again');
     expect(getHtml()).not.toContain('Start fresh to open');
     expect(calls.runRotateCredentials).not.toHaveBeenCalled();
     await tick();
@@ -8620,7 +8620,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
 
     expect(mount.getState().credentialRotationRecovery?.phase)
       .toBe('restart_ready');
-    expect(getHtml()).toContain('Enter a new replacement below');
+    expect(getHtml()).toContain('Enter the new key below');
     expect(getHtml()).not.toContain('Start fresh to open');
 
     field('auth.token', 'new-memory-only-replacement');
@@ -8687,7 +8687,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       .toBe('superseded');
     expect(mount.getState().connections[0]?.display_name)
       .toBe('Newer sibling save');
-    expect(getHtml()).toContain('Recued kept the newer server version');
+    expect(getHtml()).toContain('Recued kept the newer one');
     expect(getHtml()).not.toContain('Start fresh');
     mount.dispose();
   });
@@ -8767,7 +8767,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.getState().dialog.stage).toBe('closed');
     expect(mount.getState().connections[0]?.display_name)
       .toBe('Newer late read');
-    expect(getHtml()).toContain('Recued kept the newer server version');
+    expect(getHtml()).toContain('Recued kept the newer one');
     expect(getHtml()).not.toContain('data-conn-field="auth.token"');
     expect(calls.runRotateCredentials).not.toHaveBeenCalled();
     mount.dispose();
@@ -8837,8 +8837,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       'preserve-but-do-not-send',
     );
     expect(submitBtn.hasAttribute('disabled')).toBe(true);
-    expect(getHtml()).not.toContain('you can continue in this tab');
-    expect(getHtml()).toContain('Credential check active elsewhere');
+    expect(getHtml()).not.toContain('you can carry on in this tab');
+    expect(getHtml()).toContain('The key is being checked elsewhere');
     expect(calls.runRotateCredentials).not.toHaveBeenCalled();
     mount.dispose();
   });
@@ -8923,7 +8923,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       expect(getHtml()).toContain(
         'data-connection-rotation-owner="handoff"',
       );
-      expect(getHtml()).not.toContain('you can continue in this tab');
+      expect(getHtml()).not.toContain('you can carry on in this tab');
       expect(calls.runRotateCredentials).not.toHaveBeenCalled();
       expect(tabs.notifyCredentialRotationStarted).not.toHaveBeenCalled();
     } finally {
@@ -8965,7 +8965,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(mount.getState().credentialRotationRecovery?.phase)
       .toBe('superseded');
     expect(continuity.store.read()).toBeNull();
-    expect(getHtml()).toContain('Recued kept the newer server version');
+    expect(getHtml()).toContain('Recued kept the newer one');
     mount.dispose();
   });
 
@@ -9036,7 +9036,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     );
     expect(submitBtn.hasAttribute('disabled')).toBe(true);
     expect(getHtml()).toContain('Connection changed since you opened it');
-    expect(getHtml()).not.toContain('you can continue in this tab');
+    expect(getHtml()).not.toContain('you can carry on in this tab');
     expect(calls.runRotateCredentials).not.toHaveBeenCalled();
     mount.dispose();
   });
@@ -9093,7 +9093,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(tabs.claimCredentialRotationOwnership).toHaveBeenCalledOnce();
     expect(mount.getState().credentialRotationRecovery?.phase).toBe('handoff');
     expect(continuity.store.read()).not.toBeNull();
-    expect(getHtml()).toContain('Another tab has taken over');
+    expect(getHtml()).toContain('another tab is checking the next one');
     expect(tabs.notifyCredentialRotationStarted).not.toHaveBeenCalled();
 
     successorFinished = true;
@@ -9171,7 +9171,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       .toBe('superseded');
     expect(mount.getState().connections[0]?.display_name)
       .toBe('Successor version');
-    expect(getHtml()).toContain('Recued kept the newer server version');
+    expect(getHtml()).toContain('Recued kept the newer one');
     expect(getHtml()).not.toContain('Recued kept the old key');
     mount.dispose();
   });
@@ -9232,7 +9232,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     expect(mount.getState().connections[0]?.updated_at).toBe(79);
     expect(getHtml()).toContain('Recued kept the old key');
-    expect(getHtml()).not.toContain('Recued kept the newer server version');
+    expect(getHtml()).not.toContain('Recued kept the newer one');
     mount.dispose();
   });
 
@@ -10036,8 +10036,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       name: 'safe-stop-api',
     });
     expect(panel.getHtml()).toContain('Pause before retrying');
-    expect(panel.getHtml()).toContain('Create or rotate credential');
-    expect(panel.getHtml()).toContain('Provider/admin confirmed a fix');
+    expect(panel.getHtml()).toContain('Make a new key');
+    expect(panel.getHtml()).toContain('The provider setup is fixed');
     expect(panel.getHtml()).toMatch(
       /data-action="connections-submit-form"[^>]*disabled/,
     );
@@ -10182,7 +10182,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
         },
       },
     });
-    expect(first.getHtml()).toContain('Resume credential recovery');
+    expect(first.getHtml()).toContain('Carry on with the key');
 
     first.click({
       action: 'connections-review-credential-rotation',
@@ -10198,8 +10198,8 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
         resolution: 'regenerate_credential_or_contact_admin',
       },
     });
-    expect(first.getHtml()).toContain('No rejected credential was restored');
-    expect(first.getHtml()).not.toContain('Provider/admin confirmed a fix');
+    expect(first.getHtml()).toContain('The refused key was not kept');
+    expect(first.getHtml()).not.toContain('The provider setup is fixed');
     expect(first.getHtml()).toMatch(
       /data-action="connections-submit-form"[^>]*disabled/,
     );
@@ -10219,7 +10219,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     });
     await restored.mount.whenLoaded();
     expect(restored.calls.runRotateCredentials).not.toHaveBeenCalled();
-    expect(restored.getHtml()).toContain('Resume credential recovery');
+    expect(restored.getHtml()).toContain('Carry on with the key');
     expect(continuity.store.read()).not.toBeNull();
 
     restored.click({
@@ -10228,7 +10228,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       name: 'reload-safe-stop',
     });
     expect(restored.getHtml()).not.toContain(
-      'Provider/admin confirmed a fix',
+      'The provider setup is fixed',
     );
     restored.field('auth.token', 'newly-rotated-secret');
     expect(continuity.store.read()).toBeNull();
@@ -10528,7 +10528,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
       'auth.client_secret',
     ]);
     expect(getHtml()).toContain(
-      'Review this credential set together: Refresh Token, OAuth Client ID, OAuth Client Secret.',
+      'Review these fields together: Refresh Token, OAuth Client ID, OAuth Client Secret.',
     );
     expect(getHtml()).not.toContain('Review Token Endpoint');
     expect(getFocusedSelector()).toBe(fieldSelector('auth.refresh_token'));

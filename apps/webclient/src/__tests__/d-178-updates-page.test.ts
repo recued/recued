@@ -67,7 +67,6 @@ import {
   UPDATES_RECEIPT_RETRY_ATTR,
   UPDATES_STATUS_ATTR,
   UPDATES_TAB_PROGRESS_ATTR,
-  UPDATES_TAB_PROGRESS_PRIVACY_ATTR,
   UPDATES_TAB_PROGRESS_STATUS_ATTR,
   UPDATES_VERSION_ATTR,
   mountUpdatesPage,
@@ -339,18 +338,24 @@ describe('mountUpdatesPage', () => {
     expect(find(
       firstHost.el,
       UPDATES_TAB_PROGRESS_STATUS_ATTR,
-    )?.textContent).toMatch(/this tab is applying.*other open Recued tabs/i);
+    )?.textContent).toBe(
+      'Recued is installing the update. Your server restarts by itself, and this page '
+      + 'reconnects on its own. This can take a few minutes. Keep this tab open.',
+    );
     const siblingProgress = find(secondHost.el, UPDATES_TAB_PROGRESS_ATTR)!;
     expect(siblingProgress.hasAttribute('hidden')).toBe(false);
     expect(siblingProgress.getAttribute('aria-busy')).toBe('true');
     expect(find(
       siblingProgress,
       UPDATES_TAB_PROGRESS_STATUS_ATTR,
-    )?.textContent).toMatch(/open Recued tab.*duplicate request/i);
-    expect(find(
-      siblingProgress,
-      UPDATES_TAB_PROGRESS_PRIVACY_ATTR,
-    )?.textContent).toMatch(/keys.*addresses.*raw errors/i);
+    )?.textContent).toBe(
+      'Another Recued tab is updating your server. This tab shows the same progress, so there is nothing to do here.',
+    );
+    // ⛔ What is happening and what to do, nothing more: the card is a title
+    // and that one line. It used to end with a paragraph on what tabs pass
+    // each other, which the owner could not act on (2026-10-29), and the
+    // card is an atomic live region, so it was read out again at every step.
+    expect(siblingProgress.children.map((child) => child.tagName)).toEqual(['STRONG', 'P']);
     expect(find(
       secondHost.el,
       UPDATES_APPLY_BTN_ATTR,
@@ -494,7 +499,7 @@ describe('mountUpdatesPage', () => {
       reason: 'temporary_failure',
     });
     expect(recovery.getAttribute('aria-busy')).toBeNull();
-    expect(allText(recovery)).toMatch(/automatic retries stopped/i);
+    expect(allText(recovery)).toMatch(/stopped asking by itself/i);
     // …and NOW the manual retry is the only way forward, so it is visible and
     // it works. This is the pair: hidden while automatic, offered once that stops.
     expect(find(recovery, UPDATES_RECEIPT_RETRY_ATTR)?.hasAttribute('hidden'))
@@ -554,7 +559,7 @@ describe('mountUpdatesPage', () => {
     const review = find(recovery, UPDATES_RECEIPT_CLOSURE_REVIEW_ATTR)!;
     expect(review.hasAttribute('hidden')).toBe(false);
     expect(allText(review)).toMatch(
-      /refuse while any server update is active.*closed unresolved.*not.*succeeded/is,
+      /refuses while another update or rollback is running.*writes down only that it could not tell.*never that the update or rollback worked/is,
     );
     expect(allText(review)).toMatch(/does not repeat or undo/i);
     fire(find(review, UPDATES_RECEIPT_CLOSURE_CANCEL_ATTR)!, 'click');
@@ -568,7 +573,7 @@ describe('mountUpdatesPage', () => {
       startedAt: 100,
     });
     expect(recovery.getAttribute('aria-busy')).toBe('true');
-    expect(allText(recovery)).toMatch(/checking.*no update is under way/i);
+    expect(allText(recovery)).toMatch(/checking the update once more.*no update is running/i);
 
     setVerification({
       phase: 'closed',
@@ -578,7 +583,7 @@ describe('mountUpdatesPage', () => {
     });
     expect(recovery.getAttribute('aria-busy')).toBeNull();
     expect(allText(recovery)).toMatch(
-      /durably closed.*did not claim.*succeeded or failed/i,
+      /wrote down that it could not tell how the update went.*does not say it worked or failed/i,
     );
     const finish = find(recovery, UPDATES_RECEIPT_CLOSURE_FINISH_ATTR)!;
     expect(finish.hasAttribute('hidden')).toBe(false);
@@ -604,7 +609,7 @@ describe('mountUpdatesPage', () => {
     });
     expect(recovery.getAttribute('aria-busy')).toBeNull();
     expect(finish.textContent).toBe('Check how the server is again');
-    expect(allText(recovery)).toMatch(/current server state is not confirmed/i);
+    expect(allText(recovery)).toMatch(/could not read how the server is/i);
     expect(allText(recovery)).toMatch(
       /current server state could not be read after closure/i,
     );
@@ -629,7 +634,7 @@ describe('mountUpdatesPage', () => {
     expect(baseline.hasAttribute('hidden')).toBe(false);
     expect(allText(baseline)).toMatch(/running 26\.8\.1.*stable channel/i);
     expect(allText(baseline)).toMatch(
-      /cannot reach the update service.*github-main.*no credential verification.*original update result is still unknown/is,
+      /cannot reach the update service.*github-main: no key check is waiting.*how the update went is still unknown/is,
     );
     expect(finish.textContent).toBe('Finish recovery');
     fire(finish, 'click');
@@ -651,7 +656,7 @@ describe('mountUpdatesPage', () => {
         },
       },
     });
-    expect(finish.textContent).toBe('Retry finish recovery');
+    expect(finish.textContent).toBe('Try finishing again');
     expect(allText(recovery)).toMatch(
       /browser could not finish tidying up.*does not contact the server.*repeat/i,
     );
@@ -679,7 +684,7 @@ describe('mountUpdatesPage', () => {
     });
     expect(recovery.getAttribute('data-phase')).toBe('completed');
     expect(allText(recovery)).toMatch(
-      /all sorted.*controls work again.*one-off note.*gone after a reload.*original update.*unknown/is,
+      /all sorted.*controls work again.*note is only in this tab and is gone after a reload.*not whether the update worked/is,
     );
     expect(find(h.el, UPDATES_VERSION_ATTR)?.textContent)
       .toBe('Current version 26.8.1 · stable channel');
@@ -1502,7 +1507,7 @@ describe('mountUpdatesPage', () => {
     expect(card.getAttribute('aria-busy')).toBe('true');
     expect(card.children[0]?.textContent).toBe('Checking the key');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/will not start a duplicate check/i);
+      .toMatch(/does not start a second check/i);
     expect(returnButton.textContent).toBe('Checking…');
     expect(returnButton.hasAttribute('disabled')).toBe(true);
     expect(returnButton.getAttribute('aria-label')).toMatch(
@@ -1579,10 +1584,10 @@ describe('mountUpdatesPage', () => {
       'Carry on replacing the key',
     );
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/clean editor.*closed before any field changed/i);
+      .toMatch(/blank form.*closed before anything was typed/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_PRIVACY_ATTR)?.textContent)
-      .toMatch(/No key.*no\s+receipt was kept/i);
-    expect(returnButton.textContent).toBe('Reopen the fresh editor');
+      .toMatch(/No key or anything you typed was kept/i);
+    expect(returnButton.textContent).toBe('Reopen the blank form');
     expect(allText(card)).not.toMatch(/recovery finished|running 26\.8\.1/i);
 
     fire(returnButton, 'click');
@@ -1637,7 +1642,7 @@ describe('mountUpdatesPage', () => {
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
       .toMatch(/run the check again/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_PRIVACY_ATTR)?.textContent)
-      .toMatch(/safe notes about the server version and update/i);
+      .toMatch(/picks up where it left off.*never kept/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.textContent)
       .toBe('Check the server again');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.getAttribute('aria-label'))
@@ -1686,7 +1691,7 @@ describe('mountUpdatesPage', () => {
     expect(card.getAttribute('data-phase')).toBe('resolved_elsewhere');
     expect(card.children[0]?.textContent).toBe('The key check is ready');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/look-only check says.*stayed on Server Updates/i);
+      .toMatch(/safety check says.*stayed on Server Updates/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_PRIVACY_ATTR)?.textContent)
       .toMatch(/kept only in this tab and is gone after a reload/i);
     const continueButton = find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)!;

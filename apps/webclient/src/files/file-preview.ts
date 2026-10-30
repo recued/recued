@@ -2,6 +2,7 @@ import { FILE_PREVIEW_MAX_BYTES, FILE_PREVIEW_TEXT_CHARACTERS,
   FILE_READ_CHUNK_MAX_BYTES, type FileContentReadRequest, type FileContentReadResponse,
   type FilePreviewRequest, type FilePreviewResult } from '@recued/contracts';
 import { renderPdfPreview } from './file-preview-pdf.js';
+import { isCsvPreview, mountCsvPreview } from './csv-preview.js';
 
 export interface FilePreviewCallers {
   preview: (args: FilePreviewRequest) => Promise<FilePreviewResult>;
@@ -66,17 +67,21 @@ export const downloadStoredFile = async (
 };
 const active = new WeakMap<Document, () => void>();
 
-export const previewText = (bytes: Uint8Array): { text: string; truncated: boolean } => {
+const decodePreviewText = (bytes: Uint8Array): string => {
   const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le'
     : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
   let text: string;
   try { text = new TextDecoder(encoding, { fatal: true }).decode(bytes); }
   catch { throw new Error('This text encoding cannot be previewed. Download the file to open it.'); }
   if (text.includes('\0')) throw new Error('This file contains binary data. Download it to open it.');
+  return text;
+};
+const limitPreviewText = (text: string): { text: string; truncated: boolean } => {
   let visible = text.slice(0, FILE_PREVIEW_TEXT_CHARACTERS);
   if (/[\uD800-\uDBFF]$/.test(visible)) visible = visible.slice(0, -1);
   return { text: visible, truncated: visible.length < text.length };
 };
+export const previewText = (bytes: Uint8Array): { text: string; truncated: boolean } => limitPreviewText(decodePreviewText(bytes));
 
 /** D-274 — the DECODE-AND-DRAW half of the viewer, split out so a surface that
  *  is not a modal can draw the same thing. `openFilePreview` is now the dialog
@@ -154,9 +159,13 @@ export const renderFilePreviewBody = async (
   if (bytes.length > FILE_PREVIEW_MAX_BYTES || bytes.length !== file.size_bytes) throw new Error('The preview download was incomplete. Try again.');
   meta.bytes = bytes;
   if (file.content.kind === 'text') {
-    const text = previewText(bytes); const pre = doc.createElement('pre'); pre.textContent = text.text; pre.setAttribute('aria-label', 'File text');
-    body.append(pre);
-    host.status(text.truncated ? 'Showing the first 100,000 characters. Download the file to read the rest.' : '');
+    const decoded = decodePreviewText(bytes), text = limitPreviewText(decoded);
+    if (isCsvPreview(file.filename, file.mime_type)) mountCsvPreview({ doc, body, filename: file.filename, mime_type: file.mime_type, text: decoded, raw: text,
+      signal: host.signal, isCurrent: () => host.isCurrent(), status: text => host.status(text) });
+    else {
+      const pre = doc.createElement('pre'); pre.textContent = text.text; pre.setAttribute('aria-label', 'File text'); body.append(pre);
+      host.status(text.truncated ? 'Showing the first 100,000 characters. Download the file to read the rest.' : '');
+    }
   } else if (file.content.kind === 'image') {
     const img = doc.createElement('img'); img.alt = file.filename; img.src = host.urlFor(bytes, file.mime_type); body.append(img);
     try { await img.decode(); } catch { throw new Error('This image could not be displayed. You can download it.'); }
@@ -251,7 +260,8 @@ export const openFilePreview = (
         onMeta: (known) => {
           if (!alive || own !== generation) return;
           title.textContent = known.filename;
-          details.textContent = `${known.mime_type}${typeof known.size_bytes === 'number' ? ` · ${known.size_bytes.toLocaleString()} bytes` : ''}`;
+          const format = isCsvPreview(known.filename, known.mime_type) ? 'CSV' : known.mime_type;
+          details.textContent = `${format}${typeof known.size_bytes === 'number' ? ` · ${known.size_bytes.toLocaleString()} bytes` : ''}`;
           download.disabled = !known.can_download;
         },
       }, target, callers);

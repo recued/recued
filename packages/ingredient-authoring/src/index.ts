@@ -20,6 +20,8 @@ export type {
 } from './schema.js';
 export { canonicalHash } from './canonical-hash.js';
 export { referenceFormatHintHelp } from './reference-format-hints.js';
+export { valueHintFields, valueHintField, valueHintUnsupportedFieldHelp, type ValueHintField } from './value-hint-fields.js';
+export { recipePageBindingFields, recipePageBindingField, type RecipePageBindingField } from './value-hint-fields.js';
 export { recipeStepKernelOperations, recipeStepTransforms, type RecipeStepGroup } from './recipe-step-choices.js';
 export {
   hashRecordsDeclaration,
@@ -95,3 +97,12 @@ export {
 export { validateAuthoringSource } from './source-validation.js';
 export type { AuthoringSourceKind, AuthoringSourceValidation, AuthoringRecipeValidator } from './source-validation.js';
 export { kernelArguments, type KernelArgumentSchema } from './kernel-inputs.js';
+export { outputSectionFields, outputTypeHelp, type OutputSectionField } from './output-fields.js';
+export { stepControlFields, stepFailureKindHelp, stepCacheHelp, stepPolicyChoices, type StepControlField, type StepControlKey } from './step-controls.js';
+export { operationPolicyFields, operationPolicyValues, operationPolicyValueHelp, type OperationPolicyField, type OperationPolicyKey } from './operation-policies.js';
+
+export { tableAuthoringFields, tableAuthoringChoices, type TableAuthoringKind, type TableAuthoringField } from './table-authoring.js';
+
+export { compositionArgumentFields, compositionBindingKinds, compositionBindingFields, compositionAuthoringChoices, type CompositionAuthoringField } from './composition-authoring.js';
+
+export { recipeStepSupportsForeach, foreachAuthoringHelp, foreachResultFields } from './iteration-authoring.js';

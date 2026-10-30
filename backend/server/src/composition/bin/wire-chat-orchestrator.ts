@@ -233,6 +233,7 @@ import {
 import type { ChatRpcDeps } from '../../chat-handler.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
 import { buildChatToolRegistryInputs, buildChatTier1Handlers, type ChatToolHandlerDeps } from '../../chat-tool-handlers.js';
+import { createDocumentSearchIndex, type DocumentSearchIndex } from '../../storage/document-search-index.js';
 import type { FileViewResolver } from '../../file-view-resolver.js';
 import { DATA_FILE_RECEIVED_SLUG } from '../../collections/file/file-read-handler.js';
 import { tokenUsageToReport } from '../../chat-token-usage.js';
@@ -734,7 +735,9 @@ export const composeChatOrchestrator = (
   };
 
   let promptSchedules: PromptSchedules | undefined;
+  let documentSearchIndex: DocumentSearchIndex | undefined;
   const chatToolHandlerDeps: ChatToolHandlerDeps = {
+    getDocumentSearchIndex: () => documentSearchIndex ??= createDocumentSearchIndex(deps.db),
     getPromptSchedules: () => promptSchedules,
     getContactStore,
     getCollectionRegistry,

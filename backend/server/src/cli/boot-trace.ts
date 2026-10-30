@@ -31,6 +31,8 @@ export type BootCommandProfile =
    *  own profile because it must open nothing: it only watches folders. */
   | 'watch-host'
   | 'restore-drill-worker'
+  /** The contract key each AI app's `recued --mcp` runs under (`mcp-app-keys.ts`). */
+  | 'mcp-key'
   | 'mcp'
   | 'serve'
   | 'command';
@@ -103,6 +105,7 @@ export const classifyBootProfile = (input: BootProfileInput): BootCommandProfile
   if (input.subcommand === 'pair') return 'pair';
   if (input.subcommand === 'audit') return 'audit';
   if (input.subcommand === 'llm') return 'llm';
+  if (input.subcommand === 'mcp-key') return 'mcp-key';
   if (input.subcommand === 'archive') return 'archive';
   if (input.subcommand === 'update') return 'update';
   if (input.subcommand === 'recover-keyfile') return 'recover-keyfile';

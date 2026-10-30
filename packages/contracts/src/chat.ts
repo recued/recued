@@ -94,6 +94,7 @@ export type Tier1ToolName =
   | 'mail.search'
   | 'mail.read'
   | 'document.read'
+  | 'document.search'
   | 'calendar.search'
   | 'memory.search'
   | 'memory.write'
@@ -126,6 +127,7 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'mail.search',
   'mail.read',
   'document.read',
+  'document.search',
   'calendar.search',
   'memory.search',
   'memory.write',
@@ -171,6 +173,7 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   'mail.search': ['mail', 'email', 'message', 'lookup'],
   'mail.read': ['mail', 'email', 'body', 'attachment'],
   'document.read': ['document', 'attachment', 'file', 'markdown', 'ocr'],
+  'document.search': ['document', 'attachment', 'file', 'content', 'text', 'search'],
   'calendar.search': ['calendar', 'event', 'meeting', 'lookup'],
   'memory.search': ['memory', 'history', 'audit', 'recall'],
   'memory.write': ['memory', 'remember', 'save', 'note'],
@@ -224,6 +227,7 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   'mail.search': 'read',
   'mail.read': 'read',
   'document.read': 'read',
+  'document.search': 'read',
   'calendar.search': 'read',
   'memory.search': 'read',
   // D-329 (2026-10-24) — `write`, with every other Tier-1 write: the owner, of the writes that
@@ -320,6 +324,7 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   // Not an identity race: a call can start a local converter process (Docling
   // allows up to an hour), so a batch of attachments converts one at a time.
   'document.read': false,
+  'document.search': false,
   'calendar.search': true,
   'memory.search': true,
   // D-198 — append-only: each write mints its own `umem_` row, so two writes in
@@ -2255,6 +2260,7 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'mail.search': 'mail',
   'mail.read': 'mail',
   'document.read': 'file',
+  'document.search': 'file',
   'calendar.search': 'calendar',
   'memory.search': 'memory',
   'memory.write': 'memory',
@@ -2348,6 +2354,21 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         read_version: { type: 'string', description: 'Copy from the previous page. Required when offset is greater than zero.' } } },
     classification: TIER1_CLASSIFICATIONS['mail.read'], topic_tags: TIER1_TOPIC_TAGS['mail.read'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['mail.read'],
+  },
+  'document.search': {
+    name: 'document.search',
+    description: "Find saved files by words INSIDE them. Searches this conversation's attachments by default; use scope=all only when the user asks to search outside this conversation. Unlike file.search, filenames do not determine matches. Prepares a bounded batch through the governed document reader, reuses an encrypted text index, and returns literal excerpts with file/version citations. Continue with next_cursor and unchanged search arguments for pending files. Coverage names unreadable, pending and unsupported files; no matches does not prove those files lack the text. Converted text may omit content. Read a hit with document.read before interpreting it. Remote-only files are not downloaded and converters are never installed automatically.",
+    arg_schema: { type: 'object', required: ['query'], additionalProperties: false, properties: {
+      query: { type: 'string', minLength: 1, maxLength: 512, description: 'Literal words to find in document text. All words must match; an optional trailing * matches a word prefix. This is text retrieval, not a semantic answer.' },
+      scope: { type: 'string', enum: ['session', 'all'], description: 'session defaults to this conversation; all searches the saved file library.' },
+      file_refs: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'string' }, description: 'Optional exact saved file references to narrow the scope. Session scope still requires conversation membership.' },
+      converter: { type: 'string', enum: ['auto', 'markitdown', 'docling'], description: 'auto uses direct text or an installed converter. Use docling for OCR.' },
+      limit: { type: 'integer', minimum: 1, maximum: 20 },
+      offset: { type: 'integer', minimum: 0, maximum: 5000, description: 'Use next_offset for more indexed matches.' },
+      cursor: { type: 'string', maxLength: 1024, description: 'Copy next_cursor unchanged to prepare the next batch. Keep the same query, scope, file_refs and converter.' },
+    } },
+    classification: TIER1_CLASSIFICATIONS['document.search'], topic_tags: TIER1_TOPIC_TAGS['document.search'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['document.search'],
   },
   'document.read': {
     name: 'document.read',

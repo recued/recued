@@ -72,6 +72,7 @@ const EXPECTED: Readonly<Record<Tier1ToolName, readonly string[]>> = {
   // + `mail-read-tool.ts` leaves attachments out unless `file` is readable.
   'mail.read': [...fencedCollection('mail.read'), data('file')],
   'document.read': [...fencedCollection('document.read'), ...documentReadOps()],
+  'document.search': [...fencedCollection('document.search'), ...documentReadOps()],
   'calendar.search': fencedCollection('calendar.search'),
   'memory.search': [MEMORY_READ_OP_ID],
   'memory.write': [MEMORY_WRITE_OP_ID],

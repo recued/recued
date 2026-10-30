@@ -70,6 +70,12 @@ export const FLAGS_WITH_VALUES = new Set([
   // token — the unit tests all called the context directly and skipped the
   // router entirely.
   '--token',
+  // `recued --mcp --app <name>` and `recued mcp-key set --app <name> --key-file
+  // <path>` (`mcp-app-keys.ts`). Same trap as `--token`: an app's config that
+  // passes `--app claude-code` would otherwise route to a subcommand called
+  // "claude-code" and get the help screen.
+  '--app',
+  '--key-file',
   // D-178 — `recued report-boot-failure --exit-code <n> [--bin-dir <dir>]`.
   // Same trap as `--token` directly above: an unlisted value-flag leaves its
   // value sitting in `positionals[0]`, where it is read as the subcommand.

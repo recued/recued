@@ -1468,7 +1468,7 @@ describe('mountAccountMenu', () => {
     );
     expect(section.getAttribute('aria-busy')).toBe('true');
     expect(subtreeText(section)).toMatch(
-      /another key is already being replaced/i,
+      /another key is already being swapped/i,
     );
     expect(subtreeText(section)).not.toMatch(/recovery finished/i);
     expect(returnButton.textContent).toBe('Checking…');
@@ -1498,7 +1498,7 @@ describe('mountAccountMenu', () => {
       /stopped before Recued finished its checks/i,
     );
     expect(subtreeText(section)).toMatch(
-      /carries over no keys, nothing you typed, and no results/i,
+      /never carries over keys or anything you typed/i,
     );
     expect(returnButton.textContent).toBe('Carry on checking');
     expect(returnButton.hasAttribute('disabled')).toBe(false);
@@ -1551,18 +1551,18 @@ describe('mountAccountMenu', () => {
       .toBe('Carry on replacing the key');
     expect(section.hasAttribute('aria-busy')).toBe(false);
     expect(subtreeText(section)).toMatch(
-      /fresh key editor.*closed before any field changed/i,
+      /blank form for a new key.*closed before anything was typed/i,
     );
     expect(subtreeText(section)).toMatch(
-      /repeat.*activity.*latest-saved-connection checks/i,
+      /runs the safety check again before it reopens the blank form/i,
     );
     expect(subtreeText(section)).toMatch(
-      /nothing you typed, no keys, and no results are kept/i,
+      /nothing you typed and no keys are kept/i,
     );
     expect(subtreeText(section)).not.toMatch(/recovery finished/i);
-    expect(returnButton.textContent).toBe('Reopen the fresh editor');
+    expect(returnButton.textContent).toBe('Reopen the blank form');
     expect(returnButton.getAttribute('aria-label')).toMatch(
-      /reopen the fresh key editor.*running its safety check again/i,
+      /reopen the blank form.*running its safety check again/i,
     );
     expect(findByAttr(
       section,
@@ -1572,7 +1572,7 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(host, ACCOUNT_MENU_BADGE_ATTR)?.getAttribute('data-state'))
       .toBe('result-ready');
     expect(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute('aria-label'))
-      .toMatch(/fresh key editor is ready to reopen/i);
+      .toMatch(/blank form for a new key is ready to reopen/i);
 
     openButton.click();
     expect(onReturnToWork).not.toHaveBeenCalled();
@@ -1611,7 +1611,7 @@ describe('mountAccountMenu', () => {
       'Server update in progress',
     );
     expect(section.children[1]?.textContent).toMatch(
-      /open Recued tab.*without sending a duplicate action/i,
+      /^Another open Recued tab is handling the update for home\.example:8443\. This tab shows its progress, so there is nothing to do here\.$/,
     );
     expect(findByAttr(
       section,
@@ -1636,9 +1636,10 @@ describe('mountAccountMenu', () => {
     )!;
     expect(returnButton.hasAttribute('disabled')).toBe(true);
     expect(dismissButton.hasAttribute('disabled')).toBe(true);
-    expect(section.children[4]?.textContent).toMatch(
-      /meaningless code for the server.*never share keys.*addresses.*error details/i,
-    );
+    // Nothing about what tabs pass each other: that line is hidden while the
+    // update runs, because the owner can do nothing with it (2026-10-29).
+    expect(section.children[4]?.textContent).toBe('');
+    expect(section.children[4]?.hasAttribute('hidden')).toBe(true);
 
     // Inspecting the passive progress is safe, while credential continuation
     // and dismissal remain blocked even for scripted events.
@@ -1709,7 +1710,7 @@ describe('mountAccountMenu', () => {
     expect(guideEl.getAttribute('aria-busy')).toBeNull();
     expect(guideEl.children[0]?.textContent).toMatch(/result needs a look/i);
     expect(findByAttr(guideEl, ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR)?.textContent)
-      .toMatch(/did not know about/i);
+      .toMatch(/does not know about this/i);
     const retry = findByAttr(
       guideEl,
       ACCOUNT_MENU_SERVER_UPDATE_RETRY_ATTR,
@@ -1849,7 +1850,7 @@ describe('mountAccountMenu', () => {
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
     )?.textContent).toMatch(
-      /running 26\.8\.1.*stable.*this is the newest version.*github-main.*pending.*original rollback result is still unknown/i,
+      /running 26\.8\.1.*stable.*this is the newest version.*github-main: a key check is waiting.*how the rollback went is still unknown/i,
     );
     expect(finish.textContent).toBe(
       'Finish and go back to api/github-main',
@@ -1862,7 +1863,7 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(
       host,
       ACCOUNT_MENU_TRIGGER_ATTR,
-    )?.getAttribute('aria-label')).toMatch(/current server state is confirmed/i);
+    )?.getAttribute('aria-label')).toMatch(/how the server is now is known/i);
     expect(subtreeText(guide)).not.toMatch(/opaque-receipt-never-render/i);
 
     mount.setServerUpdateGuide({
@@ -1943,7 +1944,7 @@ describe('mountAccountMenu', () => {
     expect(subtreeText(guide)).toMatch(/server controls work again/i);
     expect(subtreeText(guide)).toMatch(/running 26\.8\.1/i);
     expect(subtreeText(guide)).toMatch(/new safety check/i);
-    expect(subtreeText(guide)).toMatch(/one-off note.*gone after a reload/is);
+    expect(subtreeText(guide)).toMatch(/note is only in this tab and is gone after a reload/is);
     expect(finish.hasAttribute('hidden')).toBe(true);
     expect(findByAttr(
       guide,
@@ -2061,7 +2062,7 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(
       diagnostic,
       ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_STATUS_ATTR,
-    )?.textContent).toMatch(/safe diagnostic copied/i);
+    )?.textContent).toMatch(/copied\. paste it into your support conversation/i);
 
     findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR)!.click();
     expect(onReturnToWork).toHaveBeenCalledWith(
@@ -2095,17 +2096,17 @@ describe('mountAccountMenu', () => {
       'The key check is ready',
     );
     expect(section.children[1]?.textContent).toMatch(
-      /look-only check says.*home\.example:8443/i,
+      /safety check says.*home\.example:8443/i,
     );
     expect(findByAttr(
       section,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
-    )?.textContent).toMatch(/look-only question to the server.*did not move/i);
+    )?.textContent).toMatch(/question that changes nothing on the server.*did not move/i);
     expect(findByAttr(
       section,
       ACCOUNT_MENU_SERVER_UPDATE_STEPS_ATTR,
     )?.children[1]?.textContent).toMatch(
-      /never read, kept, or sent a key/i,
+      /never read, kept or sent a key/i,
     );
     expect(section.children[4]?.textContent).toMatch(
       /kept only in this tab and is gone after a reload/i,
@@ -2275,7 +2276,7 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(
       host,
       ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_STATUS_ATTR,
-    )!.textContent).toMatch(/safe diagnostic copied/i);
+    )!.textContent).toMatch(/copied\. paste it into your support conversation/i);
     expect(dom.activeElement()).toBe(diagnosisTitle);
   });
 

@@ -89,7 +89,8 @@ export const priorSourceReads = (
 };
 
 /** Only first-party read outcomes supply new targets. A model/peer result, held
- * run, search hit or lookalike nested in a document body cannot mint one.
+ * run, metadata-only search hit or lookalike nested in a document body cannot mint one.
+ * document.search admits each returned content hit through the source reader.
  * Reused references must already be server-kept in this same conversation. */
 export const answerSourceCitations = (
   target: ChatPickerTarget,
@@ -101,11 +102,11 @@ export const answerSourceCitations = (
   if (target !== 'self') return [];
   const current: ChatSourceCitation[] = [];
   for (const call of calls ?? []) {
-    if (!['work.read', 'document.read', 'situation.query'].includes(call.tool_name) || !call.result || typeof call.result !== 'object') continue;
+    if (!['work.read', 'document.read', 'document.search', 'situation.query'].includes(call.tool_name) || !call.result || typeof call.result !== 'object') continue;
     const result = call.result as Record<string, unknown>;
     if (result.ok !== true || result.run_failed || result.run_held) continue;
     current.push(...chatSourceCitationsOf(result.source_citations).filter(source =>
-      source.kind === (call.tool_name === 'work.read' ? 'asset' : call.tool_name === 'document.read' ? 'file' : 'asset_projection')
+      source.kind === (call.tool_name === 'work.read' ? 'asset' : ['document.read', 'document.search'].includes(call.tool_name) ? 'file' : 'asset_projection')
       && (source.kind !== 'asset_projection' || source.projection.kind !== 'context' || answer.includes(`(#source/${source.id})`))
       && (!isProjectionRefresh(result) || answer.includes(`(#source/${source.id})`))));
   }

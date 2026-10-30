@@ -169,6 +169,7 @@ export const createLocalCalendarProvider = (
   return {
     kind: 'local',
     slug,
+    async listWritableCalendars() { return [{ calendar_id: 'local', name: 'On this server' }]; },
 
     // ── Lifecycle (all no-ops — nothing external) ───────────────────
     async connect(): Promise<void> {
@@ -200,7 +201,9 @@ export const createLocalCalendarProvider = (
     async createEvent(
       calendar_id: string,
       event: CreateEventInput,
+      beforeSend?: () => void,
     ): Promise<ProviderEventPayload> {
+      beforeSend?.();
       const ts = now();
       const source_id = mintSourceId();
       const minted: CanonicalEvent = {

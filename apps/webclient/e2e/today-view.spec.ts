@@ -211,7 +211,7 @@ test('D-325: a failed close leaves the commitment open and retryable', async ({ 
 });
 
 for (const [button, method, state] of [
-  ['Done', 'work_entity.commitment.fulfill', 'fulfilled'],
+  ['Mark fulfilled', 'work_entity.commitment.fulfill', 'fulfilled'],
   ['Cancel commitment', 'work_entity.commitment.cancel', 'cancelled'],
 ] as const) {
   test(`D-325: the commitment dialog closes as ${state}, with no dead lifecycle field`, async ({ page }) => {
@@ -220,10 +220,10 @@ for (const [button, method, state] of [
     const dialog = page.locator('.work-entity-dialog');
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel('Lifecycle state', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Mark fulfilled', exact: true })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Cancel commitment', exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: button, exact: true }).click();
-    await expect(dialog.locator('[data-commitment-status]')).toHaveText(state);
+    await expect(dialog.locator('[data-commitment-status]')).toHaveText(state === 'fulfilled' ? 'Fulfilled' : 'Cancelled');
     expect(await mutations(page)).toEqual([{ method, args: { id: 'promise' } }]);
     await dialog.locator('.work-entity-dialog-close').click();
     await page.evaluate(() => { location.hash = '#today'; });

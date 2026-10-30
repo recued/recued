@@ -3,6 +3,8 @@ import {
   findUnstorableStrings,
   UNSTORABLE_FINDING_LIMIT,
   KIND_ALLOWED_TIERS,
+  isOperationApproval,
+  isOperationIdempotency,
   OP_KINDS,
   isOpKind,
   SLUG_RE,
@@ -38,6 +40,8 @@ import {
   HTTP_UPLOAD_MAX_BYTES_CEILING,
   chunkedUploadBoundViolations,
   API_EXECUTION_BINDING_KINDS,
+  REST_METHODS,
+  OPERATION_ARG_TYPES as OPERATION_ARG_VOCABULARY,
 } from '@recued/contracts';
 import type {
   BulkPackIssue,
@@ -48,7 +52,6 @@ import type {
   CrmAlias,
   EntitySchemaIngredientInput,
   IngredientCliConfig,
-  OperationApproval,
   PackContentRef,
 } from '@recued/contracts';
 import {
@@ -108,7 +111,6 @@ export interface CompositionValidationOptions {
   warnUnboundedPatterns?: boolean;
 }
 
-const OPERATION_APPROVALS: ReadonlySet<OperationApproval> = new Set(['never', 'ask', 'always']);
 const PACK_CONTENT_KIND_SET: ReadonlySet<string> = new Set(PACK_CONTENT_KINDS);
 const CRM_ALIAS_SET: ReadonlySet<string> = new Set(CRM_ALIAS_VALUES);
 const ACCT_ALIAS_SET: ReadonlySet<string> = new Set(ACCT_ALIAS_VALUES);
@@ -1213,9 +1215,7 @@ const validateOperationPagination = (
   }
 };
 
-const OPERATION_ARG_TYPES: ReadonlySet<string> = new Set([
-  'string', 'number', 'boolean', 'object', 'array', 'file_ref', 'file_ref[]',
-]);
+const OPERATION_ARG_TYPES: ReadonlySet<string> = new Set(OPERATION_ARG_VOCABULARY);
 
 /** Validate an operation's `args[]` — each entry is a bare key string (a
  *  required string arg) or an `{ key, type?, required?, affects_target? }`
@@ -2003,6 +2003,9 @@ const validateOperations = (
       }
       validateHttpUpload(row, path, add);
       if (bindKind === 'rest') {
+        if (typeof row.bind.method !== 'string' || !(REST_METHODS as readonly string[]).includes(row.bind.method)) {
+          add('error', 'composition_operation_rest_method', `${path}.bind.method`, `REST method must be one of ${REST_METHODS.join(' | ')}`);
+        }
         validateRestResponseCapture(row, path, add);
         validateRestResponseJson(row, path, add);
         validateRestRequestJson(row, path, add);
@@ -2012,8 +2015,11 @@ const validateOperations = (
     if (typeof risk !== 'string' || !KIND_ALLOWED_TIERS.connection.has(risk as never)) {
       add('error', 'composition_operation_risk_invalid', `${path}.risk`, 'risk must be one of read|write|admin|destructive');
     }
-    if (typeof row.approval !== 'string' || !OPERATION_APPROVALS.has(row.approval as OperationApproval)) {
+    if (!isOperationApproval(row.approval)) {
       add('error', 'composition_operation_approval_invalid', `${path}.approval`, 'approval must be one of never|ask|always');
+    }
+    if (row.idempotency !== undefined && !isOperationIdempotency(row.idempotency)) {
+      add('error', 'composition_operation_idempotency_invalid', `${path}.idempotency`, 'idempotency must be one of safe|idempotent|non_idempotent');
     }
     // D-211 Slice 4 — a reason is recommended for every deliberately held read.
     // It remains a warning for a discriminating row, but becomes part of the

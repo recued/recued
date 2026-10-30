@@ -40,6 +40,12 @@ describe('D-198 memory rpc registry wiring', () => {
     }
   });
 
+  it('§12 — the owner replace is a METHOD of its own, so an older server refuses it (`unknown_method`) rather than ignoring a field on `memory.create`', () => {
+    expect(SERVER_RPC_METHOD_SET.has('memory.replace')).toBe(true);
+    const create: MemoryCreateRequest = { kind: 'note' };
+    expect('replaces' in create).toBe(false);
+  });
+
   it('does NOT revive the D-157-P0-deleted `audit.*` read family', () => {
     // The management surface is `memory.*`; reviving `audit.list` etc. would
     // regress D-157 P0. The transparent feed is `memory.list`, not `audit.list`.

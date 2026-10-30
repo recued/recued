@@ -93,6 +93,7 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // text. `mail.search` returns previews, which can omit a withdrawal.
     'mail.read',
     'document.read',
+    'document.search',
     'calendar.search',
     'memory.search',
     'memory.write',
@@ -208,14 +209,14 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // `work.create` and `memory.write` are parallel for the same append-only
     // reason. ⇒ the axis is SHARED IDENTITY, not read-vs-write.
     //
-    // `document.read` is the one exception on a different axis: it can start a
+    // Document reading and search use a different axis: either can start a
     // local converter process per call (Docling allows up to an hour), so a
     // batch of attachments runs one conversion at a time rather than all at once.
     // `recipe.schedule` mints its own schedule, but two for ONE recipe join the
     // same main dish, which the first may make: shared identity again.
     // `memory.forget` walks an entry's earlier versions, so two forgets of one
     // lineage in one turn address the same rows: shared identity once more.
-    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'memory.forget',
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'document.search', 'memory.forget',
       'schedule.run_prompt', 'schedule.update', 'schedule.pause', 'schedule.resume', 'schedule.remove']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));

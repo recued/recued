@@ -127,7 +127,7 @@ const makeProvider = (
     }),
     async createEvent(calendar_id, event) {
       calls.create.push({ calendar_id, event });
-      return wrap(nextEvent());
+      return wrap({ ...nextEvent(), calendar_id });
     },
     async updateEvent(input) {
       calls.update.push(input);

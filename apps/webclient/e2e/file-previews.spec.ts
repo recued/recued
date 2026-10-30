@@ -66,6 +66,85 @@ const setup = async (browser: Browser, seed?: (fixture: Fixture) => Promise<void
 const noWrites = (calls: Array<{ method: string }>) =>
   expect(calls.filter(call => ['chat.send', 'chat.session.create', 'data.file.attachments.import'].includes(call.method) || call.method.startsWith('upload.'))).toEqual([]);
 
+test('CSV tables page and switch to original text without changing the draft, download or Data preview', async ({ browser }, testInfo) => {
+  const csv = 'Name,Amount,Comment\r\n"North, West",00125.50,"First line\nSecond line"\r\n'
+    + 'Literal,0,"<img src=x onerror=window.csvExecuted=true>"\r\n'
+    + Array.from({ length: 120 }, (_, index) => `Customer ${index + 3},${index + 1},=1+1\r\n`).join('');
+  let fileId = '';
+  const f = await setup(browser, async fixture => {
+    fileId = (await fixture.addConversationFile({ id: 'csv-report', name: 'Report.csv', mime_type: 'text/csv', bytes: csv })).version;
+  });
+  try {
+    await f.page.setViewportSize({ width: 1280, height: 800 }); await f.input.fill('Unsent message');
+    await f.page.getByRole('button', { name: 'Preview Report.csv', exact: true }).click();
+    const table = f.viewer.getByRole('table', { name: 'CSV data: Report.csv', exact: true });
+    await expect(table.getByRole('cell', { name: 'North, West', exact: true })).toBeVisible();
+    await expect(table.getByRole('cell', { name: '00125.50', exact: true })).toBeVisible();
+    expect(await table.getByRole('cell', { name: 'First line Second line', exact: true }).textContent()).toBe('First line\nSecond line');
+    await expect(table.getByRole('cell', { name: '<img src=x onerror=window.csvExecuted=true>', exact: true })).toBeVisible();
+    expect(await table.locator('img,script').count()).toBe(0);
+    expect(await f.page.evaluate(() => Reflect.get(window, 'csvExecuted'))).toBeUndefined();
+    await expect(f.viewer.getByRole('status').filter({ hasText: 'Rows 1–50 of 122' })).toBeVisible();
+    await f.page.screenshot({ path: testInfo.outputPath('csv-table-desktop.png') });
+    const next = f.viewer.getByRole('button', { name: 'Next rows', exact: true });
+    await next.click(); await expect(next).toBeFocused();
+    await expect(f.viewer).toContainText('Rows 51–100 of 122');
+    const grid = f.viewer.getByRole('region', { name: 'CSV table scroll area', exact: true });
+    const scroll = await grid.evaluate(node => { node.scrollTop = 80; return node.scrollTop; });
+    await f.viewer.getByRole('button', { name: 'Raw text', exact: true }).click();
+    expect(await f.viewer.getByLabel('File text', { exact: true }).textContent()).toBe(csv);
+    await f.viewer.getByRole('button', { name: 'Table', exact: true }).click();
+    await expect(f.viewer).toContainText('Rows 51–100 of 122');
+    expect(await grid.evaluate(node => node.scrollTop)).toBe(scroll);
+    await f.viewer.getByRole('button', { name: 'Table', exact: true }).click();
+    expect(await grid.evaluate(node => node.scrollTop)).toBe(scroll);
+    await next.click(); await expect(next).toBeFocused(); await expect(next).toHaveAttribute('aria-disabled', 'true');
+    await expect(f.viewer).toContainText('Rows 101–122 of 122');
+    await expect(table.getByRole('rowheader', { name: '122', exact: true })).toBeVisible();
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    const download = await saving; expect(await readFile((await download.path())!, 'utf8')).toBe(csv);
+    expect(f.calls.filter(call => call.method === previewMethod)).toHaveLength(1);
+    expect(f.calls.some(call => call.method === 'data.file.read')).toBe(false);
+    await f.viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await expect(f.input).toHaveValue('Unsent message'); await f.input.fill('');
+    await f.openConversation();
+    await f.conversation.locator(`[data-conversation-file="${fileId}"]`).getByRole('link', { name: 'Open in Data', exact: true }).click();
+    await f.page.getByRole('button', { name: 'Preview file', exact: true }).click();
+    await expect(f.viewer.getByRole('table').getByRole('cell', { name: 'North, West', exact: true })).toBeVisible();
+    noWrites(f.calls);
+  } finally { await f.close(); }
+});
+
+test('phone CSV previews retain paging focus and keep malformed CSV readable and downloadable', async ({ browser }, testInfo) => {
+  const csv = Array.from({ length: 61 }, (_, index) => `Customer ${index + 1},${index + 1},Reviewed\n`).join('');
+  const broken = 'Name,Comment\nAlice,"unfinished';
+  const f = await setup(browser, async fixture => {
+    await fixture.addConversationFile({ id: 'csv-good', name: 'Good.csv', mime_type: 'application/csv; header="absent"; charset=utf-8', bytes: csv });
+    await fixture.addConversationFile({ id: 'csv-broken', name: 'Broken.csv', mime_type: 'text/csv', bytes: broken });
+  });
+  try {
+    await f.page.setViewportSize({ width: 390, height: 844 }); await f.pick();
+    const open = f.picker.getByRole('button', { name: 'Preview Good.csv', exact: true }); await open.click();
+    await expect(f.viewer.getByRole('table')).toBeVisible();
+    await expect(f.viewer.getByRole('columnheader', { name: 'Column 1', exact: true })).toBeVisible();
+    await expect(f.viewer.getByRole('cell', { name: 'Customer 1', exact: true })).toBeVisible();
+    await expect(f.viewer).toContainText('Rows 1–50 of 61');
+    const next = f.viewer.getByRole('button', { name: 'Next rows', exact: true });
+    await next.focus(); await f.page.keyboard.press('Enter');
+    await expect(f.viewer).toContainText('Rows 51–61 of 61'); await expect(next).toBeFocused();
+    await f.page.screenshot({ path: testInfo.outputPath('csv-table-mobile.png') });
+    await f.page.keyboard.press('Escape'); await expect(open).toBeFocused();
+    await f.picker.getByRole('button', { name: 'Preview Broken.csv', exact: true }).click();
+    await expect(f.viewer.getByRole('button', { name: 'Table', exact: true })).toBeDisabled();
+    await expect(f.viewer.getByRole('button', { name: 'Raw text', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    expect(await f.viewer.getByLabel('File text', { exact: true }).textContent()).toBe(broken);
+    await expect(f.viewer.getByRole('status').filter({ hasText: 'could not be shown as a table' })).toBeVisible();
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    expect(await readFile((await (await saving).path())!, 'utf8')).toBe(broken);
+    noWrites(f.calls); expect(f.calls.some(call => call.method === 'data.file.read')).toBe(false);
+  } finally { await f.close(); }
+});
+
 // Valid two-page PDF, including an ignored document action. No network or library fixture dependency.
 const pdfFixture = () => {
   const streams = ['First retained PDF page', 'Second retained PDF page'].map(text => 'BT /F1 24 Tf 30 200 Td (' + text + ') Tj ET\n');

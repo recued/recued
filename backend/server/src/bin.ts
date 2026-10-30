@@ -34,6 +34,7 @@ const KNOWN_SUBCOMMANDS = new Set([
   'pair',
   'audit',
   'llm',
+  'mcp-key',
   'archive',
   'update',
   'serve',
@@ -436,6 +437,12 @@ const dispatch = async (): Promise<void> => {
       bootTrace.markImport('./cli-context/llm.js');
       const { runLlmProfile } = await import('./cli-context/llm.js');
       await runLlmProfile({ args, bootTrace });
+      return;
+    }
+    case 'mcp-key': {
+      bootTrace.markImport('./cli-context/mcp-key.js');
+      const { runMcpKeyProfile } = await import('./cli-context/mcp-key.js');
+      await runMcpKeyProfile({ args, bootTrace });
       return;
     }
     case 'mcp': {

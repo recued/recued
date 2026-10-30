@@ -1,10 +1,12 @@
 import type { Page } from '@playwright/test';
-import type { CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CollectionRecord } from '@recued/contracts';
+import type { CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CollectionRecord, CalendarEventCreateRequest, CalendarEventCreateResult } from '@recued/contracts';
 
 /** Local RPC fixture. Clone every reply, as a real WebSocket boundary does. */
-export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'all-day' | 'connected' | 'invitation' = 'timed', agenda = false): Promise<void> => {
+export type CalendarEventFixtureMode = 'timed' | 'all-day' | 'connected' | 'invitation' | 'editable-google' | 'editable-outlook';
+export const installCalendarEventFixture = async (page: Page, mode: CalendarEventFixtureMode = 'timed', agenda = false): Promise<void> => {
   await page.addInitScript(({ mode, agenda }) => {
-    const connected = mode === 'connected' || mode === 'invitation';
+    const editableRemote = mode === 'editable-google' || mode === 'editable-outlook';
+    const connected = mode === 'connected' || mode === 'invitation' || editableRemote;
     const slug = connected ? 'work' : 'local';
     const day = mode === 'all-day';
     let version = 1;
@@ -14,9 +16,15 @@ export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'a
         start_at: Date.parse(day ? '2026-10-31T00:00:00Z' : '2026-10-28T16:00:12.345Z'),
         end_at: Date.parse(day ? '2026-11-03T00:00:00Z' : '2026-10-28T17:00:12.345Z'),
         timezone: 'America/Los_Angeles', is_all_day: day, status: 'confirmed', is_recurring: false },
-      resource_version: 'v1', incarnation: 'local-calendar-1', editable: !connected,
-      ...(connected ? { read_only_reason: 'Edit this event in its connected calendar.' } : {}),
+      resource_version: 'v1', incarnation: 'local-calendar-1', editable: !connected || editableRemote,
+      ...(connected && !editableRemote ? { read_only_reason: 'Edit this event in its connected calendar.' } : {}),
     };
+    if (editableRemote) {
+      saved.provider_verified = true;
+      saved.editable_fields = ['summary', 'location', 'start_at', 'end_at', ...(mode === 'editable-google' ? ['description' as const] : [])];
+      saved.edit_notice = mode === 'editable-outlook' ? 'Changes are saved to Outlook. Edit rich notes and online-meeting details in Outlook; they are kept when saving other fields.'
+        : 'Changes are saved to this Google calendar. Google is asked to notify existing guests.';
+    }
     if (mode === 'invitation') saved.invitation = { organizer: { email: 'host@example.com', display_name: 'Customer host' },
       attendee_email: 'me@example.com', response: 'needs_action', can_respond: true, scope: 'event' };
     if (mode === 'invitation') saved.provider_verified = true;
@@ -28,6 +36,8 @@ export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'a
     let holdRead = false;
     let releaseRead: ((fail: boolean) => void) | undefined;
     const writes: CalendarEventUpdateRequest[] = [];
+    const creates: CalendarEventCreateRequest[] = [];
+    const created = new Map<string, CalendarEventCreateResult>();
     const record = () => ({ record_id: saved.event.record_id, source_id: saved.event.source_id, received_at: 1_700_000_000_000,
       modified_at: 1_700_000_000_000 + version, size_bytes: saved.event.description.length,
       hot_fields: { summary: saved.event.summary, location: saved.event.location, start_at: saved.event.start_at, end_at: saved.event.end_at,
@@ -54,7 +64,7 @@ export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'a
       pending() { return releaseList !== undefined; },
       release() { if (!releaseList) throw new Error('No agenda read is waiting.'); const done = releaseList; releaseList = undefined; done(); },
     };
-    const controls = { writes, responses,
+    const controls = { writes, responses, creates, createdCount: () => created.size,
       setReadAvailable(available: boolean) { readAvailable = available; },
       removeOnDecline() { removeOnDecline = true; },
       allowResponses(allowed: boolean) { if (saved.invitation) { saved.invitation.can_respond = allowed; saved.invitation.unavailable_reason = allowed ? '' : 'This calendar is read-only.'; } },
@@ -69,8 +79,32 @@ export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'a
     Object.assign(window, { __calendarEvent: controls, __calendarAgenda: agendaControls, __connectionsFixture: async (method: string, raw: unknown) => {
       const args = raw as Record<string, unknown> | undefined;
       if (method === 'collection.listInstances') return { result: { instances: [{
-        slug, platform: 'calendar', adapter_type: connected ? 'gcal' : 'local', caps: {}, auth_state: 'healthy', last_synced_at: 1_700_000_000_000,
+        slug, platform: 'calendar', adapter_type: mode === 'editable-outlook' ? 'graph' : connected ? 'gcal' : 'local', caps: {}, auth_state: 'healthy', last_synced_at: 1_700_000_000_000,
       }, ...(agenda ? [{ slug: 'work', platform: 'calendar', adapter_type: 'gcal', caps: {}, auth_state: 'healthy', last_synced_at: Date.now() }] : [])] } };
+      if (method === 'collection.calendar.event.destinations') return { result: { destinations: [
+        { slug, calendar_id: slug, name: connected ? 'Work calendar' : 'On this server', provider: connected ? 'gcal' : 'local', incarnation: 'local-calendar-1' },
+        ...(agenda ? [{ slug: 'work', calendar_id: 'work', name: 'Work calendar', provider: 'gcal', incarnation: 'work-calendar-1' }] : []),
+      ], unavailable: [] } };
+      if (method === 'collection.calendar.event.create') {
+        const request = raw as CalendarEventCreateRequest; creates.push(structuredClone(request));
+        const prior = created.get(request.creation_id);
+        if (prior) return { result: structuredClone(prior) };
+        const behavior = next; next = null;
+        const interrupted = behavior === 'hold' && await new Promise<boolean>(done => { release = done; });
+        if (behavior === 'fail' || interrupted) return { error: { code: 'invalid_args', message: 'The event could not be created.' } };
+        const source_id = `created-${created.size + 1}`, record_id = `cal:${request.slug}:${source_id}`;
+        const record: CollectionRecord = { record_id, source_id, received_at: Date.now(), modified_at: Date.now(), size_bytes: request.description.length,
+          hot_fields: { summary: request.summary, location: request.location, start_at: request.start_at, end_at: request.end_at,
+            is_all_day: request.is_all_day, status: 'confirmed' }, body_inline: request.description };
+        const value: CalendarEventCreateResult = { slug: request.slug, snapshot: { record, incarnation: request.expected_incarnation, resource_version: 'created-v1', editable: request.slug === 'local',
+          ...(request.slug === 'local' ? {} : { read_only_reason: 'Edit this event in its connected calendar.' }),
+          event: { record_id, source_id, calendar_id: request.calendar_id, calendar_name: request.slug === 'local' ? 'On this server' : 'Work calendar',
+            summary: request.summary, description: request.description, location: request.location, start_at: request.start_at, end_at: request.end_at,
+            timezone: request.timezone, is_all_day: request.is_all_day, status: 'confirmed', is_recurring: false, updated_at: Date.now() } } };
+        created.set(request.creation_id, structuredClone(value));
+        if (behavior === 'lost') return { error: { code: 'timeout', message: 'The creation reply was lost.' } };
+        return { result: structuredClone(value) };
+      }
       if (method === 'collection.list' && args?.platform === 'calendar') {
         const range = args.calendar_window as { from: number; before: number } | undefined;
         const filters = args.filters as { is_all_day?: boolean } | undefined;
@@ -79,15 +113,19 @@ export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'a
         reads.push({ slug: String(args.slug), offset, from: range?.from ?? 0, before: range?.before ?? 0, allDay: filters?.is_all_day === true });
         if (holdSource === args.slug) { holdSource = null; await new Promise<void>(done => { releaseList = done; }); }
         if (failSource === args.slug) return { error: { code: 'unavailable', message: 'Calendar service unavailable.' } };
-        const rows = args.slug === slug ? [record(), ...localRows] : args.slug === 'work' ? remoteRows : [];
+        const rows = [...(args.slug === slug ? [record(), ...localRows] : args.slug === 'work' ? remoteRows : []),
+          ...[...created.values()].filter(value => value.slug === args.slug).map(value => value.snapshot.record)];
         const matches = rows.filter(row => (!filters || row.hot_fields.is_all_day === filters.is_all_day)
           && (!range || (Number(row.hot_fields.start_at) < range.before && Number(row.hot_fields.end_at) > range.from)))
           .sort((a, b) => Number(a.hot_fields.start_at) - Number(b.hot_fields.start_at) || a.record_id.localeCompare(b.record_id));
         return { result: { records: structuredClone(matches.slice(offset, offset + limit)),
           source_freshness: { last_success_at: Date.now(), age_ms: 0, degraded: false, pending: 0, stale: false } } };
       }
-      if (method === 'collection.get' && args?.platform === 'calendar') return { result: { record: args.record_id === saved.event.record_id ? structuredClone(record()) : null } };
+      if (method === 'collection.get' && args?.platform === 'calendar') return { result: { record: args.record_id === saved.event.record_id ? structuredClone(record())
+        : structuredClone([...created.values()].find(value => value.slug === args.slug && value.snapshot.record.record_id === args.record_id)?.snapshot.record ?? null) } };
       if (method === 'collection.calendar.event.get') {
+        const createdEvent = [...created.values()].find(value => value.slug === args?.slug && value.snapshot.event.source_id === args?.source_id);
+        if (createdEvent) return { result: structuredClone(createdEvent.snapshot) };
         if (args?.slug !== slug || args.source_id !== saved.event.source_id) throw new Error('Wrong fixture calendar event identity.');
         if (holdRead) {
           holdRead = false;
@@ -96,6 +134,7 @@ export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'a
         const value = view();
         if (!readAvailable) {
           delete value.provider_verified;
+          if (editableRemote) { value.editable = false; value.editable_fields = []; }
           value.refresh_error = 'The calendar could not be refreshed. Showing the last synced details.';
           if (value.invitation) { value.invitation.can_respond = false; value.invitation.unavailable_reason = 'Organizer notification could not be verified.'; }
         }
@@ -135,6 +174,8 @@ export const installCalendarEventFixture = async (page: Page, mode: 'timed' | 'a
 
 declare global { interface Window { __calendarEvent: {
   writes: CalendarEventUpdateRequest[];
+  creates: CalendarEventCreateRequest[];
+  createdCount(): number;
   responses: CalendarEventRespondRequest[];
   setReadAvailable(available: boolean): void;
   removeOnDecline(): void; allowResponses(allowed: boolean): void;

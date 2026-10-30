@@ -1,6 +1,6 @@
 /** Shared attachment reader. Conversion and byte access always use the ordinary executor. */
 import { createHash } from 'node:crypto';
-import type { ChatDispatchContext, ChatDispatchResult, RecipeDefinition } from '@recued/contracts';
+import type { ChatDispatchContext, ChatDispatchResult, CollectionRecord, RecipeDefinition } from '@recued/contracts';
 import type { Tier1Handler } from '@recued/middleware/internal-tool-registry/index.js';
 import { buildPackOpResolution } from './pack-inventory.js';
 import { isCollectionReadGrantedForDispatch, wrapRecipeRunResult, type ChatToolHandlerDeps } from './chat-tool-handlers.js';
@@ -9,6 +9,7 @@ import type { ExecuteResponse } from './types.js';
 import { isWatchedFolderCollection, parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
 import { sourceCitation, sourceCitationHint } from './chat-source-citations.js';
 import { watchedFileSelection } from './folder-file-attachments.js';
+import { documentIndexAuthority, type DocumentIndexEntry, type DocumentSearchIndex } from './storage/document-search-index.js';
 
 const object = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
@@ -66,6 +67,28 @@ const callerOf = (ctx: ChatDispatchContext): string => JSON.stringify(
   (name: string, value: unknown) => (name === 'tool_call_id' || name === 'turn_id' ? undefined : value),
 );
 
+/** One fingerprint for both reading and content search. Changing a converter
+ * manifest, MIME type, filename or source version retires the old extraction. */
+export const documentReadPlanner = (deps: ChatToolHandlerDeps, requested: string = 'auto') => {
+  const config = deps.getExecutorConfig();
+  const scan = deps.documentPacks ?? deps.scanInstalledPacks;
+  const resolution = scan ? buildPackOpResolution(scan, slug => config.manifests.get(slug)) : new Map();
+  const choices = requested === 'auto' ? ['markitdown', 'docling'] : [requested];
+  return (record: CollectionRecord, version = record.blob_hash ?? String(record.hot_fields.content_hash ?? '')) => {
+    const mime = String(record.hot_fields.mime_type ?? '').toLowerCase();
+    const media = mediaType(record.hot_fields.mime_type);
+    const plain = media.essence.startsWith('text/') || TEXT_TYPES.includes(media.essence);
+    const direct = plain && requested === 'auto';
+    const converter = direct ? undefined : choices.find(name => resolution.get(`recued-core.${name}`)?.operations.has('document.to_markdown'));
+    const binding = converter ? resolution.get(`recued-core.${converter}`) : undefined;
+    const manifest = binding ? config.manifests.get(binding.catalog_slug) : undefined;
+    const key = createHash('sha256').update(JSON.stringify([record.record_id, version, record.hot_fields.filename, mime, direct, converter ?? choices, manifest])).digest('hex');
+    return { mime, media, direct, converter, choices, key };
+  };
+};
+export const documentReadPlan = (deps: ChatToolHandlerDeps, record: CollectionRecord, requested = 'auto', version?: string) =>
+  documentReadPlanner(deps, requested)(record, version);
+
 export const documentReadRecipe = (converter?: string, metadataOnly = false): RecipeDefinition => ({
   recipe_id: DOCUMENT_READ_RECIPE_ID, version: 1, ttl: 0,
   metadata: { name: 'Read a work document', description: 'Extract readable evidence from one selected file.', author: 'recued',
@@ -79,7 +102,7 @@ export const documentReadRecipe = (converter?: string, metadataOnly = false): Re
 });
 
 export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handler => {
-  // Bounded process cache only. No plaintext artifact is written to disk. Every
+  // Bounded process cache alongside the optional encrypted durable index. Every
   // hit re-admits the original file read; a former grant never licenses a later read.
   const cache = new Map<string, { text: string; converter: string; at: number }>();
   return async (raw, ctx) => {
@@ -110,18 +133,9 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       try { return registry ? watchedFileSelection(registry, String(args.file_ref)).selection_revision : null; } catch { return null; }
     };
     if (sourceBytes > MAX_SOURCE_BYTES) return { ok: true, result: { status: 'too_large', hint: 'This attachment exceeds the 25 MB reading limit. Its contents have not been read.' } };
-    const mime = String(record.hot_fields.mime_type ?? '').toLowerCase();
-    const media = mediaType(record.hot_fields.mime_type);
-    const plain = media.essence.startsWith('text/') || TEXT_TYPES.includes(media.essence);
-    const config = deps.getExecutorConfig();
-    const scan = deps.documentPacks ?? deps.scanInstalledPacks;
-    const resolution = scan ? buildPackOpResolution(scan, slug => config.manifests.get(slug)) : new Map();
-    const requested = args.converter ?? 'auto';
-    const choices = requested === 'auto' ? ['markitdown', 'docling'] : [String(requested)];
-    // Text is read directly unless a converter is named; a converter may decode
-    // text in an encoding this reader does not guess.
-    const direct = plain && requested === 'auto';
-    const converter = direct ? undefined : choices.find(name => resolution.get(`recued-core.${name}`)?.operations.has('document.to_markdown'));
+    const requested = String(args.converter ?? 'auto');
+    const hash = watched ? watchedRevision() ?? '' : record.blob_hash ?? String(record.hot_fields.content_hash ?? '');
+    const { media, direct, converter, choices, key } = documentReadPlan(deps, record, requested, hash);
     if (!direct && !converter) return { ok: true, result: { status: 'needs_pack', file_ref: args.file_ref,
       suggested_packs: requested === 'auto' ? ['markitdown', 'docling'] : choices,
       hint: 'Enable an appropriate document reader pack, then resume this investigation. MarkItDown handles ordinary documents; Docling can use OCR for scans. No attachment content has been read.' },
@@ -130,17 +144,22 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       missing_packs: choices.map((name) => `recued-core.${name}`) };
     // Direct text is the extracted text, so its limit applies before any read.
     if (direct && sourceBytes > MAX_TEXT_BYTES) return { ok: true, result: { status: 'too_large', hint: 'This text file exceeds the 2 MB reading limit. Its contents have not been read.' } };
-    const binding = converter ? resolution.get(`recued-core.${converter}`) : undefined;
-    const manifest = binding ? config.manifests.get(binding.catalog_slug) : undefined;
-    // The version this reading is anchored to: a retained file's content
-    // address, or a watched file's revision, since its bytes are read from its
-    // folder by the governed read below and never here.
-    const hash = watched ? watchedRevision() ?? '' : record.blob_hash ?? String(record.hot_fields.content_hash ?? '');
     if (!/^[0-9a-f]{64}$/.test(hash)) return { ok: true, result: { status: 'unavailable', hint: 'The attachment has no verifiable content version.' } };
-    const key = createHash('sha256').update(JSON.stringify([args.file_ref, hash, record.hot_fields.filename, mime, converter, manifest])).digest('hex');
     const cacheKey = createHash('sha256').update(key).update(callerOf(ctx)).digest('hex');
     const previous = cache.get(cacheKey);
-    const cached = previous && Date.now() - previous.at < 15 * 60 * 1000 ? previous : undefined;
+    const authority = documentIndexAuthority(ctx);
+    let index: DocumentSearchIndex | undefined, indexed: DocumentIndexEntry | undefined;
+    let searchIndexUnavailable = false;
+    try {
+      index = !watched ? deps.getDocumentSearchIndex?.() : undefined;
+      indexed = index?.get(authority, key);
+    } catch {
+      // Derived search storage is optional for an ordinary document reading.
+      // Its failure must not hide bytes the governed reader can still read.
+      index = undefined; searchIndexUnavailable = true;
+    }
+    const cached = previous && Date.now() - previous.at < 15 * 60 * 1000 ? previous
+      : indexed?.status === 'indexed' ? { text: indexed.text, converter: indexed.converter, at: indexed.updated_at } : undefined;
     const fileRef = args.file_ref;
     const unreadable: ChatDispatchResult = { ok: true, result: { status: 'unavailable', file_ref: args.file_ref,
       suggested_packs: converter ? [converter] : [], hint: 'The document could not be read. Check reader availability and access, then resume. The attachment remains an evidence gap.' } };
@@ -189,6 +208,18 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       if (args.read_version !== undefined && args.read_version !== read_version) {
         return { ok: true, result: { status: 'changed', hint: 'The source or extracted text changed between pages. Restart at offset 0; do not combine these versions.' } };
       }
+      if (index && text.trim()) {
+        const current = files?.get(fileRef);
+        if (!current || documentReadPlan(deps, current, requested).key !== key) {
+          return { ok: true, result: { status: 'changed', hint: 'The source or converter changed during reading. Read the current version before using it.' } };
+        }
+        if (indexed?.status !== 'indexed') {
+          try {
+            index.put({ authority, fingerprint: key, file_ref: fileRef, content_hash: hash, text,
+              converter: converter ?? 'text', read_version, extraction_complete: direct, status: 'indexed', updated_at: (deps.now ?? Date.now)() });
+          } catch { searchIndexUnavailable = true; }
+        }
+      }
       if (converter && !cached && text.trim()) {
         if (cache.size >= 16) cache.delete(cache.keys().next().value!);
         cache.set(cacheKey, { text, converter, at: Date.now() });
@@ -204,7 +235,11 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
         ...(citation ? sourceCitationHint(citation) : {}),
         text_incomplete: page === null || page.next_offset !== null,
         extraction_complete: direct && text.trim().length > 0,
-        warnings: direct ? [] : ['Conversion may omit images, tables, annotations or layout. No page or sheet locations are asserted by this reader.'],
+        ...(searchIndexUnavailable ? { search_index_unavailable: true } : {}),
+        warnings: [
+          ...(direct ? [] : ['Conversion may omit images, tables, annotations or layout. No page or sheet locations are asserted by this reader.']),
+          ...(searchIndexUnavailable ? ['The search index is unavailable. This reading is usable, but its text may not be saved for later searches.'] : []),
+        ],
         hint: text.trim() ? 'Continue using next_offset and this read_version, keeping the same converter. Cite the returned source_ref as a Markdown link, keeping content_hash as the version reference. Reading all extracted text does not prove complete extraction. Keep conclusions that depend on missing content provisional.'
           : 'No usable text was extracted. Try Docling for OCR, or ask for a readable copy. Do not infer that the attachment contains no requirements.',
       } };

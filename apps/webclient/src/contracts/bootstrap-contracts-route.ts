@@ -252,8 +252,27 @@ const TOKEN_PLACEHOLDER = '<this contract\'s key>';
 export interface McpClientSnippet {
   readonly id: 'claude' | 'claude-code' | 'cursor' | 'cline' | 'codex' | 'openclaw' | 'custom';
   readonly label: string;
+  /** What to paste: a config file's content, or a command. */
   readonly body: string;
+  /** Lines shown under `body`: a step the paste still needs, or what to use on
+   *  an older server. Plain text, never focusable, so each client is one stop
+   *  in the examples' tab order. */
+  readonly notes?: ReadonlyArray<McpClientSnippetNote>;
 }
+
+export interface McpClientSnippetNote {
+  readonly text: string;
+  /** A command or a piece of config, shown as code after `text`. */
+  readonly code?: string;
+}
+
+/** The first Recued with `recued mcp-key` (D-334). The web app does not know the
+ *  server's version and can be newer than it, so a snippet that needs the
+ *  command says so. */
+export const MCP_APP_KEY_SINCE = '26.10.30';
+
+/** The name Claude Desktop's config gives its `recued --mcp`, for its saved key. */
+export const CLAUDE_DESKTOP_APP_NAME = 'claude-desktop';
 
 const RECUED_PATH_PLACEHOLDER = '<full path to recued: run `which recued`, or `where recued` on Windows>';
 
@@ -299,13 +318,18 @@ export const buildMcpClientSnippets = (
   // there never connects (remote servers go through its Connectors, which want
   // OAuth, not a key). Recued's own stdio mode is that local server. A desktop
   // app does not get the shell's PATH, so `command` is the full path.
+  //
+  // 🔑 The key is not in it (D-334): the config names the app, and the owner
+  // saves the key with Recued, so it never sits in Claude Desktop's settings
+  // file. ⛔ A server before `MCP_APP_KEY_SINCE` reads `claude-desktop` as an
+  // unknown command and prints its help onto the stream Claude Desktop reads,
+  // so the second note gives the old form.
   const claudeDesktopConfig = JSON.stringify(
     {
       mcpServers: {
         recued: {
           command: RECUED_PATH_PLACEHOLDER,
-          args: ['--mcp'],
-          env: { RECUED_MCP_TOKEN: TOKEN_PLACEHOLDER },
+          args: ['--mcp', '--app', CLAUDE_DESKTOP_APP_NAME],
         },
       },
     },
@@ -314,7 +338,21 @@ export const buildMcpClientSnippets = (
   );
 
   return [
-    { id: 'claude', label: "Claude Desktop, on the server's computer", body: claudeDesktopConfig },
+    {
+      id: 'claude',
+      label: "Claude Desktop, on the server's computer",
+      body: claudeDesktopConfig,
+      notes: [
+        {
+          text: 'Then, in a terminal on the same computer, run this and paste this contract\'s key when it asks:',
+          code: `recued mcp-key set --app ${CLAUDE_DESKTOP_APP_NAME}`,
+        },
+        {
+          text: `Recued before ${MCP_APP_KEY_SINCE} has no mcp-key. There, use these lines in place of "args":`,
+          code: `"args": ["--mcp"], "env": { "RECUED_MCP_TOKEN": "${TOKEN_PLACEHOLDER}" }`,
+        },
+      ],
+    },
     {
       id: 'claude-code',
       label: 'Claude Code',
@@ -1030,6 +1068,20 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   line-height: 1.45;
   color: var(--fg);
 }
+[${CONTRACTS_ROUTE_SNIPPET_ATTR}] .contracts-snippet-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+[${CONTRACTS_ROUTE_SNIPPET_ATTR}] .contracts-snippet-note code {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 [${CONTRACTS_ROUTE_UNAVAILABLE_ATTR}] {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1515,7 +1567,21 @@ const appendSnippet = (
   const pre = doc.createElement('pre');
   pre.textContent = snippet.body;
   card.appendChild(pre);
+  for (const note of snippet.notes ?? []) card.appendChild(snippetNote(doc, 'contracts-snippet-note', note));
   host.appendChild(card);
+};
+
+/** One line under a snippet: its text, then any command or config as code. */
+export const snippetNote = (doc: Document, className: string, note: McpClientSnippetNote): HTMLElement => {
+  // The space before the code rides on the text: no text nodes, which the
+  // route's test documents do not make.
+  const line = makeEl(doc, 'p', className, note.code === undefined ? note.text : `${note.text} `);
+  if (note.code !== undefined) {
+    const code = doc.createElement('code');
+    code.textContent = note.code;
+    line.appendChild(code);
+  }
+  return line;
 };
 
 const DOOR_TYPE_LABELS: Record<DoorType, string> = {

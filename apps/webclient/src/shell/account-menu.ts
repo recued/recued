@@ -315,7 +315,7 @@ const ACCOUNT_BASELINE_POSTURE_COPY: Readonly<
 > = {
   'update-available': 'a newer version is ready',
   'up-to-date': 'this is the newest version',
-  'not-configured': 'in-place release checks are not configured',
+  'not-configured': 'this server is not set up to check for updates by itself',
   'stale-feed': 'this server checks for updates in an old way and misses new ones',
   'launcher-outdated': 'the launcher has to be updated first',
   replay: 'an older update was ignored',
@@ -329,7 +329,7 @@ const accountServerUpdateTriageStep = (
   if (triage.reason === 'update_still_available') {
     return triage.availableVersion === undefined
       ? 'This server still has an update waiting. Install it, then check that this server really does restart.'
-      : `The selected server still offers ${triage.availableVersion}. Apply it and confirm that this exact server process restarts.`;
+      : `Your server still offers ${triage.availableVersion}. Install it, then check that the server really restarts.`;
   }
   if (triage.reason === 'running_version_unchanged') {
     return 'The version did not change. Restart this server, or install it again.';
@@ -1950,7 +1950,7 @@ export const mountAccountMenu = (
           : verification?.phase === 'closing'
             ? `The server is checking again, and making sure no update is running, before it writes down that it could not tell.`
             : verification?.phase === 'closed'
-              ? `The selected server durably closed this receipt as unresolved. It did not claim the ${operation} succeeded or failed; confirm the state that exists now before another server change.`
+              ? `Your server wrote down that it could not tell how the ${operation} went. It does not say it worked or failed. Check how the server is now before anything else changes it.`
               : verification?.phase === 'checking_baseline'
                 ? 'Recued is reading the version running now, the update state, and what the affected connection is doing. The server controls stay paused.'
                 : verification?.phase === 'baseline_retryable'
@@ -1958,7 +1958,7 @@ export const mountAccountMenu = (
                   : verification?.phase === 'baseline_confirmed'
                     ? verification.reason === 'finish_unavailable'
                       ? 'Recued still knows how the server is, but this browser could not finish tidying up. Choose Finish again. Nothing will run on the server twice.'
-                      : `The selected server freshly reported its current state. Review it below; the original ${operation} result is still unknown.`
+                      : `This is how your server is now. Look it over below. How the ${operation} went is still unknown.`
               : verification?.phase === 'finishing'
                 ? 'Recued has checked how the server is. This tab is only tidying up its own note.'
         : verification?.phase === 'unknown'
@@ -1974,18 +1974,18 @@ export const mountAccountMenu = (
               ? `The selected server says this ${operation} is still restarting. Recued will check again by itself.`
               : `Recued could not confirm this ${operation} yet. It will try again by itself.`
             : activeProfileLabel === null
-              ? `Another open Recued tab is handling this server ${operation}. This tab will observe it without sending a duplicate action.`
-              : `Another open Recued tab is handling the ${operation} for ${activeProfileLabel}. This tab will observe it without sending a duplicate action.`
+              ? `Another open Recued tab is handling this server ${operation}. This tab shows its progress, so there is nothing to do here.`
+              : `Another open Recued tab is handling the ${operation} for ${activeProfileLabel}. This tab shows its progress, so there is nothing to do here.`
       : resolvedElsewhere
       ? activeProfileLabel === null
-        ? `A look-only check says this server can safely check a new key for ${guide.connectionIdentity}.`
-        : `A look-only check says ${activeProfileLabel} can safely check a new key for ${guide.connectionIdentity}.`
+        ? `A safety check says this server can check a new key for ${guide.connectionIdentity}.`
+        : `A safety check says ${activeProfileLabel} can check a new key for ${guide.connectionIdentity}.`
       : checkingReturn
       ? exactReturnActive
-        ? `Recued is checking whether another key is already being replaced for ${guide.connectionIdentity}, then re-reading the latest saved connection. Account will not start a duplicate check while Connections owns this handoff.`
-        : `The return to ${guide.connectionIdentity} stopped before Recued finished its checks. Carry on below to run those look-only checks again.`
+        ? `Recued is checking whether another key is already being swapped for ${guide.connectionIdentity}, then reading the saved connection again. The Account menu does not start a second check while Connections is doing it.`
+        : `The return to ${guide.connectionIdentity} stopped before Recued finished its checks. Carry on below to run the safety check again.`
       : cleanEditorReady
-      ? `The checks passed, so Recued opened a fresh key editor for ${guide.connectionIdentity}, but that editor closed before any field changed. Resume below when you are ready to enter a replacement.`
+      ? `The checks passed, so Recued opened a blank form for a new key for ${guide.connectionIdentity}, but it closed before anything was typed. Carry on below when you are ready to enter the new key.`
       : triage === null
       ? activeProfileLabel === null
         ? `${guide.connectionIdentity} needs a newer Recued server before you can safely replace a key.`
@@ -2000,12 +2000,12 @@ export const mountAccountMenu = (
       const baseline = completion.baseline;
       serverUpdateStepNodes[1]!.textContent = baseline === undefined
         ? 'This browser has tidied up. Go back to the connection to have the server check it again.'
-        : `Running ${baseline.currentVersion} on the ${baseline.channel} channel. Return to ${guide.connectionIdentity}; Recued will re-read that exact connection before opening a clean editor.`;
+        : `Running ${baseline.currentVersion} on the ${baseline.channel} channel. Go back to ${guide.connectionIdentity}; Recued reads that connection again before it opens a blank form.`;
       serverUpdateStepNodes[2]!.textContent =
-        `This one-off note lives only in this tab. It does not say the original ${operation} worked or failed, and it is gone after a reload.`;
+        `This note is only in this tab and is gone after a reload. It does not say whether the ${operation} worked.`;
     } else if (progress !== null) {
       serverUpdateStepNodes[1]!.textContent = verification?.phase === 'retryable'
-        ? 'Choose Check the result again below. Recued sends only a meaningless code to this server. It will not run the update or the undo again.'
+        ? 'Choose Check the result again below. It only asks your server how it went, and never runs the update or the undo again.'
         : verification?.phase === 'reviewing_closure'
           ? 'Go back to Server Updates to look at this, or cancel. Nothing is written down until you say so there.'
           : verification?.phase === 'closing'
@@ -2025,14 +2025,14 @@ export const mountAccountMenu = (
         : verification?.phase === 'unknown'
           ? 'Check you picked the server you meant. A different or reset server cannot answer this safely.'
           : progress.phase === 'applying'
-            ? `Wait while the owner tab sends the server ${operation}. Update and rollback controls stay unavailable here.`
+            ? `Wait while Recued sends the ${operation} to the server. Update and roll back stay off here meanwhile.`
             : verification?.phase === 'waiting'
               ? 'Leave this server picked while Recued runs one more check. You can also try again now.'
               : progress.operationId !== undefined && activeConnected
                 ? 'This tab is connected. Recued is checking what the server said about the restart. Update and undo stay switched off for now.'
                 : progress.operationId !== undefined
-                  ? `The server accepted the ${operation}. This tab will check the server-issued restart receipt when it reconnects.`
-                  : `The server accepted the ${operation}. Each open tab now waits for and verifies its own reconnect.`;
+                  ? `The server accepted the ${operation}. This tab asks how it went when it reconnects.`
+                  : `The server accepted the ${operation}. Each open tab now waits for the server to come back.`;
       serverUpdateStepNodes[2]!.textContent = verification?.phase === 'closed'
         || verification?.phase === 'checking_baseline'
         || verification?.phase === 'baseline_retryable'
@@ -2053,20 +2053,20 @@ export const mountAccountMenu = (
           : 'Once this tab reconnects, Recued will read this server and the saved connection again before offering the key check.';
     } else if (checkingReturn) {
       serverUpdateStepNodes[1]!.textContent = exactReturnActive
-        ? `Keep the Connections check open while Recued finishes both look-only checks for ${guide.connectionIdentity}.`
-        : `Resume below to return to ${guide.connectionIdentity}; Recued will rebuild its baseline, check current replacement activity, then re-read the latest saved connection.`;
+        ? `Keep Connections open while Recued finishes both checks for ${guide.connectionIdentity}.`
+        : `Carry on below to go back to ${guide.connectionIdentity}. Recued reads how the server is, checks whether a key is being swapped, then reads the saved connection again.`;
       serverUpdateStepNodes[2]!.textContent =
-        'Recued carries over only which server you picked, which connection, the time, how far the safety check got, and the version before the update. It carries over no keys, nothing you typed, and no results.';
+        'Recued never carries over keys or anything you typed.';
     } else if (cleanEditorReady) {
       serverUpdateStepNodes[1]!.textContent =
-        `Resume below to return to ${guide.connectionIdentity}. Recued will repeat the read-only activity and latest-saved-connection checks before reopening the clean editor.`;
+        `Carry on below to go back to ${guide.connectionIdentity}. Recued runs the safety check again before it reopens the blank form.`;
       serverUpdateStepNodes[2]!.textContent =
-        'Only which server you picked, which connection, the time, and how far you got are kept. Nothing you typed, no keys, and no results are kept.';
+        'Nothing you typed and no keys are kept.';
     } else if (resolvedElsewhere) {
       serverUpdateStepNodes[1]!.textContent =
-        'The check used only which server and connection you picked. It never read, kept, or sent a key or anything you typed.';
+        'The check never read, kept or sent a key or anything you typed.';
       serverUpdateStepNodes[2]!.textContent =
-        'Carry on below when you are ready. This tab will read the server and the saved connection again before opening a fresh form.';
+        'Carry on below when you are ready. This tab reads the server and the saved connection again before opening a blank form.';
     } else if (triage !== null) {
       serverUpdateStepNodes[1]!.textContent = accountServerUpdateTriageStep(triage);
       serverUpdateStepNodes[2]!.textContent =
@@ -2107,15 +2107,15 @@ export const mountAccountMenu = (
                       const connectionCopy = affected === undefined
                         ? 'no connection is affected'
                         : affected.activity === 'idle'
-                          ? `${affected.kind}/${affected.name}: no credential verification is pending`
+                          ? `${affected.kind}/${affected.name}: no key check is waiting`
                           : affected.activity === 'pending'
-                            ? `${affected.kind}/${affected.name}: credential verification is pending`
-                            : `${affected.kind}/${affected.name}: activity will be checked again on return`;
+                            ? `${affected.kind}/${affected.name}: a key check is waiting`
+                            : `${affected.kind}/${affected.name}: checked again when you go back`;
                       const finishCopy =
                         verification.reason === 'finish_unavailable'
                           ? ' Tidying up in this browser needs another go.'
                           : '';
-                      return `Running ${baseline.currentVersion} · ${baseline.channel} channel · ${ACCOUNT_BASELINE_POSTURE_COPY[baseline.updateStatus]} · ${connectionCopy}. Current state confirmed; original ${operation} result is still unknown.${finishCopy}`;
+                      return `Running ${baseline.currentVersion} · ${baseline.channel} channel · ${ACCOUNT_BASELINE_POSTURE_COPY[baseline.updateStatus]} · ${connectionCopy}. This is how things are now; how the ${operation} went is still unknown.${finishCopy}`;
                     })()
             : verification?.phase === 'finishing'
               ? 'Finishing up…'
@@ -2126,7 +2126,7 @@ export const mountAccountMenu = (
             ? 'The server said no, because an update is running.'
             : verification.reason === 'closure_unavailable'
               ? 'The server cannot close this right now, so it stays open.'
-              : `This server did not know about the ${operation} receipt.`
+              : `This server does not know about this ${operation}.`
         : verification?.phase === 'waiting'
           ? verification.reason === 'restart_pending'
             ? `The ${operation} is still waiting to restart. Recued will check again.`
@@ -2140,13 +2140,13 @@ export const mountAccountMenu = (
                   : `The ${operation} was accepted. Checking what the server said about restarting.`
                 : `The server is restarting after the ${operation}. This tab is waiting to reconnect.`
       : resolvedElsewhere
-      ? 'Checked with a look-only question to the server. This tab did not move.'
+      ? 'Checked with a question that changes nothing on the server. This tab did not move.'
       : checkingReturn
       ? exactReturnActive
         ? 'Checking what is happening with the key, then checking the saved connection…'
         : 'Last time, this stopped before both checks finished.'
       : cleanEditorReady
-      ? 'Ready to run the safety check again and reopen a fresh editor.'
+      ? 'Ready to run the safety check again and reopen the blank form.'
       : triage !== null
       ? accountServerUpdateEvidenceCopy(triage)
       : guide.phase === 'awaiting_reconnect'
@@ -2202,12 +2202,15 @@ export const mountAccountMenu = (
         serverUpdateDiagnosticCopy.textContent = 'Copy the details';
       }
     }
-    serverUpdatePrivacy.textContent = completion !== null
+    // ⛔ While an update runs, this line used to list what tabs pass each
+    // other ("a meaningless code for the server…"). Nothing in it was for the
+    // owner to act on (reported 2026-10-29), so that state says nothing here.
+    const privacyCopy = completion !== null
       ? 'This result lives only in this tab. Other tabs are told only that it is done. A reload will not bring it back.'
       : verification?.phase === 'baseline_confirmed'
-      ? 'This only lives in this tab’s memory. Tabs share nothing but a meaningless progress code. No keys, addresses, typed values, versions, or error details are passed along.'
+      ? 'This lives only in this tab and is gone after a reload.'
       : progress !== null
-      ? 'Tabs share only a meaningless code for the server, what is being done, how far it got, when it started, and afterwards a meaningless result code. They never share keys, connection details, addresses, typed values, versions, or error details.'
+      ? ''
       : checkingReturn
       ? guide.reloadSafe === false
         ? 'This browser could not save your place in case of a reload. Keep this tab open. Keys, typed values, and results are still never saved.'
@@ -2221,6 +2224,9 @@ export const mountAccountMenu = (
       : guide.reloadSafe === false
       ? 'This guide never keeps a new key. This browser could not save your place, so keep this tab open.'
       : 'This guide never keeps or sends a new key.';
+    serverUpdatePrivacy.textContent = privacyCopy;
+    if (privacyCopy === '') serverUpdatePrivacy.setAttribute('hidden', '');
+    else serverUpdatePrivacy.removeAttribute('hidden');
     if (resolvedElsewhere || checkingReturn || cleanEditorReady) {
       serverUpdateOpen.setAttribute('hidden', '');
     } else serverUpdateOpen.removeAttribute('hidden');
@@ -2301,20 +2307,20 @@ export const mountAccountMenu = (
       serverUpdateRetry.setAttribute(
         'aria-label',
         verification.phase === 'closed'
-          ? `Check how the server is before retiring the server-closed unresolved ${operation} receipt`
+          ? `Check how the server is before you finish with the unanswered ${operation}`
           : verification.phase === 'checking_baseline'
-            ? `Asking the server how it is, after the unanswered ${operation} closure`
+            ? `Asking the server how it is, after closing the unanswered ${operation}`
             : verification.phase === 'baseline_retryable'
-              ? `Check how the server is again, after the unanswered ${operation} closure`
+              ? `Check how the server is again, after closing the unanswered ${operation}`
               : verification.phase === 'baseline_confirmed'
                 ? verification.reason === 'finish_unavailable'
-                  ? `Try tidying up in this browser again, then go back to ${guide.connectionIdentity}; no server action will repeat`
-                  : `Finish and go back to ${guide.connectionIdentity} using what the server just told us. The original ${operation} result is still unknown`
+                  ? `Try finishing up in this browser again, then go back to ${guide.connectionIdentity}; nothing runs on the server twice`
+                  : `Finish and go back to ${guide.connectionIdentity} using what the server just said. How the ${operation} went is still unknown`
           : verification.phase === 'finishing'
             ? `Finishing with the unanswered ${operation} result`
             : activeConnected && !unreachable
               ? verification.phase === 'checking'
-                ? `Checking the server ${operation} receipt`
+                ? `Asking how the ${operation} went`
                 : `Check the server ${operation} result again`
               : `Waiting to reconnect before checking the server ${operation} result again`,
       );
@@ -2360,7 +2366,7 @@ export const mountAccountMenu = (
         : checkingReturn
         ? 'Carry on checking'
         : cleanEditorReady
-        ? 'Reopen the fresh editor'
+        ? 'Reopen the blank form'
         : resolvedElsewhere
         ? 'Continue in this tab'
         : guide.phase === 'triage'
@@ -2379,7 +2385,7 @@ export const mountAccountMenu = (
           : checkingReturn
           ? `Carry on the key check for ${guide.connectionIdentity}`
           : cleanEditorReady
-          ? `Reopen the fresh key editor for ${guide.connectionIdentity} after running its safety check again`
+          ? `Reopen the blank form for ${guide.connectionIdentity} after running its safety check again`
           : resolvedElsewhere
           ? `Carry on checking the new key for ${guide.connectionIdentity} in this tab`
           : guide.phase === 'triage'
@@ -2558,22 +2564,22 @@ export const mountAccountMenu = (
           ? `Recued is checking the key for ${serverUpdateGuide.connectionIdentity}`
           : `The key check that was stopped can carry on for ${serverUpdateGuide.connectionIdentity}`
       : serverUpdateGuide.phase === 'editor_ready'
-        ? `A fresh key editor is ready to reopen for ${serverUpdateGuide.connectionIdentity}`
+        ? `A blank form for a new key is ready to reopen for ${serverUpdateGuide.connectionIdentity}`
       : serverUpdateGuide.serverUpdateVerification?.phase === 'unknown'
         ? `Server update result needs a look for ${serverUpdateGuide.connectionIdentity}`
         : serverUpdateGuide.serverUpdateVerification?.phase === 'retryable'
-          ? `Server update receipt is ready to retry for ${serverUpdateGuide.connectionIdentity}`
+          ? `The server update result is ready to check again for ${serverUpdateGuide.connectionIdentity}`
         : serverUpdateGuide.serverUpdateVerification?.phase === 'reviewing_closure'
-          ? `Server update receipt closure needs review for ${serverUpdateGuide.connectionIdentity}`
+          ? `Closing the unanswered server update needs a look for ${serverUpdateGuide.connectionIdentity}`
         : serverUpdateGuide.serverUpdateVerification?.phase === 'closed'
-          ? `Current server state is ready to confirm for ${serverUpdateGuide.connectionIdentity}`
+          ? `How the server is now is ready to check for ${serverUpdateGuide.connectionIdentity}`
         : serverUpdateGuide.serverUpdateVerification?.phase === 'baseline_retryable'
-          ? `Current server state is ready to retry for ${serverUpdateGuide.connectionIdentity}`
+          ? `Checking how the server is can be tried again for ${serverUpdateGuide.connectionIdentity}`
         : serverUpdateGuide.serverUpdateVerification?.phase === 'baseline_confirmed'
           ? serverUpdateGuide.serverUpdateVerification.reason
               === 'finish_unavailable'
-            ? `Current server state is confirmed and finish is ready to retry for ${serverUpdateGuide.connectionIdentity}`
-            : `Current server state is confirmed for ${serverUpdateGuide.connectionIdentity}`
+            ? `How the server is now is known, and finishing can be tried again, for ${serverUpdateGuide.connectionIdentity}`
+            : `How the server is now is known for ${serverUpdateGuide.connectionIdentity}`
         : serverUpdateGuide.serverUpdateVerification?.phase === 'completed'
           ? `Server recovery is finished and return is ready for ${serverUpdateGuide.connectionIdentity}`
       : serverUpdateGuide.serverUpdateProgress?.phase === 'applying'
@@ -3095,7 +3101,7 @@ export const mountAccountMenu = (
         if (disposed || generation !== serverUpdateDiagnosticGeneration) return;
         serverUpdateDiagnosticCopyInFlight = false;
         serverUpdateDiagnosticStatus.textContent =
-          'Safe diagnostic copied. Paste it into your support conversation when ready; nothing was sent automatically.';
+          'Copied. Paste it into your support conversation when you are ready; nothing was sent.';
         renderServerUpdateGuide();
         if (open && activeConnectionDiagnosis === null) {
           focusElement(serverUpdateDiagnosticStatus);

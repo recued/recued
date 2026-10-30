@@ -70,6 +70,8 @@ import {
   TASK_TITLE_MAX,
   TASK_STATE_MAX,
   parseTaskListFilter,
+  parseCommitmentViewFilters,
+  type CommitmentViewFilters,
   calendarDayMs,
   localDayAsDateOnly,
   type TaskListFilter,
@@ -1367,6 +1369,7 @@ export interface WorkEntityListQuery {
   /** Task/booking search. Applied by SQL before pagination. */
   search?: string;
   task_filter?: TaskListFilter;
+  commitment_filter?: CommitmentViewFilters;
   /** Server-internal, never from the wire: the zone a DATE-ONLY due's day is
    *  read in by `task_filter` (`due-day.ts`). The filter's own bounds are
    *  instants; a date-only due is "today" when its DAY is today there, and
@@ -1396,8 +1399,9 @@ export interface WorkEntityContactRelationshipSummary {
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 1000;
 
-type NormalizedListQuery = Omit<Required<WorkEntityListQuery>, 'task_filter' | 'time_zone'> & {
+type NormalizedListQuery = Omit<Required<WorkEntityListQuery>, 'task_filter' | 'commitment_filter' | 'time_zone'> & {
   task_filter: TaskListFilter | null;
+  commitment_filter: CommitmentViewFilters | null;
   time_zone: string | undefined;
 };
 const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): NormalizedListQuery => {
@@ -1422,6 +1426,10 @@ const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): Normali
   const task_filter = q?.task_filter === undefined ? null : parseTaskListFilter(q.task_filter);
   if (q?.task_filter !== undefined && task_filter === null) {
     throw new WorkEntityValidationError('invalid task filter', 'task_filter');
+  }
+  const commitment_filter = q?.commitment_filter === undefined ? null : parseCommitmentViewFilters(q.commitment_filter);
+  if (q?.commitment_filter !== undefined && commitment_filter === null) {
+    throw new WorkEntityValidationError('invalid commitment filter', 'commitment_filter');
   }
   const booking_lifecycle_states = [
     ...new Set(q?.booking_lifecycle_states ?? []),
@@ -1452,6 +1460,7 @@ const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): Normali
     booking_lifecycle_states,
     commitment_lifecycle_states,
     task_filter,
+    commitment_filter,
     time_zone: q?.time_zone,
     excluded_source_ids: q?.excluded_source_ids ?? [],
   };
@@ -1469,6 +1478,14 @@ const buildListWhere = (
 ): { sql: string; params: unknown[] } => {
   const clauses: string[] = [];
   const params: unknown[] = [];
+  if (q.commitment_filter !== null) {
+    if (!commitmentFilters) throw new WorkEntityValidationError('commitment_filter requires commitments', 'commitment_filter');
+    const { direction, status } = q.commitment_filter;
+    if (direction !== 'all') { clauses.push('direction = ?'); params.push(direction); }
+    if (status === 'open' || status === 'overdue') clauses.push("lifecycle_state = 'pending'");
+    if (status === 'overdue') clauses.push("due_status = 'overdue'");
+    if (status === 'closed') clauses.push("lifecycle_state IN ('fulfilled', 'cancelled', 'expired')");
+  }
   if (q.related_project_id) {
     if (!noteFilters) throw new WorkEntityValidationError('related_project_id requires notes', 'related_project_id');
     // Keep membership scalar: an EXISTS-join plan can consume duplicate array
@@ -1533,11 +1550,16 @@ const buildListWhere = (
       );
       params.push(...q.booking_lifecycle_states);
     }
-  } else if ((!taskFilters && q.search.length > 0) || q.booking_lifecycle_states.length > 0) {
+  } else if ((!taskFilters && !commitmentFilters && q.search.length > 0) || q.booking_lifecycle_states.length > 0) {
     throw new WorkEntityValidationError(
-      'search requires tasks or bookings; booking_lifecycle_states requires bookings',
+      'search requires tasks, bookings or commitments; booking_lifecycle_states requires bookings',
       q.search.length > 0 ? 'search' : 'booking_lifecycle_states',
     );
+  }
+  if (commitmentFilters && q.search.length > 0) {
+    const pattern = `%${escapeLike(q.search.toLowerCase())}%`;
+    clauses.push(`(js_lower(statement) LIKE ? ESCAPE '\\' OR js_lower(id) LIKE ? ESCAPE '\\' OR js_lower(COALESCE(counterparty_contact_id, '')) LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern, pattern);
   }
   if (taskFilters && q.search.length > 0) {
     const pattern = `%${escapeLike(q.search.toLowerCase())}%`;
@@ -4405,12 +4427,14 @@ export const createWorkEntityStore = (
   };
 
   const listCommitments: WorkEntityStore['listCommitments'] = (q) => {
-    const norm = normalizeListQuery(q);
+    const norm = normalizeListQuery(q, 2000);
     const where = buildListWhere(norm, false, false, false, true);
+    const order = norm.commitment_filter === null ? 'state_changed_at DESC'
+      : "CASE lifecycle_state WHEN 'pending' THEN 0 WHEN 'fulfilled' THEN 1 WHEN 'cancelled' THEN 2 ELSE 3 END, COALESCE(promised_for_at, 8640000000000001), id";
     const rows = db
       .prepare(
         `SELECT * FROM ${COMMITMENT_TABLE} ${where.sql}
-         ORDER BY state_changed_at DESC LIMIT ? OFFSET ?`,
+         ORDER BY ${order} LIMIT ? OFFSET ?`,
       )
       .all(...where.params, norm.limit, norm.offset) as CommitmentRow[];
     return rows.map(rowToCommitment);
@@ -4444,7 +4468,7 @@ export const createWorkEntityStore = (
   };
 
   const countCommitments: WorkEntityStore['countCommitments'] = (q) => {
-    const norm = normalizeListQuery(q);
+    const norm = normalizeListQuery(q, 2000);
     const where = buildListWhere(norm, false, false, false, true);
     const row = db
       .prepare(`SELECT COUNT(*) AS n FROM ${COMMITMENT_TABLE} ${where.sql}`)

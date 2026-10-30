@@ -152,6 +152,9 @@ export interface GcalEventConferenceEntryPoint {
 }
 
 export interface GcalEvent {
+  locked?: boolean;
+  guestsCanModify?: boolean;
+  eventType?: string;
   privateCopy?: boolean;
   etag?: string;
   id: string;
@@ -178,7 +181,7 @@ export interface GcalCalendarListEntry {
   summary?: string;
   primary?: boolean;
   selected?: boolean;
-  accessRole?: 'freeBusyReader' | 'reader' | 'writer' | 'owner';
+  accessRole?: 'freeBusyReader' | 'reader' | 'writer' | 'writerWithoutPrivateAccess' | 'owner';
 }
 
 interface GcalCalendarListResponse {
@@ -994,6 +997,11 @@ export const createGcalProvider = (
     kind: 'gcal',
     slug: opts.slug,
     get accountEmail() { return accountEmail; },
+    async listWritableCalendars() {
+      return (await selectedCalendars()).filter(cal => cal.accessRole === 'owner' || cal.accessRole === 'writer'
+        || cal.accessRole === 'writerWithoutPrivateAccess')
+        .map(cal => ({ calendar_id: cal.id, name: cal.summary || cal.id }));
+    },
 
     async connect() {
       // `sync.stop()` closes the provider and a later `sync.start()` reuses it
@@ -1058,7 +1066,7 @@ export const createGcalProvider = (
       };
     },
 
-    async createEvent(calendarId, event) {
+    async createEvent(calendarId, event, beforeSend) {
       requireCalendarId(calendarId, 'events.insert');
       // D-315 slice 7 — an event that keeps a given UID (an emailed invite's
       // own) is IMPORTED: `events.insert` always assigns its own iCalUID, and
@@ -1070,6 +1078,8 @@ export const createGcalProvider = (
         'POST',
         imported ? { ...fromCreateInput(event), iCalUID: event.ical_uid } : fromCreateInput(event),
         imported ? 'events.import' : 'events.insert',
+        undefined,
+        beforeSend,
       );
       if (!data) {
         throw new CalendarAdapterError(
@@ -1095,11 +1105,12 @@ export const createGcalProvider = (
       }
       const eventId = resolveTargetId(input);
       const data = await gcalMutate<GcalEvent>(
-        eventUrl(input.calendar_id, eventId),
+        eventUrl(input.calendar_id, eventId) + (input.notify_attendees ? '?sendUpdates=all' : ''),
         'PATCH',
         fromUpdatePatch(input.patch),
         'events.patch',
         input.expected_etag,
+        input.before_send,
       );
       if (!data) {
         throw new CalendarAdapterError(
@@ -1126,6 +1137,26 @@ export const createGcalProvider = (
         'events.delete',
         input.expected_etag,
       );
+    },
+
+    async readEventForEdit(calendar_id, source_id) {
+      const calendars = await selectedCalendars();
+      const calendar = calendars.find(cal => cal.id === calendar_id || calendar_id === 'primary' && cal.primary);
+      const current = await fetchEvent(calendar_id, source_id);
+      const writable = calendar?.accessRole === 'owner' || calendar?.accessRole === 'writer'
+        || calendar?.accessRole === 'writerWithoutPrivateAccess';
+      const reason = !writable ? 'This Google calendar does not allow event changes.'
+        : current.locked ? 'Google has locked this event’s details.'
+        : current.eventType && current.eventType !== 'default' ? 'Edit this type of event in Google Calendar.'
+        : current.organizer?.self !== true && current.guestsCanModify !== true ? 'The organizer has not allowed changes to this event.' : undefined;
+      const notify_attendees = Boolean(current.attendees?.length) && current.privateCopy !== true;
+      return { payload: await payloadOf(current, calendar_id, calendar?.summary),
+        editable_fields: reason ? [] : ['summary', 'description', 'location', 'start_at', 'end_at'],
+        ...(reason ? { read_only_reason: reason } : {}),
+        notify_attendees,
+        edit_notice: current.privateCopy ? 'Changes are saved to this private event copy.'
+          : 'Changes are saved to this Google calendar.' + (notify_attendees ? ' Google is asked to notify existing guests.' : ''),
+        notification_supported: Boolean(accountEmail) && writable && current.privateCopy !== true && current.organizer?.self !== true };
     },
 
     async readInvitation(calendar_id, source_id) {

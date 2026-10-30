@@ -415,14 +415,21 @@ export const handleCalendarCreate = async (
     slug: string;
     calendar_id: string;
     event: CreateEventInput;
+    /** Owner form's calendar binding, rechecked at handoff and before mirroring. */
+    beforeSend?: () => void;
   },
 ): Promise<{ source_id: string; ical_uid: string }> => {
   const { collection } = checkCalendarCreate(deps, input);
   const event = withAllDayDays(input.event);
   const payload = await callCalendarAdapter(input.slug, 'calendar-create', () =>
-    collection.provider.createEvent(input.calendar_id, event),
+    collection.provider.createEvent(input.calendar_id, event, input.beforeSend),
   );
-  await collection.applyVerifiedUpsert(payload);
+  input.beforeSend?.();
+  if (!payload.event.source_id || payload.event.calendar_id !== input.calendar_id) {
+    throw new RpcError('upstream_error', 'The calendar returned an event outside the selected calendar. Check that calendar before creating another event.', 502);
+  }
+  await collection.applyVerifiedUpsert(payload, undefined,
+    input.beforeSend ? () => { input.beforeSend!(); return true; } : undefined);
   return { source_id: payload.event.source_id, ical_uid: payload.event.ical_uid };
 };
 

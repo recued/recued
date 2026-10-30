@@ -36,6 +36,7 @@ import { e } from '../template.js';
 import { renderField, renderForm } from '../form-renderer/render.js';
 import { renderTaskDueActions } from '../task-due.js';
 import { renderNoteReader, type WorkEntityNoteView } from './note-reader.js';
+import { renderCommitmentReader, type WorkEntityCommitmentView } from './commitment-reader.js';
 
 export const WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR =
   'data-recued-data-work-entity-discard-guard';
@@ -80,12 +81,22 @@ export interface WorkEntityDialogProps {
   note_details_open?: boolean;
   note_view?: WorkEntityNoteView;
   close_label?: string;
-  commitment_lifecycle?: { state: string; can_change: boolean };
+  commitment_lifecycle?: { state: string; can_change: boolean; can_fulfill?: boolean; can_cancel?: boolean };
+  commitment_view?: WorkEntityCommitmentView;
 }
 
 /** Render the dialog. The dialog body is wrapped in a backdrop +
  *  modal envelope; the host portals or appends as needed. */
 export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => {
+  if (props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view?.mode === 'read') {
+    return renderCommitmentReader(props.commitment_view, {
+      source_label: props.sources.find(source => source.id === props.state.source_id)?.label ?? 'Source unavailable',
+      can_fulfill: props.commitment_lifecycle?.can_fulfill ?? (props.commitment_lifecycle?.can_change === true),
+      can_cancel: props.commitment_lifecycle?.can_cancel ?? (props.commitment_lifecycle?.can_change === true),
+      busy: props.state.submitting, error: props.state.submit_error,
+      history_html: props.history_html, close_label: props.close_label,
+    });
+  }
   if (props.kind === 'note' && props.state.mode === 'edit' && props.note_view?.mode === 'read') {
     return renderNoteReader(props.note_view,
       props.sources.find(source => source.id === props.state.source_id)?.label ?? 'Source unavailable', props.history_html, props.close_label);
@@ -163,8 +174,8 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
   const commitmentHtml = commitment === undefined ? '' : `
     <section aria-label="Commitment status">
       <p data-commitment-status role="status" tabindex="-1">${e(commitment.state)}</p>
-      ${commitment.can_change ? `<button type="button" data-action="fulfill-work-entity-commitment"${props.state.submitting ? ' disabled' : ''}>Done</button>
-      <button type="button" data-action="cancel-work-entity-commitment"${props.state.submitting ? ' disabled' : ''}>Cancel commitment</button>` : ''}
+      ${(commitment.can_fulfill ?? commitment.can_change) ? `<button type="button" data-action="fulfill-work-entity-commitment"${props.state.submitting ? ' disabled' : ''}>Mark fulfilled</button>` : ''}
+      ${(commitment.can_cancel ?? commitment.can_change) ? `<button type="button" data-action="cancel-work-entity-commitment"${props.state.submitting ? ' disabled' : ''}>Cancel commitment</button>` : ''}
     </section>`;
   return `
     <div
@@ -211,7 +222,8 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
             <button
               type="button"
               class="work-entity-dialog-cancel"
-              data-action="${props.kind === 'note' && props.state.mode === 'edit' && props.note_view ? 'return-note-reader' : 'close-work-entity-dialog'}"
+              data-action="${props.kind === 'note' && props.state.mode === 'edit' && props.note_view ? 'return-note-reader'
+                : props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view ? 'return-commitment-reader' : 'close-work-entity-dialog'}"
               ${closeStateAttr}
             >${e(props.kind === 'note' && props.state.mode === 'edit' && props.note_view ? 'Cancel' : props.close_label ?? 'Cancel')}</button>
             <button

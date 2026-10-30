@@ -131,6 +131,8 @@ ${panel} .exposure-connect-snippet {
   line-height: 1.5;
   scroll-margin-block: 8px;
 }
+${panel} .exposure-connect-snippet-note { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+${panel} .exposure-connect-snippet-note code { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   ${panel} :is(.exposure-presets, .exposure-grid, .exposure-public-mcp-card,
     .exposure-apex, .exposure-lan-posture, .exposure-load-error) { padding: 16px; }

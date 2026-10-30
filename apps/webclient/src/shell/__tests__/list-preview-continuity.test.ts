@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readSearchAssetReturn, saveSearchAssetReturn, trackSearchAssetRoute } from '../search-asset-return.js';
 
 import {
   readListContinuity,
@@ -7,6 +8,21 @@ import {
 } from '../list-preview-continuity.js';
 
 describe('list preview continuity', () => {
+  it('keeps an asset search return within its document, server, addressed asset and originating view', () => {
+    const doc = {} as Document, otherDoc = {} as Document, server = {}, otherServer = {};
+    const saved = { assetId: 'passport/ana', returnHash: '#views/travel', state: { query: 'passport', ids: ['one', 'passport/ana'] }, scroll: { top: 840, left: 0 } };
+    saveSearchAssetReturn(doc, server, saved);
+    expect(readSearchAssetReturn(otherDoc, server)).toBeUndefined();
+    expect(readSearchAssetReturn(doc, otherServer)).toBeUndefined();
+    trackSearchAssetRoute(doc, server, '#yours/asset/passport%2Fana');
+    trackSearchAssetRoute(doc, server, '#views/travel');
+    expect(readSearchAssetReturn(doc, server)).toEqual(saved);
+    trackSearchAssetRoute(doc, server, '#yours/asset/other');
+    expect(readSearchAssetReturn(doc, server)).toBeUndefined();
+    saveSearchAssetReturn(doc, server, saved);
+    trackSearchAssetRoute(doc, server, '#data/search');
+    expect(readSearchAssetReturn(doc, server)).toBeUndefined();
+  });
   it('merges model and view ownership only within the current document', () => {
     const first = {} as Document;
     const second = {} as Document;

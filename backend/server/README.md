@@ -164,10 +164,19 @@ Daemon (background):
 
 Server (foreground):
   (default), serve                    Start in the foreground
-  --mcp --token <token>               Start an MCP stdio server. The token, or
-                                      RECUED_MCP_TOKEN, comes from a contract on
-                                      the web app's Contracts page; without one
-                                      it offers no tools.
+  --mcp [--app <name>]                Start an MCP stdio server for an AI app.
+                                      It offers one contract's tools: the key
+                                      from --token <key> or RECUED_MCP_TOKEN,
+                                      else the key saved for this app or for
+                                      every app (mcp-key). With none, no tools.
+
+AI apps:
+  mcp-key list                        Show the contract key each AI app uses
+  mcp-key set [--app <name> | --all]  Save a contract key for one app, or for
+              [--key-file <path>]     every app. Asks for it without showing
+                                      it, or reads it from the file or stdin.
+  mcp-key clear (--app <name> | --all)
+                                      Remove a saved key
 
 Pairing:
   pair                                Show a pairing code + the app.recued.com/pair link
@@ -251,7 +260,8 @@ The main ones:
 | `DB_PATH` | the platform's standard place (see **Start**) | SQLite database path. `--db` wins over it |
 | `RECUED_CONFIG` | the platform's config folder | Path of `config.toml`. `--config` wins over it |
 | `RECUED_IDENTITY_PASSPHRASE`, `RECUED_IDENTITY_PASSPHRASE_FILE` | -- | Seal the key file with a passphrase (see above) |
-| `RECUED_MCP_TOKEN` | -- | Token for `recued --mcp` |
+| `RECUED_MCP_TOKEN` | -- | Contract key for `recued --mcp`. An app that cannot pass one, such as a plugin host, uses the key saved with `recued mcp-key set` |
+| `PLUGIN_DATA` | -- | Set by an Agent Plugins host for each installed plugin. `recued --mcp` names the app by it when there is no `--app`, to find the key saved for that app |
 | `RECUED_RECOVERY_KEY` | -- | Recovery key for `recued archive` |
 | `RECUED_PAIR_CODE_TTL_MS` | 15 minutes | How long a pairing code lasts |
 | `RECUED_WEBHOOK_CLOCK_AUTHORITY_URL` | -- | Boot-pinned independent HTTPS time endpoint. It must return a fresh `Date` and exactly echo the request's `X-Recued-Clock-Nonce`; bounded cache-busting HEAD probes gate timestamped webhook profiles. Unset keeps them disabled. |

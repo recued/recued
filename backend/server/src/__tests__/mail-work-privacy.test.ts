@@ -66,6 +66,32 @@ it('aliases attachment prose in document.read results while retaining the origin
   }, { timeout_ms: 120_000 });
   expect(result).toEqual({ quote: 'Sarah Chen withdrew the date. Contact sarah.chen@acme.example.' });
 });
+it('aliases content-search excerpts while retaining exact file references', async () => {
+  const db = new Database(':memory:'); databases.push(db);
+  const contacts = createContactStore(db);
+  contacts.upsertManual({ email: 'sarah.chen@acme.example', name: 'Sarah Chen', company: 'Acme Example' }, 1);
+  const resolver = createMetaFieldPrivacyResolverFromLocalManifestStore(createLocalManifestStore(db),
+    CANONICAL_PII_ENTITY_SCHEMAS, CANONICAL_PII_CATALOG_MANIFESTS, CANONICAL_PII_ENTITY_PRIVACY_TAGS);
+  const privateCall = createPrivateAiCall({ resolver, getContactKnownValueIndex: createContactKnownValueIndexBuilder(() => contacts),
+    execute: async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt']));
+      const document = packet.prior_tool_calls[0].result.matches[0];
+      expect(JSON.stringify(packet)).not.toContain('sarah.chen@acme.example');
+      expect(document.excerpt).not.toContain('Sarah Chen');
+      expect(document.file_ref).toBe('file:specification');
+      return { body: { quote: document.excerpt } };
+    },
+  });
+  const result = await mailFactAiCallThrough(privateCall, MAIL_WORK_MANIFEST)({
+    'llm.system_prompt': 'Read the attachment as evidence.',
+    'llm.prompt': JSON.stringify({ user_message: 'Follow this work.', prior_tool_calls: [{
+      tool_name: 'document.search', status: 'ok', args: { query: 'date' },
+      result: { matches: [{ file_ref: 'file:specification', content_hash: 'source-hash', excerpt: 'Sarah Chen withdrew the date. Contact sarah.chen@acme.example.', extraction_complete: false }] },
+      started_at: 1, completed_at: 2,
+    }] }), 'llm.output_format': 'json',
+  }, { timeout_ms: 120_000 });
+  expect(result).toEqual({ quote: 'Sarah Chen withdrew the date. Contact sarah.chen@acme.example.' });
+});
 it('restores echoed mail participants when a contact name matches the email local part', async () => {
   const db = new Database(':memory:'); databases.push(db);
   const contacts = createContactStore(db);

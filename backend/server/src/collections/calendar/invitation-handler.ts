@@ -8,8 +8,8 @@ import type { CalendarCollection } from './calendar-collection.js';
 import type { ProviderEventPayload } from './provider.js';
 import { getCalendarEvent } from './local-event-handler.js';
 import { callCalendarAdapter } from './errors.js';
+import { calendarEventEditView, ownerCalendarWrites, readCalendarEventForEdit } from './remote-event-handler.js';
 
-const inflight = new WeakMap<CalendarCollection, Set<string>>();
 const changed = (): never => { throw new RpcError('resource_changed', 'The invitation changed. Refresh its details before responding.', 409); };
 const selfOf = (collection: CalendarCollection, payload: ProviderEventPayload) => {
   const email = collection.provider.accountEmail?.trim().toLowerCase();
@@ -42,7 +42,10 @@ const mirror = async (
   payload: ProviderEventPayload, incarnation: string | null, version: string,
 ): Promise<void> => {
   checkBinding(deps, ref, collection, incarnation, version);
-  await collection.applyVerifiedUpsert(payload, version, () => {
+  const name = collection.table.get(ref.source_id)?.event.calendar_name;
+  const named = payload.event.calendar_name === undefined && name !== undefined
+    ? { ...payload, event: { ...payload.event, calendar_name: name } } : payload;
+  await collection.applyVerifiedUpsert(named, version, () => {
     checkBinding(deps, ref, collection, incarnation);
     return true;
   });
@@ -56,8 +59,8 @@ const checkPayload = (ref: CalendarEventRef, calendar_id: string, payload: Provi
 const invitationView = (
   deps: CalendarDispatcherDeps, ref: CalendarEventRef, collection: CalendarCollection,
   notificationSupported: boolean,
+  view: CalendarEventSnapshot = getCalendarEvent(deps, ref),
 ): CalendarEventSnapshot => {
-  const view = getCalendarEvent(deps, ref);
   const row = collection.table.get(ref.source_id)!;
   const self = selfOf(collection, { event: row.event, description_bytes: 0 });
   const organizer = row.event.organizer;
@@ -77,6 +80,10 @@ export const getOwnerCalendarEvent = async (deps: CalendarDispatcherDeps, ref: C
   const before = getCalendarEvent(deps, ref);
   const collection = deps.getCollection(ref.slug)!;
   if (collection.provider.kind === 'local') return before;
+  if (collection.provider.readEventForEdit) {
+    const result = await readCalendarEventForEdit(deps, ref);
+    return invitationView(deps, ref, collection, result.context?.notification_supported === true, result.view);
+  }
   if (unavailable(deps, ref, collection)) return invitationView(deps, ref, collection, false);
   let context: Awaited<ReturnType<NonNullable<typeof collection.provider.readInvitation>>>;
   try {
@@ -110,17 +117,20 @@ export const respondToCalendarEvent = async (
   checkBinding(deps, input, collection, input.expected_incarnation, input.expected_version);
   const reason = unavailable(deps, input, collection);
   if (reason) throw new RpcError('forbidden', reason, 403);
-  let pending = inflight.get(collection);
-  if (!pending) { pending = new Set(); inflight.set(collection, pending); }
-  if (pending.has(input.source_id)) throw new RpcError('conflict', 'A response is already in progress. Check the response before sending again.', 409);
+  let pending = ownerCalendarWrites.get(collection);
+  if (!pending) { pending = new Set(); ownerCalendarWrites.set(collection, pending); }
+  if (pending.has(input.source_id)) throw new RpcError('conflict', 'An event change is already in progress. Check the saved event before trying again.', 409);
   pending.add(input.source_id);
   try {
-    const context = await callCalendarAdapter(input.slug, 'read-invitation', () =>
-      collection.provider.readInvitation!(before.event.calendar_id, input.source_id));
+    const context = await callCalendarAdapter(input.slug, 'read-invitation', async () => collection.provider.readEventForEdit
+      ? collection.provider.readEventForEdit(before.event.calendar_id, input.source_id)
+      : collection.provider.readInvitation!(before.event.calendar_id, input.source_id));
     checkBinding(deps, input, collection, input.expected_incarnation, input.expected_version);
     checkPayload(input, before.event.calendar_id, context.payload);
     await mirror(deps, input, collection, context.payload, input.expected_incarnation, input.expected_version);
-    const view = invitationView(deps, input, collection, context.notification_supported);
+    const editContext = 'editable_fields' in context ? context : undefined;
+    const view = invitationView(deps, input, collection, context.notification_supported === true,
+      editContext ? calendarEventEditView(deps, input, collection, editContext) : undefined);
     const invitation = view.invitation;
     if (!invitation?.can_respond) throw new RpcError('forbidden', invitation?.unavailable_reason ?? 'The connected account is not an invited attendee.', 403);
     // A lost reply followed by another request must not send the same RSVP twice.
@@ -146,7 +156,8 @@ export const respondToCalendarEvent = async (
     checkPayload(input, view.event.calendar_id, result);
     await mirror(deps, input, collection, result, input.expected_incarnation, view.resource_version);
     checkBinding(deps, input, collection, input.expected_incarnation);
-    const saved = invitationView(deps, input, collection, context.notification_supported);
+    const saved = invitationView(deps, input, collection, context.notification_supported === true,
+      editContext ? calendarEventEditView(deps, input, collection, { ...editContext, payload: result }) : undefined);
     if (saved.invitation?.response !== input.response) throw new RpcError('upstream_error', 'The calendar has not confirmed your response. Check its status before sending again.', 502);
     return { removed: false, snapshot: { ...saved, provider_verified: true } };
   } finally { pending.delete(input.source_id); }

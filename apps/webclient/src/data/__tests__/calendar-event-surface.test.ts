@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import type { CalendarEventSnapshot, CalendarEventUpdateRequest } from '@recued/contracts';
+import { CALENDAR_EVENT_EDIT_LIMITS, type CalendarEventSnapshot, type CalendarEventUpdateRequest } from '@recued/contracts';
 import { calendarEventDraft, calendarEventPatch, calendarWallClockCandidates, calendarWallClockValue,
   createCalendarEventSurface, CALENDAR_EVENT_FIELD } from '../calendar-event-surface.js';
 
@@ -20,6 +20,46 @@ const setup = (callers: Parameters<typeof createCalendarEventSurface>[0]['caller
   return { surface, render, onSaved };
 };
 const open = (surface: ReturnType<typeof createCalendarEventSurface>) => surface.open({ slug: 'local', source_id: 'event' }, 'cal:local:event');
+
+it('honors provider field restrictions while retaining the original calendar, rich notes and unsupported time zone', async () => {
+  const value = snapshot(); value.provider_verified = true; value.editable_fields = ['summary'];
+  value.event.timezone = 'Pacific Standard Time'; value.edit_notice = 'Edit rich notes in Outlook.';
+  value.event.location = 'a'.repeat(CALENDAR_EVENT_EDIT_LIMITS.location + 1);
+  const update = vi.fn(async (request: CalendarEventUpdateRequest) => ({ ...value, resource_version: 'v2', event: { ...value.event, ...request.patch } }));
+  const { surface } = setup({ get: async () => value, update }); await open(surface);
+  expect(surface.isEditable()).toBe(true);
+  surface.handleAction('calendar-event-edit');
+  surface.handleInput(input('description', 'Must not flatten rich notes'));
+  surface.handleInput(input('start', '2026-10-30T09:00'));
+  surface.handleInput(input('summary', 'Updated title'));
+  surface.handleAction('calendar-event-save');
+  await vi.waitFor(() => expect(surface.isEditing()).toBe(false));
+  expect(update.mock.calls[0]?.[0]).toMatchObject({ slug: 'local', source_id: 'event', patch: { summary: 'Updated title' } });
+  expect(update.mock.calls[0]?.[0].patch).toEqual({ summary: 'Updated title' });
+});
+
+it('requires a live check after a remote save fails and never confirms from a cached event', async () => {
+  const before = snapshot(); before.provider_verified = true;
+  before.editable_fields = ['summary', 'description', 'location', 'start_at', 'end_at'];
+  let saved = before, live = true;
+  const update = vi.fn(async (request: CalendarEventUpdateRequest) => {
+    saved = { ...before, resource_version: 'v2', event: { ...before.event, ...request.patch } };
+    throw { code: 'timeout', message: 'Reply lost' };
+  });
+  const { surface, onSaved } = setup({ get: async () => live ? saved : { ...before, provider_verified: undefined,
+    editable: false, refresh_error: 'The calendar could not be refreshed.' }, update });
+  await open(surface); surface.handleAction('calendar-event-edit'); surface.handleInput(input('summary', 'Remote update'));
+  surface.handleAction('calendar-event-save');
+  await vi.waitFor(() => expect(surface.hasInFlightWork()).toBe(false));
+  surface.handleAction('calendar-event-save'); expect(update).toHaveBeenCalledTimes(1);
+  live = false; surface.handleAction('calendar-event-check');
+  await vi.waitFor(() => expect(surface.hasInFlightWork()).toBe(false));
+  expect(surface.isEditing()).toBe(true); expect(onSaved).not.toHaveBeenCalled();
+  surface.handleAction('calendar-event-save'); expect(update).toHaveBeenCalledTimes(1);
+  live = true; surface.handleAction('calendar-event-check');
+  await vi.waitFor(() => expect(surface.isEditing()).toBe(false));
+  expect(onSaved).toHaveBeenCalledWith(saved); expect(update).toHaveBeenCalledTimes(1);
+});
 
 it('preserves imported precision and normalized text when only another field changes', () => {
   const event = snapshot().event; event.summary = 'Planning\r\nmeeting';

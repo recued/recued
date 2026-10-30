@@ -53,7 +53,8 @@ const spawnChild = (command: string, args: string[], options: SpawnSyncOptionsWi
 
 const runBin = (
   args: string[],
-  options: { env?: Record<string, string | undefined>; loaderTracePath?: string } = {},
+  /** `input` is what the child reads on stdin, as a piped key is. */
+  options: { env?: Record<string, string | undefined>; loaderTracePath?: string; input?: string } = {},
 ) => spawnChild(
   process.execPath,
   [
@@ -66,6 +67,7 @@ const runBin = (
   {
     cwd: repoRoot,
     encoding: 'utf8',
+    ...(options.input !== undefined ? { input: options.input } : {}),
     env: {
       ...process.env,
       TSX_TSCONFIG_PATH: serverTsconfigPath,
@@ -1189,7 +1191,7 @@ describe('production router', () => {
     expect(result.exitCode).toBe(0);
     // ⚠ The recovery notice must NOT appear — it would mean the token did not
     // resolve and this test degenerated into the token-less case with extra steps.
-    expect(result.stderr).not.toContain('no token supplied');
+    expect(result.stderr).not.toContain('no contract key');
     expect(result.stderr).not.toContain('was not recognised');
 
     // ⛔ THE COMPOSITION ITSELF: a LEGACY `recued_*` tool and a REGISTRY Tier-1
@@ -1201,6 +1203,70 @@ describe('production router', () => {
     // absent, so this is a composed-then-filtered catalog, not "everything".
     expect(toolNames).not.toContain('recued_saveRecipe');
   }, forBoots(2));
+
+  /** ⛔⛔ AN APP THAT LOADS RECUED AS A PLUGIN CANNOT PASS A KEY (`mcp-app-keys.ts`).
+   *  Codex starts a plugin's `recued --mcp` with PLUGIN_DATA and a few basics, never
+   *  RECUED_MCP_TOKEN, so the owner saves the key with `recued mcp-key set`. This pins
+   *  the whole path at the real binary: the start that names the app, the CLI that
+   *  saves the key from stdin, and the start that then runs under it.
+   *
+   *  ⚠ The first boot is a witness as well as the setup: it offers nothing, names the
+   *  app, and is what puts the app in the list `set` offers. */
+  it('an app that cannot pass a key runs under the key the owner saved for it', async () => {
+    const dir = makeTmp();
+    const dbPath = join(dir, 'server.db');
+    const appFolder = join(dir, 'codex-plugin-data');
+    mkdirSync(appFolder);
+    // What Codex hands a plugin's server: its data folder, and no key of any kind.
+    const appEnv = { PLUGIN_DATA: appFolder, RECUED_MCP_TOKEN: '' };
+
+    const first = await runMcpUntilToolsList(dbPath, { env: appEnv });
+    expect(first.timedOut).toBe(false);
+    expect(first.stderr).toContain('no contract key is saved for this app');
+    expect(first.stderr).toContain('codex-plugin-data');
+
+    const BEARER = 'recued_e2e_saved_key_for_one_app';
+    {
+      const { createChatInboundTokenStore } = await import('../storage/chat-inbound-token-store.js');
+      const db = new Database(dbPath);
+      try {
+        createChatInboundTokenStore(db).issueToken({
+          value: { label: 'Codex', grants: { recued_listRecipes: true }, concurrency_tier: 3, chat_mode: null },
+          now: Date.now(),
+          bearer_plaintext: BEARER,
+        });
+      } finally { db.close(); }
+    }
+
+    const tracePath = join(dir, 'mcp-key-modules.jsonl');
+    const listed = runBin(['mcp-key', 'list', '--db', dbPath], { loaderTracePath: tracePath });
+    expect(listed.status).toBe(0);
+    expect(listed.stdout).toContain('codex-plugin-data');
+    expect(listed.stdout).toContain('no key of its own');
+    // The command opens the database and nothing of the server: no serve
+    // runtime, no MCP server, no other profile's context.
+    const loaded = readModuleLoads(tracePath);
+    expect(loaded.length).toBeGreaterThan(0);
+    expect(loaded.filter((entry) => profileBoundaryForbiddenLoadedModule(entry, {
+      allowedContexts: ['mcp-key'],
+    }))).toEqual([]);
+
+    // The key arrives on stdin, as `pbpaste | recued mcp-key set …` sends it.
+    const saved = runBin(['mcp-key', 'set', '--app', appFolder, '--db', dbPath], { input: `${BEARER}\n` });
+    expect(saved.stderr).not.toContain('Error');
+    expect(saved.status).toBe(0);
+    expect(saved.stdout).toContain('now uses contract "Codex"');
+    expect(`${saved.stdout}${saved.stderr}${listed.stdout}`).not.toContain(BEARER);
+
+    const second = await runMcpUntilToolsList(dbPath, { env: appEnv });
+    const toolNames = (parseJsonRpcLines(second.stdout).find((response) => response.id === 2) as
+      | { result?: { tools?: Array<{ name?: string }> } } | undefined)?.result?.tools?.map((tool) => tool.name) ?? [];
+    expect(second.timedOut).toBe(false);
+    expect(second.stderr).not.toContain('no contract key');
+    expect(toolNames).toContain('recued_listRecipes');
+    // The contract still filters: only what it grants.
+    expect(toolNames).not.toContain('recipe.run');
+  }, forBoots(2) + forChildren(2));
 
   it('routes --mcp through the MCP profile context; a token-less boot offers NOTHING', async () => {
     const dir = makeTmp();
@@ -1233,7 +1299,8 @@ describe('production router', () => {
     expect(toolNames).toEqual([]);
     // …and the refusal is recoverable rather than a mystery: the CLI says what
     // to do, on stderr (stdout is the MCP protocol stream).
-    expect(result.stderr).toContain('no token supplied');
+    expect(result.stderr).toContain('no contract key was given');
+    expect(result.stderr).toContain('recued mcp-key set');
     expect(result.stderr).toContain('RECUED_MCP_TOKEN');
     expect(existsSync(dbPath)).toBe(true);
     expect(loaded.length).toBeGreaterThan(0);

@@ -131,7 +131,8 @@ export interface UserMemoryAuthoredInput extends UserMemoryCreateInput {
   /** D-198 §10 — the author contract, stamped by the AI write path. */
   author_contract_id?: string;
   /** D-198 §10 — the earlier entry this one replaces. The caller has already
-   *  checked it is the same author's current version (`memory-revision.ts`). */
+   *  checked it (`memory-revision.ts`): for an agent, its own current version;
+   *  for the owner (§12, `user_self`), an agent's current version. */
   replaces?: string;
 }
 

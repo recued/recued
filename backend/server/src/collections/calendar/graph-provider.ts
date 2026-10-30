@@ -180,6 +180,8 @@ export const graphRecurrenceRule = (recurrence: GraphCalRecurrence | null | unde
 };
 
 export interface GraphCalEvent {
+  isOnlineMeeting?: boolean;
+  locations?: Array<{ displayName?: string }>;
   '@odata.etag'?: string;
   isOrganizer?: boolean;
   responseStatus?: GraphCalAttendee['status'];
@@ -385,6 +387,7 @@ const toAdapterError = (
   body: string,
   operation: string,
 ): CalendarAdapterError => {
+  if (status === 412) return new CalendarAdapterError('version_conflict', 'This Outlook event changed. Refresh its details before saving.', body);
   if (status === 401 || status === 403) {
     return new CalendarAdapterError(
       'auth_expired',
@@ -538,9 +541,11 @@ export const createGraphCalProvider = (
     operation: string,
     returnsBody = true,
     beforeSend?: () => void,
+    expected_etag?: string,
   ): Promise<T | null> => {
     let token = await ensureToken(false);
     const headers: Record<string, string> = graphHeaders(token);
+    if (expected_etag) headers['If-Match'] = expected_etag;
     let payload: string | undefined;
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -551,6 +556,7 @@ export const createGraphCalProvider = (
     if (res.status === 401 && !opts.managedFetcher) {
       token = await ensureToken(true);
       const retryHeaders: Record<string, string> = graphHeaders(token);
+      if (expected_etag) retryHeaders['If-Match'] = expected_etag;
       if (payload) retryHeaders['Content-Type'] = 'application/json';
       beforeSend?.();
       res = await fetcher(url, {
@@ -1100,6 +1106,10 @@ export const createGraphCalProvider = (
     kind: 'graph',
     slug: opts.slug,
     get accountEmail() { return accountEmail; },
+    async listWritableCalendars() {
+      return (await selectedCalendars()).filter(cal => cal.canEdit === true)
+        .map(cal => ({ calendar_id: cal.id, name: cal.name || cal.id }));
+    },
 
     async connect() {
       // `sync.stop()` closes the provider and a later `sync.start()` reuses it
@@ -1186,7 +1196,7 @@ export const createGraphCalProvider = (
       };
     },
 
-    async createEvent(calendarId, event) {
+    async createEvent(calendarId, event, beforeSend) {
       requireCalendarId(calendarId, 'events.insert');
       const url = `${GRAPH_API_BASE}/me/calendars/${encodeURIComponent(calendarId)}/events`;
       const data = await graphMutate<GraphCalEvent>(
@@ -1194,6 +1204,8 @@ export const createGraphCalProvider = (
         'POST',
         fromCreateInput(event),
         'events.insert',
+        true,
+        beforeSend,
       );
       if (!data) {
         throw new CalendarAdapterError(
@@ -1213,10 +1225,13 @@ export const createGraphCalProvider = (
         );
       }
       const data = await graphMutate<GraphCalEvent>(
-        eventUrl(input.source_id),
+        eventUrl(input.source_id, input.calendar_id),
         'PATCH',
         fromUpdatePatch(input.patch),
         'events.patch',
+        true,
+        input.before_send,
+        input.expected_etag,
       );
       if (!data) {
         throw new CalendarAdapterError(
@@ -1242,6 +1257,26 @@ export const createGraphCalProvider = (
         'events.delete',
         false,
       );
+    },
+
+    async readEventForEdit(calendar_id, source_id) {
+      const calendars = await selectedCalendars();
+      const calendar = calendars.find(cal => cal.id === calendar_id);
+      const current = await fetchEvent(source_id, calendar_id);
+      const reason = calendar?.canEdit !== true ? 'This Outlook calendar does not allow event changes.'
+        : current.isOrganizer !== true && current.responseStatus?.response !== 'organizer'
+          ? 'The organizer manages this event’s details.' : undefined;
+      const richNotes = current.body?.contentType?.toLowerCase() !== 'text' || current.isOnlineMeeting === true;
+      const multipleLocations = (current.locations?.length ?? 0) > 1;
+      const editable_fields: Array<'summary' | 'description' | 'location' | 'start_at' | 'end_at'> = reason ? []
+        : ['summary', 'start_at', 'end_at', ...(!richNotes ? ['description' as const] : []), ...(!multipleLocations ? ['location' as const] : [])];
+      const notices = ['Changes are saved to this Outlook calendar.',
+        current.attendees?.length ? 'Outlook handles attendee updates.' : '',
+        richNotes ? 'Edit rich notes and online-meeting details in Outlook; they are kept when saving other fields.' : '',
+        multipleLocations ? 'Edit this event’s multiple locations in Outlook.' : ''].filter(Boolean);
+      return { payload: await payloadOf(current, calendar_id, calendar?.name), editable_fields,
+        ...(reason ? { read_only_reason: reason } : {}), edit_notice: notices.join(' '),
+        notification_supported: Boolean(accountEmail) && calendar?.canEdit === true && current.isOrganizer === false && current.responseStatus?.response !== 'organizer' };
     },
 
     async readInvitation(calendar_id, source_id) {

@@ -15,6 +15,42 @@ import {
 const NOW = 1_800_000_000_000;
 const base = { actionAttr: 'data-act' };
 
+describe('assets in universal search', () => {
+  const assets = { query: 'passport', matches: [], total: 0, offset: 0, more: false, loading: false };
+  it('counts asset-only hits and suppresses collection-only corrections and cloud offers', () => {
+    const html = renderUniversalSearch({ ...base, query: 'passport', groups: [], marketplaceOffered: true,
+      didYouMean: { query: 'password', corrections: [{ typed: 'passport', word: 'password', records: 1 }] },
+      assetSearch: { ...assets, total: 8, more: true, matches: [{ id: 'ana/passport', name: 'Ana’s passport',
+        class_name: 'Passport', status: 'active', stale: false, pending_write: true }] } });
+    expect(html).toContain('1+ in 1 place');
+    expect(html).toContain('href="#yours/asset/ana%2Fpassport"');
+    expect(html).toContain('waiting for source confirmation');
+    expect(html).not.toContain('No matches');
+    expect(html).not.toContain('Did you mean');
+    expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+  });
+
+  it('keeps ready collection results usable while assets are pending or unavailable', () => {
+    for (const state of [{ loading: true }, { error: 'Connection lost' }]) {
+      const html = renderUniversalSearch({ ...base, query: 'passport', groups: [group('inbox', 'mail', [row()])],
+        assetSearch: { ...assets, ...state }, absentWords: ['passport'], marketplaceOffered: true });
+      expect(html).toContain('data-search-record="r1"');
+      expect(html).not.toContain('No matches');
+      expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+      expect(html).not.toContain('No searched mail, calendar or file record holds');
+    }
+  });
+
+  it('offers marketplace search only after assets have a confirmed empty result', () => {
+    for (const state of [{ loading: true }, { error: 'Connection lost' }, { unsupported: true }]) {
+      const html = renderUniversalSearch({ ...base, query: 'passport', groups: [], marketplaceOffered: true, assetSearch: { ...assets, ...state } });
+      expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+    }
+    expect(renderUniversalSearch({ ...base, query: 'passport', groups: [], marketplaceOffered: true, assetSearch: assets }))
+      .toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+  });
+});
+
 const group = (
   slug: string, platform: string, matches: unknown[], over: Record<string, unknown> = {},
 ): CollectionSearchGroup => ({

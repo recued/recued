@@ -619,17 +619,17 @@ const renderRecentProbe = (
     let action = '';
     if (resolution === 'checking') {
       title = 'Checking the connection you saved…';
-      detail = `The previous recovery stop for ${identity} stays closed while your server checks the key you have saved.`;
+      detail = `You said the provider setup is fixed, so your server is checking the key you have saved for ${identity}.`;
     } else if (resolution === 'resolved') {
       title = 'Checked, and it is sorted';
-      detail = `Your server checked the key you have saved for ${identity}, and the provider accepted it. Recovery is complete; no credential was changed or replayed.${checked}${remainingDetail}`;
+      detail = `Your server checked the key you have saved for ${identity}, and the provider accepted it. All done; nothing was changed or sent again.${checked}${remainingDetail}`;
       action = continueAction;
     } else if (resolution === 'reopen') {
       const hasCredentialCorrection = p.credential_correction !== undefined;
       title = hasCredentialCorrection
         ? 'The key you saved still needs a look'
         : 'The connection you saved still needs a look';
-      detail = `Your server checked again, and they still refuse the key you have saved for ${identity}. The acknowledged recovery stop remains closed; this is a new result with a clean correction path.${checked}`;
+      detail = `Your server checked again, and the provider still refuses the key you have saved for ${identity}. This is a new result, so you can correct the key from here.${checked}`;
       action = button({
         label: hasCredentialCorrection
           ? 'Look at the key you saved'
@@ -655,11 +655,11 @@ const renderRecentProbe = (
       });
     } else if (resolution === 'removed') {
       title = 'That connection is gone';
-      detail = `Your server no longer has ${identity}. Its previous recovery stop remains closed, and there is no saved credential left to check.${remainingDetail}`;
+      detail = `Your server no longer has ${identity}, so there is no saved key left to check.${remainingDetail}`;
       action = continueAction;
     } else if (resolution === 'unsupported') {
       title = 'Your server needs updating before it can check this';
-      detail = `Your server can check ${identity}, but it cannot prove which saved version it checked. Update and restart the paired server, then run the check once more. The previous recovery stop remains closed, and no credential was changed.`;
+      detail = `Your server can check ${identity}, but it cannot say which saved version it checked. Update and restart your server, then run the check once more. No key was changed.`;
       action = button({
         label: 'Check once it is updated',
         size: 'sm',
@@ -839,36 +839,36 @@ const serverUpdateTriageReasonCopy = (
       && triage.currentVersion !== undefined
       && triage.currentVersion !== triage.baselineVersion
     ) {
-      return `Your server went from version ${baseline} to ${current}, but its signed update check still offers ${target}. An update landed, yet this server is not at the available release and the required capability remains absent.`;
+      return `Your server went from version ${baseline} to ${current}, but it still offers ${target}. An update was installed, but not the newest one, and the safety check is still missing.`;
     }
-    return `Your server still says it is on version ${current}, and its signed update check still offers ${target}. The available release is not running on this server.`;
+    return `Your server still says it is on version ${current}, and it still offers ${target}. That update is not running yet.`;
   }
   if (triage.reason === 'running_version_unchanged') {
-    return `Your server still says it is on version ${current}, the same running version seen before the update detour. Restart or redeploy the actual server used by this profile before retrying.`;
+    return `Your server still says it is on version ${current}, the same as before the update. Restart the server you picked, or install the update again, then try again.`;
   }
   if (triage.reason === 'running_version_changed') {
-    return `Your server went from version ${baseline} to ${current}, but the required safe-preflight capability is still absent. Verify that this profile received the complete server image or package, then restart that instance.`;
+    return `Your server went from version ${baseline} to ${current}, but the safety check is still missing. Check that the whole update reached the server you picked, then restart it.`;
   }
   if (triage.reason === 'launcher_update_required') {
-    return `Your server says it is on version ${current}, but its signed update check says the launcher is too old. Update the launcher or deployment wrapper before retrying.`;
+    return `Your server says it is on version ${current}, but the launcher that starts it is too old. Update the launcher, then try again.`;
   }
   if (triage.reason === 'self_update_unavailable') {
-    return `Your server says it is on version ${current}, but in-app updates are not configured for this install. Update its package, image, or deployment outside Recued, then restart the selected instance.`;
+    return `Your server says it is on version ${current}, and it cannot update itself from here. Update it the way you installed it, then restart it.`;
   }
   if (triage.reason === 'current_build_missing_capability') {
     return `Your server says it is on version ${current} and says its ${triage.channel ?? 'current'} is up to date, but the safety check it needs is missing. Check what you actually installed, and that you picked the right server, before trying again.`;
   }
   if (triage.checkStatus === 'bad-signature') {
-    return `Your server says it is on version ${current}, but it rejected the release manifest signature. Do not apply from that feed; verify the server’s trusted release key and signed manifest before retrying.`;
+    return `Your server says it is on version ${current}, but the update it was offered did not pass its signature check. Do not install from that update service; check the server’s trusted update key first.`;
   }
   if (triage.checkStatus === 'replay') {
-    return `Your server says it is on version ${current}, but it rejected an older signed release manifest. Restore a current release feed before retrying.`;
+    return `Your server says it is on version ${current}, but it turned down an older update. Point it at an up-to-date update service, then try again.`;
   }
   if (triage.checkStatus === 'stale-feed') {
-    return `Your server says it is on version ${current}, but it is on an older release check that ignores the current feed. Re-run the installer on that server to update it.`;
+    return `Your server says it is on version ${current}, but it checks for updates in an old way that misses new ones. Run the installer on that server again to update it.`;
   }
   if (triage.checkStatus === 'fetch-failed') {
-    return `Your server says it is on version ${current}, but it could not fetch its release feed. Check this server’s outbound access and configured feed endpoint before retrying.`;
+    return `Your server says it is on version ${current}, but it could not reach its update service. Check that it can reach the internet, and that its update address is right, then try again.`;
   }
   return 'The safety check it needs is missing, and Recued could not check for updates. Check you picked the right server, that Recued can reach it, and that its update settings are right.';
 };
@@ -897,7 +897,7 @@ const serverUpdateBaselinePostureCopy: Readonly<
 > = {
   'update-available': 'a newer version is ready',
   'up-to-date': 'this is the newest version',
-  'not-configured': 'in-place release checks are not configured',
+  'not-configured': 'this server is not set up to check for updates by itself',
   'stale-feed': 'this server checks for updates in an old way and misses new ones',
   'launcher-outdated': 'the launcher has to be updated first',
   replay: 'an older update was ignored',
@@ -925,20 +925,20 @@ const renderCredentialRotationRecovery = (
       : canReview
         ? hasExactCorrection
           ? hasRegenerationSafeStop
-            ? 'Resume credential recovery'
+            ? 'Carry on with the key'
             : hasRepeatedRejectionTriage
-            ? 'Resolve repeated rejection'
-            : 'Correct replacement'
+            ? 'Fix the refused key'
+            : 'Correct the new key'
           : 'Look at the connection'
         : 'Dismiss',
     ariaLabel: props.loading
       ? `Loading connection ${identity}`
       : canReview && hasExactCorrection
         ? hasRegenerationSafeStop
-          ? `Resume safe credential recovery for ${identity}`
+          ? `Carry on with the key for ${identity}`
           : hasRepeatedRejectionTriage
-          ? `Resolve the repeated credential rejection for ${identity}`
-          : `Correct the rejected credential replacement for ${identity}`
+          ? `Fix the key the provider keeps refusing for ${identity}`
+          : `Correct the refused new key for ${identity}`
         : undefined,
     size: 'xs',
     action: 'connections-review-credential-rotation',
@@ -951,72 +951,81 @@ const renderCredentialRotationRecovery = (
     const progress = recovery.serverUpdateProgress;
     const verification = recoveryVerification;
     const operation = progress.operation === 'update' ? 'update' : 'rollback';
+    // ⛔ What is happening and what to do, in the owner's words (2026-10-29).
+    // These used to say what tabs pass each other ("an opaque ID for the
+    // selected server profile…") and narrate receipts, closures and browser
+    // latches, none of which the owner can act on. The update may come from
+    // this very tab, so no line says which tab sent it.
+    const doing = progress.operation === 'update'
+      ? 'updating your server'
+      : 'taking your server back to its previous version';
+    const paused = `Swapping the key for ${identity}, and updates, stay paused.`;
     message = progress.phase === 'applying'
-      ? `An open Recued tab is applying the server ${operation}. This tab will stay on ${identity} and wait instead of sending a duplicate action. Tabs share only an opaque ID for the selected server profile, the operation, phase, and start time; no credential, endpoint, connection detail, form value, version, or raw error is shared.`
+      ? `Recued is ${doing}. This tab stays on ${identity} and waits; nothing is sent twice.`
       : progress.operationId === undefined
-        ? `The server accepted the ${operation} in an open Recued tab. This tab will stay on ${identity} and verify its own reconnect before offering the credential check. Tabs share only an opaque ID for the selected server profile, the operation, phase, and start time; no credential, endpoint, connection detail, form value, version, or raw error is shared.`
+        ? `Your server accepted the ${operation} and is restarting. This tab stays on ${identity} and offers to check the key once it has reconnected.`
         : verification?.phase === 'waiting'
           ? verification.reason === 'restart_pending'
-            ? `The paired server says this ${operation} is still finishing its restart. Recued will check the exact receipt again automatically; ${identity} and all server controls stay paused meanwhile. The receipt and raw server details are never shown or stored in this recovery view.`
-            : `Recued could not confirm this ${operation} receipt yet. It will try again by itself. ${identity} and all server controls stay paused unless the paired server resolves the exact receipt. Raw errors and the receipt are never shown or stored in this recovery view.`
+            ? `Your server is still restarting after the ${operation}. Recued asks again by itself. Swapping the key for ${identity} waits until then.`
+            : `Recued could not confirm the ${operation} yet and tries again by itself. Swapping the key for ${identity} waits until it can.`
         : verification?.phase === 'retryable'
-          ? `Recued could not confirm this ${operation} after several safe checks. ${identity} and all server controls remain paused. Open Server Updates or Account to retry; switching servers cannot count as proof of this result.`
+          ? `Recued could not confirm the ${operation} after several tries. ${paused} Try again from Server Updates or the Account menu; switching to another server does not settle it.`
         : verification?.phase === 'reviewing_closure'
-          ? `An owner is reviewing a server-authoritative closure for this unresolved ${operation} receipt. ${identity} and all server controls remain paused; review or cancel that decision in Server Updates.`
+          ? `Closing this unanswered ${operation} is waiting in Server Updates. Finish or cancel it there. ${paused}`
         : verification?.phase === 'closing'
-          ? `The selected server is re-checking this exact ${operation} receipt and will refuse closure while any release transition is active. ${identity} and all server controls remain paused.`
+          ? `Your server is checking the ${operation} once more, and that no other update is running, before it writes down that it could not tell how it went. ${paused}`
         : verification?.phase === 'closed'
-          ? `The selected server durably closed this receipt as unresolved without claiming the ${operation} succeeded or failed. Confirm its current version, release posture, and ${identity} activity in Server Updates or Account before another server change.`
+          ? `Your server wrote down that it could not tell how the ${operation} went. It does not say it worked or failed. Check how the server is now, in Server Updates or the Account menu, before anything else changes it.`
         : verification?.phase === 'checking_baseline'
-          ? `Recued is freshly reading the selected server’s running version, release posture, and ${identity} activity. The original ${operation} result is still unknown and all server controls stay paused.`
+          ? `Recued is reading how your server is now: the version it runs, its update state, and what ${identity} is doing. How the ${operation} went is still unknown, and updates stay paused.`
         : verification?.phase === 'baseline_retryable'
-          ? `The selected server’s current state could not be confirmed. ${identity} and all server controls remain paused; reconnect if needed, then retry the current-state check in Server Updates or Account.`
+          ? `Recued could not read how your server is now. Reconnect if you need to, then try again in Server Updates or the Account menu. ${paused}`
         : verification?.phase === 'baseline_confirmed'
           ? (() => {
               const baseline = verification.baseline;
               if (baseline === undefined) {
-                return `Current-state evidence is incomplete. ${identity} and all server controls remain paused.`;
+                return `Recued could not read everything about how your server is now. ${paused}`;
               }
               const affected = baseline.affectedConnection;
               const connectionCopy = affected === undefined
-                ? 'no affected connection was linked'
+                ? 'no connection is affected'
                 : affected.activity === 'idle'
-                  ? `${affected.kind}/${affected.name} has no credential verification pending`
+                  ? `${affected.kind}/${affected.name} has no key check waiting`
                   : affected.activity === 'pending'
-                    ? `${affected.kind}/${affected.name} has credential verification pending`
-                    : `${affected.kind}/${affected.name} activity will be checked again on return`;
+                    ? `${affected.kind}/${affected.name} has a key check waiting`
+                    : `${affected.kind}/${affected.name} is checked again when you go back`;
               const finishCopy =
                 verification.reason === 'finish_unavailable'
-                  ? ' The exact browser latch could not be retired; retry Finish recovery there. No server action will repeat.'
-                  : ' Review and finish recovery there.';
-              return `Current state confirmed: running ${baseline.currentVersion} on the ${baseline.channel} channel; ${serverUpdateBaselinePostureCopy[baseline.updateStatus]}; ${connectionCopy}. Open Server Updates or Account.${finishCopy} The original ${operation} result is still unknown.`;
+                  ? ' This browser could not finish tidying up: choose Try finishing again in Server Updates or the Account menu. Nothing runs on the server twice.'
+                  : ' Look it over in Server Updates or the Account menu, then finish recovery there.';
+              return `Your server now runs ${baseline.currentVersion} on the ${baseline.channel} channel; ${serverUpdateBaselinePostureCopy[baseline.updateStatus]}; ${connectionCopy}.${finishCopy} How the ${operation} went is still unknown.`;
             })()
         : verification?.phase === 'finishing'
-          ? `The reviewed current-state baseline is confirmed and this tab is retiring only its browser latch. ${identity} stays paused until that local finish completes; the original ${operation} result is still unknown.`
+          ? `Recued knows how your server is now and is tidying up in this browser. Swapping the key for ${identity} waits until that is done. How the ${operation} went is still unknown.`
         : verification?.phase === 'unknown'
           ? verification.reason === 'operation_mismatch'
-            ? `The paired server resolved this receipt as a different action than the expected ${operation}. ${identity} and all server controls remain paused. Confirm the selected server profile in Account, then use the privacy-safe diagnostic before retrying.`
+            ? `Your server says this was not the ${operation} Recued expected. Check in the Account menu that you picked the right server, and copy the details there, before you try again. ${paused}`
             : verification.reason === 'closure_in_flight'
-              ? `The server refused unresolved closure because another release transition is active. ${identity} and all server controls remain paused; wait for that change to settle, then retry the result again.`
+              ? `Your server said no, because another update or rollback is running. Wait for it to finish, then check again. ${paused}`
               : verification.reason === 'closure_unavailable'
-                ? `The selected server could not record an authoritative unresolved closure. ${identity} and all server controls remain paused; retry the result again or use the privacy-safe administrator handoff.`
-                : `The paired server did not recognize this ${operation} receipt. ${identity} and all server controls remain paused. Confirm the selected server profile in Account, then retry, use the privacy-safe diagnostic, or review server-authoritative closure in Server Updates.`
-        : `The server accepted the ${operation} in an open Recued tab. This tab will stay on ${identity} while the paired server verifies the exact opaque receipt before offering the credential check. Tabs share only an opaque ID for the selected server profile, the operation, phase, start time, and opaque server receipt; no credential, endpoint, connection detail, form value, version, or raw error is shared.`;
+                ? `Your server could not write down that it could not tell how the ${operation} went. Try again, or send the details to whoever looks after this server. ${paused}`
+                : `Your server does not know about this ${operation}. Check in the Account menu that you picked the right server. Then try again, copy the details to share, or close it in Server Updates. ${paused}`
+        : `Your server accepted the ${operation} and is restarting. This tab stays on ${identity} and offers to check the key once the server confirms the ${operation} finished.`;
   } else if (recovery.phase === 'checking') {
-    message = `Checking the interrupted credential replacement for ${identity}…`;
+    message = `Checking how swapping the key for ${identity} went…`;
   } else if (recovery.phase === 'pending') {
-    message = `The server received the replacement for ${identity} and is still checking it. Do not retry while this outcome is pending.`;
+    message = `The server has the new key for ${identity} and is still checking it. Wait for the result before you try again.`;
     action = button({
-      label: 'Check outcome',
+      label: 'Check the result',
       size: 'xs',
       action: 'connections-check-credential-rotation',
     });
   } else if (recovery.phase === 'safe_stop_checking') {
-    message = `Another tab reported that credential recovery for ${identity} reached a safe stop. This tab is asking the paired server to confirm that exact state before showing or clearing any recovery guidance; no credential or form value crossed tabs.`;
+    message = `Another tab says Recued stopped swapping the key for ${identity}. This tab is checking that with your server before it shows what to do next.`;
   } else if (recovery.phase === 'safe_stop_unconfirmed') {
-    message = `Another tab reported a safe stop for ${identity}, but this tab could not confirm it with the paired server. Credential replacement remains paused here. Reconnect and check again, or continue the regeneration/administrator handoff in the tab that received the rejection.`;
+    message = `Another tab says Recued stopped swapping the key for ${identity}, but this tab could not check that with your server. Swapping the key stays paused here. Reconnect and check again, or carry on in the tab where the provider refused the key.`;
     action = button({
-      label: 'Check safe stop',
+      label: 'Check again',
       size: 'xs',
       action: 'connections-check-credential-safe-stop',
       data: { kind: recovery.kind, name: recovery.name },
@@ -1035,22 +1044,22 @@ const renderCredentialRotationRecovery = (
       ? ` ${recovery.outstandingSafeStopCount! - 1} other connection${recovery.outstandingSafeStopCount === 2 ? '' : 's'} also ${recovery.outstandingSafeStopCount === 2 ? 'needs' : 'need'} recovery; Recued will offer the next one when you return to the list.`
       : '';
     message = (exactRecoveryVisible
-      ? `The paired server confirmed the safe stop for ${identity}. This tab kept its draft memory-only and now offers the same credential regeneration and privacy-safe administrator handoff as the originating tab. A material correction or explicit provider-side fix is required before one new verification.`
+      ? `Your server confirms Recued stopped swapping the key for ${identity}, because the provider kept refusing the new one. The draft is only in this tab. Make a new key at the provider, or send the details to whoever manages it. Change the key, or fix the setup at the provider, before Recued checks again.`
       : exactEditorOpen
-        ? `The paired server confirmed the safe stop for ${identity}, but the rejected sign-in method differs from this editor's current draft. Saving remains paused. Resume credential recovery to explicitly discard this draft, rebuild the editor around the rejected sign-in method, and open the exact privacy-safe handoff.`
-        : `The paired server confirmed that another tab reached the credential safe stop for ${identity}. The saved credential remains active, no draft crossed tabs, and this tab can resume the same regeneration or privacy-safe administrator handoff.`) + queueCopy;
+        ? `Your server confirms Recued stopped swapping the key for ${identity}, but the sign-in method the provider refused differs from this draft. Saving stays paused. Choose Carry on with the key to discard this draft, set the form back to the refused sign-in method, and get the details to share.`
+        : `Your server confirms another tab stopped swapping the key for ${identity}. The saved key still works. You can carry on here: make a new key at the provider, or send the details to whoever manages it.`) + queueCopy;
     if (!exactRecoveryVisible) action = reviewAction();
   } else if (recovery.phase === 'handoff') {
-    message = `This tab's earlier replacement for ${identity} ended. Another tab has taken over the next credential check. Recued will update this page when that tab finishes or lets go; do not start another replacement here.`;
+    message = `This tab's earlier try at swapping the key for ${identity} ended, and another tab is checking the next one. This page updates when that tab is done. Do not start another swap here.`;
     action = button({
-      label: 'Check handoff',
+      label: 'Check again',
       size: 'xs',
       action: 'connections-check-credential-rotation',
     });
   } else if (recovery.phase === 'handoff_waiting') {
-    message = `This tab's earlier replacement for ${identity} ended, but Recued could not confirm the current connection state. It will check again after reconnecting; do not retry from this tab yet.`;
+    message = `This tab's earlier try at swapping the key for ${identity} ended, but Recued could not check the connection now. It checks again after reconnecting. Do not try again from this tab yet.`;
     action = button({
-      label: 'Check handoff',
+      label: 'Check again',
       size: 'xs',
       action: 'connections-check-credential-rotation',
     });
@@ -1066,10 +1075,10 @@ const renderCredentialRotationRecovery = (
         ? 'The earlier replacement was not applied.'
         : credentialRotationFailureCopy(recovery.failureReason);
       message = hasRegenerationSafeStop
-        ? `No newer credential was saved for ${identity}, and the safe stop remains active in this tab. Your current replacement is still memory-only. Create or rotate a credential, use the privacy-safe administrator handoff, or explicitly confirm that the provider fixed the setup before another verification.`
-        : `No newer credential was saved for ${identity}, so you can continue in this tab. Your current replacement is still only here. ${earlierOutcome} Review or correct the draft, then choose Verify and replace. Recued will confirm that no other tab or server check owns this connection before sending.`;
+        ? `No newer key was saved for ${identity}, and swapping it stays stopped in this tab. Your new key is only in this tab. Make a new key at the provider, send the details to whoever manages it, or confirm the provider fixed the setup before Recued checks again.`
+        : `No newer key was saved for ${identity}, so you can carry on in this tab. Your new key is only here. ${earlierOutcome} Check or correct it, then choose Verify and replace. Recued checks that nothing else is swapping this key before it sends.`;
     } else {
-      message = `No newer version of ${identity} was saved. Review the current connection before entering another replacement.`;
+      message = `No newer version of ${identity} was saved. Look at the connection before you enter another key.`;
       action = reviewAction();
     }
   } else if (recovery.phase === 'editor_ready') {
@@ -1080,20 +1089,20 @@ const renderCredentialRotationRecovery = (
         recovery.name,
       );
     if (exactCleanEditorOpen) {
-      message = `The read-only safety check finished and the fresh key editor for ${identity} is ready. No field value or credential was restored. Enter a replacement below; Recued will recheck ownership before sending.`;
+      message = `The safety check finished and the blank form for ${identity} is ready. Nothing typed before was kept. Enter the new key below; Recued checks that nothing else is swapping it before it sends.`;
     } else {
-      message = `The fresh key editor for ${identity} closed before any field changed. Resume when ready; Recued will repeat the current activity and saved-connection checks before reopening it. No field value, credential, or server-recovery receipt will be restored.`;
+      message = `The blank form for ${identity} closed before anything was typed. Carry on when you are ready; Recued runs the safety check again before it reopens the form. Nothing typed before comes back.`;
       action = button({
         label: props.loading
           ? 'Loading connection…'
           : canReview
-            ? 'Reopen the fresh editor'
+            ? 'Reopen the blank form'
             : 'Dismiss',
         ariaLabel: props.loading
           ? `Loading connection ${identity}`
           : canReview
-            ? `Reopen the fresh key editor for ${identity} after running its safety check again`
-            : `Dismiss fresh key editor recovery for ${identity}`,
+            ? `Reopen the blank form for ${identity} after running its safety check again`
+            : `Dismiss this for ${identity}`,
         size: 'xs',
         action: canReview
           ? 'connections-start-fresh-credential-rotation'
@@ -1113,9 +1122,9 @@ const renderCredentialRotationRecovery = (
       ? 'The earlier replacement was not applied.'
       : credentialRotationFailureCopy(recovery.failureReason);
     if (exactCleanEditorOpen) {
-      message = `No newer credential was saved for ${identity}. This tab has no replacement draft to recover because unfinished credentials are never stored. ${earlierOutcome} Enter a new replacement below. Recued will recheck ownership before sending.`;
+      message = `No newer key was saved for ${identity}. Nothing typed before is here, because Recued never stores an unfinished key. ${earlierOutcome} Enter the new key below. Recued checks that nothing else is swapping it before it sends.`;
     } else {
-      message = `No newer credential was saved for ${identity}. This tab has no replacement draft to recover because unfinished credentials are never stored. ${earlierOutcome} Start fresh to open a clean replacement form. Recued will recheck ownership before sending.`;
+      message = `No newer key was saved for ${identity}. Nothing typed before is here, because Recued never stores an unfinished key. ${earlierOutcome} Choose Start fresh to open a blank form. Recued checks that nothing else is swapping it before it sends.`;
       action = button({
         label: props.loading
           ? 'Loading connection…'
@@ -1125,8 +1134,8 @@ const renderCredentialRotationRecovery = (
         ariaLabel: props.loading
           ? `Loading connection ${identity}`
           : canReview
-            ? `Start a fresh credential replacement for ${identity}`
-            : `Dismiss credential recovery for ${identity}`,
+            ? `Start swapping the key for ${identity} again with a blank form`
+            : `Dismiss this for ${identity}`,
         size: 'xs',
         action: canReview
           ? 'connections-start-fresh-credential-rotation'
@@ -1137,18 +1146,18 @@ const renderCredentialRotationRecovery = (
     }
   } else if (recovery.phase === 'restart_checking') {
     message = recovery.returnedFromServerUpdate === true
-      ? `Checking the updated server and the latest saved version of ${identity} before opening its clean credential form…`
-      : `Rechecking server activity and the latest saved version of ${identity} before opening a clean credential form…`;
+      ? `Checking the updated server and the saved ${identity} before opening a blank form…`
+      : `Checking the server and the saved ${identity} again before opening a blank form…`;
     action = button({
       label: 'Checking server…',
-      ariaLabel: `Checking whether a fresh credential replacement can start for ${identity}`,
+      ariaLabel: `Checking whether swapping the key for ${identity} can start again`,
       size: 'xs',
       action: 'connections-start-fresh-credential-rotation',
       data: { kind: recovery.kind, name: recovery.name },
       disabled: true,
     });
   } else if (recovery.phase === 'restart_triaging') {
-    message = `The updated server still lacks the safe activity preflight for ${identity}. Checking its running version and signed update state before suggesting another step…`;
+    message = `The updated server still cannot do the safety check for ${identity}. Checking its version and updates before suggesting what to do…`;
     action = button({
       label: 'Checking server…',
       ariaLabel: `Checking the running version and update state for the server used by ${identity}`,
@@ -1158,21 +1167,21 @@ const renderCredentialRotationRecovery = (
       disabled: true,
     });
   } else if (recovery.phase === 'restart_handoff') {
-    message = `Another tab or paired client is checking a replacement for ${identity}. No credential entry is needed here yet. Check again after that work finishes.`;
+    message = `Another tab or device is checking a new key for ${identity}. Nothing to enter here yet. Check again once it is done.`;
     action = button({
-      label: 'Check handoff',
-      ariaLabel: `Check whether the credential replacement handoff finished for ${identity}`,
+      label: 'Check again',
+      ariaLabel: `Check whether the other check of the key for ${identity} is done`,
       size: 'xs',
       action: 'connections-start-fresh-credential-rotation',
       data: { kind: recovery.kind, name: recovery.name },
     });
   } else if (recovery.phase === 'restart_waiting') {
     message = recovery.returnedFromServerUpdate === true
-      ? `Recued could not yet confirm the updated server and the latest saved version of ${identity}. No credential was sent. Let this tab reconnect, then try again.`
-      : `Recued could not confirm current server activity and the latest saved version of ${identity}. No credential was sent, and the clean-start option is still here. Reconnect or try again.`;
+      ? `Recued could not yet check the updated server and the saved ${identity}. No key was sent. Let this tab reconnect, then try again.`
+      : `Recued could not check the server and the saved ${identity}. No key was sent, and you can still start fresh. Reconnect or try again.`;
     action = button({
       label: 'Try again',
-      ariaLabel: `Retry the fresh credential replacement preflight for ${identity}`,
+      ariaLabel: `Try the safety check for ${identity} again`,
       size: 'xs',
       action: 'connections-start-fresh-credential-rotation',
       data: { kind: recovery.kind, name: recovery.name },
@@ -1180,10 +1189,10 @@ const renderCredentialRotationRecovery = (
   } else if (recovery.phase === 'restart_unsupported') {
     const triage = recovery.serverUpdateTriage;
     message = recovery.returnedFromServerUpdate === true && triage !== undefined
-      ? `${serverUpdateTriageReasonCopy(triage)} ${serverUpdateTriageEvidenceCopy(triage)} No credential was sent.`
+      ? `${serverUpdateTriageReasonCopy(triage)} ${serverUpdateTriageEvidenceCopy(triage)} No key was sent.`
       : recovery.returnedFromServerUpdate === true
-        ? `This server still cannot perform the activity preflight required for a safe fresh replacement of ${identity}. Recued could not confirm its update state; review the selected server profile before retrying. No credential was sent.`
-      : `This paired server cannot perform the activity preflight required to start a safe fresh replacement for ${identity}. Update the server before trying again; no credential was sent.`;
+        ? `This server still cannot do the safety check needed to swap the key for ${identity}, and Recued could not check its updates. Check you picked the right server before you try again. No key was sent.`
+      : `This server cannot do the safety check needed to swap the key for ${identity}. Update the server, then try again. No key was sent.`;
     const guideAction = props.credentialRotationServerUpdateGuideAvailable === true
       ? button({
           label: triage?.reason === 'update_still_available'
@@ -1192,7 +1201,7 @@ const renderCredentialRotationRecovery = (
               ? 'Review server profile'
               : 'Review update steps',
           ariaLabel: recovery.returnedFromServerUpdate === true
-            ? `Review the selected server profile and update diagnosis for ${identity}`
+            ? `Look at the server you picked and what Recued found for ${identity}`
             : `Review server update steps for ${identity}`,
           variant: 'primary',
           size: 'xs',
@@ -1202,20 +1211,20 @@ const renderCredentialRotationRecovery = (
       : '';
     action = `${guideAction}${button({
       label: 'Check again',
-      ariaLabel: `Check again for safe fresh credential replacement support for ${identity}`,
+      ariaLabel: `Check again whether the server can do the safety check for ${identity}`,
       size: 'xs',
       action: 'connections-start-fresh-credential-rotation',
       data: { kind: recovery.kind, name: recovery.name },
     })}${button({
       label: 'Dismiss',
-      ariaLabel: `Dismiss credential recovery for ${identity}`,
+      ariaLabel: `Dismiss this for ${identity}`,
       variant: 'link',
       size: 'xs',
       action: 'connections-dismiss-credential-rotation',
       data: { kind: recovery.kind, name: recovery.name },
     })}`;
   } else if (recovery.phase === 'restart_resolved') {
-    message = `A look-only check says this server can safely check a new key for ${identity}. You stayed on this page and no credential form opened. Continue here when you are ready; Recued will re-read the server and exact saved connection before opening a clean replacement form.`;
+    message = `A safety check says this server can check a new key for ${identity}. You stayed on this page and no form opened. Carry on here when you are ready; Recued reads the server and the saved connection again before it opens a blank form.`;
     action = `${button({
       label: props.loading
         ? 'Loading connection…'
@@ -1226,7 +1235,7 @@ const renderCredentialRotationRecovery = (
         ? `Loading connection ${identity}`
         : canReview
           ? `Carry on checking the new key for ${identity} in this tab`
-          : `Dismiss resolved server capability for ${identity}`,
+          : `Dismiss this for ${identity}`,
       variant: canReview ? 'primary' : 'secondary',
       size: 'xs',
       action: canReview
@@ -1236,7 +1245,7 @@ const renderCredentialRotationRecovery = (
       disabled: props.loading,
     })}${canReview ? button({
       label: 'Dismiss',
-      ariaLabel: `Dismiss resolved server capability for ${identity}`,
+      ariaLabel: `Dismiss this for ${identity}`,
       variant: 'link',
       size: 'xs',
       action: 'connections-dismiss-credential-rotation',
@@ -1244,21 +1253,21 @@ const renderCredentialRotationRecovery = (
     }) : ''}`;
   } else if (recovery.phase === 'superseded') {
     message = canReview
-      ? `Another tab or paired client saved a newer version of ${identity} while this tab was away. Recued kept the newer server version; review it before making another change.`
-      : `${identity} was removed while this tab was away. Recued kept the authoritative server state; dismiss this receipt when ready.`;
+      ? `Another tab or device saved a newer version of ${identity} while this tab was away. Recued kept the newer one; look at it before you change anything.`
+      : `${identity} was removed while this tab was away. Recued kept what the server has; dismiss this when you are ready.`;
     action = reviewAction();
   } else if (recovery.phase === 'waiting') {
-    message = `The result for ${identity} is not confirmed yet. Recued will check again when this server reconnects; do not enter another replacement meanwhile.`;
+    message = `The result for ${identity} is not confirmed yet. Recued checks again when this server reconnects; do not enter another key meanwhile.`;
     action = button({
-      label: 'Check outcome',
+      label: 'Check the result',
       size: 'xs',
       action: 'connections-check-credential-rotation',
     });
   } else if (recovery.phase === 'not_received') {
-    message = `The server has no current receipt for this replacement of ${identity}. It was not applied to any currently enrolled connection with this identity; review the connection before trying again.`;
+    message = `The server has no record of this new key for ${identity}, so it was not used. Look at the connection before you try again.`;
     action = reviewAction();
   } else if (recovery.phase === 'unsupported') {
-    message = `This server cannot recover the interrupted receipt for ${identity}. Review and probe the connection before deciding whether to retry.`;
+    message = `This server cannot tell how swapping the key for ${identity} went. Look at the connection and test it before you decide whether to try again.`;
     action = reviewAction();
   } else if (hasRegenerationSafeStop) {
     const exactEditorOpen = props.dialog.stage === 'form'
@@ -1268,21 +1277,21 @@ const renderCredentialRotationRecovery = (
         recovery.name,
       );
     message = exactEditorOpen
-      ? `Safe credential recovery is open for ${identity}. The saved credential remains active, and unfinished credentials are never restored after a reload. Verify and replace stays paused until you enter a fresh credential; if this tab still holds the rejected draft, you can instead confirm a provider-side fix before one new check.`
-      : `The paired server rejected another replacement for ${identity} after provider/endpoint triage. The saved credential remains active, and no credential draft was stored. Resume to create or rotate a credential or prepare a privacy-safe administrator handoff.`;
+      ? `Recovery is open for ${identity}. The saved key still works, and an unfinished key never comes back after a reload. Verify and replace waits until you enter a new key. If this tab still holds the refused one, you can instead confirm the provider fixed the setup, and Recued checks once more.`
+      : `Your server refused another new key for ${identity} after checking the provider and its address. The saved key still works, and no unfinished key was stored. Carry on to make a new key at the provider, or get the details to send to whoever manages it.`;
     if (!exactEditorOpen) action = reviewAction();
   } else {
-    message = `${credentialRotationFailureCopy(recovery.failureReason)} Review ${identity} and re-enter the replacement when ready.`;
+    message = `${credentialRotationFailureCopy(recovery.failureReason)} Look at ${identity} and enter the new key again when you are ready.`;
     action = reviewAction();
   }
   if (recoveryVerification?.phase === 'completed') {
     const baseline = recoveryVerification.baseline;
     const currentState = baseline === undefined
-      ? 'Its reviewed current-state baseline is no longer available.'
-      : `It confirmed running ${baseline.currentVersion} on the ${baseline.channel} channel; ${serverUpdateBaselinePostureCopy[baseline.updateStatus]}.`;
+      ? 'What it read about the server is no longer here.'
+      : `Your server runs ${baseline.currentVersion} on the ${baseline.channel} channel; ${serverUpdateBaselinePostureCopy[baseline.updateStatus]}.`;
     message =
-      `Server recovery is finished and server-change controls are unlocked. ${currentState} `
-      + `The original ${recoveryVerification.operation} result is still unknown. `
+      `Recovery is finished, and update and roll back work again. ${currentState} `
+      + `How the ${recoveryVerification.operation} went is still unknown. `
       + message;
   }
   const recoveryBusy = (
@@ -2236,18 +2245,18 @@ const renderCredentialCorrection = (
   const firstEndpoint = endpointFields[0];
   const reviewCopy = safeStop
     ? hasRetainedCredentialDraft
-      ? 'Do not resend this replacement unchanged. Enter a newly created or rotated credential, or ask the provider administrator to repair and confirm the account or app first.'
-      : 'No rejected credential was restored. Enter a newly created or rotated credential before verifying again, or use the safe handoff to ask the provider administrator for one.'
+      ? 'Do not send this key again unchanged. Enter a new key made at the provider, or ask whoever manages the provider account to fix it and confirm first.'
+      : 'The refused key was not kept. Enter a new key made at the provider before checking again, or send the details below to whoever manages the provider account and ask them for one.'
     : labels.length === 1
-      ? `Review ${labels[0]}, then verify the replacement again.`
-      : `Review this credential set together: ${labels.join(', ')}. Start with ${first.label}, then verify again.`;
+      ? `Review ${labels[0]}, then verify the new key again.`
+      : `Review these fields together: ${labels.join(', ')}. Start with ${first.label}, then verify again.`;
   const triageCopy = triage === undefined
     ? ''
     : triage.stage === 'credential_exchange'
-      ? 'The paired server saw another rejection during credential exchange. Confirm that the credential details and exchange endpoint belong to the same provider account or tenant before retrying.'
+      ? 'The provider refused the key again when your server tried to sign in with it. Check that the key and the sign-in address belong to the same provider account before you try again.'
       : firstEndpoint === undefined
-        ? "The paired server's configured provider check rejected this replacement again. Confirm that this credential was issued for the intended provider account, tenant, or workspace before retrying."
-        : "The paired server's configured endpoint check rejected this replacement again. Confirm that the credential and endpoint belong to the intended provider account or tenant before retrying.";
+        ? 'The provider refused the new key again. Check that it was made for the right provider account or workspace before you try again.'
+        : 'The provider refused the new key again at the address it was sent to. Check that the key and the address belong to the right provider account before you try again.';
   const endpointAction = firstEndpoint === undefined
     ? ''
     : button({
@@ -2261,14 +2270,14 @@ const renderCredentialCorrection = (
     && schema.kind === 'api'
     && dialog.setupGuide.stage === 'closed'
     ? button({
-        label: safeStop ? 'Create or rotate credential' : 'Check provider setup',
+        label: safeStop ? 'Make a new key' : 'Check provider setup',
         size: 'sm',
         variant: safeStop ? 'primary' : 'secondary',
         action: 'connections-guide-open',
       })
     : '';
   const credentialAction = button({
-    label: safeStop ? `Enter fresh ${first.label}` : `Review ${first.label}`,
+    label: safeStop ? `Enter a new ${first.label}` : `Review ${first.label}`,
     size: 'sm',
     variant: safeStop && guideAction === '' ? 'primary' : 'secondary',
     action: 'connections-focus-credential-correction',
@@ -2277,19 +2286,19 @@ const renderCredentialCorrection = (
   const closureActionLabel = closure?.phase === 'checking'
     ? 'Checking server support…'
     : closure?.phase === 'acknowledging'
-      ? 'Recording provider fix…'
+      ? 'Noting the fix…'
       : closure?.phase === 'unconfirmed'
-        ? 'Check server closure'
+        ? 'Check again'
         : closure?.phase === 'unsupported'
-          ? 'Server update required'
-          : 'Provider/admin confirmed a fix';
+          ? 'Update the server first'
+          : 'The provider setup is fixed';
   const confirmedAction = safeStop
     ? button({
         label: closureActionLabel,
         size: 'sm',
         variant: 'secondary',
         action: 'connections-confirm-credential-handoff',
-        ariaLabel: 'Confirm the provider or administrator changed the credential setup and close this server safe stop',
+        ariaLabel: 'Confirm the provider setup is fixed, so Recued can check the key again',
         disabled: closure?.phase === 'checking'
           || closure?.phase === 'acknowledging'
           || closure?.phase === 'unsupported',
@@ -2298,15 +2307,15 @@ const renderCredentialCorrection = (
   const closureStatus = !safeStop || closure === undefined
     ? ''
     : closure.phase === 'ready'
-      ? 'Recued will ask the paired server to record this fix before closing the recovery stop. No credential or form value is sent; checking the saved or replacement credential remains a separate action.'
+      ? 'Recued asks your server to note the fix, then you can check the key again. No key is sent; checking a key is a separate step.'
       : closure.phase === 'checking'
-        ? 'Checking whether the paired server can record this recovery closure…'
+        ? 'Checking that your server can note the fix…'
         : closure.phase === 'acknowledging'
-          ? 'Recording the provider or administrator fix on the paired server before this recovery stop is closed…'
+          ? 'Noting the fix on your server…'
           : closure.error
             ?? (closure.phase === 'unsupported'
-              ? 'This server cannot record authoritative safe-stop closure yet. Update it, or enter a materially new credential before verifying again.'
-              : 'Recued could not confirm that the paired server recorded the fix. Reconnect and check server closure before retrying.');
+              ? 'This server cannot note the fix yet. Update it, or enter a different key before checking again.'
+              : 'Recued could not confirm your server noted the fix. Reconnect, then choose Check again before you try again.');
   const adminHandoff = safeStop
     ? connectionCredentialRegenerationAdminHandoff(dialog, schema)
     : null;
@@ -3284,39 +3293,39 @@ const renderCredentialRotationOwnership = (
   const title = ownership.phase === 'checking'
     ? 'Checking who can continue…'
     : ownership.phase === 'pending'
-      ? 'The server is still checking the replacement'
+      ? 'The server is still checking the new key'
       : ownership.phase === 'safe_stop_checking'
-        ? 'Confirming the cross-tab safe stop…'
+        ? 'Checking that swapping the key stopped…'
         : ownership.phase === 'safe_stopped'
-          ? 'Credential recovery is paused across tabs'
+          ? 'Swapping the key is stopped'
           : ownership.phase === 'safe_stop_unconfirmed'
-            ? 'Could not confirm the cross-tab safe stop'
+            ? 'Could not check that swapping the key stopped'
             : ownership.phase === 'handoff'
               ? 'Another tab is handling this check'
               : ownership.phase === 'available'
                 ? 'This tab can continue'
                 : ownership.phase === 'unconfirmed'
-                  ? 'Could not confirm that takeover is safe'
-                  : 'Credential check active elsewhere';
+                  ? 'Could not confirm this tab can take over'
+                  : 'The key is being checked elsewhere';
   const detail = ownership.phase === 'checking'
-    ? `Saving ${identity} is paused while Recued checks the live tab and paired server. Your replacement stays only in this tab.`
+    ? `Saving ${identity} is paused while Recued checks the other tab and your server. Your new key stays only in this tab.`
     : ownership.phase === 'pending'
-      ? `This tab now holds the browser check, but the paired server is still verifying ${identity}. Recued will wait without sending the credential again.`
+      ? `This tab is in charge now, but your server is still checking ${identity}. Recued waits and does not send the key again.`
       : ownership.phase === 'safe_stop_checking'
-        ? `Another tab reported a safe stop for ${identity}. Saving is paused while this tab independently checks the paired server; your replacement stays only in this tab.`
+        ? `Another tab says Recued stopped swapping the key for ${identity}. Saving is paused while this tab checks that with your server; your new key stays only in this tab.`
         : ownership.phase === 'safe_stopped'
-          ? `The paired server confirmed the safe stop for ${identity}, but its correction does not match this editor's current sign-in method. Keep this draft here and review the exact recovery before another verification.`
+          ? `Your server confirms Recued stopped swapping the key for ${identity}, but what it needs fixed does not match this form's sign-in method. Keep this draft here and look at the recovery before Recued checks again.`
           : ownership.phase === 'safe_stop_unconfirmed'
-            ? `Saving ${identity} remains paused because this tab could not verify the safe-stop handoff. Reconnect and check again, or continue in the tab that received the rejection; your replacement stays only here.`
+            ? `Saving ${identity} stays paused because this tab could not check that swapping the key stopped. Reconnect and check again, or carry on in the tab where the provider refused the key; your new key stays only here.`
             : ownership.phase === 'handoff'
-              ? `This returned editor does not own ${identity}. Recued is waiting for the active tab before this draft can be sent; your replacement stays only in this tab.`
+              ? `Another tab is checking ${identity}. Recued waits for it before this draft can be sent; your new key stays only in this tab.`
               : ownership.phase === 'available'
-                ? `No other tab or server check owns ${identity}. Review this memory-only replacement, then choose Verify and replace when ready.`
+                ? `Nothing else is checking ${identity}. Look over your new key, which is only in this tab, then choose Verify and replace when you are ready.`
                 : ownership.phase === 'unconfirmed'
-                  ? `Saving ${identity} remains paused because Recued could not prove that the prior check finished. Your replacement stays only in this tab.`
+                  ? `Saving ${identity} stays paused because Recued could not confirm the earlier check finished. Your new key stays only in this tab.`
                   : ownership.automaticTakeover
-                    ? `Another tab or paired client owns the provider check for ${identity}. Saving here is paused so the replacement cannot be sent twice; your draft stays only in this tab. If that owner disappears, Recued will elect one safe successor automatically.`
-                    : `Another tab or paired client owns the provider check for ${identity}. Saving here is paused so the replacement cannot be sent twice; your draft stays only in this tab. After that owner finishes or closes, choose Check availability.`;
+                    ? `Another tab or device is checking ${identity} with the provider. Saving here is paused so the key is not sent twice; your draft stays only in this tab. If that tab goes away, Recued picks one tab to carry on by itself.`
+                    : `Another tab or device is checking ${identity} with the provider. Saving here is paused so the key is not sent twice; your draft stays only in this tab. When that tab finishes or closes, choose Check availability.`;
   const action = ownership.phase === 'available'
     ? ''
     : button({
@@ -3325,7 +3334,7 @@ const renderCredentialRotationOwnership = (
           : ownership.phase === 'safe_stop_checking'
             ? 'Checking…'
             : safeStopPhase
-              ? 'Check safe stop'
+              ? 'Check again'
               : ownership.phase === 'pending' || ownership.phase === 'handoff'
                 ? 'Check again'
                 : 'Check availability',

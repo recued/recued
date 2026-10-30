@@ -1,3 +1,4 @@
+import { trackSearchAssetRoute } from './shell/search-asset-return.js';
 import { mountKitchenWorkItemRoute } from './kitchen/work-item-route.js';
 import { mountKitchenHomeRoute } from './kitchen/kitchen-home-route.js';
 import { bootstrapRecipeEditorRoute as bootstrapImportedRecipeEditor } from './kitchen/recipe-editor/recipe-editor-route.js';
@@ -472,6 +473,7 @@ import {
   type DataMemoryDeleteCaller,
   type DataMemoryGetCaller,
   type DataMemoryImportCaller,
+  type DataMemoryReplaceCaller,
   type DataMemoryRestoreCaller,
   type DataMemoryListCaller,
   type DataMemoryUpdateCaller,
@@ -7728,6 +7730,11 @@ export const bootstrapWebclient = async (
     switchWorkTracker.track(
       (input: typeof args) => rpcConn.call('memory.restore', input),
     )(args);
+  // D-198 §12 — the owner replaces an agent's entry with their own version.
+  const dataMemoryReplaceCaller: DataMemoryReplaceCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('memory.replace', input),
+    )(args);
   // D-198 Slice 5 — the generic collection explorer reads (schema-driven
   // list→detail over the adapter-backed collections; mail / calendar tabs).
   const dataCollectionListInstancesCaller: DataCollectionListInstancesCaller = () =>
@@ -10201,6 +10208,7 @@ export const bootstrapWebclient = async (
     /** Chat-only in-memory rescue seam for a forced re-pair. */
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } => {
+    if (doc) trackSearchAssetRoute(doc, rpcConn, hashSource?.getHash() ?? '');
     // A file upload return belongs to its current owner task, not later routes.
     if (route !== 'data') pendingYoursFileAttachment = undefined;
     // A re-pair draft belongs to this first return, not every later Chat mount.
@@ -11403,6 +11411,8 @@ export const bootstrapWebclient = async (
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
         workEntityListCaller: dataWorkEntityListCaller,
         workEntitySearchCaller: dataWorkEntitySearchCaller,
+        assetSearchCaller: input => rpcConn.call('yours.read', input),
+        searchContinuityOwner: rpcConn,
         projectItemsCaller: dataProjectItemsCaller,
         workEntityGetCaller: dataWorkEntityGetCaller,
         onOwnerRecordOpened: ref => { void rpcConn.call('yours.change', { action: 'navigation.open', ref }).catch(() => {}); },
@@ -11455,6 +11465,7 @@ export const bootstrapWebclient = async (
         memoryUpdateCaller: dataMemoryUpdateCaller,
         memoryDeleteCaller: dataMemoryDeleteCaller,
         memoryRestoreCaller: dataMemoryRestoreCaller,
+        memoryReplaceCaller: dataMemoryReplaceCaller,
         memoryImportCaller: dataMemoryImportCaller,
         collectionListInstancesCaller: dataCollectionListInstancesCaller,
         collectionListCaller: dataCollectionListCaller,
@@ -11463,6 +11474,10 @@ export const bootstrapWebclient = async (
           get: args => rpcConn.call('collection.calendar.event.get', args),
           update: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.update', args)),
           respond: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.respond', args)),
+        },
+        calendarCreateCallers: {
+          destinations: () => rpcConn.call('collection.calendar.event.destinations', undefined),
+          create: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.create', args)),
         },
         mailMessageCallers: {
           get: args => rpcConn.call('collection.mail.message.get', args),
@@ -11599,6 +11614,7 @@ export const bootstrapWebclient = async (
         // Data changes tabs and opens/closes details without a hashchange. Keep
         // the router cache aligned with the visible hierarchical address.
         onHashSync: (hash) => {
+          if (doc) trackSearchAssetRoute(doc, rpcConn, hash);
           activeHash = hash;
         },
         subscribe: subscriber.on,

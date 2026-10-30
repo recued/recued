@@ -4,6 +4,7 @@ import { installedPackInstalledAt } from '../pack-inventory.js';
 import { mailAccountCapabilities } from '@recued/contracts';
 import { handleExecute } from '../execute-handler.js';
 import { createAutomationRehearsalHost } from '../automation-rehearsal-host.js';
+import { createCalendarEventCreationStore } from '../storage/calendar-event-creations.js';
 import { createAutomationRehearsalStore } from '../storage/automation-rehearsal-store.js';
 import { connectionViewFromRow } from '@recued/contracts';
 import { randomBytes } from 'node:crypto';
@@ -1215,6 +1216,7 @@ export const composeListeners = async (
     ...(collection.calendarStack
       ? { calendarEnroll: collection.calendarStack.enrollDeps }
       : {}),
+    ...(collection.calendarStack && storage.db ? { calendarEventCreations: createCalendarEventCreationStore(storage.db) } : {}),
     ...(collection.mailStack ? { mailEnroll: collection.mailStack.enrollDeps } : {}),
     ...(app.cacheBlobs ? { mailBodyBlobs: app.cacheBlobs } : {}),
     // D-318 step 1 — `collection.mail.chat_door.*`, and the chat mailbox's flag

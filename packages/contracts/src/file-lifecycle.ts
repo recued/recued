@@ -31,7 +31,7 @@ export const filePreviewKind = (mime: string): FilePreviewKind | undefined => {
   const type = mime.toLowerCase().split(';')[0]!.trim();
   if (['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'].includes(type)) return 'image';
   if (type === 'application/pdf') return 'pdf';
-  if (type.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript',
+  if (type.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript', 'application/csv',
     'application/x-ndjson', 'application/yaml', 'application/x-yaml', 'image/svg+xml'].includes(type)
     || type.endsWith('+json') || type.endsWith('+xml')) return 'text';
   return undefined;

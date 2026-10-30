@@ -30,4 +30,5 @@ export {
   type BookingDetailProps,
 } from './booking-detail.js';
 export { WORK_ENTITY_PAGE_STYLES } from './styles.js';
+export { commitmentCounterpartyLabel, type WorkEntityCommitmentView } from './commitment-reader.js';
 export { renderProjectOverview, PROJECT_OVERVIEW_STYLES, type ProjectOverviewProps, type ProjectWorkSection } from './project-overview.js';

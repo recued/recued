@@ -18,10 +18,8 @@ import {
 } from '@recued/contracts';
 import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
 import { getArg } from '../cli/parse.js';
-import {
-  createChatInboundTokenStore,
-  deriveMcpInboundTokenId,
-} from '../storage/chat-inbound-token-store.js';
+import { createChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
+import { createMcpAppKeyStore, resolveStdioMcpKey } from '../mcp-app-keys.js';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { openApplicationDatabase } from '../open-application-database.js';
 import { createManifestRegistry } from '../manifest-loader.js';
@@ -644,28 +642,23 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   // third-party application, and so is any local process that can reach a stdio
   // server. Running on the owner's machine does not make a caller the owner.
   //
-  // A bearer resolves to its inbound-token record and the SAME predicate the
-  // HTTP door uses (`isMcpInboundTokenToolAuthorized`) — no second enforcement
-  // path. Absent or unknown ⇒ no authorizer ⇒ the snapshot yields an empty
-  // catalog, and the reason is printed rather than left as a mystery.
+  // A contract key resolves to its inbound-token record and the SAME predicate
+  // the HTTP door uses (`isMcpInboundTokenToolAuthorized`) — no second
+  // enforcement path. The key is the start's own (`--token`, RECUED_MCP_TOKEN)
+  // or, for an app that cannot pass one, the key the owner saved for it or for
+  // every app (`recued mcp-key set`, `mcp-app-keys.ts`). Absent or unknown ⇒ no
+  // authorizer ⇒ the snapshot yields an empty catalog, and the reason is
+  // printed rather than left as a mystery.
   //
   // ⚠ stderr, never stdout: stdout is the MCP protocol stream on stdio.
-  const bearer = getArg(options.args, 'token') ?? env.RECUED_MCP_TOKEN;
-  const tokenRecord = bearer !== undefined && bearer.length > 0
-    ? createChatInboundTokenStore(db).getTokenById(deriveMcpInboundTokenId(bearer))
-    : null;
-  if (bearer !== undefined && bearer.length > 0 && tokenRecord === null) {
-    console.error(
-      '[recued mcp] the supplied token was not recognised — no tools will be offered. '
-      + 'Check it on the Contracts page of the web app.',
-    );
-  } else if (tokenRecord === null) {
-    console.error(
-      '[recued mcp] no token supplied, so no tools will be offered. '
-      + 'This surface derives its catalog from the contract its caller carries. '
-      + 'Pass --token <bearer> or set RECUED_MCP_TOKEN; create one on the Contracts page of the web app.',
-    );
-  }
+  const { record: tokenRecord, notice: keyNotice } = resolveStdioMcpKey({
+    args: options.args,
+    env,
+    now: Date.now(),
+    tokens: createChatInboundTokenStore(db),
+    appKeys: createMcpAppKeyStore(db),
+  });
+  if (keyNotice !== null) console.error(keyNotice);
   const initialBoundContractId = tokenRecord?.contract_id ?? null;
   // A stdio MCP process may outlive token-grant edits, revocation, or a
   // contract-door change. Re-read all three axes for every catalog/call check;

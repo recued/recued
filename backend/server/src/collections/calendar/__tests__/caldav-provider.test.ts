@@ -135,6 +135,16 @@ afterEach(async () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('parseCalendarHomePropfind', () => {
+  it('combines successful properties and never treats missing or failed privileges as permission to create', () => {
+    const response = (name: string, privilege: string, status: string | null = '200 OK') => `<D:response><D:href>/${name}/</D:href>
+      <D:propstat><D:prop><D:displayname>${name}</D:displayname><D:resourcetype><C:calendar/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+      <D:propstat><D:prop><D:current-user-privilege-set><D:privilege><D:${privilege}/></D:privilege></D:current-user-privilege-set></D:prop>${status ? `<D:status>HTTP/1.1 ${status}</D:status>` : ''}</D:propstat></D:response>`;
+    const entries = parseCalendarHomePropfind(`<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">${response('work', 'bind')}${response('readonly', 'read')}${response('unknown', 'write', '404 Not Found')}${response('no-status', 'write', null)}</D:multistatus>`);
+    expect(entries).toEqual([{ href: '/work/', displayname: 'work', isCalendar: true, canCreate: true },
+      { href: '/readonly/', displayname: 'readonly', isCalendar: true, canCreate: false },
+      { href: '/unknown/', displayname: 'unknown', isCalendar: true }, { href: '/no-status/', displayname: 'no-status', isCalendar: true }]);
+  });
+
   it('extracts calendar collections (ignores addressbooks)', () => {
     const xml = `<?xml version="1.0"?>
 <multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
@@ -1772,6 +1782,35 @@ function mkText(
 }
 
 describe('CalDAV reviewed writes', () => {
+  it('verifies event write-content permission and preserves the original invitation and rich ICS details', async () => {
+    const calendarHref = '/calendars/alice/work/', eventHref = calendarHref + 'meeting.ics';
+    const homeWithPermission = '<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><response>'
+      + `<href>${calendarHref}</href><propstat><prop><displayname>Work</displayname><resourcetype><c:calendar/></resourcetype>`
+      + '<current-user-privilege-set><privilege><bind/></privilege></current-user-privilege-set></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>';
+    let privilege = 'write-content', written = '', guardCalled = false;
+    const original = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', 'UID:meeting', 'DTSTART:20261030T160000Z', 'DTEND:20261030T170000Z', 'SUMMARY:Planning',
+      'ORGANIZER:mailto:owner@example.com', 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.com', 'URL:https://meet.example.com/join',
+      'X-PROVIDER-FEATURE:keep-me', 'BEGIN:VALARM', 'ACTION:DISPLAY', 'TRIGGER:-PT15M', 'DESCRIPTION:Reminder', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+    const provider = createCalDavProvider({ slug: 'personal', config: mkConfig(), etagStore: makeEtagStore(), scheduler: () => () => undefined,
+      fetcher: async (url, init) => {
+        let body = original;
+        if (init?.method === 'PROPFIND') body = url.endsWith('meeting.ics')
+          ? `<multistatus xmlns="DAV:"><response><href>${eventHref}</href><propstat><prop><current-user-privilege-set><privilege><${privilege}/></privilege></current-user-privilege-set></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>` : homeWithPermission;
+        if (init?.method === 'PUT') { expect(guardCalled).toBe(true); expect(init.headers?.['If-Match']).toBe('"e1"'); written = init.body as string; }
+        return { status: 200, ok: true, headers: new Headers({ etag: '"e1"' }), async json() { return {}; }, async text() { return body; } };
+      } });
+    cleanup.push(() => provider.close());
+    const calendar = (await provider.listWritableCalendars!())[0]!;
+    const source = `${calendar.calendar_id}:meeting`;
+    expect((await provider.readEventForEdit!(calendar.calendar_id, source)).editable_fields).toContain('summary');
+    privilege = 'read'; expect((await provider.readEventForEdit!(calendar.calendar_id, source)).editable_fields).toEqual([]);
+    privilege = 'write-content';
+    await provider.updateEvent({ calendar_id: calendar.calendar_id, source_id: source, expected_etag: '"e1"', patch: { summary: 'Review' }, before_send: () => { guardCalled = true; } });
+    expect(written).toContain('SUMMARY:Review');
+    for (const line of ['UID:meeting', 'ORGANIZER:mailto:owner@example.com', 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.com',
+      'URL:https://meet.example.com/join', 'X-PROVIDER-FEATURE:keep-me', 'BEGIN:VALARM', 'TRIGGER:-PT15M']) expect(written).toContain(line);
+  });
+
   const home = '<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><response>'
     + '<href>/calendars/alice/work/</href><propstat><prop><displayname>Work</displayname>'
     + '<resourcetype><collection/><c:calendar/></resourcetype></prop></propstat></response></multistatus>';

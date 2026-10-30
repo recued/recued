@@ -367,6 +367,14 @@ const upsertMode = (
   return 'update';
 };
 
+const commitmentCounterparties = (entities: readonly WorkEntity[], display: WorkEntityCrudRpcDeps['contactDisplay']): Record<string, string> => {
+  const ids = new Set(entities.flatMap(entity => entity._kind === 'commitment' && entity.counterparty_contact_id ? [entity.counterparty_contact_id] : []));
+  return Object.fromEntries([...ids].map(id => {
+    const contact = display?.getByContactIdResolved(id);
+    return [id, contact?.name?.trim() || contact?.email || 'Contact unavailable'];
+  }));
+};
+
 export const handleWorkEntityList = async (
   deps: WorkEntityCrudRpcDeps,
   args: WorkEntityListRpcRequest,
@@ -374,12 +382,13 @@ export const handleWorkEntityList = async (
   const kind = requireKind('work_entity.list', args.kind);
   if (
     (kind !== 'booking' && args.booking_lifecycle_states !== undefined)
-    || (kind !== 'booking' && kind !== 'task' && kind !== 'asset' && args.search !== undefined)
+    || (kind !== 'booking' && kind !== 'task' && kind !== 'asset' && kind !== 'commitment' && args.search !== undefined)
     || (kind !== 'task' && args.task_filter !== undefined)
+    || (kind !== 'commitment' && args.commitment_filter !== undefined)
   ) {
     throw new RpcError(
       'bad_request',
-      'work_entity.list: search requires tasks, bookings or assets; task_filter requires tasks; booking_lifecycle_states requires bookings',
+      'work_entity.list: search requires tasks, bookings, assets or commitments; task_filter requires tasks; commitment_filter requires commitments; booking_lifecycle_states requires bookings',
     );
   }
   // Build the store-layer query from the wire request. The resolver
@@ -390,6 +399,7 @@ export const handleWorkEntityList = async (
   if (args.sync_states !== undefined) filters.sync_states = args.sync_states;
   if (args.include_deleted !== undefined) filters.include_deleted = args.include_deleted;
   if (args.search !== undefined) filters.search = args.search;
+  if (args.commitment_filter !== undefined) filters.commitment_filter = args.commitment_filter;
   if (args.task_filter !== undefined) {
     filters.task_filter = args.task_filter;
     const zone = deps.timeZone?.();
@@ -434,6 +444,7 @@ export const handleWorkEntityList = async (
     return {
       entities,
       total,
+      ...(kind === 'commitment' ? { counterparty_labels: commitmentCounterparties(entities, deps.contactDisplay) } : {}),
       ...(source_freshness !== null ? { source_freshness } : {}),
     };
   } catch (err) {
@@ -476,6 +487,7 @@ export const handleWorkEntityGet = async (
         : undefined;
     return {
       entity,
+      ...(kind === 'commitment' ? { counterparty_labels: commitmentCounterparties([entity], deps.contactDisplay) } : {}),
       ...(source_freshness !== undefined ? { source_freshness } : {}),
       ...(relationship_edges !== undefined ? { relationship_edges } : {}),
       ...(booking_history !== undefined ? { booking_history } : {}),
@@ -665,6 +677,9 @@ export const handleWorkEntityCommitmentClose = async (
         throw new WorkEntityNotFoundError('commitment', id);
       }
       if (current.lifecycle_state === to) return { entity: { _kind: 'commitment', ...current } };
+      if (current.pending_write) {
+        throw new RpcError('bad_request', 'A change is waiting for source confirmation. Reopen this commitment before trying again.');
+      }
       const source = deps.store.getSource(current.source_id);
       if (!source || source.top_tier_kind !== 'commitment' || !source.write_capable || source.sync_posture === 'read_through') {
         throw new RpcError('bad_request', `${method}: this source cannot confirm a commitment change`);

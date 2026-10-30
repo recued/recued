@@ -7,6 +7,69 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.30 — 2026-10-30
+
+Create a one-off event from the calendar agenda, on this server or on a Google, Outlook or CalDAV
+calendar you can write to, and edit an event on those calendars when its provider allows it.
+Commitments can be filtered, searched in full and opened to read, and you can replace an agent's
+memory note with your own version. Chat and AI apps can search inside saved files and
+attachments, Search also finds your assets, and CSV files open as tables. An AI app that starts
+Recued itself, such as one that loads it as a plugin, can use a contract key you saved for it.
+
+### Added
+
+- **Create calendar events.** Data → Calendar → New event makes a one-off event on this server or
+  on a Google, Outlook or CalDAV calendar that Recued has checked you can write to. A provider
+  event is made there first and saved only after the provider confirms it. A save that cannot be
+  confirmed keeps your details, and checking it never makes a second event.
+- **Edit events on Google, Outlook and CalDAV calendars** when the provider allows the change.
+  The editor changes the title, location, description, start and end, and keeps guests, invitations,
+  meeting links and reminders. Each save reads the event first; if it changed at the provider,
+  the save is refused and your draft is kept.
+- **Filter, search and read commitments.** Filter by who owes and by status, search every saved
+  promise, and open one to read in full before editing. Mark fulfilled and Cancel commitment
+  appear only when the source can confirm the change. Saved views keep both filters.
+- **Replace an agent's memory note with your own version.** Recall then finds yours, and
+  deleting yours brings the agent's back. An agent cannot undo your correction.
+- **Search inside saved files and attachments.** Chat, and an AI app whose contract allows Search
+  document contents, can find words inside files and return short excerpts, each with a link to
+  its file. Text files are read directly; other documents need the MarkItDown or Docling pack.
+  Each search says which files it could not search, and why.
+- **Find assets in Search.** Data → Search lists matching assets first, and Back to search returns
+  to the same results, keyboard focus and scroll.
+- **Read CSV files as tables.** The file viewer pages through a CSV file 50 rows at a time,
+  read-only, and Raw text shows the original. A file over the preview limits, or with broken
+  quoting, opens as text.
+- **Save a contract key for an AI app.** `recued mcp-key set` saves a contract key for one app or
+  for every app, so an app that starts `recued --mcp` itself needs no key in its own settings. An
+  app that loads Recued as a plugin, such as Codex, needs this, because a plugin cannot carry a
+  key. `recued mcp-key list` and `recued mcp-key clear` show and remove saved keys. Only a key's
+  id is stored, never the key.
+
+### Changed
+
+- **The Connect tab sets up Claude Desktop with a saved key** instead of putting the key in
+  Claude Desktop's settings file. It also gives the older form for servers before 26.10.30.
+- **Update and recovery messages say what is happening and what to do**: while a server update
+  runs, when its result is unclear, and while a connection's key is swapped.
+- **The recipe check refuses more mistakes** when a recipe is installed, updated or saved: a
+  step `cache` other than `fresh`, `acceptable` or `any`, and wrong literal arguments to the CSV
+  Toolkit's inspect and transform steps. Every recipe Recued publishes passes it.
+- **Update the server for the new controls.** The hosted web app needs 26.10.30 to create events,
+  edit provider events, replace a memory note, filter and search commitments, and preview
+  `application/csv` files. On an older server, those screens say to update it.
+
+### Fixed
+
+- **A run you forgot stays forgotten** where an AI app or a recipe reads runs: run history and
+  timelines say only when it ran, what kind of run it was and who started it. In Memory, a run
+  you started offers only Forget.
+- **Commitments show readable values**, such as "I owe" and "Overdue", instead of stored values
+  such as `outbound` and `pending`, and a contact's name follows a contact merge.
+- **A provider's reply to a calendar change is checked.** An event a provider created in another
+  calendar is not saved, an Outlook update goes to the event's own calendar, and a version
+  conflict reads as a changed event.
+
 ## 26.10.29 — 2026-10-29
 
 Run a saved request once or repeatedly from Automation, move a pending one-time run to another

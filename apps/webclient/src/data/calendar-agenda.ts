@@ -88,6 +88,7 @@ export interface CalendarAgenda {
   refresh(options?: { silent?: boolean; sourcesOnly?: boolean }): Promise<void>;
   whenLoaded(): Promise<void>;
   selectSource(slug: string | null): void;
+  showDay(day: string, slug: string): void;
   selectedSource(): string | null | undefined;
   isToday(): boolean;
   record(slug: string, id: string): CollectionRecord | undefined;
@@ -104,6 +105,8 @@ export const createCalendarAgenda = (deps: {
   listInstances?: DataCollectionListInstancesCaller; list?: DataCollectionListCaller;
   actionAttr: string; render(): void; onSources?(sources: CollectionInstanceRow[]): void;
   onViewChange?(): void; now?: () => number; timeZone?: string; initialSource?: string | null;
+  newEventButton?(): string;
+  createForm?(): string;
 }): CalendarAgenda => {
   const now = deps.now ?? Date.now;
   const zone = deps.timeZone ?? stampZone();
@@ -282,8 +285,9 @@ export const createCalendarAgenda = (deps: {
     }).join('');
     return `<section class="calendar-agenda" data-calendar-agenda aria-label="Calendar agenda">
       <div class="calendar-agenda-heading"><div><h2>Calendar</h2><p class="calendar-agenda-range">${e(heading)}</p></div>
-        <button type="button" class="data-button" ${deps.actionAttr}="${AGENDA_ACTION}refresh" ${AGENDA_FOCUS}="refresh"
-          ${loading ? 'aria-disabled="true" aria-busy="true"' : ''}>${loading ? 'Refreshing…' : 'Refresh'}</button></div>
+        <div class="calendar-agenda-controls">${deps.newEventButton?.() ?? ''}<button type="button" class="data-button" ${deps.actionAttr}="${AGENDA_ACTION}refresh" ${AGENDA_FOCUS}="refresh"
+          ${loading ? 'aria-disabled="true" aria-busy="true"' : ''}>${loading ? 'Refreshing…' : 'Refresh'}</button></div></div>
+      ${deps.createForm?.() ?? ''}
       <div class="calendar-agenda-controls" role="group" aria-label="Agenda dates">
         ${button('previous', 'Previous week')}${button('today', 'Today')}${button('next', 'Next week')}
         <label>Starting <input class="data-input" type="date" aria-label="Agenda start date" ${AGENDA_FIELD}="date"
@@ -318,6 +322,7 @@ export const createCalendarAgenda = (deps: {
     selectedSource,
     isToday: () => window.day === calendarDateIn(now(), zone),
     record: (slug, id) => currentSelection().has(slug) ? events().find(event => event.slug === slug && event.record.record_id === id)?.record : undefined,
+    showDay: (day, slug) => { selection = new Set([slug]); chooseDay(day); },
     replace: (slug, record) => {
       const source = sources.find(source => source.instance.slug === slug);
       if (source) source.records = [...source.records.filter(row => row.record_id !== record.record_id), record];

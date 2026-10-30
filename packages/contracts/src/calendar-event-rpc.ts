@@ -1,6 +1,6 @@
 import type { CollectionRecord } from './collections.js';
 
-/** Paired owner UI: inspect events, edit local events, and respond to remote invitations. */
+/** Paired owner UI: create, inspect and edit events, and respond to invitations. */
 export interface CalendarEventRef {
   slug: string;
   source_id: string;
@@ -32,6 +32,9 @@ export interface CalendarEventSnapshot {
   /** Prevents an old draft from editing a replacement calendar with the same slug. */
   incarnation: string | null;
   editable: boolean;
+  /** Omitted by older servers and local editors, which support every patch field. */
+  editable_fields?: Array<keyof CalendarEventPatch>;
+  edit_notice?: string;
   read_only_reason?: string;
   /** A provider read succeeded for this request; absent on cached/local reads. */
   provider_verified?: true;
@@ -70,6 +73,39 @@ export interface CalendarEventUpdateRequest extends CalendarEventRef {
   expected_version: string;
   expected_incarnation: string;
   patch: CalendarEventPatch;
+}
+
+export interface CalendarEventDestination {
+  slug: string;
+  calendar_id: string;
+  name: string;
+  provider: 'local' | 'gcal' | 'graph' | 'caldav';
+  incarnation: string;
+}
+
+export interface CalendarEventDestinations {
+  destinations: CalendarEventDestination[];
+  unavailable: Array<{ slug: string; reason: string }>;
+}
+
+export interface CalendarEventCreateRequest {
+  slug: string;
+  calendar_id: string;
+  expected_incarnation: string;
+  /** Retried unchanged until its outcome is known. A different draft needs a new ID. */
+  creation_id: string;
+  summary: string;
+  description: string;
+  location: string;
+  start_at: number;
+  end_at: number;
+  timezone: string;
+  is_all_day: boolean;
+}
+
+export interface CalendarEventCreateResult {
+  slug: string;
+  snapshot: CalendarEventSnapshot;
 }
 
 export const CALENDAR_EVENT_EDIT_LIMITS = {

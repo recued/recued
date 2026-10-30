@@ -4,6 +4,8 @@ export {
   assertValidRecipe,
 } from './validate.js';
 export { reverseLocalUpdate } from './local-update-compensation.js';
+export { conditionStringParts, type ConditionSourceToken } from './condition-source.js';
+export { filterVariableProblem, filterVariableBindings } from './filter-variable.js';
 export type {
   ValidationSeverity,
   ValidationIssue,
@@ -279,3 +281,5 @@ export {
   COMPENSATION_RECIPE_ID_PREFIX,
 } from './saga-compensation.js';
 export type { LandedCatalogWrite, CompensationPlan } from './saga-compensation.js';
+
+export { outputVariableBindings, outputVariableBindingRole, tableSelectVariableProblem, type OutputVariableBinding, type OutputVariableBindingRole } from './output-variable-bindings.js';

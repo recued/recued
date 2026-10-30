@@ -108,7 +108,7 @@ import {
 // ⛔ The SAME builder the contracts route uses, imported rather than copied —
 // two surfaces printing a connection example for one server must not be able to
 // disagree about its endpoint.
-import { buildMcpClientSnippets } from '../contracts/bootstrap-contracts-route.js';
+import { buildMcpClientSnippets, snippetNote } from '../contracts/bootstrap-contracts-route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { EXPOSURE_WORKSPACE_STYLES } from './exposure-workspace-styles.js';
@@ -1278,6 +1278,8 @@ export const mountExposurePanel = (
       });
       body.appendChild(pre);
       controls.push(pre);
+      // Plain lines, not stops: each client stays one place in the tab order.
+      for (const note of snippet.notes ?? []) body.appendChild(snippetNote(doc, 'exposure-connect-snippet-note', note));
     }
     const close = makeButton(
       PANEL_COPY.connect_modal_close,

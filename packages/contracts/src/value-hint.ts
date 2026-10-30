@@ -69,12 +69,17 @@ export interface RecipePageBinding {
   platform?: string;
 }
 
+/** Shared by validation and authoring; the binding vocabulary stays closed. */
+export const RECIPE_PAGE_BINDING_KEYS = ['kind', 'field', 'platform'] as const satisfies ReadonlyArray<keyof RecipePageBinding>;
+const _pageBindingKeysComplete: Exclude<keyof RecipePageBinding, (typeof RECIPE_PAGE_BINDING_KEYS)[number]> extends never ? true : never = true;
+void _pageBindingKeysComplete;
+
 export const isRecipePageBinding = (value: unknown): value is RecipePageBinding => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const binding = value as Record<string, unknown>;
   const safePart = (part: string): boolean => /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(part)
     && part !== 'constructor' && part !== 'prototype';
-  return Object.keys(binding).every(key => key === 'kind' || key === 'field' || key === 'platform')
+  return Object.keys(binding).every(key => RECIPE_PAGE_BINDING_KEYS.some(allowed => allowed === key))
     && Object.prototype.hasOwnProperty.call(binding, 'kind')
     && Object.prototype.hasOwnProperty.call(binding, 'field')
     && typeof binding.kind === 'string' && safePart(binding.kind)

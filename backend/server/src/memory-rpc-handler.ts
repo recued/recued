@@ -37,6 +37,7 @@ import {
   type MemoryListRequest,
   type MemoryListResponse,
   type MemoryMutationResult,
+  type MemoryReplaceRequest,
   type MemoryRestoreRequest,
   type MemoryRestoreResult,
   type MemoryUpdateRequest,
@@ -45,7 +46,13 @@ import {
 import type { AuditEntry, AuditLogStore, Collection } from '@recued/storage';
 import type { EventBus } from './events/bus.js';
 import { emitMemoryUser } from './events/emit-sites.js';
-import { liveReplacementOf, restoreAgentForget } from './memory-revision.js';
+import {
+  checkOwnerReplace,
+  forgottenIds,
+  liveReplacementOf,
+  restoreAgentForget,
+  withRevisionLock,
+} from './memory-revision.js';
 import {
   USER_MEMORY_ID_PREFIX,
   type UserMemoryCreateInput,
@@ -592,6 +599,65 @@ export const handleMemoryCreate = async (
   return { memory_id: row.memory_id, provenance_edges_written: ids.length };
 };
 
+/** `memory.replace` (D-198 §12) — the owner replaces an AGENT's entry with their
+ *  own version: a NEW `user_self` row carrying `replaces`. The agent's row is
+ *  never touched; recall skips it while a live row replaces it, so deleting the
+ *  owner's version is the undo. The new row keeps the replaced entry's links to
+ *  people and records, and its event time unless the owner gives one: it takes
+ *  that entry's place. Checked and written under the §10 revision lock, so it
+ *  cannot race an agent's replace or forget of the same entry. */
+export const handleMemoryReplace = async (
+  deps: MemoryRpcDeps,
+  args: MemoryReplaceRequest,
+): Promise<MemoryMutationResult> => {
+  const memory_id = args.memory_id;
+  if (typeof memory_id !== 'string' || memory_id.length === 0) {
+    throw new RpcError('bad_request', 'memory.replace requires a memory_id', 400);
+  }
+  if (typeof args.kind !== 'string' || args.kind.trim().length === 0) {
+    throw new RpcError('bad_request', 'memory.replace requires a non-empty kind', 400);
+  }
+  const store = deps.userMemoryStore;
+  if (!store) {
+    throw new RpcError('not_configured', 'memory.replace requires the user_memory store', 501);
+  }
+  if (!isUserMemoryId(memory_id)) {
+    if ((await deps.auditLog.get(memory_id)) !== null) {
+      throw new RpcError('unsupported', 'A run can’t be replaced. Forget it instead.', 409);
+    }
+    throw new RpcError('not_found', 'memory entry not found', 404);
+  }
+
+  const input: UserMemoryCreateInput = { kind: args.kind };
+  const summary = coerceOptionalString(args.summary);
+  if (summary !== undefined) input.summary = summary;
+  const body = coerceBody(args.body);
+  if (body !== undefined) input.body = body;
+
+  const row = await withRevisionLock(store, async () => {
+    const checked = await checkOwnerReplace(store, await forgottenIds(deps.redactionStore), memory_id);
+    if (!checked.ok) {
+      throw checked.refusal === 'not_found'
+        ? new RpcError('not_found', checked.message, 404)
+        : new RpcError('unsupported', checked.message, 409);
+    }
+    const replaced = checked.row;
+    const event_at = typeof args.event_at === 'number' ? args.event_at : replaced.event_at;
+    return store.writeAuthored({
+      ...input,
+      ...(event_at !== undefined ? { event_at } : {}),
+      ...(replaced.provenance_entity_ids !== undefined && replaced.provenance_entity_ids.length > 0
+        ? { provenance_entity_ids: replaced.provenance_entity_ids }
+        : {}),
+      origin_actor: 'user_self',
+      replaces: memory_id,
+    });
+  });
+  emitMemoryUser(deps.bus, row.memory_id);
+  emitMemoryUser(deps.bus, memory_id);
+  return { memory_id: row.memory_id, provenance_edges_written: row.provenance_entity_ids?.length ?? 0 };
+};
+
 /** `memory.update` — edit the caller's OWN `user_self` entry. Only owner rows
  *  are mutable (§3); an audit-row id is rejected (view + redact only). Origin
  *  is never patchable — `update` cannot touch it. */
@@ -751,7 +817,8 @@ type MemoryRpcMethods =
   | 'memory.update'
   | 'memory.delete'
   | 'memory.import'
-  | 'memory.restore';
+  | 'memory.restore'
+  | 'memory.replace';
 
 export const makeMemoryRpcHandlers = (
   deps: MemoryRpcDeps | undefined,
@@ -760,7 +827,7 @@ export const makeMemoryRpcHandlers = (
   // Registered-client gate at every slice arrow (enforces the owner-only
   // boundary the no-contract-gate read/write relies on).
   return {
-    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import', 'memory.restore'],
+    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import', 'memory.restore', 'memory.replace'],
     handlers: {
       'memory.list': async (args, client) => {
         requireRegisteredClient(client);
@@ -789,6 +856,10 @@ export const makeMemoryRpcHandlers = (
       'memory.restore': async (args, client) => {
         requireRegisteredClient(client);
         return handleMemoryRestore(deps, args as MemoryRestoreRequest);
+      },
+      'memory.replace': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleMemoryReplace(deps, args as MemoryReplaceRequest);
       },
     },
   };

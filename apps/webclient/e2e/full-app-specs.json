@@ -12,6 +12,7 @@
   "reminder-editing.spec.ts",
   "mail-compose.spec.ts",
   "universal-search.spec.ts",
+  "asset-global-search.spec.ts",
   "universal-search-navigation.spec.ts",
   "automation.spec.ts",
   "one-off-reschedule.spec.ts",

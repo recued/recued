@@ -174,6 +174,7 @@ import { mailEvidenceMetadata } from './mail-evidence.js';
 import { mailboxAddressOf } from './mail-senders.js';
 import { resolveRecipeId } from './recipe-tool-name.js';
 import { createDocumentReadHandler } from './document-read-tool.js';
+import { createDocumentSearchHandler } from './document-search-tool.js';
 import type { MailAttachmentReader } from './mail-attachment-evidence.js';
 
 import type { ServerExecutorConfig } from './server-executor.js';
@@ -277,6 +278,7 @@ export interface ChatToolHandlerDeps {
   readMailBody?: (record: import('@recued/contracts').CollectionRecord) => Promise<string | null>;
   mailAttachments?: MailAttachmentReader;
   documentPacks?: InstalledPackScan;
+  getDocumentSearchIndex?: () => import('./storage/document-search-index.js').DocumentSearchIndex | undefined;
   /** D-259 § 7.4.3 — the live in-flight registry, for `recipe.stop`. Late-bound
    *  like the executor: `bin.ts` composes the handler table before the
    *  registry exists. Absent ⇒ `recipe.stop` reports the registry unavailable
@@ -3109,7 +3111,11 @@ const createMemoryWriteHandler =
           : `${owned.message}. Leave it as it is; if it looks wrong, tell the user`;
       }
       const current = await currentVersionOf(store, forgotten, target);
-      return current === target ? undefined
+      if (current === target) return undefined;
+      // D-198 §12 — the owner put their own version in its place. Pointing the agent
+      // at that entry would only earn a second refusal (`not_an_agent_entry`).
+      return (await store.getRow(current))?.origin_actor === 'user_self'
+        ? `the owner replaced '${target}' with their own version ('${current}'). Leave it as it is; if it looks wrong, tell the user`
         : `'${target}' was already replaced by '${current}'; pass '${current}' as replaces instead`;
     };
     // D-329 — a check makes the write's own checks, `replaces` included, and stops before
@@ -5579,6 +5585,7 @@ export const FENCED_EMPTY_CONTAINER: Readonly<Record<string, string>> = {
   'mail.search': 'matches',
   'mail.read': 'messages',
   'document.read': 'documents',
+  'document.search': 'matches',
   'calendar.search': 'matches',
   'file.search': 'files',
 };
@@ -5901,6 +5908,7 @@ export const buildChatTier1Handlers = (
   'mail.search': createMailSearchHandler(deps),
   'mail.read': createMailReadHandler(deps),
   'document.read': createDocumentReadHandler(deps),
+  'document.search': createDocumentSearchHandler(deps),
   'calendar.search': createCalendarSearchHandler(deps),
   'memory.search': createMemorySearchHandler(deps),
   'memory.write': createMemoryWriteHandler(deps),
@@ -5958,7 +5966,7 @@ const wrapSphereFence = (handlers: Record<string, Tier1Handler>, deps: ChatToolH
       try { before = signature(); }
       catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }
     }
-    if (['contact.search', 'contact.read', 'mail.search', 'mail.read', 'document.read', 'calendar.search', 'memory.search', 'enrichment.search', 'deal.search', 'account.search', 'file.search'].includes(tool)) {
+    if (['contact.search', 'contact.read', 'mail.search', 'mail.read', 'document.read', 'document.search', 'calendar.search', 'memory.search', 'enrichment.search', 'deal.search', 'account.search', 'file.search'].includes(tool)) {
       if (access) {
         try { if (createReadScope(access, ctx.execution_source).limited) return { ok: true, result: { refused: true, hint: SPHERE_READ_REFUSAL } }; }
         catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }
@@ -5982,7 +5990,9 @@ export const wrapEmptyResults = (
     tool,
     (async (raw, ctx) => {
       const out = await handler(raw, ctx);
-      return out.ok ? { ...out, result: withExplicitEmpty(tool, out.result) } : out;
+      // Content search owns its coverage and refusal wording. A generic empty
+      // sentence would turn unreadable/unindexed documents into a false negative.
+      return out.ok && tool !== 'document.search' ? { ...out, result: withExplicitEmpty(tool, out.result) } : out;
     }) satisfies Tier1Handler,
   ]));
 

@@ -140,8 +140,9 @@ describe('sources bound to an answer', () => {
     expect(afterWrite.prior_tool_calls[0]).toEqual(brief);
   });
 
-  it('keeps successful native reader targets, not peer, failed, held, search or body lookalikes', () => {
+  it('keeps verified native source targets, not peer, failed, held or body lookalikes', () => {
     expect(answerSourceCitations('self', [call('work.read'), call('document.read', [file])], [], '')).toEqual([file, asset]);
+    expect(answerSourceCitations('self', [call('document.search', [file])], [], '')).toEqual([file]);
     expect(answerSourceCitations('connection.mcp.peer', [call('work.read')], [], '')).toEqual([]);
     for (const calls of [[call('work.search')], [call('recipe.run')], [call('work.read', [file])],
       [call('work.read', [asset], { ok: false })], [call('work.read', [asset], { run_failed: { detail: 'failed' } })],

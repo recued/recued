@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "6bf42e822ed8b429c326665e16bbf882d96acb6d",
-    "tree": "9c9cab4e967f6620a31e2e6d05e62ec86dd7b6dd",
-    "committed_at": "2026-10-29T15:30:26-07:00"
+    "commit": "4194175215ff2416f2707d166a7cf4d87939d398",
+    "tree": "1782d41831456b95762afd87d437b0934965a9f6",
+    "committed_at": "2026-10-30T04:18:47-07:00"
   },
   "export_manifest_sha256": "5042b98747ef43dea4454f1af0e848210eb94705d38e8e38486f5f2fe9592579",
-  "version": "26.10.29",
+  "version": "26.10.30",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -1020,7 +1020,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 7964,
-    "sha256": "ee78cdacb781f3d8ee64e006258e571352b7d9fe882e61412b27bbfd540479f5"
+    "file_count": 8006,
+    "sha256": "7cf2dff039c5b3c66880b0585870d2a1d23637721d70797f0ca471f2ec2be187"
   }
 }

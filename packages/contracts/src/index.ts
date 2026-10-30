@@ -61,7 +61,7 @@ export type { RecipeSimulationInput, RecipeSimulationRequest, RecipeSimulationRe
 export * from './recipe-regression.js';
 export * from './recipe-release.js';
 export type { StepType, BaseStep, TransformStep, IngredientStep, GuardStep, CanonicalOpStep, RecipeStep, PrefetchStep, PrefetchOpStep, CacheFreshness, StepOptions, StepPages, StepMeta, StepFailureKind } from './steps.js';
-export { isPrefetchOpStep } from './steps.js';
+export { isPrefetchOpStep, CACHE_FRESHNESS_MODES } from './steps.js';
 
 // Connection-agnostic op dispatch — resolver I/O types + the op-step guard +
 // the registry-sourced canonical field-mapping helper (slice 2).
@@ -104,6 +104,7 @@ export type {
   UndeclaredConfigOrigin, UndeclaredConfigArgument, UndeclaredConfigArgumentDetails,
 } from './recipe.js';
 export { isRecordOutputSource } from './record-output-source.js';
+export { OUTPUT_SECTION_KEYS, FILTER_OUTPUT_SECTION_KEYS, RECORD_FIELDS_OUTPUT_SECTION_KEYS, TABLE_OUTPUT_SECTION_KEYS, TABLE_EDIT_KEYS, TABLE_SELECT_KEYS, TABLE_COLUMN_KEYS, TABLE_EDIT_ROW_MODES, outputSectionKeys, type OutputSectionKey } from './output-section-fields.js';
 export type { RecordOutputSource } from './record-output-source.js';
 export {
   ALLOW_UPGRADE_VARIABLE,
@@ -969,7 +970,7 @@ export {
   REGEN_TRIGGERS, REGEN_DETERMINISMS, REGEN_INPUT_INVARIANTS,
 } from './ingredient.js';
 export type { ValueHintType, ValueHint, RecipePageBinding } from './value-hint.js';
-export { VALUE_HINT_KEYS, isRecipePageBinding } from './value-hint.js';
+export { VALUE_HINT_KEYS, RECIPE_PAGE_BINDING_KEYS, isRecipePageBinding } from './value-hint.js';
 export {
   isListOfNumbers,
   isListSetting,
@@ -3437,7 +3438,7 @@ export {
   CalendarAdapterError,
 } from './calendar.js';
 export { CALENDAR_EVENT_EDIT_LIMITS } from './calendar-event-rpc.js';
-export type { CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarInvitationResponse } from './calendar-event-rpc.js';
+export type { CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarInvitationResponse, CalendarEventDestination, CalendarEventDestinations, CalendarEventCreateRequest, CalendarEventCreateResult } from './calendar-event-rpc.js';
 export type {
   CanonicalEvent,
   CalendarRecordHotFields,
@@ -5354,6 +5355,7 @@ export type {
   MemoryImportResult,
   MemoryRestoreRequest,
   MemoryRestoreResult,
+  MemoryReplaceRequest,
   CollectListPagesOptions,
   ListPage,
   ListPageFields,
@@ -6947,6 +6949,7 @@ export * from './searchable-score.js';
 export * from './saved-data-views.js';
 export * from './records-view.js';
 export * from './task-data-view.js';
+export * from './commitment-data-view.js';
 export * from './preapproval.js';
 export * from './operation-phrase.js';
 
@@ -7159,4 +7162,5 @@ export * from './csv-toolkit.js';
 
 export type { ContactSearchLocalRequest, ContactSearchLocalResponse } from './contact-search.js';
 export * from './csv-toolkit-authoring.js';
+export { typedKernelArguments, type KernelArgumentSchema } from './kernel-argument-schema.js';
 export * from './file-content-read.js';

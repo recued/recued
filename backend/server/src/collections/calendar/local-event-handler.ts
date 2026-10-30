@@ -66,17 +66,9 @@ export const getCalendarEvent = (deps: CalendarDispatcherDeps, input: CalendarEv
   };
 };
 
-export const updateCalendarEvent = async (
-  deps: CalendarDispatcherDeps, input: CalendarEventUpdateRequest,
-): Promise<CalendarEventSnapshot> => {
-  const ref = refOf(input);
-  const snapshot = getCalendarEvent(deps, ref);
-  if (!snapshot.editable) throw new RpcError('forbidden', snapshot.read_only_reason!, 403);
-  if (typeof input.expected_version !== 'string' || typeof input.expected_incarnation !== 'string'
-    || snapshot.resource_version !== input.expected_version || snapshot.incarnation !== input.expected_incarnation) {
-    throw new RpcError('resource_changed', 'This event changed since you opened it. Your draft has been kept. Reload the saved event before editing again.', 409);
-  }
-  const patch = input.patch;
+export const validateCalendarEventPatch = (
+  snapshot: CalendarEventSnapshot, patch: CalendarEventUpdateRequest['patch'],
+): CalendarEventUpdateRequest['patch'] => {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch) || Object.keys(patch).length === 0) {
     return invalid('Choose at least one event field to update.');
   }
@@ -99,6 +91,20 @@ export const updateCalendarEvent = async (
   if (snapshot.event.is_all_day && (start % DAY_MS !== 0 || end % DAY_MS !== 0)) {
     return invalid('All-day events must use whole calendar days.');
   }
+  return patch;
+};
+
+export const updateCalendarEvent = async (
+  deps: CalendarDispatcherDeps, input: CalendarEventUpdateRequest,
+): Promise<CalendarEventSnapshot> => {
+  const ref = refOf(input);
+  const snapshot = getCalendarEvent(deps, ref);
+  if (!snapshot.editable) throw new RpcError('forbidden', snapshot.read_only_reason!, 403);
+  if (typeof input.expected_version !== 'string' || typeof input.expected_incarnation !== 'string'
+    || snapshot.resource_version !== input.expected_version || snapshot.incarnation !== input.expected_incarnation) {
+    throw new RpcError('resource_changed', 'This event changed since you opened it. Your draft has been kept. Reload the saved event before editing again.', 409);
+  }
+  const patch = validateCalendarEventPatch(snapshot, input.patch);
   const dispatchInput = { ...ref, patch, scope: 'this_instance' as const };
   const resource = captureCalendarResource(deps, 'calendar-update', dispatchInput);
   // No await between snapshot and capture; the dispatcher revalidates this

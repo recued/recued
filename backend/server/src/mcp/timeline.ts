@@ -46,6 +46,7 @@ import {
   type TimelineRollup,
 } from '@recued/contracts';
 import type { AuditEntry, AuditLogStore } from '@recued/storage';
+import { forgottenIds, openMemoryRedactionStore } from '../memory-revision.js';
 import type { AnnotationStore } from '../storage/annotation-store.js';
 import type { EnrichmentStore } from '../storage/enrichment-store.js';
 import { contactAddressSet } from '../storage/contact-merge-graph.js';
@@ -269,11 +270,26 @@ interface LinkRow {
   origin_contract_id: string | null;
 }
 
+/** D-198 — a run the owner forgot, as the timeline keeps it: the skeleton the
+ *  Memory lens keeps (origin, kind, time, run id) and nothing the run said or
+ *  which recipe ran. An ALLOW-list, like the lens's `redactEntry`, so a field
+ *  added to memory entries later stays out of a forgotten one by default. */
+const forgottenMemoryEntry = (entry: TimelineEntry, run_id: string): TimelineEntry => ({
+  ts: entry.ts,
+  source: entry.source,
+  kind: entry.kind,
+  payload: { run_id, redacted: true },
+  ...(entry.origin_actor !== undefined ? { origin_actor: entry.origin_actor } : {}),
+  ...(entry.attribution !== undefined ? { attribution: entry.attribution } : {}),
+});
+
 /** Load memory entries for `entity_id` within the window. Each row
  *  is paired with its AuditEntry for payload + recipe_slug. Audit
  *  rows that have been pruned (retention, manual purge) yield a
  *  `audit_pruned: true` payload — the link is the proof the touch
- *  happened even if the audit body is gone. */
+ *  happened even if the audit body is gone. A run the owner forgot in
+ *  the Memory lens yields `redacted: true` and keeps only its skeleton
+ *  (`forgottenMemoryEntry`), in every channel. */
 const loadMemoryEntries = async (
   deps: TimelineDeps,
   qualifiedEntityId: string,
@@ -303,6 +319,9 @@ const loadMemoryEntries = async (
   params.push(fetchLimit);
   const rows = deps.db.prepare(sql).all(...params) as LinkRow[];
   if (rows.length === 0) return { entries: [], hadMore: false };
+  // D-198 — read off the handle the links query just ran on, not a store a
+  // composition hands in (see `openMemoryRedactionStore`).
+  const forgotten = await forgottenIds(openMemoryRedactionStore(deps.db));
 
   // De-duplicate audit lookups across multiple link rows pointing at
   // the same run_id. Common: a single recipe-run touches the same
@@ -398,7 +417,7 @@ const loadMemoryEntries = async (
       ...(memoryAttribution ? { attribution: memoryAttribution } : {}),
     };
     entries.push({
-      entry,
+      entry: forgotten.has(row.memory_id) ? forgottenMemoryEntry(entry, row.memory_id) : entry,
       // Multiple links can share (memory_id, kind) when the same
       // step touches the same entity twice with the same kind at
       // different timestamps — fold ts into rowId for uniqueness.

@@ -17,6 +17,7 @@
  *    'critical' — runtime-breaking, will be auto-rejected
  */
 
+import { outputVariableBindings } from './output-variable-bindings.js';
 import { declaresPiiHandling, NO_PII_DECLARATION_DETAIL } from './pii-declaration.js';
 import { aiStepDispatch } from './step-dispatch.js';
 
@@ -224,8 +225,9 @@ export const qualityPrecheck = (recipe: R): QualityFinding[] => {
       find('critical', 'undeclared_variable_ref', `{{config.${ref}}} referenced but not declared in variables`);
     }
   }
+  const usedVars = new Set([...configRefs, ...outputVariableBindings(recipe).map(binding => binding.name)]);
   for (const v of declaredVars) {
-    if (!configRefs.has(v)) {
+    if (!usedVars.has(v)) {
       find('review', 'unused_variable', `variable '${v}' declared but never referenced`);
     }
   }

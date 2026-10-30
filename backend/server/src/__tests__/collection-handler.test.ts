@@ -395,6 +395,8 @@ describe('makeCollectionHandlers', () => {
       'collection.calendar.enrollBasic',
       'collection.calendar.enrollManagedOAuth',
       'collection.calendar.enrollOAuth',
+      'collection.calendar.event.create',
+      'collection.calendar.event.destinations',
       'collection.calendar.event.get',
       'collection.calendar.event.respond',
       'collection.calendar.event.update',

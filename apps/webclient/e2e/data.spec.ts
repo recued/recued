@@ -6,6 +6,7 @@ import { handleContactGet, handleContactList, handleContactSearchLocal } from '.
 import { applyContactFileImport, planContactFileImport } from '../../../backend/server/src/contact-import-file.js';
 import type { ContactImportOccasionSelection, YoursCommand, YoursSnapshot } from '@recued/contracts';
 import { installProjectOverviewFixture } from './helpers/project-overview-fixture.js';
+import { installCommitmentWorkspaceFixture } from './helpers/commitment-workspace-fixture.js';
 import { expect, test, type Page } from '@playwright/test';
 import type { MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView, WorkEntity } from '@recued/contracts';
 import {
@@ -5444,4 +5445,133 @@ test('VCF import selects contact-linked dates, retains a failed review, and edit
     expect(history.occasions()[0]).toMatchObject({ source_next_on: '2030-06-01', people: [contact.contact_id] });
     expect(history.occasions()[0]?.rules[0]?.schedule).toEqual({ before: [{ amount: 1, unit: 'days' }], on_day: true });
   } finally { db.close(); }
+});
+
+test.describe('Commitment workspace', () => {
+  test.use({ locale: 'en-US', timezoneId: 'America/Los_Angeles' });
+  const listRows = (page: Page) => page.locator('.work-entity-list-view[data-kind="commitment"] .work-entity-list-row');
+  const selectView = async (page: Page, direction: string, status: string) => {
+    await page.getByRole('combobox', { name: 'Who owes', exact: true }).focus();
+    await page.getByRole('combobox', { name: 'Who owes', exact: true }).selectOption(direction);
+    await page.getByRole('combobox', { name: 'Commitment status', exact: true }).focus();
+    await page.getByRole('combobox', { name: 'Commitment status', exact: true }).selectOption(status);
+  };
+
+  test('Commitment workspace searches the complete set and restores saved direction and status filters', async ({ page }, testInfo) => {
+    const f = await installCommitmentWorkspaceFixture(page);
+    try {
+      await page.goto(`${HARNESS_URL}?data=contacts#data/commitment`);
+      await expect(listRows(page)).toHaveCount(100);
+      await expect(page.getByRole('button', { name: /Prepare École_100% release/ })).toHaveCount(0);
+      const search = page.getByRole('searchbox', { name: 'Search commitments', exact: true });
+      await search.fill('ÉCOLE_100%');
+      await expect(listRows(page)).toHaveCount(1);
+      await expect(listRows(page)).toContainText('Prepare École_100% release');
+      expect(f.reads.at(-1)?.search).toBe('ÉCOLE_100%');
+      await search.fill('');
+      await expect(listRows(page)).toHaveCount(100);
+      await selectView(page, 'inbound', 'overdue');
+      await expect(listRows(page)).toHaveCount(1);
+      await expect(listRows(page)).toContainText('Maya will send the signed agreement');
+      await expect(listRows(page)).toContainText('Maya Chen');
+      await expect(listRows(page)).toContainText('Due Oct 28, 2026');
+      await expect(page.getByRole('combobox', { name: 'Commitment status', exact: true })).toBeFocused();
+      await page.screenshot({ path: testInfo.outputPath('commitments-desktop.png'), fullPage: true });
+      const views = page.locator('[data-saved-data-views]');
+      await views.getByRole('button', { name: 'Save current view', exact: true }).click();
+      await views.getByLabel('View name', { exact: true }).fill('Waiting on Maya');
+      await views.getByRole('button', { name: 'Save view', exact: true }).click();
+      await expect(views.locator('[data-view-notice]')).toContainText('Saved “Waiting on Maya”');
+      await selectView(page, 'outbound', 'open');
+      await expect(listRows(page).filter({ hasText: 'Send Maya the revised proposal' })).toHaveCount(1);
+      await page.getByRole('link', { name: 'Saved views', exact: true }).click();
+      await page.getByRole('link', { name: /Waiting on Maya/ }).click();
+      await expect(page.getByRole('combobox', { name: 'Who owes', exact: true })).toHaveValue('inbound');
+      await expect(page.getByRole('combobox', { name: 'Commitment status', exact: true })).toHaveValue('overdue');
+      await expect(listRows(page)).toHaveCount(1);
+      expect(f.writes).toEqual([]);
+    } finally { f.close(); }
+  });
+
+  test('Commitment workspace reader preserves drafts, confirms deadline edits and closes only writable promises', async ({ page }, testInfo) => {
+    const f = await installCommitmentWorkspaceFixture(page);
+    try {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(`${HARNESS_URL}?data=contacts#data/commitment`);
+      await listRows(page).filter({ hasText: 'Send Maya the revised proposal' }).getByRole('button').click();
+      const reader = page.locator('.work-entity-commitment-reader'), editor = page.locator('.work-entity-dialog[data-mode="edit"]');
+      await expect(reader).toContainText('Maya Chen');
+      await expect(reader).toContainText('Oct 28, 2026');
+      await page.screenshot({ path: testInfo.outputPath('commitments-mobile.png'), fullPage: true });
+      await reader.getByRole('button', { name: 'Edit', exact: true }).click();
+      await editor.locator('[data-form-field="statement"]').fill('Unfinished promise edit');
+      await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(page.getByRole('alertdialog')).toBeVisible();
+      await page.getByRole('button', { name: 'Keep editing', exact: true }).click();
+      await expect(editor.locator('[data-form-field="statement"]')).toHaveValue('Unfinished promise edit');
+      await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
+      await expect(reader).toContainText('Send Maya the revised proposal');
+      expect(f.writes).toEqual([]);
+      await reader.getByRole('button', { name: 'Edit', exact: true }).click();
+      await editor.locator('[data-form-field="promised_for_at"]').fill('2026-11-02T14:30');
+      await editor.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(reader).toContainText('Commitment saved.');
+      expect(f.store.readCommitment('maya-outbound')?.promised_for_at).toBe(Date.parse('2026-11-02T14:30:00-08:00'));
+      await reader.getByRole('button', { name: 'Edit', exact: true }).click();
+      await editor.locator('[data-form-field="promised_for_at"]').fill('');
+      await editor.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(reader).toContainText('No deadline');
+      expect(f.store.readCommitment('maya-outbound')?.promised_for_at).toBeUndefined();
+      await reader.getByRole('button', { name: 'Back to commitments', exact: true }).click();
+      await selectView(page, 'outbound', 'open');
+      await page.getByRole('searchbox', { name: 'Search commitments', exact: true }).fill('revised proposal');
+      await listRows(page).filter({ hasText: 'Send Maya the revised proposal' }).getByRole('button').click();
+      await reader.getByRole('button', { name: 'Mark fulfilled', exact: true }).click();
+      await expect(reader.locator('[data-commitment-status]')).toHaveText('Fulfilled');
+      await expect(reader.locator('[data-commitment-status]')).toBeFocused();
+      expect(f.writes.filter(row => row.method === 'work_entity.commitment.fulfill')).toHaveLength(1);
+      await reader.getByRole('button', { name: 'Back to commitments', exact: true }).click();
+      await expect(listRows(page).filter({ hasText: 'Send Maya the revised proposal' })).toHaveCount(0);
+      await expect(page.getByRole('combobox', { name: 'Commitment status', exact: true })).toHaveValue('open');
+      await page.getByRole('searchbox', { name: 'Search commitments', exact: true }).fill('');
+      await selectView(page, 'inbound', 'all');
+      await listRows(page).filter({ hasText: 'Imported promise' }).getByRole('button').click();
+      await expect(reader).toContainText('This promise is read-only here.');
+      await expect(reader.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+      await expect(reader.getByRole('button', { name: 'Mark fulfilled', exact: true })).toHaveCount(0);
+      await expect(reader.getByRole('button', { name: 'Cancel commitment', exact: true })).toHaveCount(0);
+      expect(f.writes).toHaveLength(3);
+    } finally { f.close(); }
+  });
+
+  test('Commitment workspace admits cancellation of strict expired promises and blocks pending changes', async ({ page }) => {
+    const f = await installCommitmentWorkspaceFixture(page);
+    try {
+      f.store.stagePendingWrite('commitment', 'maya-outbound', { staged_at: Date.now(), operation: 'update', dirty_fields: ['statement'], state: 'awaiting_verify' });
+      f.store.writeCommitment({ ...f.store.readCommitment('maya-inbound')!, lifecycle_state: 'expired', expiry_policy: 'strict_expire' });
+      await page.goto(`${HARNESS_URL}?data=contacts#data/commitment`);
+      await listRows(page).filter({ hasText: 'Send Maya the revised proposal' }).getByRole('button').click();
+      const reader = page.locator('.work-entity-commitment-reader');
+      await expect(reader).toContainText('A change is waiting for source confirmation.');
+      await expect(reader.getByRole('button', { name: 'Mark fulfilled', exact: true })).toHaveCount(0);
+      await expect(reader.getByRole('button', { name: 'Cancel commitment', exact: true })).toHaveCount(0);
+      await expect(reader.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+      expect(f.writes).toEqual([]);
+      await reader.getByRole('button', { name: 'Back to commitments', exact: true }).click();
+      await selectView(page, 'inbound', 'closed');
+      await listRows(page).filter({ hasText: 'Maya will send the signed agreement' }).getByRole('button').click();
+      await expect(reader.locator('[data-commitment-status]')).toHaveText('Expired');
+      await expect(reader.getByRole('button', { name: 'Mark fulfilled', exact: true })).toHaveCount(0);
+      await reader.getByRole('button', { name: 'Edit', exact: true }).click();
+      const editor = page.locator('.work-entity-dialog[data-mode="edit"]');
+      await expect(editor.getByRole('button', { name: 'Mark fulfilled', exact: true })).toHaveCount(0);
+      await expect(editor.getByRole('button', { name: 'Cancel commitment', exact: true })).toBeVisible();
+      await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await reader.getByRole('button', { name: 'Cancel commitment', exact: true }).click();
+      await expect(reader.locator('[data-commitment-status]')).toHaveText('Cancelled');
+      expect(f.writes).toEqual([{ method: 'work_entity.commitment.cancel', args: { id: 'maya-inbound' } }]);
+      expect(f.store.readCommitment('maya-inbound')?.lifecycle_state).toBe('cancelled');
+    } finally { f.close(); }
+  });
 });

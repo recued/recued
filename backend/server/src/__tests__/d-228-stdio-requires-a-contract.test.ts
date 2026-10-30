@@ -109,6 +109,9 @@ describe('D-228 slice 6 — DISPATCH denies without a checklist', () => {
     // way to present a token before slice 1, so a bare "denied" is a dead end.
     expect(res.content[0]?.text).toContain('presented no MCP token');
     expect(res.content[0]?.text).toContain('RECUED_MCP_TOKEN');
+    // An app that loads Recued as a plugin cannot pass a key at all; the owner
+    // saves one for it instead (`mcp-app-keys.ts`).
+    expect(res.content[0]?.text).toContain('recued mcp-key set');
   });
 
   /** ⚠ THE PERMITTING WITNESS — the dispatch path must still WORK. */

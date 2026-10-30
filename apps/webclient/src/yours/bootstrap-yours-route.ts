@@ -31,6 +31,8 @@ import { proposalPreview, reminderTimingWords } from './proposal-preview.js';
 import { episodeDateWords, yoursCalendarDate, yoursDateTime } from './yours-dates.js';
 import { mountCountryChoice } from './country-choice.js';
 import { renderAssetComparisons } from './asset-comparisons.js';
+import { ASSET_STATUS_WORDS } from './asset-status.js';
+import { readSearchAssetReturn } from '../shell/search-asset-return.js';
 
 const TABS = ['assets', 'proposals', 'occurrences', 'occasions', 'episodes'] as const;
 type Tab = typeof TABS[number];
@@ -86,7 +88,6 @@ type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; corr
   | { type: 'episode'; episode?: EpisodeInput; correction?: ProactiveProposal };
 type EditorReturnFocus = { key: string; asset_id: string; scope?: string; menu?: string };
 const scheduleText = (rule: AssetRule) => rule.schedule.before.map(ruleOffsetWords).join(', ');
-const ASSET_STATUS_WORDS: Record<Asset['status'], string> = { active: 'Active', lent: 'Lent', sold: 'Sold', lost: 'Lost', retired: 'Retired' };
 const newClassId = () => `owner_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
 /** §4.7 — the ladder an episode stands on (its `basis`), in the owner's words. */
 const EPISODE_BASIS_WORDS: Record<EpisodeInput['basis'], string> = { declared: 'your record', derived: 'planned, and shown to have happened', inferred: 'pieced together from traces' };
@@ -1004,7 +1005,10 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const masthead = el('header', undefined, root); masthead.className = 'yours-masthead';
     const introduction = el('div', undefined, masthead); const heading = el('h1', 'Yours', introduction); heading.tabIndex = -1; heading.dataset.yoursHeading = '';
     if (selected) { introduction.className = 'yours-breadcrumb';
-      const back = link(introduction, 'Assets', readListContinuity<string>(doc, continuityKey)?.filter ?? '#yours/assets'); back.setAttribute('aria-label', 'Back to assets'); }
+      const search = readSearchAssetReturn(doc, continuityOwner);
+      const fromSearch = search?.assetId === selected;
+      const back = link(introduction, fromSearch ? 'Back to search' : 'Assets', fromSearch ? search.returnHash : readListContinuity<string>(doc, continuityKey)?.filter ?? '#yours/assets');
+      back.setAttribute('aria-label', fromSearch ? 'Back to search' : 'Back to assets'); }
     const restoreInteraction = () => {
       const menus = new Map([...root.querySelectorAll<HTMLDetailsElement>('[data-yours-menu]')].map(menu => [menu.dataset.yoursMenu!, menu]));
       for (const key of openMenus) { const menu = menus.get(key); if (menu) menu.open = true; }

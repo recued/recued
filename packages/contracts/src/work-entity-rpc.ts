@@ -44,6 +44,7 @@ import type {
 import type { WorkEntitySourceFreshness } from './work-entity-sources.js';
 import type { WorkEntityEdgeView } from './work-entity-edges.js';
 import type { TaskListFilter } from './task-data-view.js';
+import type { CommitmentViewFilters } from './commitment-data-view.js';
 
 export const WORK_ENTITY_SEARCH_KINDS = ['task', 'note', 'project', 'commitment'] as const;
 export type WorkEntitySearchKind = typeof WORK_ENTITY_SEARCH_KINDS[number];
@@ -118,15 +119,18 @@ export interface WorkEntityListRpcRequest {
   include_deleted?: boolean;
   limit?: number;
   offset?: number;
-  /** Task/booking search across the complete result set, before pagination. */
+  /** Task/booking/commitment search across the complete result set, before pagination. */
   search?: string;
   /** Task-only completion, resolved date window, and ordering. */
   task_filter?: TaskListFilter;
+  commitment_filter?: CommitmentViewFilters;
   /** Booking-only business lifecycle filter. */
   booking_lifecycle_states?: readonly BookingLifecycleState[];
 }
 
 export interface WorkEntityListRpcResponse {
+  /** Owner display only, keyed by the stored counterparty id and forward-resolved after contact merges. */
+  counterparty_labels?: Record<string, string>;
   /** Tagged records (`_kind` discriminator on each) so the caller can
    *  render a mixed list without re-deriving the kind. */
   entities: WorkEntity[];
@@ -151,6 +155,7 @@ export interface WorkEntityGetRpcRequest {
 }
 
 export interface WorkEntityGetRpcResponse {
+  counterparty_labels?: Record<string, string>;
   entity: WorkEntity | null;
   /** D-192 read resolution — the entity's own Source freshness (absent
    *  when `entity` is null or the sync substrate isn't wired). A

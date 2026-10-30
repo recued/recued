@@ -25,6 +25,7 @@ import {
   type WorkEntityListViewProps,
 } from '@recued/contracts';
 import { e, timeAgo } from '../template.js';
+import { commitmentCounterpartyLabel, commitmentDeadlineLabel, commitmentDirectionLabel, commitmentStatusLabel } from './commitment-reader.js';
 
 /** YYYY-MM-DD — locale-stable for list rendering.
  *
@@ -107,13 +108,14 @@ const rowTextForNote = (entity: WorkEntity & { _kind: 'note' }): RowText => ({
 
 const rowTextForCommitment = (
   entity: WorkEntity & { _kind: 'commitment' },
+  counterpartyLabel?: string,
 ): RowText => ({
   primary: entity.statement,
-  secondary: undefined,
+  secondary: entity.counterparty_contact_id ? counterpartyLabel ?? 'Contact unavailable' : undefined,
   meta: [
-    `${entity.direction}`,
-    `${entity.lifecycle_state}`,
-    entity.due_status !== 'no_deadline' ? `${entity.due_status}` : '',
+    commitmentDirectionLabel(entity.direction),
+    commitmentStatusLabel(entity),
+    entity.promised_for_at === undefined ? 'No deadline' : `Due ${commitmentDeadlineLabel(entity)}`,
     entity.monetary_value !== undefined
       ? `${entity.monetary_value.amount} ${entity.monetary_value.currency}`
       : '',
@@ -168,7 +170,7 @@ const rowTextForBooking = (
 });
 
 /** Per-kind row-text projection. */
-export const projectRowText = (entity: WorkEntity): RowText => {
+export const projectRowText = (entity: WorkEntity, counterpartyLabel?: string): RowText => {
   switch (entity._kind) {
     case 'asset': return { primary: entity.name, secondary: entity.class_id ?? '', meta: entity.status };
     case 'task':
@@ -176,7 +178,7 @@ export const projectRowText = (entity: WorkEntity): RowText => {
     case 'note':
       return rowTextForNote(entity);
     case 'commitment':
-      return rowTextForCommitment(entity);
+      return rowTextForCommitment(entity, counterpartyLabel);
     case 'project':
       return rowTextForProject(entity);
     case 'booking':
@@ -200,17 +202,20 @@ export const renderWorkEntityListView = (
     props.booking_lifecycle_filter ?? 'all',
   );
   const filters = props.kind === 'task' && props.task_filters !== undefined
-    ? renderTaskFilters(props.task_filters) : '';
+    ? renderTaskFilters(props.task_filters) : props.kind === 'commitment' && props.commitment_filters
+      ? renderCommitmentFilters(props.commitment_filters) : '';
   const body =
     props.rows.length === 0
       ? renderEmptyState(props.kind,
           props.task_filters !== undefined && (props.task_filters.completion !== 'all' || props.task_filters.due !== 'all')
-            ? 'No tasks match these filters.' : props.empty_state_copy, props.search_query)
+            ? 'No tasks match these filters.' : props.commitment_filters && (props.commitment_filters.direction !== 'all' || props.commitment_filters.status !== 'all')
+              ? 'No commitments match these filters.' : props.empty_state_copy, props.search_query)
       : renderRows(
           props.rows,
           props.show_source_label,
           props.opening_entity_id,
           props.task_selection,
+          props.counterparty_labels,
         );
   return `
     <div class="work-entity-list-view" data-kind="${e(props.kind)}">
@@ -236,7 +241,7 @@ const renderSearchInput = (
         placeholder="Search ${e(kind)}s"
         value="${e(search_query)}"
         aria-label="Search ${e(kind)}s"
-        ${kind === 'task' ? 'maxlength="2000"' : ''}
+        ${kind === 'task' || kind === 'commitment' ? 'maxlength="2000"' : ''}
       />
       ${kind === 'booking' ? `
         <label class="work-entity-list-filter-label">
@@ -271,11 +276,20 @@ const renderTaskFilters = (filters: NonNullable<WorkEntityListViewProps['task_fi
   </div>${filters.due === 'all' ? '' : '<p class="work-entity-list-date-hint">Dates use your local time. Next seven days includes today; overdue shows unfinished tasks.</p>'}`;
 };
 
+const renderCommitmentFilters = (filters: NonNullable<WorkEntityListViewProps['commitment_filters']>): string => {
+  const select = (field: 'direction' | 'status', label: string, options: readonly (readonly [string, string])[]) => `<label class="work-entity-list-filter-label">${label}
+    <select class="work-entity-list-filter" data-action="filter-commitment-${field}" aria-label="${label}">${options.map(([value, text]) => `<option value="${value}"${filters[field] === value ? ' selected' : ''}>${text}</option>`).join('')}</select></label>`;
+  return `<div class="work-entity-list-search work-entity-commitment-filters" role="group" aria-label="Commitment filters">
+    ${select('direction', 'Who owes', [['all', 'All commitments'], ['outbound', 'I owe'], ['inbound', 'Waiting for others'], ['internal', 'For myself']])}
+    ${select('status', 'Commitment status', [['all', 'All statuses'], ['open', 'Open'], ['overdue', 'Overdue'], ['closed', 'Closed']])}</div>`;
+};
+
 const renderRows = (
   rows: readonly WorkEntityListRow[],
   show_source_label: boolean,
   opening_entity_id: string | undefined,
   selection?: TaskListSelection,
+  counterpartyLabels?: Readonly<Record<string, string>>,
 ): string => {
   const items = rows
     .map((row) => renderRow(
@@ -283,6 +297,7 @@ const renderRows = (
       show_source_label,
       row.entity.id === opening_entity_id,
       selection,
+      row.entity._kind === 'commitment' ? commitmentCounterpartyLabel(row.entity, counterpartyLabels) : undefined,
     ))
     .join('');
   return `<ul class="work-entity-list" role="list">${items}</ul>`;
@@ -357,8 +372,9 @@ const renderRow = (
   show_source_label: boolean,
   opening: boolean,
   selection?: TaskListSelection,
+  counterpartyLabel?: string,
 ): string => {
-  const text = projectRowText(row.entity);
+  const text = projectRowText(row.entity, counterpartyLabel);
   const sourceLabel = show_source_label
     ? `<span class="work-entity-list-row-source" data-source-id="${e(row.source.id)}">${e(row.source.label)}</span>`
     : '';

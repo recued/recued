@@ -1,3 +1,7 @@
+import { DEFAULT_COMMITMENT_VIEW_FILTERS, parseCommitmentViewFilters, type CommitmentViewFilters } from '@recued/contracts';
+import { commitmentCounterpartyLabel, type WorkEntityCommitmentView } from '@recued/ui-shared/work-entity-page';
+import { createAssetSearch, type AssetSearchCaller } from './asset-search.js';
+import { readSearchAssetReturn, saveSearchAssetReturn } from '../shell/search-asset-return.js';
 import { mountSpherePlacement, type SpherePlacementCallers } from '../yours/sphere-placement.js';
 import { isContactAnnualDate, isDateOnlyDue } from '@recued/contracts';
 import { recordsRecordAddress,type RecordsRecordAddress } from './records-navigation.js';
@@ -70,6 +74,7 @@ import type {
   MemoryImportResult,
   MemoryListEntry,
   MemoryListRequest,
+  MemoryReplaceRequest,
   MemoryRestoreRequest,
   MemoryRestoreResult,
   MemoryListResponse,
@@ -265,6 +270,7 @@ import {
   MEMORY_DELETE_ACTION,
   MEMORY_DELETE_CANCEL_ACTION,
   MEMORY_DELETE_CONFIRM_ACTION,
+  MEMORY_REPLACE_ACTION,
   MEMORY_RESTORE_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
   MEMORY_DETAIL_HEADING_ATTR,
@@ -286,6 +292,7 @@ import {
   MEMORY_OPEN_ACTION,
   MEMORY_OPEN_RUN_ACTION,
   MEMORY_ROW_ID_ATTR,
+  isReplaceableEntry,
   memoryFilterActors,
   renderLensSwitcher,
   renderMemoryLens,
@@ -309,7 +316,8 @@ import {
   COLLECTION_RETRY_ATTR,
   type CollectionExplorerDetailState,
 } from './collection-explorer.js';
-import { createCalendarAgenda, CALENDAR_AGENDA_STYLES, AGENDA_FOCUS, AGENDA_SOURCE } from './calendar-agenda.js';
+import { createCalendarAgenda, calendarDateIn, CALENDAR_AGENDA_STYLES, AGENDA_FOCUS, AGENDA_SOURCE } from './calendar-agenda.js';
+import { createCalendarCreateSurface, CALENDAR_CREATE_STYLES, type CalendarCreateCallers } from './calendar-create-surface.js';
 import { REMINDER_CREATE_STYLES } from '../reminders/reminder-create-form.js';
 import { createTaskBulkActions, TASK_BULK_FOCUS, TASK_BULK_STYLES, type TaskBulkActions } from './task-bulk-actions.js';
 import type { PackInstalledListCaller, RosterPack } from '../discover/pack-discovery.js';
@@ -331,6 +339,7 @@ import {
   SEARCH_MORE_WORK_ACTION,
   SEARCH_WORK_KIND_ATTR,
   SEARCH_WORK_ID_ATTR,
+  SEARCH_OPEN_ASSET_ACTION, SEARCH_MORE_ASSETS_ACTION, SEARCH_ASSET_ID_ATTR,
   SEARCH_OPEN_CONTACT_ACTION,
   SEARCH_MORE_CONTACTS_ACTION,
   SEARCH_CONTACT_EMAIL_ATTR,
@@ -832,6 +841,9 @@ export type DataMemoryImportCaller = (args: MemoryImportRequest) => Promise<Memo
 /** D-198 §10 — the owner undoes an AGENT's forget (`memory.restore`). Absent →
  *  no Restore on agent-forgotten rows. */
 export type DataMemoryRestoreCaller = (args: MemoryRestoreRequest) => Promise<MemoryRestoreResult>;
+/** D-198 §12 — the owner replaces an agent's entry with their own version
+ *  (`memory.replace`). Absent → Replace reports that saving is unavailable. */
+export type DataMemoryReplaceCaller = (args: MemoryReplaceRequest) => Promise<MemoryMutationResult>;
 
 /** D-198 Slice 5 — the generic collection-explorer reads (schema-driven
  *  list→detail over the adapter-backed collections). All three present → the
@@ -946,6 +958,8 @@ export interface BootstrapDataRouteOptions {
   workEntitySourceListCaller?: WorkEntitySourceListCaller;
   workEntityListCaller?: DataWorkEntityListCaller;
   workEntitySearchCaller?: DataWorkEntitySearchCaller;
+  assetSearchCaller?: AssetSearchCaller;
+  searchContinuityOwner?: object;
   projectItemsCaller?: ProjectItemsCaller;
   workEntityGetCaller?: DataWorkEntityGetCaller;
   onOwnerRecordOpened?: (ref: import('@recued/contracts').SituationRef) => void;
@@ -1002,6 +1016,7 @@ export interface BootstrapDataRouteOptions {
    *  absent caller hides what needs it. */
   reminderCallers?: ReminderCallers;
   calendarEventCallers?: CalendarEventCallers;
+  calendarCreateCallers?: CalendarCreateCallers;
   mailMessageCallers?: MailMessageCallers;
   mailCompose?: import('../mail/mail-compose-host.js').MailComposeDeps;
   /** Owner-only installed recipe discovery + manual execution for explicitly
@@ -1031,6 +1046,8 @@ export interface BootstrapDataRouteOptions {
   memoryImportCaller?: DataMemoryImportCaller;
   /** D-198 §10 — `memory.restore`, for the Restore on an agent-forgotten row. */
   memoryRestoreCaller?: DataMemoryRestoreCaller;
+  /** D-198 §12 — `memory.replace`, for the Replace on an agent's note. */
+  memoryReplaceCaller?: DataMemoryReplaceCaller;
   /** D-198 Slice 5 — the collection explorer reads. All three present → the
    *  mail / calendar tabs browse list→detail (from the raw-id drill-down);
    *  absent → the tab shows a not-wired notice. */
@@ -5062,6 +5079,8 @@ const renderWorkEntitySurface = (
   openingEntityId: string | null,
   bookingLifecycleFilter: BookingLifecycleState | 'all',
   taskViewFilters: TaskViewFilters,
+  commitmentViewFilters: CommitmentViewFilters,
+  commitmentContactLabels: Readonly<Record<string, string>>,
   bookingDetailId: string | null,
   bookingDetail: WorkEntityGetRpcResponse | null,
   bookingDetailError: string | null,
@@ -5076,11 +5095,12 @@ const renderWorkEntitySurface = (
    *  section is then omitted rather than asserting an empty past. */
   historyHtml: string,
   taskCompletion?: { done: boolean; can_change: boolean; busy?: boolean; notice?: string },
-  commitmentLifecycle?: { state: string; can_change: boolean },
+  commitmentLifecycle?: { state: string; can_change: boolean; can_fulfill?: boolean; can_cancel?: boolean },
   loadedCount?: number,
   taskDetailsOpen = false,
   noteDetailsOpen = false,
   noteView?: WorkEntityNoteView,
+  commitmentView?: WorkEntityCommitmentView,
   closeLabel?: string,
   projectView?: ProjectOverviewProps,
   taskBulk?: { html: string; selection: ReturnType<TaskBulkActions['selection']> },
@@ -5148,7 +5168,7 @@ const renderWorkEntitySurface = (
   // the generic client title/body predicate a second time: the server also
   // searches booking id and opaque customer id, and a second narrower filter
   // would hide valid matches it just returned.
-  const visible = state.kind === 'task' ? entities : filterAndSortEntities(
+  const visible = state.kind === 'task' || state.kind === 'commitment' ? entities : filterAndSortEntities(
     state.kind,
     entities,
     state.kind === 'booking' ? '' : state.search_query,
@@ -5182,6 +5202,7 @@ const renderWorkEntitySurface = (
     // wires them after each render via `mountWorkEntityRefPickers`.
     ref_picker: true,
     ...(state.kind === 'task' ? { task_filters: taskViewFilters } : {}),
+    ...(state.kind === 'commitment' ? { commitment_filters: commitmentViewFilters, counterparty_labels: commitmentContactLabels } : {}),
     ...(taskBulk ? { task_selection: taskBulk.selection, list_toolbar_html: taskBulk.html } : {}),
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: bookingLifecycleFilter }
@@ -5193,6 +5214,7 @@ const renderWorkEntitySurface = (
     task_details_open: taskDetailsOpen,
     note_details_open: noteDetailsOpen,
     ...(noteView ? { note_view: noteView } : {}),
+    ...(commitmentView ? { commitment_view: commitmentView } : {}),
     ...(closeLabel ? { close_label: closeLabel } : {}),
     ...(taskCompletion !== undefined ? { task_completion: taskCompletion } : {}),
     ...(commitmentLifecycle !== undefined ? { commitment_lifecycle: commitmentLifecycle } : {}),
@@ -5309,6 +5331,7 @@ export const bootstrapDataRoute = (
       // D-198 Slice 5 — the mail / calendar / files collection explorer.
       COLLECTION_EXPLORER_STYLES,
       CALENDAR_AGENDA_STYLES,
+      CALENDAR_CREATE_STYLES,
       REMINDER_CREATE_STYLES,
       // 2026-08-28 — universal search across every collection.
       UNIVERSAL_SEARCH_STYLES,
@@ -5433,6 +5456,21 @@ export const bootstrapDataRoute = (
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
   });
+  const calendarCreateSurface = createCalendarCreateSurface({
+    callers: opts.calendarCreateCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
+    ...(opts.now ? { now: opts.now } : {}),
+    context: () => ({ day: calendarAgenda.snapshot().window.day, zone: calendarAgenda.snapshot().zone,
+      preferredSlug: calendarAgenda.selectedSource() }),
+    render: () => render(),
+    onCreated: ({ slug, snapshot }) => {
+      const day = snapshot.event.is_all_day ? new Date(snapshot.event.start_at).toISOString().slice(0, 10)
+        : calendarDateIn(snapshot.event.start_at, calendarAgenda.snapshot().zone);
+      calendarAgenda.showDay(day, slug);
+      explorerCollection = 'calendar'; explorerSelectedSlug = slug; explorerRecords = [snapshot.record];
+      calendarAgendaReturn = { key: 'date', scrollTop: 0, hash: dataHistory.current().hash, sourcesOpen: false };
+      void openExplorerRecord(snapshot.record.record_id);
+    },
+  });
   const calendarAgenda = createCalendarAgenda({
     ...(opts.collectionListInstancesCaller ? { listInstances: opts.collectionListInstancesCaller } : {}),
     ...(opts.collectionListCaller ? { list: opts.collectionListCaller } : {}),
@@ -5443,6 +5481,9 @@ export const bootstrapDataRoute = (
     render: () => { if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null) render(); },
     onSources: (sources) => { explorerInstances = sources; },
     onViewChange: () => { syncDataHash(); opts.onViewChange?.(currentView()); },
+    newEventButton: () => calendarCreateSurface.available() && !calendarCreateSurface.isOpen()
+      ? `<button type="button" class="data-button data-button--primary" ${DATA_ROUTE_ACTION_ATTR}="calendar-create-new" data-calendar-create-focus="new">New event</button>` : '',
+    createForm: () => calendarCreateSurface.render(),
   });
   let calendarInitialAddress = activeTab === 'calendar' && typeof opts.initialEntityId === 'string';
   let calendarAgendaReturn: { key: string; scrollTop: number; hash: string; sourcesOpen: boolean } | null = null;
@@ -5575,6 +5616,10 @@ export const bootstrapDataRoute = (
   let projectEditing = false;
   let projectChildReturn: { kind: 'task' | 'note'; id?: string; scrollTop: number; page: WorkEntityPageState; entities: WorkEntity[]; total: number } | null = null;
   let pendingProjectRestore: { key: string; scrollTop: number } | null = null;
+  let commitmentMode: 'read' | 'edit' = 'read';
+  let commitmentNotice: string | undefined;
+  let commitmentDiscardToReader = false;
+  let commitmentContactLabels: Record<string, string> = {};
   let noteMode: 'read' | 'edit' = 'read';
   let noteDetailsOpen = false;
   let noteCopying = false;
@@ -5591,6 +5636,10 @@ export const bootstrapDataRoute = (
     && 'booking_lifecycle' in opts.savedView.definition ? opts.savedView.definition.booking_lifecycle : 'all';
   let taskViewFilters: TaskViewFilters = opts.savedView?.definition.tab === 'task'
     ? opts.savedView.definition.task_filters ?? DEFAULT_TASK_VIEW_FILTERS : DEFAULT_TASK_VIEW_FILTERS;
+  let commitmentViewFilters: CommitmentViewFilters = opts.savedView?.definition.tab === 'commitment'
+    ? opts.savedView.definition.commitment_filters ?? DEFAULT_COMMITMENT_VIEW_FILTERS : DEFAULT_COMMITMENT_VIEW_FILTERS;
+  let commitmentListFilter = { ...commitmentViewFilters };
+  let commitmentListSearch = workEntityState.kind === 'commitment' ? workEntityState.search_query.trim() : '';
   let taskListFilter = resolveTaskListFilter(taskViewFilters, (opts.now ?? Date.now)());
   let taskListSearch = workEntityState.kind === 'task' ? workEntityState.search_query.trim() : '';
   const retireTaskListReads = (): void => {
@@ -5904,6 +5953,57 @@ export const bootstrapDataRoute = (
   /** Guards against an out-of-order response overwriting a newer one. */
   let universalSearchSeq = 0;
   let universalSearchMarketSeq = 0;
+  const searchContinuityOwner = opts.searchContinuityOwner ?? opts.root;
+  let pendingAssetSearchRestore: { id: string; scrollTop: number; reveal?: boolean } | null = null;
+  let assetSearchIds = new Set<string>();
+  const assetSearch = createAssetSearch(opts.assetSearchCaller, () => {
+    const state = assetSearch.state();
+    if (!state.loading && !state.error && doc.activeElement?.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_MORE_ASSETS_ACTION) {
+      const next = state.matches.find(row => !assetSearchIds.has(row.id));
+      if (next) pendingAssetSearchRestore = { id: next.id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, reveal: true };
+    }
+    assetSearchIds = new Set(state.matches.map(row => row.id));
+    if (activeLens === 'data' && activeTab === 'search') render();
+  });
+  const captureSearchState = () => ({
+    universalSearchQuery, universalSearchGroups, universalSearchWorkGroups,
+    universalSearchContacts, universalSearchContactTotal, universalSearchContactOffset,
+    universalSearchContactMore, universalSearchContactError, universalSearchContactUnsupported,
+    universalSearchWorkError, universalSearchWorkUnsupported,
+    universalSearchDidYouMean, universalSearchAbsentWords, universalSearchCapabilitiesError,
+    universalSearchError, universalSearchRecipes, universalSearchPacks,
+    universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery,
+    assets: assetSearch.snapshot(),
+    pending: { records: universalSearchLoading || universalSearchGroups === undefined && !universalSearchError,
+      work: universalSearchWorkLoading || universalSearchWorkGroups === undefined && !universalSearchWorkError && !universalSearchWorkUnsupported,
+      contacts: universalSearchContactLoading && universalSearchContacts.length === 0,
+      capabilities: universalSearchCapabilitiesLoading },
+  });
+  type SearchResume = ReturnType<typeof captureSearchState>;
+  let initialSearchResume: SearchResume['pending'] | undefined;
+  const savedAssetSearch = readSearchAssetReturn<SearchResume>(doc, searchContinuityOwner);
+  if (savedAssetSearch && activeTab === 'search' && savedAssetSearch.returnHash === doc.defaultView?.location.hash) {
+    ({ universalSearchQuery, universalSearchGroups, universalSearchWorkGroups,
+      universalSearchContacts, universalSearchContactTotal, universalSearchContactOffset,
+      universalSearchContactMore, universalSearchContactError, universalSearchContactUnsupported,
+      universalSearchWorkError, universalSearchWorkUnsupported,
+      universalSearchDidYouMean, universalSearchAbsentWords, universalSearchCapabilitiesError,
+      universalSearchError, universalSearchRecipes, universalSearchPacks,
+      universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery } = savedAssetSearch.state);
+    assetSearch.restore(savedAssetSearch.state.assets);
+    assetSearchIds = new Set(assetSearch.state().matches.map(row => row.id));
+    initialSearchResume = savedAssetSearch.state.pending;
+    pendingUniversalSearchFocus = false;
+    // The saved-view wrapper adds its tools after the child mounts. Restore
+    // after that synchronous layout, before any user event, so scroll anchoring
+    // cannot add the tools' height to the retained position.
+    queueMicrotask(() => {
+      if (disposed || activeTab !== 'search') return;
+      pendingAssetSearchRestore = { id: savedAssetSearch.assetId, scrollTop: savedAssetSearch.scroll.top };
+      render();
+    });
+    for (const group of universalSearchWorkGroups ?? []) universalSearchWorkOffsets.set(group.kind, group.offset + group.matches.length);
+  }
 
   let explorerRecords: CollectionRecord[] = [];
   let explorerDetail: CollectionExplorerDetailState | null = null;
@@ -6657,7 +6757,7 @@ export const bootstrapDataRoute = (
       if (memoryDetail !== null || memoryCompose.open || memoryImport.open) return null;
       return { tab: 'memory', origin: memoryOriginFilter };
     }
-    if (contactDialog !== null || workEntityState.dialog !== null
+    if (calendarCreateSurface.isOpen() || contactDialog !== null || workEntityState.dialog !== null
       || contactImport !== null || contactScan !== null || currentDeepLinkEntity() !== undefined) return null;
     if (activeTab === 'contact') return { tab: activeTab, query: contactSearch };
     if (activeTab === 'search') return { tab: activeTab, query: universalSearchQuery };
@@ -6671,6 +6771,8 @@ export const bootstrapDataRoute = (
       ...(activeTab === 'task' && (taskViewFilters.completion !== 'all'
         || taskViewFilters.due !== 'all' || taskViewFilters.sort !== 'default')
         ? { task_filters: taskViewFilters } : {}),
+      ...(activeTab === 'commitment' && (commitmentViewFilters.direction !== 'all' || commitmentViewFilters.status !== 'all')
+        ? { commitment_filters: commitmentViewFilters } : {}),
     };
     if (activeTab === 'mail' || activeTab === 'files') {
       return { tab: activeTab, collection_slug: explorerSelectedSlug
@@ -6704,7 +6806,8 @@ export const bootstrapDataRoute = (
       ?? doc.activeElement?.closest?.('[data-project-focus]')?.getAttribute('data-project-focus') : undefined;
     const projectScroll = projectRead ? pendingProjectRestore?.scrollTop
       ?? (routeRoot.querySelector?.('.project-overview') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
-    const searchScrollTop = activeTab === 'search' ? pendingContactSearchRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
+    const revealAssetSearchFocus = pendingAssetSearchRestore?.reveal === true;
+    const searchScrollTop = activeTab === 'search' ? pendingAssetSearchRestore?.scrollTop ?? pendingContactSearchRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
       ?? (renderedActiveTab === 'search' && routeRoot.querySelector?.('.rq-search') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
     const oldNoteReader = routeRoot.querySelector?.<HTMLElement>('.work-entity-note-reader');
     const oldNoteFocus = oldNoteReader?.contains(doc.activeElement) ? doc.activeElement : null;
@@ -6752,15 +6855,16 @@ export const bootstrapDataRoute = (
     // captures the live owner again, so moving to another control while a read
     // is pending cancels the restoration naturally.
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
-    const focusedSearchControl = activeTab === 'search' && activeElement?.tagName === 'BUTTON'
+    const focusedSearchControl = activeTab === 'search' && (activeElement?.tagName === 'BUTTON' || activeElement?.tagName === 'A')
       && activeElement.closest?.('.rq-search') ? [DATA_ROUTE_ACTION_ATTR, SEARCH_WORK_KIND_ATTR, SEARCH_WORK_ID_ATTR,
         SEARCH_GROUP_PLATFORM_ATTR, SEARCH_GROUP_SLUG_ATTR, SEARCH_RECORD_ID_ATTR, SEARCH_RECIPE_ID_ATTR,
-        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR, SEARCH_CONTACT_EMAIL_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
+        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR, SEARCH_CONTACT_EMAIL_ATTR, SEARCH_ASSET_ID_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
     // D-315 — Mail facts keys each focusable control; restored after the repaint.
     const focusedMailFactsKey = renderedActiveTab === 'mail_fact'
       ? mailFacts.captureFocus(activeElement)
       : null;
     const focusedCalendarEvent = renderedActiveTab === 'calendar' ? calendarEventSurface.captureFocus(activeElement) : null;
+    const focusedCalendarCreate = renderedActiveTab === 'calendar' ? calendarCreateSurface.captureFocus(activeElement) : null;
     const focusedMailMessage = renderedActiveTab === 'mail' ? mailMessageSurface.captureFocus(activeElement) : null;
     // D-324 — so does the Reminders tab.
     const focusedTaskBulk = renderedActiveTab === 'task' ? activeElement?.getAttribute?.(TASK_BULK_FOCUS) ?? null : null;
@@ -7117,9 +7221,12 @@ export const bootstrapDataRoute = (
         pendingContactEditFocusEmail = null;
       }
     }
-    const focusedTaskFilter = activeLens === 'data' && activeTab === 'task'
-      && renderedActiveTab === 'task'
-      && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)?.startsWith('filter-task-')
+    const commitmentFocused = activeTab === 'commitment' && activeElement?.closest?.('.work-entity-commitment-reader')
+      ? { id: activeElement.closest('.work-entity-commitment-reader')?.getAttribute('data-commitment-id'), action: activeElement.getAttribute?.(SHARED_ACTION_ATTR),
+          status: activeElement.hasAttribute?.('data-commitment-status'), notice: activeElement.hasAttribute?.('data-commitment-notice') } : null;
+    const focusedTaskFilter = activeLens === 'data' && (activeTab === 'task' || activeTab === 'commitment')
+      && renderedActiveTab === activeTab
+      && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)?.startsWith(`filter-${activeTab}-`)
       ? activeElement.getAttribute(SHARED_ACTION_ATTR) : null;
     const focusedSearch =
       activeLens === 'data'
@@ -7310,6 +7417,8 @@ export const bootstrapDataRoute = (
               : null,
             bookingLifecycleFilter,
             taskViewFilters,
+            commitmentViewFilters,
+            commitmentContactLabels,
             bookingDetailId,
             bookingDetail,
             bookingDetailError,
@@ -7360,11 +7469,9 @@ export const bootstrapDataRoute = (
             })(),
             workEntityDialogEntity?._kind === 'commitment' ? {
               state: workEntityDialogEntity.lifecycle_state,
-              can_change: opts.commitmentCloseCaller !== undefined
-                && workEntityDialogEntity.sync_state === 'live' && workEntityDialogEntity.deleted_at == null
-                && sources.some(source => source.id === workEntityDialogEntity?.source_id && source.top_tier_kind === 'commitment' && source.write_capable && source.sync_posture !== 'read_through')
-                && (workEntityDialogEntity.lifecycle_state === 'pending'
-                  || (workEntityDialogEntity.lifecycle_state === 'expired' && workEntityDialogEntity.expiry_policy !== 'strict_expire')),
+              can_change: canCloseCommitment(workEntityDialogEntity, 'fulfill') || canCloseCommitment(workEntityDialogEntity, 'cancel'),
+              can_fulfill: canCloseCommitment(workEntityDialogEntity, 'fulfill'),
+              can_cancel: canCloseCommitment(workEntityDialogEntity, 'cancel'),
             } : undefined,
             workEntities.length,
             taskDetailsOpen,
@@ -7377,6 +7484,14 @@ export const bootstrapDataRoute = (
                 copying: noteCopying, opening: pendingWorkEntityDialogOpen?.id === entity.id,
                 ...(noteNotice ? { notice: noteNotice } : {}) };
             })(),
+            (() => {
+              const entity = workEntityDialogEntity;
+              if (activeTab !== 'commitment' || entity?._kind !== 'commitment' || workEntityState.dialog?.mode !== 'edit'
+                || workEntityState.dialog.entity_id !== entity.id) return undefined;
+              return { entity, mode: commitmentMode, can_edit: canEditCommitment(entity),
+                counterparty_label: commitmentCounterpartyLabel(entity, commitmentContactLabels),
+                opening: pendingWorkEntityDialogOpen?.id === entity.id, notice: commitmentNotice };
+            })(),
             projectChildReturn ? 'Back to project' : workSearchReturn ? 'Back to search' : undefined,
             projectOverviewProps(),
             activeTab === 'task' && !workEntityState.dialog && taskBulk.enabled()
@@ -7385,6 +7500,7 @@ export const bootstrapDataRoute = (
         : activeTab === 'search'
           ? renderUniversalSearch({
               query: universalSearchQuery,
+              ...(opts.assetSearchCaller ? { assetSearch: assetSearch.state() } : {}),
               ...(opts.contactListCaller ? { contactSearch: { contacts: universalSearchContacts,
                 total: universalSearchContactTotal, loading: universalSearchContactLoading, more: universalSearchContactMore,
                 ...(universalSearchContactError ? { error: universalSearchContactError } : {}),
@@ -7634,7 +7750,7 @@ export const bootstrapDataRoute = (
       // In a dialog the control sits above its actions, so Save stays the last stop of its focus loop.
       const dialog = routeRoot.querySelector<HTMLElement>('dialog,[role="dialog"]');
       const actions = dialog?.querySelector<HTMLElement>('.work-entity-dialog-actions, .data-dialog-actions') ?? null;
-      const taskContent = dialog?.querySelector<HTMLElement>('.work-entity-task-content, .work-entity-note-content') ?? null;
+      const taskContent = dialog?.querySelector<HTMLElement>('.work-entity-task-content, .work-entity-note-content, .work-entity-commitment-content') ?? null;
       if (ref) sphereControl = mountSpherePlacement(taskContent ?? actions?.parentElement ?? dialog ?? routeRoot, ref, {
         read: opts.spheres.read,
         change: async input => { opaqueMutationsInFlight += 1; try { const result = await opts.spheres!.change(input); facetKey = ''; return result; } finally { opaqueMutationsInFlight -= 1; } },
@@ -7674,9 +7790,12 @@ export const bootstrapDataRoute = (
       }
       pendingCalendarAgendaRestore = null;
     }
-    if (activeTab === 'search' && (focusedSearchControl || pendingWorkSearchRestore || pendingContactSearchRestore)) {
+    if (activeTab === 'search' && (focusedSearchControl || pendingWorkSearchRestore || pendingContactSearchRestore || pendingAssetSearchRestore)) {
       const origin = pendingWorkSearchRestore;
-      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('.rq-search button')).find(element => pendingContactSearchRestore
+      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('.rq-search button, .rq-search a')).find(element => pendingAssetSearchRestore
+        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_ASSET_ACTION
+          && element.getAttribute(SEARCH_ASSET_ID_ATTR) === pendingAssetSearchRestore.id
+        : pendingContactSearchRestore
         ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_CONTACT_ACTION
           && element.getAttribute(SEARCH_CONTACT_EMAIL_ATTR) === pendingContactSearchRestore.email
         : origin
@@ -7685,7 +7804,7 @@ export const bootstrapDataRoute = (
         : focusedSearchControl?.every(([attribute, value]) => element.getAttribute(attribute) === value));
       (target ?? routeRoot.querySelector<HTMLElement>(`[${SEARCH_INPUT_ATTR}]`))?.focus({ preventScroll: true });
       searchFocusFallback = target === undefined;
-      pendingWorkSearchRestore = null; pendingContactSearchRestore = null;
+      pendingWorkSearchRestore = null; pendingContactSearchRestore = null; pendingAssetSearchRestore = null;
     }
     if (activeElement?.hasAttribute?.('data-data-sphere')) routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus();
     if (opts.savedView !== undefined && currentView() !== null
@@ -7748,7 +7867,14 @@ export const bootstrapDataRoute = (
       const replacement = collectionNavigationTarget(focusedTab ?? activeTab);
       replacement?.focus?.({ preventScroll: true });
     }
-    if (focusedTaskFilter !== null && activeLens === 'data' && activeTab === 'task') {
+    if (commitmentFocused && activeTab === 'commitment' && workEntityDialogEntity?.id === commitmentFocused.id) {
+      const reader = routeRoot.querySelector<HTMLElement>('.work-entity-commitment-reader');
+      const target = commitmentFocused.status ? reader?.querySelector<HTMLElement>('[data-commitment-status]')
+        : commitmentFocused.notice ? reader?.querySelector<HTMLElement>('[data-commitment-notice]')
+        : commitmentFocused.action ? reader?.querySelector<HTMLElement>(`[data-action="${commitmentFocused.action}"]`) : null;
+      (target ?? reader?.querySelector<HTMLElement>('[data-commitment-status]'))?.focus?.({ preventScroll: true });
+    }
+    if (focusedTaskFilter !== null && activeLens === 'data' && (activeTab === 'task' || activeTab === 'commitment')) {
       routeRoot.querySelector<HTMLElement>(`select[${SHARED_ACTION_ATTR}="${focusedTaskFilter}"]`)
         ?.focus?.({ preventScroll: true });
     }
@@ -8271,6 +8397,7 @@ export const bootstrapDataRoute = (
       remindersSurface.restoreFocus(routeRoot, focusedRemindersKey);
     }
     if (activeLens === 'data' && activeTab === 'calendar') calendarEventSurface.restoreFocus(routeRoot, focusedCalendarEvent);
+    if (activeLens === 'data' && activeTab === 'calendar') calendarCreateSurface.restoreFocus(routeRoot, focusedCalendarCreate);
     if (activeLens === 'data' && activeTab === 'mail') {
       mailMessageSurface.restoreScroll(routeRoot, mailIndexScroll);
       mailMessageSurface.restoreFocus(routeRoot, focusedMailMessage);
@@ -8319,7 +8446,7 @@ export const bootstrapDataRoute = (
       const scrollHost = workSearchScrollHost();
       if (scrollHost) scrollHost.scrollTop = searchScrollTop;
       const owner = doc.activeElement as HTMLElement | null;
-      if ((owner?.tagName === 'BUTTON' || searchFocusFallback) && owner?.closest?.('.rq-search')) owner.scrollIntoView?.({ block: 'nearest' });
+      if ((owner?.tagName === 'BUTTON' || searchFocusFallback || revealAssetSearchFocus) && owner?.closest?.('.rq-search')) owner.scrollIntoView?.({ block: 'nearest' });
     }
     if (agendaVisible && agendaScroll !== undefined && !agendaFocusFallback) {
       const host = workSearchScrollHost();
@@ -8405,6 +8532,10 @@ export const bootstrapDataRoute = (
       request.task_filter = taskListFilter;
       if (taskListSearch.length > 0) request.search = taskListSearch;
     }
+    if (workEntityState.kind === 'commitment') {
+      request.commitment_filter = commitmentListFilter;
+      if (commitmentListSearch) request.search = commitmentListSearch;
+    }
     if (workEntityState.kind === 'booking') {
       const search = workEntityState.search_query.trim();
       if (search.length > 0) request.search = search;
@@ -8439,6 +8570,7 @@ export const bootstrapDataRoute = (
       if (disposed || generation !== loadGeneration) return;
       workEntities = [...response.entities];
       workEntityTotal = response.total;
+      if (response.counterparty_labels) commitmentContactLabels = { ...commitmentContactLabels, ...response.counterparty_labels };
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
       workEntities = [];
@@ -8453,6 +8585,8 @@ export const bootstrapDataRoute = (
   // load so `offset` reads the post-refresh list.
   const loadMoreWorkEntities = async (): Promise<void> => {
     if (opts.workEntityListCaller === undefined) return;
+    if (activeTab === 'commitment' && (commitmentListSearch !== workEntityState.search_query.trim()
+      || commitmentListFilter.direction !== commitmentViewFilters.direction || commitmentListFilter.status !== commitmentViewFilters.status)) return;
     if (loadingMoreWorkEntities || workEntities.length >= workEntityTotal) return;
     const generation = loadGeneration;
     loadingMoreWorkEntities = true;
@@ -8474,6 +8608,7 @@ export const bootstrapDataRoute = (
             .map((entity) => ({ kind: entity._kind, id: entity.id }));
       workEntities = [...workEntities, ...response.entities];
       workEntityTotal = response.total;
+      if (response.counterparty_labels) commitmentContactLabels = { ...commitmentContactLabels, ...response.counterparty_labels };
       if (errors.work_entities !== undefined) {
         errors = { ...errors };
         delete errors.work_entities;
@@ -9097,6 +9232,7 @@ export const bootstrapDataRoute = (
     if (platform === undefined || slug === explorerSelectedSlug) return;
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
+    if (!calendarCreateSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
     calendarEventSurface.reset();
     mailMessageSurface.reset();
     cloudFileQuery = cloudFileQueryInput = ''; cloudFileCursor = undefined; cloudBrowseError = '';
@@ -9233,6 +9369,7 @@ export const bootstrapDataRoute = (
   /** Open one record's detail (lazy `collection.get`). */
   const openCalendarAgendaEvent = async (slug: string, recordId: string, key: string): Promise<void> => {
     if (activeLens !== 'data' || activeTab !== 'calendar' || !calendarAgenda.record(slug, recordId)) return;
+    if (!calendarCreateSurface.beforeLeave(() => { void openCalendarAgendaEvent(slug, recordId, key); })) return;
     loadGeneration += 1; loading = false;
     calendarAgenda.cancel();
     calendarAgendaReturn = { key, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash,
@@ -9245,6 +9382,7 @@ export const bootstrapDataRoute = (
   };
 
   const openExplorerRecord = async (record_id: string): Promise<void> => {
+    if (!calendarCreateSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
     calendarEventSurface.reset();
@@ -10267,6 +10405,10 @@ export const bootstrapDataRoute = (
     explorerScope?: { tab: DataTabId; slug: string },
   ): Promise<void> => {
     const generation = ++loadGeneration;
+    if (activeTab === 'commitment') {
+      commitmentListFilter = { ...commitmentViewFilters };
+      commitmentListSearch = workEntityState.search_query.trim();
+    }
     if (activeTab === 'task') {
       taskListFilter = resolveTaskListFilter(taskViewFilters, (opts.now ?? Date.now)());
       taskListSearch = workEntityState.search_query.trim();
@@ -10322,7 +10464,8 @@ export const bootstrapDataRoute = (
         await openEditWorkEntityDialog('project', projectWork.project.id, 'read', true);
       }
     } else if (activeTab === 'search') {
-      await runUniversalSearch();
+      const resume = initialSearchResume; initialSearchResume = undefined;
+      await runUniversalSearch(resume);
     } else if (activeTab === 'calendar') {
       const addressPending = calendarInitialAddress;
       calendarInitialAddress = false;
@@ -10423,6 +10566,7 @@ export const bootstrapDataRoute = (
     opts.bookingSearchDebounceMs ?? 180,
   );
   const taskSearchRefresh = createDebouncedRefresh(opts.taskSearchDebounceMs ?? 180);
+  const commitmentSearchRefresh = createDebouncedRefresh(180);
 
   /** ⚠ ITS OWN TIMER, NOT `createDebouncedRefresh`. That helper debounces the
    *  route's whole-page `startRefresh()`, which re-reads every lens; this loader
@@ -10438,6 +10582,7 @@ export const bootstrapDataRoute = (
   /** Retire replies at the edit/navigation boundary, before the next debounce.
    * A query comparison alone misses an edit away and back to the same words. */
   const retireUniversalSearch = (): void => {
+    assetSearch.reset();
     universalSearchSeq += 1;
     universalSearchMarketSeq += 1;
     if (universalSearchTimer !== null) clearTimeout(universalSearchTimer);
@@ -10466,7 +10611,7 @@ export const bootstrapDataRoute = (
     universalSearchError = undefined;
   };
 
-  const runUniversalSearch = async (): Promise<void> => {
+  const runUniversalSearch = async (resume = { records: true, work: true, contacts: true, capabilities: true }): Promise<void> => {
     if (disposed || activeLens !== 'data' || activeTab !== 'search') return;
     const caller = opts.collectionSearchAllCaller;
     const query = universalSearchQuery.trim();
@@ -10481,24 +10626,24 @@ export const bootstrapDataRoute = (
       && seq === universalSearchSeq && universalSearchNavigation === navigationGeneration
       && activeLens === 'data' && (activeTab === 'search' || workSearchReturn?.sequence === seq || contactSearchReturn?.sequence === seq)
       && query === universalSearchQuery.trim();
-    universalSearchLoading = true;
-    universalSearchCapabilitiesLoading = true;
-    universalSearchCapabilitiesError = undefined;
-    universalSearchGroups = undefined;
-    universalSearchDidYouMean = undefined;
-    universalSearchAbsentWords = undefined;
-    universalSearchRecipes = [];
-    universalSearchPacks = [];
-    universalSearchError = undefined;
-    universalSearchContacts = []; universalSearchContactTotal = 0; universalSearchContactOffset = 0;
-    universalSearchContactMore = false; universalSearchContactLoading = false; universalSearchContactError = undefined;
-    universalSearchContactPageSeq += 1;
-    universalSearchWorkGroups = undefined;
-    universalSearchWorkLoading = opts.workEntitySearchCaller !== undefined;
-    universalSearchWorkError = undefined;
-    universalSearchWorkLoadingKinds.clear();
-    universalSearchWorkOffsets.clear();
-    universalSearchWorkPageSeq.clear();
+    if (resume.records) {
+      universalSearchLoading = true; universalSearchGroups = undefined;
+      universalSearchDidYouMean = undefined; universalSearchAbsentWords = undefined; universalSearchError = undefined;
+    }
+    if (resume.capabilities) {
+      universalSearchCapabilitiesLoading = true; universalSearchCapabilitiesError = undefined;
+      universalSearchRecipes = []; universalSearchPacks = [];
+    }
+    if (resume.contacts) {
+      universalSearchContacts = []; universalSearchContactTotal = 0; universalSearchContactOffset = 0;
+      universalSearchContactMore = false; universalSearchContactLoading = false; universalSearchContactError = undefined;
+      universalSearchContactPageSeq += 1;
+    }
+    if (resume.work) {
+      universalSearchWorkGroups = undefined; universalSearchWorkLoading = opts.workEntitySearchCaller !== undefined;
+      universalSearchWorkError = undefined; universalSearchWorkLoadingKinds.clear();
+      universalSearchWorkOffsets.clear(); universalSearchWorkPageSeq.clear();
+    }
     // A new local search retires any marketplace answer: it belonged to the
     // previous query, and leaving it up would attach cloud results to words the
     // owner never sent.
@@ -10510,6 +10655,7 @@ export const bootstrapDataRoute = (
     // Each branch paints as it settles. In particular a slow capability list
     // must neither delay starting the record search nor hide its ready rows.
     const recordSearch = (async (): Promise<void> => {
+      if (!resume.records) return;
       try {
         if (caller === undefined) throw new Error('This server cannot search mail, calendar or files.');
         const { groups, did_you_mean: didYouMean, absent_words: absentWords } = await caller({ query });
@@ -10532,7 +10678,7 @@ export const bootstrapDataRoute = (
       }
     })();
     const workSearch = (async (): Promise<void> => {
-      if (!opts.workEntitySearchCaller) return;
+      if (!resume.work || !opts.workEntitySearchCaller) return;
       try {
         const result = await opts.workEntitySearchCaller({ query });
         if (!isCurrent()) return;
@@ -10558,7 +10704,7 @@ export const bootstrapDataRoute = (
     const capabilityErrors: string[] = [];
     const recipeRead = (async (): Promise<ServerRecipeListEntry[]> => {
       const listCaller = opts.recipeListCaller;
-      if (listCaller === undefined) return [];
+      if (!resume.capabilities || listCaller === undefined) return [];
       try {
         return (await listCaller()).recipes.slice();
       } catch {
@@ -10568,7 +10714,7 @@ export const bootstrapDataRoute = (
     })();
     const packRead = (async (): Promise<ReadonlyArray<RosterPack>> => {
       const packCaller = opts.packInstalledListCaller;
-      if (packCaller === undefined) return [];
+      if (!resume.capabilities || packCaller === undefined) return [];
       try {
         return (await packCaller()).packs// ⚠ `installed_any_version` too: a pack installed at a DIFFERENT version than
         // the server bundle is still one the owner has, and omitting it would hide
@@ -10580,6 +10726,7 @@ export const bootstrapDataRoute = (
       }
     })();
     const capabilitySearch = (async (): Promise<void> => {
+      if (!resume.capabilities) return;
       const [recipeList, packList] = await Promise.all([recipeRead, packRead]);
       if (!isCurrent()) return;
 
@@ -10633,7 +10780,7 @@ export const bootstrapDataRoute = (
       universalSearchCapabilitiesError = capabilityErrors.length > 0 ? capabilityErrors.join(' ') : undefined;
       if (activeTab === 'search') render();
     })();
-    await Promise.all([recordSearch, workSearch, capabilitySearch, loadUniversalContactSearch(true)]);
+    await Promise.all([recordSearch, workSearch, capabilitySearch, resume.contacts ? loadUniversalContactSearch(true) : Promise.resolve(), assetSearch.load(query)]);
   };
 
   const loadUniversalContactSearch = async (replace = false): Promise<void> => {
@@ -10742,6 +10889,10 @@ export const bootstrapDataRoute = (
       || caller === undefined || query === '' || universalSearchMarketLoading
       || universalSearchLoading || universalSearchCapabilitiesLoading
       || universalSearchCapabilitiesError !== undefined
+      || assetSearch.state().loading || assetSearch.state().error !== undefined || assetSearch.state().unsupported
+      || assetSearch.state().matches.length > 0
+      || universalSearchContactLoading || universalSearchContactError !== undefined || universalSearchContactUnsupported
+      || universalSearchContacts.length > 0
       || universalSearchWorkLoading || universalSearchWorkError !== undefined
       || universalSearchWorkGroups?.some(group => group.error || group.matches.length > 0)
       || universalSearchError !== undefined || universalSearchGroups === undefined
@@ -10989,6 +11140,7 @@ export const bootstrapDataRoute = (
     if (taskBulk.busy()) { focusTaskBatch(); return; }
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch); })) return;
+    if (!calendarCreateSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch); })) return;
     if (activeTab === 'reminder' && !remindersSurface.beforeLeave()) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
@@ -11181,6 +11333,7 @@ export const bootstrapDataRoute = (
     if (taskBulk.busy()) { focusTaskBatch(); return; }
     if (lens !== activeLens && !mailMessageSurface.beforeLeave()) return;
     if (lens !== activeLens && !calendarEventSurface.beforeLeave(() => { void selectLens(lens); })) return;
+    if (lens !== activeLens && !calendarCreateSurface.beforeLeave(() => { void selectLens(lens); })) return;
     if (lens !== activeLens && activeTab === 'reminder' && !remindersSurface.beforeLeave()) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
@@ -11341,6 +11494,19 @@ export const bootstrapDataRoute = (
     guard?.scrollIntoView?.({ block: 'nearest' });
   };
 
+  /** The row's form-opening button: Edit on your note, Replace (D-198 §12) on
+   *  an agent's. One query per action, so it needs no selector-list support. */
+  const memoryRowFormAction = (memoryId: string): HTMLElement | null => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    return [MEMORY_EDIT_ACTION, MEMORY_REPLACE_ACTION]
+      .flatMap((action) => Array.from(queryable.querySelectorAll?.(
+        `[${DATA_ROUTE_ACTION_ATTR}="${action}"]`,
+      ) ?? []))
+      .find((candidate) => candidate.getAttribute(MEMORY_ROW_ID_ATTR) === memoryId) ?? null;
+  };
+
   const focusMemoryComposeReturnTarget = (
     origin: typeof memoryComposeReturnFocus,
   ): void => {
@@ -11349,14 +11515,7 @@ export const bootstrapDataRoute = (
       querySelector?: (selector: string) => HTMLElement | null;
       querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
     };
-    const edit = origin.kind === 'edit'
-      ? Array.from(queryable.querySelectorAll?.(
-          `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_EDIT_ACTION}"]`,
-        ) ?? []).find(
-          (candidate) =>
-            candidate.getAttribute(MEMORY_ROW_ID_ATTR) === origin.memoryId,
-        ) ?? null
-      : null;
+    const edit = origin.kind === 'edit' ? memoryRowFormAction(origin.memoryId) : null;
     const add = queryable.querySelector?.(
       `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_ADD_ACTION}"]`,
     ) ?? null;
@@ -11370,14 +11529,7 @@ export const bootstrapDataRoute = (
   };
 
   const focusMemoryEditAction = (memoryId: string): void => {
-    const queryable = routeRoot as unknown as {
-      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
-    };
-    const target = Array.from(queryable.querySelectorAll?.(
-      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_EDIT_ACTION}"]`,
-    ) ?? []).find(
-      (candidate) => candidate.getAttribute(MEMORY_ROW_ID_ATTR) === memoryId,
-    ) ?? null;
+    const target = memoryRowFormAction(memoryId);
     target?.focus?.({ preventScroll: true });
     target?.scrollIntoView?.({ block: 'nearest' });
   };
@@ -11451,8 +11603,10 @@ export const bootstrapDataRoute = (
   };
 
   /** Open the compose form in EDIT mode, prefilled from the full entry
-   *  (`memory.get` resolves the body). Own (`user_self`) rows only. */
-  const openMemoryEdit = async (memory_id: string): Promise<void> => {
+   *  (`memory.get` resolves the body). Own (`user_self`) rows only. REPLACE mode
+   *  (D-198 §12) opens the same form on an agent's note, prefilled the same way,
+   *  and saving writes a new note of yours in its place. */
+  const openMemoryEdit = async (memory_id: string, mode: 'edit' | 'replace' = 'edit'): Promise<void> => {
     if (memoryEditOpeningId !== null) {
       focusMemoryEditAction(memoryEditOpeningId);
       return;
@@ -11472,11 +11626,13 @@ export const bootstrapDataRoute = (
         || seq !== memoryEditOpenSeq
         || memoryEditOpeningId !== memory_id
       ) return;
-      if (entry.origin_actor !== 'user_self') {
+      if (mode === 'edit' ? entry.origin_actor !== 'user_self' : !isReplaceableEntry(entry)) {
         memoryEditOpeningId = null;
         memoryEditError = {
           memoryId: memory_id,
-          message: 'You can only edit your own memories.',
+          message: mode === 'edit'
+            ? 'You can only edit your own memories.'
+            : 'Only the current version of a note an agent saved can be replaced.',
         };
         render();
         focusMemoryEditAction(memory_id);
@@ -11484,7 +11640,7 @@ export const bootstrapDataRoute = (
       }
       memoryCompose = {
         open: true,
-        mode: 'edit',
+        mode,
         editId: memory_id,
         kind: entry.kind,
         summary: entry.summary ?? '',
@@ -11527,8 +11683,10 @@ export const bootstrapDataRoute = (
     }
     const createCaller = opts.memoryCreateCaller;
     const updateCaller = opts.memoryUpdateCaller;
+    const replaceCaller = opts.memoryReplaceCaller;
     const isEdit = memoryCompose.mode === 'edit' && memoryCompose.editId !== undefined;
-    if (isEdit ? updateCaller === undefined : createCaller === undefined) {
+    const isReplace = memoryCompose.mode === 'replace' && memoryCompose.editId !== undefined;
+    if (isReplace ? replaceCaller === undefined : isEdit ? updateCaller === undefined : createCaller === undefined) {
       memoryCompose = { ...memoryCompose, error: 'You cannot save memories here.' };
       render();
       return;
@@ -11539,7 +11697,15 @@ export const bootstrapDataRoute = (
     render();
     focusMemoryComposeSave();
     try {
-      if (isEdit && editId !== undefined && updateCaller !== undefined) {
+      let replacedBy: string | undefined;
+      if (isReplace && editId !== undefined && replaceCaller !== undefined) {
+        replacedBy = (await replaceCaller({
+          memory_id: editId,
+          kind: draft.kind,
+          ...(draft.summary.length > 0 ? { summary: draft.summary } : {}),
+          body: draft.body,
+        })).memory_id;
+      } else if (isEdit && editId !== undefined && updateCaller !== undefined) {
         await updateCaller({ memory_id: editId, kind: draft.kind, summary: draft.summary, body: draft.body });
       } else if (createCaller !== undefined) {
         await createCaller({
@@ -11549,7 +11715,10 @@ export const bootstrapDataRoute = (
         });
       }
       if (disposed) return;
-      const returnFocus = memoryComposeReturnFocus;
+      // A replaced agent row loses its Replace, so land on your new note instead.
+      const returnFocus = replacedBy !== undefined
+        ? { kind: 'edit' as const, memoryId: replacedBy }
+        : memoryComposeReturnFocus;
       memoryCompose = { open: false, mode: 'create', kind: '', summary: '', body: '', submitting: false };
       retireMemoryComposeDraft();
       pendingLoadPromise = refreshActive();
@@ -11557,7 +11726,12 @@ export const bootstrapDataRoute = (
       if (!disposed) focusMemoryComposeReturnTarget(returnFocus);
     } catch (err) {
       if (disposed) return;
-      memoryCompose = { ...memoryCompose, submitting: false, error: errMessage(err) };
+      // An older server has no `memory.replace` and says so: it never saves an
+      // unlinked note in its place (D-198 §12).
+      const error = isReplace && classifyRpcError(err).code === 'unknown_method'
+        ? 'Your Recued server needs an update to replace an agent’s note. Until then, forget it and add your own.'
+        : errMessage(err);
+      memoryCompose = { ...memoryCompose, submitting: false, error };
       render();
       focusMemoryComposeSave();
     }
@@ -12193,6 +12367,7 @@ export const bootstrapDataRoute = (
     taskCompletionNotice = null;
     workEntityDiscardGuardOpen = false;
     workEntityDiscardReturnFocus = null;
+    commitmentMode = 'read'; commitmentNotice = undefined; commitmentDiscardToReader = false;
     noteMode = 'read'; noteDetailsOpen = false; noteCopying = false;
     noteCopySequence += 1; noteNotice = undefined; noteDiscardToReader = false;
   };
@@ -12276,7 +12451,7 @@ export const bootstrapDataRoute = (
         !== workEntityDialogBaseline;
   };
 
-  const closeWorkEntityDialog = (discardChanges = false, returnToNote = false): void => {
+  const closeWorkEntityDialog = (discardChanges = false, returnToNote = false, returnToCommitment = false): void => {
     if (
       workEntityState.dialog === null
       || workEntityState.dialog.submitting === true
@@ -12287,6 +12462,7 @@ export const bootstrapDataRoute = (
     }
     if (!discardChanges && hasUnsavedWorkEntityDialog()) {
       noteDiscardToReader = returnToNote;
+      commitmentDiscardToReader = returnToCommitment;
       showWorkEntityDiscardGuard();
       return;
     }
@@ -12294,6 +12470,17 @@ export const bootstrapDataRoute = (
     workEntityDialogOpenSeq += 1;
     pendingWorkEntityDialogOpen = null;
     loadingWorkEntityDetail = false;
+    if (returnToCommitment && workEntityState.kind === 'commitment' && workEntityDialogEntity?._kind === 'commitment') {
+      workEntityState = openEditDialogTransition(workEntityState, workEntityDialogEntity, getCanonicalSchema('commitment'));
+      workEntityDialogOriginal = { ...workEntityState.dialog!.values };
+      commitmentMode = 'read'; commitmentNotice = undefined; commitmentDiscardToReader = false;
+      workEntityDiscardGuardOpen = false;
+      render(); captureWorkEntityDialogBaseline();
+      (routeRoot.querySelector<HTMLElement>('[data-action="edit-commitment"]')
+        ?? routeRoot.querySelector<HTMLElement>('.work-entity-dialog-title'))?.focus?.();
+      loadWorkEntityTimeline('commitment', workEntityDialogEntity.id, workEntityDialogOpenSeq);
+      return;
+    }
     if (returnToNote && workEntityState.kind === 'note' && workEntityDialogEntity?._kind === 'note') {
       workEntityState = openEditDialogTransition(workEntityState, workEntityDialogEntity, getCanonicalSchema('note'));
       workEntityDialogOriginal = { ...workEntityState.dialog!.values };
@@ -12329,6 +12516,7 @@ export const bootstrapDataRoute = (
     taskBulk.reset();
     workEntityDialogOriginal = {};
     workEntityDialogEntity = null;
+    commitmentMode = 'edit'; commitmentNotice = undefined; commitmentDiscardToReader = false;
     noteMode = 'edit'; noteDetailsOpen = false; noteNotice = undefined;
     noteCopying = false; noteCopySequence += 1; noteDiscardToReader = false;
     taskDetailsOpen = false;
@@ -12429,6 +12617,17 @@ export const bootstrapDataRoute = (
     void openEditWorkEntityDialog('project', overview.project.id, 'read', true);
   };
 
+  const commitmentWritable = (entity: Extract<WorkEntity, { _kind: 'commitment' }>): boolean =>
+    entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write
+    && sources.some(source => source.id === entity.source_id && source.top_tier_kind === 'commitment'
+      && source.write_capable && source.sync_posture !== 'read_through');
+  const canEditCommitment = (entity: Extract<WorkEntity, { _kind: 'commitment' }>): boolean =>
+    opts.workEntityUpsertCaller !== undefined && opts.workEntityGetCaller !== undefined && commitmentWritable(entity);
+  const canCloseCommitment = (entity: Extract<WorkEntity, { _kind: 'commitment' }>, outcome: 'fulfill' | 'cancel'): boolean =>
+    opts.commitmentCloseCaller !== undefined && commitmentWritable(entity)
+    && (entity.lifecycle_state === 'pending' || entity.lifecycle_state === 'expired'
+      && (outcome === 'cancel' || entity.expiry_policy !== 'strict_expire'));
+
   const canEditNote = (entity: Extract<WorkEntity, { _kind: 'note' }>): boolean =>
     opts.workEntityUpsertCaller !== undefined && opts.workEntityGetCaller !== undefined
     && entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write
@@ -12522,7 +12721,7 @@ export const bootstrapDataRoute = (
       try {
         const [response, registered] = await Promise.all([
           opts.workEntityGetCaller({ kind, id }),
-          (kind === 'note' || kind === 'project' && noteIntent !== 'read') && opts.workEntitySourceListCaller
+          (kind === 'note' || kind === 'commitment' || kind === 'project' && noteIntent !== 'read') && opts.workEntitySourceListCaller
             ? opts.workEntitySourceListCaller().catch(error => {
                 if (noteIntent === 'read') return undefined;
                 throw error;
@@ -12531,6 +12730,7 @@ export const bootstrapDataRoute = (
         if (disposed || seq !== workEntityDialogOpenSeq || activeTab !== kind) return;
         entity = response.entity;
         openedFreshness = response.source_freshness;
+        if (response.counterparty_labels) commitmentContactLabels = { ...commitmentContactLabels, ...response.counterparty_labels };
         if (registered) sources = [...registered.sources];
       } catch (err) {
         if (disposed || seq !== workEntityDialogOpenSeq) return;
@@ -12562,6 +12762,9 @@ export const bootstrapDataRoute = (
     );
     workEntityDialogEntity = entity;
     noteCopying = false; noteCopySequence += 1; noteNotice = undefined; noteDiscardToReader = false;
+    if (entity._kind === 'commitment') {
+      commitmentMode = noteIntent !== 'read' && canEditCommitment(entity) ? 'edit' : 'read'; commitmentNotice = undefined; commitmentDiscardToReader = false;
+    }
     if (entity._kind === 'note') {
       noteMode = noteIntent !== 'read' && canEditNote(entity) ? 'edit' : 'read';
       noteDetailsOpen = noteIntent === 'details';
@@ -12873,7 +13076,7 @@ export const bootstrapDataRoute = (
     const close = opts.commitmentCloseCaller;
     if (disposed || activeLens !== 'data' || activeTab !== 'commitment' || dialog?.mode !== 'edit'
       || dialog.submitting || workEntityDiscardGuardOpen || opened?._kind !== 'commitment'
-      || opened.id !== dialog.entity_id || !close) return;
+      || opened.id !== dialog.entity_id || pendingWorkEntityDialogOpen || !close || !canCloseCommitment(opened, outcome)) return;
     if (hasUnsavedWorkEntityDialog()) {
       workEntityState = setDialogSubmitErrorTransition(workEntityState, 'Save or discard your edits before closing the commitment.');
       render(); focusTaskCompletionError(); return;
@@ -12889,10 +13092,11 @@ export const bootstrapDataRoute = (
       const { entity } = await close({ id: opened.id, outcome });
       if (!stillHere()) return;
       if (entity._kind !== 'commitment' || entity.id !== opened.id
+        || entity.source_id !== opened.source_id || entity.source_record_id !== opened.source_record_id || entity.created_at !== opened.created_at
         || entity.lifecycle_state !== (outcome === 'fulfill' ? 'fulfilled' : 'cancelled')) {
         throw new Error('The server did not confirm the close. Reopen the commitment to check it.');
       }
-      workEntityDialogEntity = entity;
+      workEntityDialogEntity = entity; commitmentMode = 'read'; commitmentNotice = undefined;
       workEntityState = openEditDialogTransition(workEntityState, entity, getCanonicalSchema('commitment'));
       workEntityDialogOriginal = { ...(workEntityState.dialog?.values ?? {}) };
       render(); captureWorkEntityDialogBaseline();
@@ -12997,6 +13201,7 @@ export const bootstrapDataRoute = (
     ) return;
     if (activeTab === 'project' && projectWork && !projectEditing) return;
     if (workEntityState.kind === 'note' && workEntityState.dialog.mode === 'edit' && noteMode === 'read') return;
+    if (workEntityState.kind === 'commitment' && workEntityState.dialog.mode === 'edit' && commitmentMode === 'read') return;
     if (opts.workEntityUpsertCaller === undefined) {
       workEntityState = setDialogSubmitErrorTransition(
         workEntityState,
@@ -13026,7 +13231,9 @@ export const bootstrapDataRoute = (
       && workEntityDialogEntity?._kind === 'task' ? workEntityDialogEntity : null;
     const editingNote = workEntityState.kind === 'note' && workEntityState.dialog.mode === 'edit'
       && workEntityDialogEntity?._kind === 'note' ? workEntityDialogEntity : null;
-    const editingEntity = editingTask ?? editingNote;
+    const editingCommitment = workEntityState.kind === 'commitment' && workEntityState.dialog.mode === 'edit'
+      && workEntityDialogEntity?._kind === 'commitment' ? workEntityDialogEntity : null;
+    const editingEntity = editingTask ?? editingNote ?? editingCommitment;
     const submittedSequence = workEntityDialogOpenSeq;
     const submittedProject = projectWork;
     try {
@@ -13039,6 +13246,7 @@ export const bootstrapDataRoute = (
       if (editingEntity?.pending_write) {
         throw new Error(`This ${editingEntity._kind} has a change waiting for its source. Close and reopen it to check before trying again.`);
       }
+      if (editingCommitment && !canEditCommitment(editingCommitment)) throw new Error('This promise cannot be changed now. Your draft is still here. Check its source.');
       if (editingNote && !canEditNote(editingNote)) {
         throw new Error('This note cannot be edited now. Your draft is still here. Check its source.');
       }
@@ -13062,7 +13270,7 @@ export const bootstrapDataRoute = (
         errMessage(err),
       );
       render();
-      if (workEntityState.kind === 'task' || workEntityState.kind === 'note') focusTaskCompletionError();
+      if (workEntityState.kind === 'task' || workEntityState.kind === 'note' || workEntityState.kind === 'commitment') focusTaskCompletionError();
       return;
     }
 
@@ -13074,7 +13282,7 @@ export const bootstrapDataRoute = (
       const result = unchanged
         ? { entity: editingEntity } : await opts.workEntityUpsertCaller(request);
       if (disposed) return;
-      if ((editingNote || submittedProject) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
+      if ((editingNote || editingCommitment || submittedProject) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
       if (request.kind === 'project' && projectWork && projectEditing) {
         const saved = result.entity;
         if (saved._kind !== 'project' || saved.id !== projectWork.project.id || saved.source_id !== projectWork.project.source_id
@@ -13143,6 +13351,30 @@ export const bootstrapDataRoute = (
         pendingLoadPromise = refreshActive(true);
         return;
       }
+      if (editingCommitment) {
+        const saved = result.entity;
+        if (saved._kind !== 'commitment' || saved.id !== editingCommitment.id || saved.source_id !== editingCommitment.source_id
+          || saved.source_record_id !== editingCommitment.source_record_id || saved.created_at !== editingCommitment.created_at) {
+          throw new Error('The source did not confirm this promise. Your draft is still here.');
+        }
+        if (saved.pending_write) {
+          workEntityDialogEntity = saved;
+          throw new Error('Your change is saved in Recued, but the source has not confirmed it yet. Your draft is still here. Close and reopen the promise to check before trying again.');
+        }
+        if (saved.sync_state !== 'live' || saved.deleted_at != null
+          || Object.entries(request).some(([key, value]) => key !== 'kind' && key !== 'id'
+            && !workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key]))) {
+          throw new Error('The source did not confirm your edits. Your draft is still here. Check the promise before trying again.');
+        }
+        workEntityDialogEntity = saved;
+        workEntityState = openEditDialogTransition(workEntityState, saved, getCanonicalSchema('commitment'));
+        workEntityDialogOriginal = { ...workEntityState.dialog!.values };
+        commitmentMode = 'read'; commitmentNotice = unchanged ? 'No changes to save.' : 'Commitment saved.';
+        render(); captureWorkEntityDialogBaseline();
+        routeRoot.querySelector<HTMLElement>('[data-commitment-notice]')?.focus?.({ preventScroll: true });
+        pendingLoadPromise = refreshActive(true);
+        return;
+      }
       if (projectChildReturn || projectWork && projectEditing || workSearchReturn) {
         workEntityState = setDialogSubmittingTransition(workEntityState, false);
         closeWorkEntityDialog(true);
@@ -13160,14 +13392,14 @@ export const bootstrapDataRoute = (
       }
       if (!disposed) focusWorkEntityDialogReturnTarget();
     } catch (err) {
-      if (disposed || (editingNote || submittedProject) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
+      if (disposed || (editingNote || editingCommitment || submittedProject) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
       workEntityState = setDialogSubmittingTransition(workEntityState, false);
       workEntityState = setDialogSubmitErrorTransition(
         workEntityState,
         errMessage(err),
       );
       render();
-      if (workEntityState.kind === 'task' || workEntityState.kind === 'note') focusTaskCompletionError();
+      if (workEntityState.kind === 'task' || workEntityState.kind === 'note' || workEntityState.kind === 'commitment') focusTaskCompletionError();
     }
   };
 
@@ -15166,6 +15398,7 @@ export const bootstrapDataRoute = (
       ?? '';
     if (activeLens === 'data' && activeTab === 'task' && taskBulk.handleAction(action)) return;
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (activeLens === 'data' && activeTab === 'calendar' && calendarCreateSurface.handleAction(action)) return;
     if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null
       && calendarAgenda.handleAction(action, target)) return;
     if (action.startsWith(CALENDAR_EVENT_ACTION_PREFIX)) {
@@ -15294,6 +15527,7 @@ export const bootstrapDataRoute = (
     if (
       action === MEMORY_OPEN_ACTION
       || action === MEMORY_EDIT_ACTION
+      || action === MEMORY_REPLACE_ACTION
       || action === MEMORY_DELETE_ACTION
       || action === MEMORY_DELETE_CONFIRM_ACTION
       || action === MEMORY_DELETE_CANCEL_ACTION
@@ -15303,6 +15537,7 @@ export const bootstrapDataRoute = (
       if (memoryId === null || memoryId.length === 0) return;
       if (action === MEMORY_OPEN_ACTION) void openMemoryDetail(memoryId);
       else if (action === MEMORY_EDIT_ACTION) void openMemoryEdit(memoryId);
+      else if (action === MEMORY_REPLACE_ACTION) void openMemoryEdit(memoryId, 'replace');
       else if (action === MEMORY_DELETE_ACTION) requestMemoryDelete(memoryId);
       else if (action === MEMORY_DELETE_CONFIRM_ACTION) void confirmMemoryDelete(memoryId);
       else if (action === MEMORY_RESTORE_ACTION) void restoreMemory(memoryId);
@@ -15577,6 +15812,22 @@ export const bootstrapDataRoute = (
     if (action === 'return-project-overview') { returnToProjectOverview(); return; }
     if (action === 'return-work-search') {
       if (workEntityState.dialog) closeWorkEntityDialog(); else returnToWorkSearch();
+      return;
+    }
+    if (action === SEARCH_OPEN_ASSET_ACTION) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      const id = target.getAttribute(SEARCH_ASSET_ID_ATTR);
+      if (!id || !assetSearch.state().matches.some(row => row.id === id)) { ev.preventDefault(); return; }
+      saveSearchAssetReturn(doc, searchContinuityOwner, { assetId: id,
+        returnHash: doc.defaultView?.location.hash ?? '#data/search', state: captureSearchState(),
+        scroll: { top: workSearchScrollHost()?.scrollTop ?? 0, left: 0 } });
+      // Leave native anchor navigation intact, including keyboard and new-tab use.
+      return;
+    }
+    if (action === SEARCH_MORE_ASSETS_ACTION) {
+      const state = assetSearch.state();
+      if (!state.loading) void assetSearch.load(universalSearchQuery, state.error ? state.retry_append === true : true);
       return;
     }
     if (action === SEARCH_OPEN_CONTACT_ACTION) {
@@ -16033,7 +16284,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION) {
-      closeWorkEntityDialog(true, noteDiscardToReader);
+      closeWorkEntityDialog(true, noteDiscardToReader, commitmentDiscardToReader);
       return;
     }
     if (action === 'close-work-entity-dialog') {
@@ -16041,7 +16292,15 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'return-note-reader') { closeWorkEntityDialog(false, true); return; }
+    if (action === 'return-commitment-reader') { closeWorkEntityDialog(false, false, true); return; }
     if (action === 'copy-note-text') { void copyNoteText(); return; }
+    if (action === 'edit-commitment') {
+      if (workEntityDialogEntity?._kind === 'commitment' && !pendingWorkEntityDialogOpen
+        && !workEntityState.dialog?.submitting && canEditCommitment(workEntityDialogEntity)) {
+        void openEditWorkEntityDialog('commitment', workEntityDialogEntity.id, 'edit');
+      }
+      return;
+    }
     if (action === 'edit-note' || action === 'edit-note-details') {
       if (workEntityDialogEntity?._kind === 'note' && !pendingWorkEntityDialogOpen) {
         void openEditWorkEntityDialog('note', workEntityDialogEntity.id, action === 'edit-note-details' ? 'details' : 'edit');
@@ -16142,6 +16401,7 @@ export const bootstrapDataRoute = (
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
     if (activeTab === 'calendar' && typeof target.getAttribute === 'function' && calendarAgenda.handleInput(target)) return;
+    if (activeTab === 'calendar' && calendarCreateSurface.handleInput(target as HTMLElement)) return;
     if (activeTab === 'calendar' && calendarEventSurface.handleInput(target as HTMLElement)) return;
     // D-315 — the Mail facts editor's text fields keep their draft without a repaint.
     if (activeTab === 'mail_fact' && typeof target.getAttribute === 'function'
@@ -16266,6 +16526,11 @@ export const bootstrapDataRoute = (
               && activeTab === 'booking'
               && workEntityState.kind === 'booking'
               && workEntityState.search_query === scheduledSearch);
+          } else if (workEntityState.kind === 'commitment') {
+            loadGeneration += 1; loadingMoreWorkEntities = false;
+            const scheduledSearch = workEntityState.search_query;
+            commitmentSearchRefresh.schedule(() => activeLens === 'data' && activeTab === 'commitment'
+              && workEntityState.kind === 'commitment' && workEntityState.search_query === scheduledSearch);
           } else if (workEntityState.kind === 'task') {
             const scheduledSearch = workEntityState.search_query;
             taskSearchRefresh.schedule(() => activeLens === 'data' && activeTab === 'task'
@@ -16342,6 +16607,7 @@ export const bootstrapDataRoute = (
     const target = ev.target as HTMLInputElement | HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
     if (activeTab === 'calendar' && calendarAgenda.handleChange(target)) return;
+    if (activeTab === 'calendar' && calendarCreateSurface.handleInput(target as HTMLElement, true)) return;
     const importDateKey = target.getAttribute('data-contact-import-date');
     const importDateField = target.getAttribute('data-contact-import-date-field');
     if (importDateKey && importDateField && contactImport?.file && !contactImportFileApplyPending()) {
@@ -16414,6 +16680,7 @@ export const bootstrapDataRoute = (
       workEntityState = selectSourceTransition(workEntityState, target.value, valid);
       bookingSearchRefresh.cancel();
       taskSearchRefresh.cancel();
+      commitmentSearchRefresh.cancel();
       startRefresh();
       return;
     }
@@ -16424,6 +16691,13 @@ export const bootstrapDataRoute = (
         bookingSearchRefresh.cancel();
         pendingLoadPromise = refreshActive(true);
       }
+      return;
+    }
+    if (activeTab === 'commitment' && action?.startsWith('filter-commitment-')) {
+      const field = action.slice('filter-commitment-'.length);
+      if (field !== 'direction' && field !== 'status') return;
+      const next = parseCommitmentViewFilters({ ...commitmentViewFilters, [field]: target.value });
+      if (next) { commitmentViewFilters = next; commitmentSearchRefresh.cancel(); startRefresh(); }
       return;
     }
     if (activeTab === 'task' && action?.startsWith('filter-task-')) {
@@ -16511,6 +16785,9 @@ export const bootstrapDataRoute = (
           return;
         }
       }
+    }
+    if (ev.key === 'Escape' && !ev.isComposing && activeLens === 'data' && activeTab === 'calendar' && calendarCreateSurface.isOpen()) {
+      ev.preventDefault(); ev.stopPropagation(); calendarCreateSurface.handleAction('calendar-create-cancel'); return;
     }
     if (activeLens === 'data' && activeTab === 'calendar' && calendarEventSurface.guardKeyDown(ev, routeRoot)) return;
     if (ev.key === 'Escape' && !ev.isComposing && activeLens === 'data' && activeTab === 'calendar' && calendarEventSurface.escape()) {
@@ -16609,6 +16886,7 @@ export const bootstrapDataRoute = (
     applyRecordsView();
   };
   routeRoot.addEventListener('submit', onRecordsViewSubmit);
+  routeRoot.addEventListener('submit', calendarCreateSurface.handleSubmit);
   routeRoot.addEventListener('change', onChange);
   routeRoot.addEventListener('keydown', onKeyDown);
 
@@ -16877,6 +17155,7 @@ export const bootstrapDataRoute = (
     // D-324 — a reminder being moved or cancelled.
     || remindersSurface.hasInFlightWork()
     || calendarEventSurface.hasInFlightWork()
+    || calendarCreateSurface.hasInFlightWork()
     || mailMessageSurface.hasInFlightWork();
 
   return {
@@ -16933,9 +17212,10 @@ export const bootstrapDataRoute = (
     timeline: () => timeline,
     getLoadErrors: () => errors,
     hasInFlightWork: hasDataInFlightWork,
-    hasUnsavedChanges: () => mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
+    hasUnsavedChanges: () => mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || calendarCreateSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
     unsavedChangesPrompt: () => (mailMessageSurface.hasUnsavedChanges()
-      ? 'Leave Data? Your email draft is not saved.' : calendarEventSurface.hasUnsavedChanges()
+      ? 'Leave Data? Your email draft is not saved.' : calendarCreateSurface.hasUnsavedChanges()
+      ? 'Leave Data? Your new event is not saved.' : calendarEventSurface.hasUnsavedChanges()
       ? 'Leave Data? Your event changes are not saved.' : recordsImport.hasUnsavedChanges()
       ? 'Leave Data? Your spreadsheet import is still open.' : mailFacts.hasUnsavedChanges()
       ? 'Leave Data? Your changes to a mail-fact template or kind of email are not saved.'
@@ -16951,6 +17231,7 @@ export const bootstrapDataRoute = (
     whenLoaded: async () => {
       await taskBulk.whenSettled();
       await pendingLoadPromise;
+      if (activeTab === 'search') await assetSearch.whenLoaded();
       if (activeTab === 'calendar' && explorerDetail === null) await calendarAgenda.whenLoaded();
       if (activeTab === 'reminder') await remindersSurface.whenLoaded();
     },
@@ -17020,11 +17301,17 @@ export const bootstrapDataRoute = (
     dispose: () => {
       sphereControl?.dispose();
       if (disposed) return;
+      if (activeTab === 'search') {
+        const saved = readSearchAssetReturn<SearchResume>(doc, searchContinuityOwner);
+        if (saved) saveSearchAssetReturn(doc, searchContinuityOwner, { ...saved, state: captureSearchState() });
+      }
       disposed = true;
       retireUniversalSearch();
+      assetSearch.dispose();
       remindersSurface.dispose();
       taskBulk.dispose();
       calendarAgenda.dispose();
+      calendarCreateSurface.dispose();
       calendarEventSurface.dispose();
       mailMessageSurface.dispose();
       projectWork?.dispose();
@@ -17032,6 +17319,7 @@ export const bootstrapDataRoute = (
       contactSearchRefresh.cancel();
       bookingSearchRefresh.cancel();
       taskSearchRefresh.cancel();
+      commitmentSearchRefresh.cancel();
       if (liveRefreshTimer !== null) {
         clearTimeout(liveRefreshTimer);
         liveRefreshTimer = null;
@@ -17046,6 +17334,7 @@ export const bootstrapDataRoute = (
       routeRoot.removeEventListener('change', onChange);
       routeRoot.removeEventListener('submit', onRecordsViewSubmit);
       routeRoot.removeEventListener('keydown', onKeyDown);
+      routeRoot.removeEventListener('submit', calendarCreateSurface.handleSubmit);
       doc.removeEventListener('focusin', onCollectionFocusIn);
       doc.removeEventListener('focusout', onCollectionFocusOut);
       collectionPickerBreakpoint?.removeEventListener?.('change', onCollectionBreakpointChange);

@@ -1431,6 +1431,16 @@ describe('GraphCalProvider — startSync', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('GraphCalProvider — createEvent', () => {
+  it('offers only selected Outlook calendars with verified edit permission', async () => {
+    const { fetcher } = makeRouter([{ match: url => url.includes('/me/calendars'), response: { status: 200, body: { value: [
+      { id: 'work', name: 'Work', canEdit: true }, { id: 'read', canEdit: false }, { id: 'unknown' }, { id: 'outside', canEdit: true },
+    ] } } }]);
+    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig({ calendar_filter: ['work', 'read', 'unknown'] }),
+      accountStore: seedStore(), providerConfig, fetcher });
+    cleanup.push(() => provider.close());
+    expect(await provider.listWritableCalendars!()).toEqual([{ calendar_id: 'work', name: 'Work' }]);
+  });
+
   it('POSTs /me/calendars/{id}/events and returns a canonical payload', async () => {
     const store = seedStore();
     const { fetcher, calls } = makeRouter([
@@ -1507,12 +1517,42 @@ describe('GraphCalProvider — createEvent', () => {
 });
 
 describe('GraphCalProvider — updateEvent', () => {
-  it('PATCHes /me/events/{id} and returns canonical payload', async () => {
+  it('keeps rich notes and meeting details outside owner patches and scopes conditional updates to their calendar', async () => {
+    const current: GraphCalEvent = { id: 'event', '@odata.etag': 'W/"e1"', subject: 'Planning', isOrganizer: true, isOnlineMeeting: true,
+      body: { contentType: 'html', content: '<p>Agenda</p><a href="https://teams.example.com/join">Join</a>' },
+      start: { dateTime: '2026-10-30T16:00:00', timeZone: 'UTC' }, end: { dateTime: '2026-10-30T17:00:00', timeZone: 'UTC' },
+      attendees: [{ emailAddress: { address: 'guest@example.com' }, type: 'required' }] };
+    let canEdit = true, rejectVersion = false, guardCalled = false;
+    const patches: Array<{ url: string; etag?: string; body: Record<string, unknown> }> = [];
+    const fetcher: HttpFetcher = async (url, init) => {
+      if (init?.method === 'PATCH') {
+        expect(guardCalled).toBe(true); patches.push({ url, etag: init.headers?.['If-Match'], body: JSON.parse(init.body as string) });
+      }
+      const body = url.includes('/me/calendars?') ? { value: [{ id: 'team', canEdit, name: 'Team' }] } : current;
+      const status = rejectVersion && init?.method === 'PATCH' ? 412 : 200;
+      return { status, ok: status === 200, async json() { return body; }, async text() { return JSON.stringify(body); } };
+    };
+    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher });
+    cleanup.push(() => provider.close());
+    const context = await provider.readEventForEdit!('team', 'event');
+    expect(context.editable_fields).toEqual(['summary', 'start_at', 'end_at', 'location']);
+    canEdit = false; expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toEqual([]);
+    canEdit = true; current.isOrganizer = false;
+    expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toEqual([]);
+    current.isOrganizer = true;
+    const input = { calendar_id: 'team', source_id: 'event', expected_etag: 'W/"e1"', patch: { summary: 'Review' }, before_send: () => { guardCalled = true; } };
+    await provider.updateEvent(input);
+    expect(patches[0]).toEqual({ url: 'https://graph.microsoft.com/v1.0/me/calendars/team/events/event', etag: 'W/"e1"', body: { subject: 'Review' } });
+    rejectVersion = true;
+    await expect(provider.updateEvent(input)).rejects.toMatchObject({ code: 'version_conflict' });
+  });
+
+  it('PATCHes the named calendar event and returns canonical payload', async () => {
     const store = seedStore();
     const { fetcher, calls } = makeRouter([
       {
         match: (u, init) =>
-          u.endsWith('/me/events/evt-1') && init?.method === 'PATCH',
+          u.endsWith('/me/calendars/cal-1/events/evt-1') && init?.method === 'PATCH',
         response: {
           status: 200,
           body: {
@@ -1925,7 +1965,7 @@ describe('GraphCalProvider — a time is sent as the wall clock of its zone', ()
       {
         match: (u, init) => {
           const hit = (u.endsWith('/me/calendars/cal-1/events') && init?.method === 'POST')
-            || (u.endsWith('/me/events/evt-1') && init?.method === 'PATCH');
+            || (u.endsWith('/me/calendars/cal-1/events/evt-1') && init?.method === 'PATCH');
           // The router's own type for a request names only its method.
           const body = (init as { body?: unknown } | undefined)?.body;
           if (hit && typeof body === 'string') bodies.push(body);

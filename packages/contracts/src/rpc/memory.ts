@@ -199,7 +199,26 @@ export interface MemoryUpdateRequest {
   event_at?: number;
 }
 
-/** Result of a `memory.create` / `memory.update`. */
+/** Inbound shape for `memory.replace` (D-198 §12) — the owner replaces an AGENT's
+ *  entry with their own version. Writes a NEW `user_self` row carrying
+ *  `replaces: memory_id`; the agent's row is never touched, and deleting the
+ *  owner's version makes the agent's current again. Only a live, current agent
+ *  (`contracted_user`) entry can be replaced. A method of its own rather than a
+ *  field on `memory.create`: an older server refuses an unknown method
+ *  (`unknown_method`) where it would silently ignore an unknown field and save
+ *  an unlinked note. */
+export interface MemoryReplaceRequest {
+  /** The agent entry to replace — its current version. */
+  memory_id: string;
+  kind: string;
+  summary?: string;
+  /** Same shape and storage as `memory.create`'s body. */
+  body?: unknown;
+  event_at?: number;
+}
+
+/** Result of a `memory.create` / `memory.update` / `memory.replace` (the NEW
+ *  row's id for a replace). */
 export interface MemoryMutationResult {
   memory_id: string;
   /** Provenance edges actually written (may be < requested when some

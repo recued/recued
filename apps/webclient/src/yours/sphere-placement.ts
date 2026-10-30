@@ -25,7 +25,9 @@ export const mountSpherePlacement = (host: HTMLElement, ref: SituationRef, calle
   source.className = resetSource.className = 'data-button';
   const refresh = async () => {
     const next = await callers.read(ref); if (disposed || !root.isConnected) return;
-    placement = next; summary.textContent = `${next.sphere === 'personal' ? 'Personal' : next.sphere === 'professional' ? 'Professional' : 'Unsorted'} · ${next.reason}`;
+    placement = next;
+    const sphereLabel = next.sphere === 'personal' ? 'Personal' : next.sphere === 'professional' ? 'Professional' : 'Unsorted';
+    summary.textContent = next.reason === 'unsorted' ? `Sphere · ${sphereLabel}` : `${sphereLabel} · ${next.reason}`;
     choice.value = next.pinned ? next.sphere ?? '' : ''; source.hidden = !next.source; resetSource.hidden = !next.source;
     source.disabled = !next.sphere;
   };

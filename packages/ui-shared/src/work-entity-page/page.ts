@@ -26,6 +26,7 @@ import {
   workEntityNavSpec,
   type BookingLifecycleState,
   type TaskViewFilters,
+  type CommitmentViewFilters,
   type FormDefinition,
   type SourceDropdownOption,
   type WorkEntityListRow,
@@ -66,6 +67,9 @@ export interface WorkEntityPageProps {
   /** Booking-only server-side lifecycle filter echoed into the list control. */
   booking_lifecycle_filter?: BookingLifecycleState | 'all';
   task_filters?: TaskViewFilters;
+  commitment_filters?: CommitmentViewFilters;
+  counterparty_labels?: Readonly<Record<string, string>>;
+  commitment_view?: WorkEntityDialogProps['commitment_view'];
   task_selection?: TaskListSelection;
   list_toolbar_html?: string;
   /** Exact row whose edit detail is loading. It remains focusable while busy. */
@@ -122,6 +126,8 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
     empty_state_copy: spec.empty_state_copy,
     search_query: state.search_query,
     ...(props.task_filters !== undefined ? { task_filters: props.task_filters } : {}),
+    ...(props.commitment_filters ? { commitment_filters: props.commitment_filters } : {}),
+    ...(props.counterparty_labels ? { counterparty_labels: props.counterparty_labels } : {}),
     ...(props.task_selection ? { task_selection: props.task_selection } : {}),
     ...(props.list_toolbar_html ? { toolbar_html: props.list_toolbar_html } : {}),
     ...(state.kind === 'booking'
@@ -145,6 +151,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           task_details_open: props.task_details_open === true,
           note_details_open: props.note_details_open === true,
           ...(props.note_view ? { note_view: props.note_view } : {}),
+          ...(props.commitment_view ? { commitment_view: props.commitment_view } : {}),
           ...(props.close_label ? { close_label: props.close_label } : {}),
           ...(props.task_completion !== undefined
             ? { task_completion: props.task_completion } : {}),

@@ -58,7 +58,7 @@ import type {
 } from '../saved-data-views.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
 import type { Dish, DishGroup, DishLastRun, DishRunRow, DishWebhookDoorChange } from '../dish.js';
-import type { CalendarEventRef, CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult } from '../calendar-event-rpc.js';
+import type { CalendarEventRef, CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarEventDestinations, CalendarEventCreateRequest, CalendarEventCreateResult } from '../calendar-event-rpc.js';
 import type { CacheEntry } from '../cache.js';
 import type {
   RecipeDefinition,
@@ -361,6 +361,7 @@ import type {
   MemoryImportResult,
   MemoryRestoreRequest,
   MemoryRestoreResult,
+  MemoryReplaceRequest,
 } from './memory.js';
 import type {
   ExposurePreset,
@@ -6767,6 +6768,10 @@ export type ServerRpcRegistry = {
   'memory.import': RpcMethodSpec<MemoryImportRequest, MemoryImportResult>;
   // D-198 §10 — the owner undoes an AGENT's forget (owner-trusted, like the rest).
   'memory.restore': RpcMethodSpec<MemoryRestoreRequest, MemoryRestoreResult>;
+  // D-198 §12 — the owner replaces an AGENT's entry with their own version (a new
+  // `user_self` row carrying `replaces`). Its own method so an older server
+  // refuses it (`unknown_method`) instead of ignoring a field on `memory.create`.
+  'memory.replace': RpcMethodSpec<MemoryReplaceRequest, MemoryMutationResult>;
 
   // ── triggers.* — event-driven recipe dispatch (§Recipe triggers) ─
   'triggers.list': RpcMethodSpec<void, { triggers: EventTrigger[] }>;
@@ -7003,6 +7008,8 @@ export type ServerRpcRegistry = {
   >;
   /** Paired owner details and version-bound edits of single local events. */
   'collection.calendar.event.get': RpcMethodSpec<CalendarEventRef, CalendarEventSnapshot>;
+  'collection.calendar.event.destinations': RpcMethodSpec<void, CalendarEventDestinations>;
+  'collection.calendar.event.create': RpcMethodSpec<CalendarEventCreateRequest, CalendarEventCreateResult>;
   'collection.calendar.event.update': RpcMethodSpec<CalendarEventUpdateRequest, CalendarEventSnapshot>;
   'collection.calendar.event.respond': RpcMethodSpec<CalendarEventRespondRequest, CalendarEventRespondResult>;
   /** Patch retention / quota / expansion / poll cadence. `reprobe:
@@ -9208,6 +9215,7 @@ export const SERVER_RPC_METHODS = [
   'memory.delete',
   'memory.import',
   'memory.restore',
+  'memory.replace',
   'triggers.list',
   'triggers.create',
   'triggers.update',
@@ -9234,6 +9242,8 @@ export const SERVER_RPC_METHODS = [
   'collection.calendar.updateCredentials',
   'collection.calendar.list',
   'collection.calendar.event.get',
+  'collection.calendar.event.destinations',
+  'collection.calendar.event.create',
   'collection.calendar.event.update',
   'collection.calendar.event.respond',
   'collection.calendar.update',

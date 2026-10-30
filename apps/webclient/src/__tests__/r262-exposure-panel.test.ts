@@ -164,6 +164,12 @@ const findByAttr = (
   return null;
 };
 
+/** Every line under a connection example (`exposure-connect-snippet-note`), in order. */
+const collectNotes = (root: FakeElement): FakeElement[] => [
+  ...(root.className === 'exposure-connect-snippet-note' ? [root] : []),
+  ...root.children.flatMap((child) => collectNotes(child)),
+];
+
 const collectText = (root: FakeElement): string => {
   let out = root.textContent ?? '';
   for (const c of root.children) out += ` ${collectText(c)}`;
@@ -827,6 +833,17 @@ describe('Connection example — the MCP snippet lives where the endpoint is dec
     const desktopBody = (desktop as unknown as { textContent: string }).textContent;
     expect(desktopBody).toContain('"--mcp"');
     expect(desktopBody).not.toContain('://');
+    // Its second step follows it as a plain line, the command as code, and is
+    // no tab stop: it carries neither the snippet attribute nor a tabindex.
+    const lines = collectNotes(host);
+    expect(lines.map((line) => line.children[0]?.textContent)).toEqual([
+      'recued mcp-key set --app claude-desktop',
+      expect.stringContaining('"RECUED_MCP_TOKEN"'),
+    ]);
+    for (const line of lines) {
+      expect(line.hasAttribute(EXPOSURE_CONNECT_SNIPPET_ATTR)).toBe(false);
+      expect(line.hasAttribute('tabindex')).toBe(false);
+    }
   });
 });
 

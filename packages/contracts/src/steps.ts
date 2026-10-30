@@ -18,7 +18,8 @@ export type StepType = 'transform' | 'ingredient' | 'guard' | 'unknown';
  *    the sidebar can paint stale data immediately, then a background refresh
  *    re-runs expired steps and updates the UI when fresh values arrive.
  */
-export type CacheFreshness = 'fresh' | 'acceptable' | 'any';
+export const CACHE_FRESHNESS_MODES = ['fresh', 'acceptable', 'any'] as const;
+export type CacheFreshness = typeof CACHE_FRESHNESS_MODES[number];
 
 /** Per-call options the engine passes through the IngredientExecutor chain.
  *  Derived from the step definition; cache wrappers + dispatch adapters

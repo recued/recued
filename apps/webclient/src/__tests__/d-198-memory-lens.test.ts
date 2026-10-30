@@ -40,6 +40,7 @@ import {
   MEMORY_LENS_SELECT_ACTION,
   MEMORY_OPEN_ACTION,
   MEMORY_OPEN_RUN_ACTION,
+  MEMORY_REPLACE_ACTION,
   MEMORY_RESTORE_ACTION,
   memoryFilterActors,
   renderLensSwitcher,
@@ -729,6 +730,51 @@ describe('renderMemoryLens — Slice 4 redaction UI', () => {
   });
 });
 
+describe('renderMemoryLens — a run you started is the record of a run, not a note you wrote (D-198 §11)', () => {
+  // `user_self` like a note you wrote, but audit-authored — `run_id` set, exactly
+  // as `memory.list` projects a run the owner started. The server refuses to edit
+  // it (409) and forgets it instead of deleting it.
+  const ownRun = entry({
+    memory_id: 'run-own', origin_actor: 'user_self', kind: 'run', ts: 998_000,
+    summary: 'ran my recipe', run_id: 'run-own',
+  });
+  const ownNote = entry({
+    memory_id: 'umem_mine', origin_actor: 'user_self', kind: 'note', ts: 999_000,
+    has_body: true, body_preview: 'mine', size_bytes: 4,
+  });
+  const forgetButton = (id: string): RegExp =>
+    new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="${id}"[^>]*>Forget<`);
+
+  it('offers Forget, never Edit or Delete, on your own run — while your note keeps both', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [ownNote, ownRun], canWrite: true });
+    expect(html).not.toMatch(new RegExp(`${MEMORY_EDIT_ACTION}[^>]*data-memory-id="run-own"`));
+    expect(html).toMatch(forgetButton('run-own'));
+    expect(html).not.toMatch(/aria-label="Delete memory ran my recipe/);
+    // the control: the same origin, written by you, is still yours to change
+    expect(html).toMatch(new RegExp(`${MEMORY_EDIT_ACTION}[^>]*data-memory-id="umem_mine"`));
+    expect(html).toMatch(/aria-label="Delete memory mine \(umem_mine\)"/);
+    expect(html).not.toMatch(forgetButton('umem_mine'));
+  });
+
+  it('asks to forget your run, not to delete it', () => {
+    const html = renderMemoryLens({
+      ...baseProps, entries: [ownRun], canWrite: true, pendingDeleteId: 'run-own',
+    });
+    expect(html).toContain('Forget this memory?');
+    expect(html).not.toContain('Delete this memory?');
+  });
+
+  it('detail: Forget, not Edit, on your own run', () => {
+    const detail: MemoryDetailState = {
+      memory_id: 'run-own', loading: false,
+      entry: { memory_id: 'run-own', origin_actor: 'user_self', kind: 'run', ts: 1, summary: 'ran', run_id: 'run-own' },
+    };
+    const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail });
+    expect(html).toContain('>Forget<');
+    expect(html).not.toContain(MEMORY_EDIT_ACTION);
+  });
+});
+
 describe('memory feed pagination', () => {
   /** ⛔ THE LENS NEVER ASKED FOR PAGE 2. `memory.list` has always returned a
    *  `next_cursor`; the route dropped it and the lens rendered nothing about
@@ -833,5 +879,76 @@ describe('renderMemoryLens — an agent replacing or forgetting its own entries'
       entry: { memory_id: 'umem_7', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 999_000, redacted: true, forgotten_by: 'your chat' },
     };
     expect(renderMemoryLens({ ...baseProps, entries: [], detail })).toContain('Forgotten by your chat.');
+  });
+});
+
+describe('renderMemoryLens — replacing an agent note with your own version (D-198 §12)', () => {
+  const agentNote = entry({
+    memory_id: 'umem_agent', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 998_000,
+    summary: 'Dana prefers phone calls', has_body: true, body_preview: 'Dana prefers phone calls',
+  });
+  const replaceButton = (id: string): RegExp =>
+    new RegExp(`<button[^>]*"${MEMORY_REPLACE_ACTION}"[^>]*data-memory-id="${id}"[^>]*>`);
+
+  it('offers Replace beside Forget on a live, current agent note — never Edit', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [agentNote], canWrite: true });
+    expect(html).toMatch(replaceButton('umem_agent'));
+    expect(html).toMatch(/aria-label="Replace memory Dana prefers phone calls \(umem_agent\)">Replace</);
+    expect(html).toContain('>Forget<');
+    expect(html).not.toContain(MEMORY_EDIT_ACTION);
+    // read-only mode offers nothing
+    expect(renderMemoryLens({ ...baseProps, entries: [agentNote] })).not.toContain(MEMORY_REPLACE_ACTION);
+  });
+
+  it('⛔ offers no Replace on a run, a forgotten note, one already replaced, or your own note', () => {
+    const entries = [
+      entry({ memory_id: 'run-1', origin_actor: 'system', kind: 'run', ts: 1, run_id: 'run-1' }),
+      entry({ memory_id: 'run-2', origin_actor: 'contracted_user', kind: 'run', ts: 2, run_id: 'run-2' }),
+      entry({ memory_id: 'umem_gone', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 3, redacted: true }),
+      entry({ memory_id: 'umem_old', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 4, replaced_by: 'umem_new' }),
+      entry({ memory_id: 'umem_mine', origin_actor: 'user_self', kind: 'note', ts: 5 }),
+    ];
+    const html = renderMemoryLens({ ...baseProps, entries, canWrite: true });
+    expect(html).not.toContain(MEMORY_REPLACE_ACTION);
+    // the replaced one can still be forgotten; the controls did not vanish with Replace
+    expect(html).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="umem_old"[^>]*>Forget<`));
+  });
+
+  it('shows the prefill in flight on Replace, holds Forget, and keeps a failure on its own row', () => {
+    const opening = renderMemoryLens({ ...baseProps, entries: [agentNote], canWrite: true, openingEditId: 'umem_agent' });
+    const replace = opening.match(replaceButton('umem_agent'))?.[0] ?? '';
+    expect(replace).toContain('aria-busy="true"');
+    expect(opening).toContain('Opening…');
+    expect(opening).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*aria-disabled="true"[^>]*>Forget<`));
+
+    const failed = renderMemoryLens({
+      ...baseProps, entries: [agentNote], canWrite: true,
+      editError: { memoryId: 'umem_agent', message: '<server too old>' },
+    });
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain('&lt;server too old&gt;');
+  });
+
+  it('names the act in the form, and says what saving does and how to undo it', () => {
+    const compose: MemoryComposeState = {
+      open: true, mode: 'replace', editId: 'umem_agent',
+      kind: 'chat_memory', summary: 'Dana prefers email', body: '', submitting: false,
+    };
+    const html = renderMemoryLens({ ...baseProps, entries: [agentNote], canWrite: true, compose });
+    expect(html).toContain('aria-label="Replace with your version"');
+    expect(html).toContain('Saving puts your version in place of the agent’s');
+    expect(html).toContain('Delete yours later and the agent’s comes back');
+    expect(renderMemoryLens({ ...baseProps, entries: [], canWrite: true, compose: { ...compose, mode: 'create' } }))
+      .not.toContain('in place of the agent’s');
+  });
+
+  it('detail: Replace beside Forget on an agent note', () => {
+    const detail: MemoryDetailState = {
+      memory_id: 'umem_agent', loading: false,
+      entry: { memory_id: 'umem_agent', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 1, summary: 'Dana prefers phone calls', body: 'full' },
+    };
+    const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail });
+    expect(html).toMatch(replaceButton('umem_agent'));
+    expect(html).toContain('>Forget<');
   });
 });

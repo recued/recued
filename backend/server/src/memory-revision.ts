@@ -1,4 +1,5 @@
-/** D-198 §10 — an agent replaces or forgets its OWN pool entries.
+/** D-198 §10 — an agent replaces or forgets its OWN pool entries; §12 — the owner
+ *  replaces an agent's entry with their own version (`checkOwnerReplace`).
  *
  *  The pool was add-only for an agent: a correction became a second entry, and
  *  recall returned both as equally-ranked contradictions. An agent may now revise
@@ -18,9 +19,28 @@
  *
  *  Spec: D-198 §10. */
 
+import type Database from 'better-sqlite3';
 import type { Collection } from '@recued/storage';
 import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
+import { createSQLiteCollection } from './sqlite-collection.js';
 import type { UserMemoryRow, UserMemoryStore } from './user-memory-store.js';
+
+/** The table the redaction overlay lives in, beside `links` and the audit log. */
+export const MEMORY_REDACTION_TABLE = 'memory_redactions';
+
+/** The redaction overlay on `db`. Boot opens it once for the memory handlers; a
+ *  reader that holds only the database handle opens it here.
+ *
+ *  ⛔ The run readers an AI reaches (`data.timeline` in all three channels, the
+ *  MCP run history) are composed in four places, one of them a separate stdio
+ *  process that wires no memory stores at all. A store each of them had to be
+ *  handed would fail OPEN wherever one was missed, and a forgotten run would come
+ *  back with its output. Reading the marks off the handle their own query runs on
+ *  cannot be missed: no database, no runs to read, no marks to honour. */
+export const openMemoryRedactionStore = (
+  db: Database.Database,
+): Collection<MemoryRedactionRecord> =>
+  createSQLiteCollection<MemoryRedactionRecord>(db, MEMORY_REDACTION_TABLE);
 
 /** A replace lineage longer than this is treated as ending here. Real lineages
  *  are a handful of versions; the bound only keeps a corrupt cycle finite. */
@@ -110,6 +130,44 @@ export const checkOwnEntry = async (
   }
   if (forgotten.has(memory_id)) {
     return { ok: false, refusal: 'forgotten', message: `'${memory_id}' was forgotten` };
+  }
+  return { ok: true, row };
+};
+
+export type OwnerReplaceCheck =
+  | { ok: true; row: UserMemoryRow }
+  | { ok: false; refusal: 'not_found' | 'not_replaceable'; message: string };
+
+/** D-198 §12 — may the OWNER replace `memory_id` with their own version? Only a
+ *  live, current agent entry: the owner edits their own notes, and a version
+ *  already replaced has a newer one to replace instead. The words go to the owner,
+ *  so they name the next step and never an id. */
+export const checkOwnerReplace = async (
+  store: Pick<UserMemoryStore, 'getRow' | 'replacementsOf'>,
+  forgotten: ReadonlySet<string>,
+  memory_id: string,
+): Promise<OwnerReplaceCheck> => {
+  const row = await store.getRow(memory_id);
+  if (row === null) return { ok: false, refusal: 'not_found', message: 'memory entry not found' };
+  if (row.origin_actor === 'user_self') {
+    return { ok: false, refusal: 'not_replaceable', message: 'This is your own memory. Edit it instead.' };
+  }
+  if (row.origin_actor !== 'contracted_user') {
+    return { ok: false, refusal: 'not_replaceable', message: 'Only a memory an agent saved can be replaced.' };
+  }
+  if (forgotten.has(memory_id)) {
+    return {
+      ok: false,
+      refusal: 'not_replaceable',
+      message: 'This memory was forgotten. Restore it first, or add a new memory.',
+    };
+  }
+  if ((await currentVersionOf(store, forgotten, memory_id)) !== memory_id) {
+    return {
+      ok: false,
+      refusal: 'not_replaceable',
+      message: 'A newer version already replaced this memory. Replace that one instead.',
+    };
   }
   return { ok: true, row };
 };

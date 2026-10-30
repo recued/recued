@@ -519,6 +519,23 @@ ${TASK_DUE_STYLES}
   font-weight: 600;
   cursor: pointer;
 }
+.work-entity-commitment-reader { overflow: hidden; }
+.work-entity-commitment-reader .work-entity-dialog-header { padding: 20px; flex-shrink: 0; }
+.work-entity-commitment-reader button[aria-disabled="true"] { opacity: .6; cursor: default; }
+.work-entity-commitment-content { padding: 20px; display: grid; gap: 16px; min-width: 0; min-height: 0; overflow: auto; }
+.work-entity-commitment-content p { margin: 0; }
+.work-entity-commitment-statement { font-size: 20px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.work-entity-commitment-status { font-weight: 600; color: var(--fg-muted); }
+.work-entity-commitment-status.is-overdue { color: var(--danger,#b42318); }
+.work-entity-commitment-meta { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 0; }
+.work-entity-commitment-meta dt { font-size: 12px; color: var(--fg-muted); margin-bottom: 4px; }
+.work-entity-commitment-meta dd { margin: 0; overflow-wrap: anywhere; }
+.work-entity-commitment-reader .work-entity-dialog-actions { flex-wrap: wrap; flex-shrink: 0; padding: 16px 20px; }
+@media(max-width:600px) {
+  .work-entity-commitment-meta { grid-template-columns: minmax(0,1fr); }
+  .work-entity-commitment-reader .work-entity-dialog-actions button { min-height: 44px; }
+  .work-entity-commitment-filters { flex-wrap: wrap; }
+}
 @media (max-width: 360px) {
   .work-entity-list-search {
     align-items: stretch;

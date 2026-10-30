@@ -41,6 +41,7 @@ import {
   validateTriggerSteps,
   validateWait,
   validateStepPages,
+  validateStepCache,
   validateOnFailure,
   validateProvenance,
   validateChatExposed,
@@ -60,6 +61,7 @@ import {
 } from './validate/references.js';
 import { validateQualityChecks } from './validate/quality.js';
 import { validateContracts } from './validate/contracts.js';
+import { validateKernelArguments } from './validate/kernel-arguments.js';
 
 /** Validation severity tiers.
  *  - `error` blocks install / publish. valid === false when any error is present.
@@ -114,6 +116,8 @@ export const validateRecipe = (input: unknown): ValidationResult => {
   validateTriggerSteps(r, declaredStepIds, add);
   validateWait(r, add);
   validateStepPages(r, add);
+  validateStepCache(r, add);
+  validateKernelArguments(r, add);
   validateOnFailure(r, add);
   validateProvenance(r, add);
   validateChatExposed(r, add);

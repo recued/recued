@@ -6618,7 +6618,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(guide.children[0]?.textContent)
       .toBe('Carry on replacing the key');
     expect(subtreeText(guide)).toMatch(
-      /fresh key editor.*closed before any field changed/i,
+      /blank form for a new key.*closed before anything was typed/i,
     );
     expect(subtreeText(guide)).toMatch(
       /keeps no keys, typed values, or results/i,
@@ -6626,7 +6626,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(subtreeText(guide)).not.toMatch(
       /recovery finished|running 26\./i,
     );
-    expect(resume.textContent).toBe('Reopen the fresh editor');
+    expect(resume.textContent).toBe('Reopen the blank form');
 
     resume.click();
     expect(handle.activeRoute()).toBe('connections');
@@ -6720,7 +6720,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       'data-recued-connections-route-content',
     )!;
     expect(subtreeInnerHtml(connectionContent)).toMatch(
-      /data-connection-credential-recovery="editor_ready".*no field value or credential was restored.*data-conn-field="auth\.token"/is,
+      /data-connection-credential-recovery="editor_ready".*nothing typed before was kept.*data-conn-field="auth\.token"/is,
     );
     guide = findChildByAttr(
       fixture.root,
@@ -6757,7 +6757,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     )!;
     expect(guide.children[0]?.textContent)
       .toBe('Carry on replacing the key');
-    expect(resume.textContent).toBe('Reopen the fresh editor');
+    expect(resume.textContent).toBe('Reopen the blank form');
     expect(subtreeText(guide)).not.toMatch(
       /recovery finished|running 26\.|success receipt/i,
     );
@@ -7104,7 +7104,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       card,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
     )?.textContent).toMatch(
-      /look-only check says.*stayed on Server Updates/i,
+      /safety check says.*stayed on Server Updates/i,
     );
     expect(findChildByAttr(
       fixture.root,
@@ -7665,7 +7665,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findChildByAttr(
       fixture.root,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
-    )?.textContent).toMatch(/checking.*server-issued restart receipt/i);
+    )?.textContent).toMatch(/asking how the update went before checking this connection again/i);
 
     fixture.transportControls.fireMessage({
       type: 'rpc_result',
@@ -7816,7 +7816,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       reply: {
         error: {
           code: 'temporarily_unavailable',
-          message: 'try again',
+          message: 'raw-server-error-never-render',
         },
       },
     },
@@ -7922,7 +7922,9 @@ describe('bootstrapWebclient: Account server profiles', () => {
       UPDATES_RECEIPT_DIAGNOSTIC_ATTR,
     )?.hasAttribute('hidden')).toBe(automaticallyRetrying);
     expect(subtreeText(recovery)).not.toContain('rollback-ledger-receipt');
-    expect(subtreeText(recovery)).not.toContain('try again');
+    // The server's raw error text never reaches the card (the copy itself
+    // may say "try again", so the sentinel is unique).
+    expect(subtreeText(recovery)).not.toContain('raw-server-error-never-render');
     expect(handle.activeRoute()).toBe('settings');
     expect(fixture.hashSource.getHash()).toBe('#settings/updates');
     await handle.dispose();
@@ -8031,7 +8033,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await flush();
     expect(recovery.getAttribute('data-phase')).toBe('closed');
     expect(subtreeText(recovery)).toMatch(
-      /did not claim the rollback succeeded or failed/i,
+      /could not tell how the rollback went.*does not say it worked or failed/i,
     );
     expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
       phase: 'awaiting_reconnect',
@@ -8086,7 +8088,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await flush();
     expect(recovery.getAttribute('data-phase')).toBe('baseline_confirmed');
     expect(subtreeText(recovery)).toMatch(
-      /running 26\.8\.1.*github-main.*no credential verification.*current state only.*original rollback result is still unknown/is,
+      /running 26\.8\.1.*github-main: no key check is waiting.*this is how things are now.*how the rollback went is still unknown/is,
     );
     expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
       phase: 'awaiting_reconnect',
@@ -8114,7 +8116,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     });
     expect(recovery.getAttribute('data-phase')).toBe('completed');
     expect(subtreeText(recovery)).toMatch(
-      /all sorted.*controls work again.*one-off note.*gone after a reload.*original rollback.*unknown/is,
+      /all sorted.*controls work again.*note is only in this tab and is gone after a reload.*not whether the rollback worked/is,
     );
     expect(handle.activeRoute()).toBe('connections');
     expect(fixture.hashSource.getHash()).toBe(
@@ -8192,7 +8194,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       'data-recued-connections-route-content',
     )!;
     expect(subtreeInnerHtml(connectionContent)).toMatch(
-      /data-connection-credential-recovery="restart_ready".*server recovery is finished and server-change controls are unlocked.*original rollback result is still unknown.*data-conn-field="auth\.token"/is,
+      /data-connection-credential-recovery="restart_ready".*recovery is finished, and update and roll back work again.*how the rollback went is still unknown.*data-conn-field="auth\.token"/is,
     );
     expect(subtreeInnerHtml(connectionContent)).not.toContain(
       'rollback-ledger-receipt',
@@ -8355,7 +8357,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findChildByAttr(
       progress,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
-    )?.textContent).toMatch(/open Recued tab.*not do the same thing twice/i);
+    )?.textContent).toMatch(/^Recued is updating your server\. .*Nothing is sent twice\.$/);
     expect(handle.activeRoute()).toBe('settings');
     expect(fixture.hashSource.getHash()).toBe('#settings/updates');
 
@@ -8380,7 +8382,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findChildByAttr(
       progress,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
-    )?.textContent).toMatch(/accepted.*waiting to observe the restart/i);
+    )?.textContent).toMatch(/accepted the update\. Waiting for it to restart/i);
 
     // The source tab recovered first. Its idle signal must not unlock this
     // receiver before this receiver observes its own transport boundary.
@@ -8391,7 +8393,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findChildByAttr(
       progress,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
-    )?.textContent).toMatch(/accepted.*waiting to observe the restart/i);
+    )?.textContent).toMatch(/accepted the update\. Waiting for it to restart/i);
     expect(capabilityCalls()).toHaveLength(1);
 
     fixture.transportControls.fireState('reconnecting');

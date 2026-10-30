@@ -32,6 +32,9 @@ import type {
   WorkEntitySearchKind,
 } from '@recued/contracts';
 
+import type { AssetSearchState } from './asset-search.js';
+import { ASSET_STATUS_WORDS } from '../yours/asset-status.js';
+
 /** Click-dispatch contract with the route's `onClick`. */
 export const SEARCH_OPEN_RECORD_ACTION = 'universal-search-open-record';
 export const SEARCH_OPEN_GROUP_ACTION = 'universal-search-open-group';
@@ -44,6 +47,9 @@ export const SEARCH_OPEN_WORK_ACTION = 'universal-search-open-work';
 export const SEARCH_MORE_WORK_ACTION = 'universal-search-more-work';
 export const SEARCH_WORK_KIND_ATTR = 'data-search-work-kind';
 export const SEARCH_WORK_ID_ATTR = 'data-search-work-id';
+export const SEARCH_OPEN_ASSET_ACTION = 'universal-search-open-asset';
+export const SEARCH_MORE_ASSETS_ACTION = 'universal-search-more-assets';
+export const SEARCH_ASSET_ID_ATTR = 'data-search-asset-id';
 export const SEARCH_OPEN_CONTACT_ACTION = 'universal-search-open-contact';
 export const SEARCH_MORE_CONTACTS_ACTION = 'universal-search-more-contacts';
 export const SEARCH_CONTACT_EMAIL_ATTR = 'data-search-contact-email';
@@ -113,6 +119,7 @@ export interface UniversalSearchProps {
   groups?: ReadonlyArray<CollectionSearchGroup>;
   workGroups?: ReadonlyArray<WorkEntitySearchGroup>;
   contactSearch?: UniversalContactSearch;
+  assetSearch?: AssetSearchState;
   workLoading?: boolean;
   workLoadingKinds?: ReadonlySet<WorkEntitySearchKind>;
   workError?: string;
@@ -265,6 +272,22 @@ const renderContactGroup = (search: UniversalContactSearch | undefined, actionAt
       <span class="rq-row-excerpt">${e([contact.email, contact.phone, contact.company].filter(Boolean).join(' · '))}</span>
     </button></li>`).join('')}</ul>
     ${!search.unsupported && (search.more || search.error) ? `<button type="button" class="rq-more" ${e(actionAttr)}="${SEARCH_MORE_CONTACTS_ACTION}"${search.loading ? ' aria-disabled="true" aria-busy="true"' : ''}>${search.error ? 'Retry contacts' : 'More contacts'}</button>` : ''}
+  </section>`;
+};
+
+const renderAssetGroup = (search: AssetSearchState | undefined, actionAttr: string): string => {
+  if (!search || !search.loading && !search.error && !search.unsupported && search.matches.length === 0) return '';
+  return `<section class="rq-group rq-asset-group" aria-label="Asset search results">
+    <h3 class="rq-group-head"><span class="rq-group-name">Assets</span><span class="rq-group-count" role="status">${search.unsupported ? 'Update required' : search.loading && !search.matches.length ? 'Searching' : search.error && !search.matches.length ? 'Unavailable' : `${search.matches.length} of ${search.total}${search.loading ? ' · Loading…' : ''}`}</span></h3>
+    ${search.unsupported ? '<p class="rq-subtle">Update your Recued server to search assets here.</p>' : ''}
+    ${search.error ? `<p class="rq-error" role="alert">${e(search.error)}</p>` : ''}
+    <ul class="rq-rows">${search.matches.map(asset => `<li class="rq-row"><a class="rq-row-btn" href="#yours/asset/${e(encodeURIComponent(asset.id))}"
+      ${e(actionAttr)}="${SEARCH_OPEN_ASSET_ACTION}" ${SEARCH_ASSET_ID_ATTR}="${e(asset.id)}">
+      <span class="rq-row-title">${e(asset.name)}</span>
+      <span class="rq-row-when">${e(asset.class_name)} · ${ASSET_STATUS_WORDS[asset.status]}</span>
+      ${asset.stale || asset.pending_write ? `<span class="rq-row-badges">${asset.stale ? '<span class="rq-badge rq-badge-stale">may be out of date</span>' : ''}${asset.pending_write ? '<span class="rq-badge rq-badge-stale">waiting for source confirmation</span>' : ''}</span>` : ''}
+    </a></li>`).join('')}</ul>
+    ${!search.unsupported && (search.more || search.error) ? `<button type="button" class="rq-more" ${e(actionAttr)}="${SEARCH_MORE_ASSETS_ACTION}"${search.loading ? ' aria-disabled="true" aria-busy="true"' : ''}>${search.loading ? 'Loading…' : search.error ? 'Retry assets' : 'More assets'}</button>` : ''}
   </section>`;
 };
 
@@ -441,6 +464,9 @@ export const renderUniversalSearch = (
     : 'Tasks, notes, projects, commitments, mail, calendar, files, installed recipes and packs.';
   if (props.contactSearch && !props.contactSearch.unsupported)
     scope = `Contacts, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
+  if (props.assetSearch && !props.assetSearch.unsupported)
+    scope = `Assets, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
+  if (props.assetSearch?.unsupported) scope += ' Update your Recued server to search assets too.';
   const box = `<label class="rq-search-label" for="rq-search-input">Search everything</label>
 <input id="rq-search-input" class="rq-search-input" type="search" autocomplete="off" aria-describedby="rq-search-scope"
   ${SEARCH_INPUT_ATTR} value="${e(props.query)}"
@@ -454,6 +480,9 @@ export const renderUniversalSearch = (
   const workGroups = props.workGroups ?? [];
   const visibleWork = workGroups.filter(group => group.matches.length > 0 || group.error);
   const workCount = workGroups.reduce((count, group) => count + group.matches.length, 0);
+  const assetCount = props.assetSearch?.matches.length ?? 0;
+  const assetGroup = renderAssetGroup(props.assetSearch, props.actionAttr);
+  const assetsUncertain = props.assetSearch?.loading || props.assetSearch?.error || props.assetSearch?.unsupported;
   const contactCount = props.contactSearch?.contacts.length ?? 0;
   const contactGroup = renderContactGroup(props.contactSearch, props.actionAttr);
   const recipes = props.recipes ?? [];
@@ -464,46 +493,48 @@ export const renderUniversalSearch = (
     : props.capabilitiesLoading === true ? 'Searching installed recipes and packs…' : '';
   const progress = pending || props.workLoading || props.contactSearch?.loading ? `<p class="rq-hint" role="status">${pending || (props.workLoading ? 'Searching tasks, notes, projects and commitments…' : 'Searching contacts…')}</p>` : '';
   const failed = props.error !== undefined || props.workError !== undefined
-    || props.capabilitiesError !== undefined || props.contactSearch?.error !== undefined || workGroups.some(group => group.error);
+    || props.capabilitiesError !== undefined || props.contactSearch?.error !== undefined || props.assetSearch?.error !== undefined || workGroups.some(group => group.error);
   const searchErrors = [props.error ? `Mail, calendar and files: ${props.error}` : undefined,
     props.workError, props.capabilitiesError].filter((error): error is string => error !== undefined);
   const errors = searchErrors.map(error => `<p class="rq-error" role="alert">${e(error)}</p>`).join('')
     + (searchErrors.length > 0 ? `<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_RETRY_ACTION}">Try again</button>` : '');
   const didYouMean = props.didYouMean !== undefined
-    && workCount === 0 && contactCount === 0 && !props.contactSearch?.loading && !props.contactSearch?.error && !props.contactSearch?.unsupported ? renderDidYouMean(props.didYouMean, props.actionAttr)
+    && workCount === 0 && assetCount === 0 && !assetsUncertain && contactCount === 0 && !props.contactSearch?.loading && !props.contactSearch?.error && !props.contactSearch?.unsupported ? renderDidYouMean(props.didYouMean, props.actionAttr)
     : '';
-  if (groups.length === 0 && workCount === 0 && contactCount === 0 && recipes.length === 0 && packs.length === 0) {
+  if (groups.length === 0 && workCount === 0 && assetCount === 0 && contactCount === 0 && recipes.length === 0 && packs.length === 0) {
     // An unfinished local read cannot establish an empty result or justify
     // offering a cloud search. Completed groups remain usable while it runs.
-    if (progress || failed) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}${contactGroup}
+    if (progress || failed || props.assetSearch?.loading) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}${assetGroup}${contactGroup}
       ${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true)).join('')}</div>`;
     // ⛔ NAMES THE SCOPE IT SEARCHED. "No results" alone cannot be told apart
     // from "the search did not run", and an owner reading the shorter sentence
     // concludes their data is not there when it may simply not be synced.
     return `<div class="rq-search">${box}
 ${didYouMean}
+${assetGroup}
 ${contactGroup}
 <p class="rq-empty">No matches in the searched sources for “${e(q)}”. Sources still syncing will not appear yet.</p>
 ${props.marketplaceError !== undefined
   ? `<p class="rq-error" role="alert">${e(props.marketplaceError)}</p>`
   : ''}
 ${market.length > 0 ? renderMarketGroup(market, props.actionAttr) : ''}
-${market.length === 0 && props.marketplaceOffered === true && !props.contactSearch?.unsupported
+${market.length === 0 && props.marketplaceOffered === true && !props.contactSearch?.unsupported && !assetsUncertain
   ? renderMarketOffer(q, props.actionAttr, props.marketplaceLoading === true)
   : ''}</div>`;
   }
   const total = groups.reduce((n, g) => n + g.matches.length, 0);
   const places = groups.length + workGroups.filter(group => group.matches.length > 0).length
-    + (contactCount > 0 ? 1 : 0) + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
-  const absent = groups.length > 0 && contactCount === 0 && props.absentWords !== undefined && props.absentWords.length > 0
+    + (assetCount > 0 ? 1 : 0) + (contactCount > 0 ? 1 : 0) + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
+  const absent = groups.length > 0 && assetCount === 0 && !assetsUncertain && contactCount === 0 && props.absentWords !== undefined && props.absentWords.length > 0
     ? renderAbsentWords(props.absentWords)
     : '';
   return `<div class="rq-search">${box}
 ${errors}
 ${absent}
 ${didYouMean}
-<p class="rq-summary" role="status">${total + workCount + contactCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) || props.contactSearch?.more ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
+<p class="rq-summary" role="status">${total + workCount + assetCount + contactCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) || props.contactSearch?.more || props.assetSearch?.more ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
 ${progress}
+${assetGroup}
 ${contactGroup}
 ${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true)).join('')}
 ${groups.map((g) => renderGroup(g, props.actionAttr, now)).join('')}
@@ -528,7 +559,7 @@ export const UNIVERSAL_SEARCH_STYLES = `
 .rq-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .rq-row-btn { display: grid; gap: 0.3rem; width: 100%; min-height: 44px; box-sizing: border-box; text-align: left;
   padding: 0.75rem; font: inherit; cursor: pointer; border: 1px solid var(--border); border-radius: 0.5rem;
-  background: var(--surface); color: var(--fg); }
+  background: var(--surface); color: var(--fg); text-decoration: none; }
 .rq-row-btn:hover { background: var(--surface-sunk); border-color: var(--border-strong); }
 .rq-row-title, .rq-row-excerpt, .rq-row-when { min-width: 0; overflow-wrap: anywhere; }
 .rq-row-title { font-weight: 600; line-height: 1.4; }
@@ -546,7 +577,7 @@ export const UNIVERSAL_SEARCH_STYLES = `
   background: var(--surface); color: var(--fg); }
 .rq-market-offer:hover, .rq-more:hover, .rq-retry:hover { background: var(--surface-sunk); }
 .rq-more[aria-disabled="true"] { cursor: progress; color: var(--fg-muted); }
-.rq-search button:focus-visible, .rq-search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rq-search :is(button, a):focus-visible, .rq-search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rq-subtle { font-size: 0.75rem; line-height: 1.5; color: var(--fg-muted); margin: 0; }
 .rq-error { margin: 0.25rem 0; font-size: 0.875rem; }
 .rq-did-you-mean { margin: 0.25rem 0; }

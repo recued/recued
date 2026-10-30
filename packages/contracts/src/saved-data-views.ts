@@ -6,6 +6,7 @@ import {
 import type { RecordsChangeCursor, RecordsPackRef } from './records.js';
 import { parseRecordsViewSettings, type RecordsViewSettings } from './records-view.js';
 import { parseTaskViewFilters, type TaskViewFilters } from './task-data-view.js';
+import { parseCommitmentViewFilters, type CommitmentViewFilters } from './commitment-data-view.js';
 
 export const SAVED_DATA_VIEW_LIMIT = 100;
 export const SAVED_DATA_VIEW_NAME_LIMIT = 100;
@@ -31,6 +32,7 @@ export type SavedDataViewDefinition =
       booking_lifecycle: BookingLifecycleState | 'all';
       /** Only valid on Tasks. Absent on older views means the default settings. */
       task_filters?: TaskViewFilters;
+      commitment_filters?: CommitmentViewFilters;
     }
   | { tab: 'mail' | 'calendar' | 'files'; collection_slug: string | null }
   /** ⛔ `webhook` IS LEGACY AND UNCREATABLE — READ PATH ONLY. Its "Webhook
@@ -250,6 +252,7 @@ export const parseSavedDataViewDefinition = (value: unknown): SavedDataViewDefin
   if (typeof tab === 'string' && WORK_ENTITY_KINDS.some((kind) => kind === tab)) {
     const keys = ['tab', 'query', 'source_id', 'booking_lifecycle'];
     if (tab === 'task' && Object.hasOwn(value, 'task_filters')) keys.push('task_filters');
+    if (tab === 'commitment' && Object.hasOwn(value, 'commitment_filters')) keys.push('commitment_filters');
     if (!keysAre(value, keys)
       || !boundedString(value.query, SAVED_DATA_VIEW_QUERY_LIMIT) || !locator(value.source_id)) return null;
     const lifecycle = value.booking_lifecycle;
@@ -264,6 +267,11 @@ export const parseSavedDataViewDefinition = (value: unknown): SavedDataViewDefin
       if (filters.completion !== 'all' || filters.due !== 'all' || filters.sort !== 'default') {
         definition.task_filters = filters;
       }
+    }
+    if (Object.hasOwn(value, 'commitment_filters')) {
+      const filters = parseCommitmentViewFilters(value.commitment_filters);
+      if (filters === null) return null;
+      if (filters.direction !== 'all' || filters.status !== 'all') definition.commitment_filters = filters;
     }
     return definition;
   }

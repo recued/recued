@@ -1303,7 +1303,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       });
     expect(triage).toHaveBeenCalledWith({ kind: 'api', name: 'guided-api' });
     const content = collectByAttr(root, CONNECTIONS_ROUTE_ENROLL_HOST_ATTR)[0]!;
-    expect(content.innerHTML).toContain('same running version seen before');
+    expect(content.innerHTML).toContain('the same as before the update');
     expect(content.innerHTML).toContain('Review server profile');
 
     clickAction(content, {

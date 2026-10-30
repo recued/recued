@@ -481,6 +481,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       ...CONTACT_MERGE_RPC_METHODS,
       'contact.search.local',
       'collection.calendar.event.get',
+      'collection.calendar.event.destinations',
+      'collection.calendar.event.create',
       'collection.calendar.event.respond',
       'collection.calendar.event.update',
       'collection.mail.message.get',

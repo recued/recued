@@ -12,7 +12,11 @@
  *      owner's own redaction;
  *    - reads: recall skips replaced entries and marks `by_you`; the owner's feed
  *      shows every mark; `memory.restore` lifts one agent forget; a recipe's
- *      `data.memory.<id>` no longer reads a forgotten entry. */
+ *      `data.memory.<id>` no longer reads a forgotten entry.
+ *    - §12: the OWNER replaces an agent's entry with their own version
+ *      (`memory.replace`) — a new `user_self` row in its place, refused for
+ *      anything but a live current agent entry, undone by deleting it, and not
+ *      something an agent can override. */
 
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -35,8 +39,11 @@ import {
 } from '../user-memory-store.js';
 import { buildChatTier1Handlers, buildChatToolRegistryInputs, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import {
+  handleMemoryCreate,
+  handleMemoryDelete,
   handleMemoryGet,
   handleMemoryList,
+  handleMemoryReplace,
   handleMemoryRestore,
   type MemoryRedactionRecord,
   type MemoryRpcDeps,
@@ -450,5 +457,108 @@ describe('recipes — data.memory.<id>', () => {
     expect(await lookup(live.memory_id)).toMatchObject({ memory_id: live.memory_id, summary: 'still here' });
     expect(await lookup(gone.memory_id)).toBeNull();
     expect(scope).toHaveBeenCalled();
+  });
+});
+
+// ── §12: the owner replaces an agent's entry ───────────────────────────
+
+describe('memory.replace — the owner puts their own version in an agent entry\'s place (§12)', () => {
+  const replace = (h: Harness, memory_id: string, summary: string) =>
+    handleMemoryReplace(h.rpcDeps, { memory_id, kind: 'note', summary, body: `${summary}, in full` });
+
+  it('writes a NEW note of yours that replaces it; the agent row is untouched; recall and the feed follow', async () => {
+    const h = harness();
+    const agents = okResult<{ memory_id: string }>(await write(h, ownerChat, 'Dana prefers phone calls'));
+    const before = await h.store.getRow(agents.memory_id);
+
+    const mine = await replace(h, agents.memory_id, 'Dana prefers email');
+    const row = await h.store.getRow(mine.memory_id);
+    expect(row).toMatchObject({ origin_actor: 'user_self', replaces: agents.memory_id, summary: 'Dana prefers email' });
+    expect(await h.store.getRow(agents.memory_id)).toEqual(before);
+
+    expect((await recalled(h, ownerChat)).map((m) => m.memory_id)).toEqual([mine.memory_id]);
+    const feed = (await handleMemoryList(h.rpcDeps, {})).entries;
+    expect(feed.find((e) => e.memory_id === agents.memory_id)?.replaced_by).toBe(mine.memory_id);
+    expect(feed.find((e) => e.memory_id === mine.memory_id)?.replaces).toBe(agents.memory_id);
+  });
+
+  it("keeps the replaced entry's links and event time, unless you give a time", async () => {
+    const h = harness();
+    const agents = await h.store.writeAuthored({
+      origin_actor: 'contracted_user', author_contract_id: 'door-a', kind: 'fact', summary: 'met at the expo',
+      event_at: 111, provenance_entity_ids: ['contact:dana@example.com'],
+    });
+    const kept = await replace(h, agents.memory_id, 'met at the trade fair');
+    expect(kept.provenance_edges_written).toBe(1);
+    expect(await h.store.getRow(kept.memory_id)).toMatchObject({
+      event_at: 111, provenance_entity_ids: ['contact:dana@example.com'],
+    });
+
+    const other = await h.store.writeAuthored({ origin_actor: 'contracted_user', author_contract_id: 'door-a', kind: 'fact', summary: 'x', event_at: 111 });
+    const timed = await handleMemoryReplace(h.rpcDeps, { memory_id: other.memory_id, kind: 'fact', summary: 'y', event_at: 222 });
+    expect((await h.store.getRow(timed.memory_id))?.event_at).toBe(222);
+  });
+
+  it("deleting your version makes the agent's entry current again", async () => {
+    const h = harness();
+    const agents = okResult<{ memory_id: string }>(await write(h, ownerChat, 'the gate code is 1234'));
+    const mine = await replace(h, agents.memory_id, 'the gate code is 4321');
+    expect(await handleMemoryDelete(h.rpcDeps, { memory_id: mine.memory_id })).toMatchObject({ deleted: true });
+    expect((await recalled(h, ownerChat)).map((m) => m.memory_id)).toEqual([agents.memory_id]);
+  });
+
+  it('⛔ refuses your own note, a forgotten entry, one a newer version replaced, and a run — and writes nothing', async () => {
+    const h = harness();
+    const own = await handleMemoryCreate(h.rpcDeps, { kind: 'note', summary: 'mine' });
+    const forgotten = okResult<{ memory_id: string }>(await write(h, ownerChat, 'old'));
+    okResult(await h.call('memory.forget', { memory_id: forgotten.memory_id }, ownerChat));
+    const v1 = okResult<{ memory_id: string }>(await write(h, ownerChat, 'v1'));
+    okResult(await write(h, ownerChat, 'v2', v1.memory_id));
+    const rows = (await h.store.list()).length;
+
+    await expect(replace(h, own.memory_id, 'x')).rejects.toThrow(/your own memory\. Edit it instead/);
+    await expect(replace(h, forgotten.memory_id, 'x')).rejects.toThrow(/was forgotten\. Restore it first/);
+    await expect(replace(h, v1.memory_id, 'x')).rejects.toThrow(/A newer version already replaced this memory/);
+    await expect(replace(h, `${USER_MEMORY_ID_PREFIX}missing`, 'x')).rejects.toThrow(/not found/);
+    const withRun: MemoryRpcDeps = {
+      ...h.rpcDeps,
+      auditLog: { get: async (id: string) => (id === 'run-1' ? { run_id: 'run-1' } : null) } as unknown as AuditLogStore,
+    };
+    await expect(handleMemoryReplace(withRun, { memory_id: 'run-1', kind: 'note', summary: 'x' }))
+      .rejects.toThrow(/A run can’t be replaced\. Forget it instead/);
+    expect((await h.store.list()).length).toBe(rows);
+  });
+
+  it("⛔ an agent cannot override it: its own corrected entry and your note are both refused, in words that say you corrected it", async () => {
+    const h = harness();
+    const agents = okResult<{ memory_id: string }>(await write(h, ownerChat, 'the office closes at 5'));
+    const mine = await replace(h, agents.memory_id, 'the office closes at 6');
+
+    const onCorrected = refusal(await write(h, ownerChat, 'the office closes at 4', agents.memory_id));
+    expect(onCorrected).toMatch(/the owner replaced .* with their own version/);
+    expect(onCorrected).not.toMatch(/as replaces instead/);
+    expect(refusal(await write(h, ownerChat, 'the office closes at 4', mine.memory_id))).toMatch(/the owner's own entry/);
+    expect((await recalled(h, ownerChat)).map((m) => m.memory_id)).toEqual([mine.memory_id]);
+  });
+
+  it("an agent forgetting its corrected entry leaves your version in recall", async () => {
+    const h = harness();
+    const agents = okResult<{ memory_id: string }>(await write(h, ownerChat, 'parking is on level 2'));
+    const mine = await replace(h, agents.memory_id, 'parking is on level 3');
+    okResult(await h.call('memory.forget', { memory_id: agents.memory_id }, ownerChat));
+    expect((await recalled(h, ownerChat)).map((m) => m.memory_id)).toEqual([mine.memory_id]);
+    expect(await h.redactions.get(mine.memory_id)).toBeNull();
+  });
+
+  it('your replace and an agent replace of one entry in the same tick: exactly one wins', async () => {
+    const h = harness();
+    const agents = okResult<{ memory_id: string }>(await write(h, ownerChat, 'v1'));
+    const [owner, agent] = await Promise.allSettled([
+      replace(h, agents.memory_id, 'yours'),
+      write(h, ownerChat, 'theirs', agents.memory_id),
+    ]);
+    const agentWon = agent.status === 'fulfilled' && agent.value.ok;
+    expect([owner.status === 'fulfilled', agentWon].filter(Boolean)).toHaveLength(1);
+    expect(await h.store.replacementsOf(agents.memory_id)).toHaveLength(1);
   });
 });

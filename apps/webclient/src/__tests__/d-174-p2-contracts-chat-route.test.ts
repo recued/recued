@@ -64,6 +64,7 @@ import {
   CONTRACTS_ROUTE_TAB_ATTR,
   CONTRACTS_ROUTE_TAB_BODY_ATTR,
   CONTRACTS_ROUTE_UNAVAILABLE_ATTR,
+  MCP_APP_KEY_SINCE,
   mcpEndpointFromServerUrl,
 } from '../contracts/bootstrap-contracts-route.js';
 import {
@@ -1277,12 +1278,26 @@ describe('D-174 contracts route — list → detail shell', () => {
       'claude', 'claude-code', 'cursor', 'cline', 'codex', 'openclaw', 'custom',
     ]);
     // Claude Desktop's config file starts local servers only: Recued's stdio
-    // mode, by full path, with the door's key in the environment. No address.
+    // mode, by full path, named so the owner can save its key with Recued
+    // (D-334). No address, and no key: it never sits in Claude Desktop's file.
     const claude = JSON.parse(snippets.get('claude')!).mcpServers.recued;
-    expect(Object.keys(claude)).toEqual(['command', 'args', 'env']);
-    expect(claude.args).toEqual(['--mcp']);
-    expect(Object.keys(claude.env)).toEqual(['RECUED_MCP_TOKEN']);
+    expect(Object.keys(claude)).toEqual(['command', 'args']);
+    expect(claude.args).toEqual(['--mcp', '--app', 'claude-desktop']);
     expect(snippets.get('claude')).not.toContain('https://');
+    expect(snippets.get('claude')).not.toContain("<this contract's key>");
+    const all = buildMcpClientSnippets('wss://alice.example/ws');
+    const notes = all.find((snippet) => snippet.id === 'claude')!.notes!;
+    expect(notes[0]!.code).toBe('recued mcp-key set --app claude-desktop');
+    // ⛔ A server before `mcp-key` reads "claude-desktop" as a command and
+    // prints its help onto Claude Desktop's stream, so the old form stays on
+    // offer, and it is valid config.
+    expect(notes[1]!.text).toContain(`Recued before ${MCP_APP_KEY_SINCE}`);
+    expect(JSON.parse(`{${notes[1]!.code!}}`)).toEqual({
+      args: ['--mcp'],
+      env: { RECUED_MCP_TOKEN: "<this contract's key>" },
+    });
+    // Every other client is one paste.
+    expect(all.filter((snippet) => snippet.notes !== undefined).map((snippet) => snippet.id)).toEqual(['claude']);
     // Cline defaults to SSE without a `type`.
     expect(JSON.parse(snippets.get('cline')!).mcpServers.recued).toMatchObject({
       type: 'streamableHttp',
@@ -1649,6 +1664,13 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(snippets).toHaveLength(buildMcpClientSnippets('ws://127.0.0.1:3001/ws').length);
     expect(snippets).toHaveLength(7);
     expect(snippets.every((snippet) => snippet.children[0]?.tagName === 'H3')).toBe(true);
+    // Claude Desktop's card carries its second step and the older-server form,
+    // each a line under the config with the command as code.
+    const claudeCard = snippets.find((snippet) => snippet.getAttribute(CONTRACTS_ROUTE_SNIPPET_ATTR) === 'claude')!;
+    expect(claudeCard.children.map((child) => child.tagName)).toEqual(['H3', 'PRE', 'P', 'P']);
+    expect(claudeCard.children[2]!.children[0]!.tagName).toBe('CODE');
+    expect(claudeCard.children[2]!.children[0]!.textContent).toBe('recued mcp-key set --app claude-desktop');
+    expect(claudeCard.children[3]!.textContent).toMatch(/^Recued before \d+\.\d+\.\d+ has no mcp-key\. /);
     // No key callers in this harness → the key panel degrades to a note (it
     // mounts for real in the D-327 coverage).
     expect(collectByAttr(root, CONTRACTS_ROUTE_UNAVAILABLE_ATTR)).toHaveLength(1);

@@ -1,12 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
-import { installCalendarEventFixture } from './helpers/calendar-event-fixture.js';
+import { installCalendarEventFixture, type CalendarEventFixtureMode } from './helpers/calendar-event-fixture.js';
 
 installFullAppHooks();
 // The browser is away from the event's zone: every edit must still use LA.
 test.use({ timezoneId: 'Asia/Tokyo' });
 const field = (page: Page, name: string) => page.locator(`[data-calendar-event-field="${name}"]`);
-const boot = async (page: Page, mode: 'timed' | 'all-day' | 'connected' | 'invitation' = 'timed') => {
+const boot = async (page: Page, mode: CalendarEventFixtureMode = 'timed') => {
   await page.clock.setFixedTime(new Date('2026-10-28T12:00:00Z'));
   await installCalendarEventFixture(page, mode);
   await page.goto(`${HARNESS_URL}?journey=verification&recipes=installed`);
@@ -15,6 +15,107 @@ const boot = async (page: Page, mode: 'timed' | 'all-day' | 'connected' | 'invit
   await page.locator('[data-collection-record]').first().click();
   await expect(page.locator('.calendar-event')).toContainText(mode === 'all-day' ? 'All day' : 'America/Los_Angeles');
 };
+
+test('edits a permitted Google event in its original calendar without creating or moving it', async ({ page }, testInfo) => {
+  await boot(page, 'editable-google');
+  const original = await page.evaluate(() => window.__calendarEvent.saved());
+  await page.getByRole('button', { name: 'Edit event', exact: true }).click();
+  await expect(page.locator('.calendar-event-editor')).toContainText('Google is asked to notify existing guests');
+  await field(page, 'summary').fill('Updated customer planning');
+  await field(page, 'location').fill('Room 5');
+  await field(page, 'end').fill('2026-10-28T11:00');
+  await page.locator('.calendar-event').screenshot({ path: testInfo.outputPath('remote-edit-desktop.png') });
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(page.locator('.calendar-event')).toContainText('Event saved.');
+  const writes = await page.evaluate(() => window.__calendarEvent.writes);
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ slug: 'work', source_id: original.event.source_id,
+    patch: { summary: 'Updated customer planning', location: 'Room 5', end_at: Date.parse('2026-10-28T18:00:00Z') } });
+  const saved = await page.evaluate(() => window.__calendarEvent.saved());
+  expect(saved.event.calendar_id).toBe(original.event.calendar_id); expect(saved.event.source_id).toBe(original.event.source_id);
+  expect(saved.event.description).toBe(original.event.description);
+  expect(await page.evaluate(() => window.__calendarEvent.creates.length)).toBe(0);
+});
+
+test('keeps Outlook rich notes read-only on a phone and confirms an interrupted save from a live read', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await boot(page, 'editable-outlook');
+  const original = await page.evaluate(() => window.__calendarEvent.saved());
+  await page.getByRole('button', { name: 'Edit event', exact: true }).click();
+  await expect(field(page, 'description')).toHaveJSProperty('readOnly', true);
+  await field(page, 'summary').fill('Planning for Friday');
+  await page.locator('.calendar-event').screenshot({ path: testInfo.outputPath('remote-edit-phone.png') });
+  await page.evaluate(() => window.__calendarEvent.loseNextReply());
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check saved event', exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled();
+  await page.evaluate(() => window.__calendarEvent.setReadAvailable(false));
+  await page.getByRole('button', { name: 'Check saved event', exact: true }).click();
+  await expect(field(page, 'summary')).toHaveValue('Planning for Friday');
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled();
+  await page.evaluate(() => window.__calendarEvent.setReadAvailable(true));
+  await page.getByRole('button', { name: 'Check saved event', exact: true }).click();
+  await expect(page.locator('.calendar-event')).toContainText('Your changes are saved.');
+  expect(await page.evaluate(() => window.__calendarEvent.writes.length)).toBe(1);
+  const saved = await page.evaluate(() => window.__calendarEvent.saved());
+  expect(saved.event.description).toBe(original.event.description); expect(saved.event.calendar_id).toBe(original.event.calendar_id);
+});
+
+test('creates an event in the chosen connected calendar and returns to its agenda date', async ({ page }, testInfo) => {
+  await page.clock.setFixedTime(new Date('2026-10-28T12:00:00Z'));
+  await installCalendarEventFixture(page, 'timed', true);
+  await page.goto(`${HARNESS_URL}?journey=verification&recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/calendar'));
+  await page.getByRole('button', { name: 'New event', exact: true }).click();
+  const form = page.getByRole('region', { name: 'New event', exact: true });
+  await expect(form.getByLabel('Title', { exact: true })).toBeFocused();
+  await form.getByLabel('Calendar', { exact: true }).selectOption(JSON.stringify(['work', 'work']));
+  await form.getByLabel('Title', { exact: true }).fill('Project planning');
+  await form.getByLabel('Starts', { exact: true }).fill('2026-11-05T16:00');
+  await form.getByLabel('Ends', { exact: true }).fill('2026-11-05T17:00');
+  await form.getByLabel('Location (optional)', { exact: true }).fill('Room 4');
+  await form.getByLabel('Notes (optional)', { exact: true }).fill('Review the release scope.');
+  await form.screenshot({ path: testInfo.outputPath('new-event-desktop.png') });
+  await form.getByRole('button', { name: 'Create event', exact: true }).click();
+  await expect(page.locator('.calendar-event')).toContainText('Project planning');
+  expect(await page.evaluate(() => window.__calendarEvent.creates[0])).toMatchObject({ slug: 'work', calendar_id: 'work',
+    expected_incarnation: 'work-calendar-1', summary: 'Project planning', location: 'Room 4', description: 'Review the release scope.',
+    start_at: Date.parse('2026-11-05T07:00:00Z'), end_at: Date.parse('2026-11-05T08:00:00Z'), timezone: 'Asia/Tokyo', is_all_day: false });
+  await page.getByRole('button', { name: '← Back', exact: true }).click();
+  await expect(page.getByLabel('Agenda start date')).toHaveValue('2026-11-05');
+  await expect(page.getByRole('button', { name: /Project planning/ })).toBeVisible();
+});
+
+test('keeps a phone event draft through navigation and recovers a lost all-day save without a second event', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.clock.setFixedTime(new Date('2026-10-28T12:00:00Z'));
+  await installCalendarEventFixture(page);
+  await page.goto(`${HARNESS_URL}?journey=verification&recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/calendar'));
+  await page.getByRole('button', { name: 'New event', exact: true }).click();
+  const form = page.getByRole('region', { name: 'New event', exact: true });
+  await form.getByLabel('Title', { exact: true }).fill('Conference');
+  await form.getByLabel('All day', { exact: true }).check();
+  await form.getByLabel('First day', { exact: true }).fill('2026-10-31');
+  await form.getByLabel('Last day (inclusive)', { exact: true }).fill('2026-11-02');
+  await page.getByRole('combobox', { name: 'Collection', exact: true }).selectOption('task');
+  await expect(form.getByRole('button', { name: 'Keep editing', exact: true })).toBeFocused();
+  await form.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(form.getByLabel('Title', { exact: true })).toHaveValue('Conference');
+  await form.screenshot({ path: testInfo.outputPath('new-event-phone.png') });
+  await page.evaluate(() => window.__calendarEvent.loseNextReply());
+  await form.getByRole('button', { name: 'Create event', exact: true }).click();
+  await expect(form.getByRole('button', { name: 'Check save', exact: true })).toBeFocused();
+  await expect(form.getByLabel('Title', { exact: true })).toBeDisabled();
+  await form.getByRole('button', { name: 'Check save', exact: true }).click();
+  await expect(page.locator('.calendar-event')).toContainText('Conference');
+  const requests = await page.evaluate(() => window.__calendarEvent.creates);
+  expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]);
+  expect(requests[0]).toMatchObject({ is_all_day: true, start_at: Date.parse('2026-10-31T00:00:00Z'), end_at: Date.parse('2026-11-03T00:00:00Z') });
+  expect(await page.evaluate(() => window.__calendarEvent.createdCount())).toBe(1);
+});
 
 test('responds to a remote invitation once and checks a lost reply without resending', async ({ page }) => {
   await boot(page, 'invitation');

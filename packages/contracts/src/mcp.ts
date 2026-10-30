@@ -121,7 +121,12 @@ export interface TimelineRequest {
  *  - `memory` — `{ run_id, recipe_id, commit_status, output_string?,
  *    duration_ms }`. One row per recipe-run touch, joined to the
  *    entity via the D-120 links table. `commit_status` is the D-153
- *    P1 lifecycle enum (replaces pre-D-153 boolean `success`).
+ *    P1 lifecycle enum (replaces pre-D-153 boolean `success`). Two
+ *    reduced shapes: `{ run_id, audit_pruned: true }` when retention
+ *    has removed the run's audit row, and `{ run_id, redacted: true }`
+ *    when the owner FORGOT the run in the Memory lens (D-198) — that
+ *    entry also drops `recipe_slug` / `recipe_insight_id`, keeping only
+ *    origin, kind, time and attribution, as the lens itself does.
  *  - `enrichment` (D-128 Phase 5) — `{ enrichment_id, topic, scope,
  *    target_id, value, meta?, ingredient_slug?, model_id?,
  *    staleness_class, authored_by }`. One `data_enrichment` row for

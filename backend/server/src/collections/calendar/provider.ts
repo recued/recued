@@ -196,8 +196,20 @@ export type CreateEventInput = Omit<
 
 /** Payload for `updateEvent` — a partial patch on the canonical
  *  event, applied by the adapter to the provider. */
+export interface ProviderEventEditContext {
+  payload: ProviderEventPayload;
+  editable_fields: Array<keyof import('@recued/contracts').CalendarEventPatch>;
+  read_only_reason?: string;
+  edit_notice?: string;
+  notify_attendees?: boolean;
+  notification_supported?: boolean;
+}
+
 export interface UpdateEventInput {
   expected_etag?: string;
+  /** Paired owner edits revalidate their connection and warehouse version at handoff. */
+  before_send?: () => void;
+  notify_attendees?: boolean;
   /** Which calendar on the account the event lives on. Resolved by
    *  the dispatcher from the warehouse row before the adapter call
    *  — adapters need it to build the provider path. */
@@ -237,6 +249,10 @@ export interface CalendarProvider {
    *  carries it as its owner, and a CalDAV username may be one. '' or absent
    *  while unknown, and for a calendar with no account (`local`). */
   readonly accountEmail?: string;
+  /** Live, selected calendars whose permissions allow a new event. */
+  listWritableCalendars?(): Promise<Array<{ calendar_id: string; name: string }>>;
+  /** Live event and per-field write permission, from the event's own calendar. */
+  readEventForEdit?(calendar_id: string, source_id: string): Promise<ProviderEventEditContext>;
 
   /** Bring the provider online. Throws typed
    *  `CalendarAdapterError('auth_expired' | 'io_error')` on failure
@@ -278,6 +294,7 @@ export interface CalendarProvider {
   createEvent(
     calendar_id: string,
     event: CreateEventInput,
+    beforeSend?: () => void,
   ): Promise<ProviderEventPayload>;
   /** Patch an event. Idempotent at the provider level — the second
    *  call is a no-op when the state already matches. Throws

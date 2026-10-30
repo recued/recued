@@ -33,6 +33,15 @@ describe('CLI parsePositionals', () => {
     ).toEqual(['pair', 'generate']);
   });
 
+  it('skips the values of --app and --key-file, so an app name is never read as a subcommand', () => {
+    expect(parsePositionals(['--mcp', '--app', 'claude-code'])).toEqual([]);
+    expect(parsePositionals(['mcp-key', 'set', '--app', 'claude-code', '--key-file', '/k.txt'])).toEqual([
+      'mcp-key',
+      'set',
+    ]);
+    expect(getArg(['--mcp', '--app', 'claude-code'], 'app')).toBe('claude-code');
+  });
+
   it('skips --bind-port value after an initial positional', () => {
     expect(parsePositionals(['pair', '--bind-port', '9000', 'generate'])).toEqual([
       'pair',

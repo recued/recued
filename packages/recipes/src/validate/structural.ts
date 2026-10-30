@@ -13,6 +13,9 @@
 import type { OutputType, TableColumnControl } from '@recued/contracts';
 import {
   TABLE_COLUMN_CONTROLS,
+  TABLE_EDIT_KEYS, TABLE_SELECT_KEYS, TABLE_COLUMN_KEYS, TABLE_EDIT_ROW_MODES,
+  CACHE_FRESHNESS_MODES,
+  outputSectionKeys,
   AUTO_RUN_SERVER_FLOOR_MS,
   WAIT_TRANSFORM_MAX_MS,
   ACCT_ALIAS_VALUES,
@@ -55,6 +58,8 @@ import {
   type RecipeStep,
 } from '@recued/contracts';
 import { TRANSFORM_SCHEMAS, applyValueParam } from '@recued/transforms';
+import { filterVariableProblem } from '../filter-variable.js';
+import { tableSelectVariableProblem } from '../output-variable-bindings.js';
 import { connectionVariableNames } from '../connection-agnostic.js';
 import { OP_STEP_CONNECTION_REF_REGEX, parseOpStepConnectionRef } from '../connection-agnostic-paths.js';
 import { aiStepDispatch } from '../step-dispatch.js';
@@ -834,19 +839,20 @@ export const validateOnFailure = (r: Record<string, unknown>, add: AddFn): void 
     + `the event trigger { "event": "run.${source}.*.failed" } and remove 'on_failure' here`);
 };
 
-/** D-116 — cross-cutting checks for the `wait` transform. Ensures:
- *
- *  - `wait_max_exceeded`       — literal `ms` above WAIT_TRANSFORM_MAX_MS.
- *  - `wait_inside_trigger_steps` — `wait` placed in `trigger_steps`
- *    (pauses the gate phase, starves auto-run).
- *  - `wait_in_non_reactive`    — non-reactive recipe whose only step
- *    is `wait`, or whose cumulative wait exceeds 5_000ms. Warn only;
- *    the user's sidebar will block.
- *
- *  Schema-level type + required checks run in `validateTransformStep`.
- *  The max bound is enforced here (not in TRANSFORM_SCHEMAS) because
- *  the schema registry is pure shape; per-transform runtime bounds
- *  live next to their other cross-field rules. */
+/** Cache policy is a literal closed contract in every phase that accepts a step. */
+export const validateStepCache = (r: Record<string, unknown>, add: AddFn): void => {
+  for (const group of ['steps', 'prefetch_steps', 'trigger_steps'] as const) {
+    const rows = r[group]; if (!Array.isArray(rows)) continue;
+    rows.forEach((step, index) => {
+      if (!step || typeof step !== 'object' || Array.isArray(step) || step.cache === undefined) return;
+      if (typeof step.cache !== 'string' || !(CACHE_FRESHNESS_MODES as readonly string[]).includes(step.cache)) {
+        add('error', 'step_cache_invalid', `${group}[${index}].cache`,
+          `cache must be one of ${CACHE_FRESHNESS_MODES.join(' / ')}; dynamic references are not supported`);
+      }
+    });
+  }
+};
+
 /** `pages: "all"` — read a Records search page by page (`StepPages` in contracts).
  *
  *  - `step_pages_invalid` — any value but `"all"`.
@@ -885,6 +891,19 @@ export const validateStepPages = (r: Record<string, unknown>, add: AddFn): void 
   }
 };
 
+/** D-116 — cross-cutting checks for the `wait` transform. Ensures:
+ *
+ *  - `wait_max_exceeded`       — literal `ms` above WAIT_TRANSFORM_MAX_MS.
+ *  - `wait_inside_trigger_steps` — `wait` placed in `trigger_steps`
+ *    (pauses the gate phase, starves auto-run).
+ *  - `wait_in_non_reactive`    — non-reactive recipe whose only step
+ *    is `wait`, or whose cumulative wait exceeds 5_000ms. Warn only;
+ *    the user's sidebar will block.
+ *
+ *  Schema-level type + required checks run in `validateTransformStep`.
+ *  The max bound is enforced here (not in TRANSFORM_SCHEMAS) because
+ *  the schema registry is pure shape; per-transform runtime bounds
+ *  live next to their other cross-field rules. */
 export const validateWait = (r: Record<string, unknown>, add: AddFn): void => {
   const triggerSteps = Array.isArray(r.trigger_steps) ? r.trigger_steps : [];
   const seqSteps = Array.isArray(r.steps) ? r.steps : [];
@@ -2099,8 +2118,8 @@ const validateEnumVariable = (name: string, value: unknown[], add: AddFn): void 
  *  `{type, source, label?}` and the D-222 `filter` discriminator adds exactly
  *  `fields`, `hidden`, and `submit`
  *  and `RecipeOutput` is `{render?, sidebar?}`. Widen a shape in contracts and widen the
- *  matching const here in the same change — a copy that silently disagrees is the drift this
- *  very fence exists to catch. */
+ *  admission registry in contracts in the same change. Section keys are shared directly
+ *  with editor help through outputSectionKeys. */
 const KNOWN_OUTPUT_KEYS: ReadonlySet<string> = new Set(['render', 'sidebar', 'exchange']);
 /** D-232 § 19.3 — the exchange output kind's own fence. Same rule as the block
  *  and section fences above and for the same reason: an invented key here is a
@@ -2115,42 +2134,6 @@ const KNOWN_EXCHANGE_KEYS: ReadonlySet<string> = new Set([
   // D-232 § 28 — "this answer must leave the server; refuse rather than
   // deliver it locally". See `RecipeExchangeOutput.require_connection`.
   'require_connection',
-]);
-const KNOWN_SECTION_KEYS: ReadonlySet<string> = new Set(['type', 'source', 'label']);
-const KNOWN_FILTER_SECTION_KEYS: ReadonlySet<string> = new Set([
-  ...KNOWN_SECTION_KEYS,
-  'fields',
-  'hidden',
-  'submit',
-]);
-const KNOWN_RECORD_FIELDS_SECTION_KEYS: ReadonlySet<string> = new Set([
-  ...KNOWN_SECTION_KEYS,
-  'entity',
-  'fields',
-]);
-/** A `table` may derive its columns from an entity schema. The keys are the
- *  same two `record_fields` uses, and deliberately so — one vocabulary for
- *  "these fields of that entity", whichever block is asking. */
-const KNOWN_TABLE_SECTION_KEYS: ReadonlySet<string> = new Set([
-  ...KNOWN_SECTION_KEYS,
-  'entity',
-  'fields',
-  'edit',
-  // D-282 B6 — pick rows, then act on the set. ⛔ The fence is the REASON a new
-  // facet has to be added in two places: the block's own rules are useless if
-  // the key never reaches them, and a section key that nothing reads is
-  // silently ignored rather than refused.
-  'select',
-  /** The field whose value buckets the rows. NOT a layout directive and not a
-   *  new output kind: `OUTPUT_TYPES` members say what the data IS, and "board"
-   *  or "kanban" say how it looks. A grouped list is still a list, so this is a
-   *  facet of `table` — which also means one vocabulary, one validator, and no
-   *  widening of a closed union every consumer has to follow.
-   *
-   *  ⚠ NOT named anything column-ish: `columns` on a table already means its
-   *  FIELDS, while a board's "columns" are its groups. One word, two meanings,
-   *  in one descriptor is how a reader a year from now gets it wrong. */
-  'group_by',
 ]);
 
 export const validateOutput = (
@@ -2278,18 +2261,12 @@ export const validateOutput = (
       continue;
     }
     const s = section as Record<string, unknown>;
-    const sectionKeys = s.type === 'filter'
-      ? KNOWN_FILTER_SECTION_KEYS
-      : s.type === 'record_fields'
-        ? KNOWN_RECORD_FIELDS_SECTION_KEYS
-        : s.type === 'table'
-          ? KNOWN_TABLE_SECTION_KEYS
-          : KNOWN_SECTION_KEYS;
+    const sectionKeys = outputSectionKeys(s.type);
     // The section half of the fence — same rule, same reason. `title` was authored 442 times
     // and read by nothing (the display field is `label`); `copy_button: true` on a `text`
     // section was reaching for the `copyable` kind that already existed.
     for (const key of Object.keys(s)) {
-      if (sectionKeys.has(key)) continue;
+      if (sectionKeys.includes(key)) continue;
       add('error', 'output_section_unknown_key', `${path}.${key}`,
         `${key} is not a field on an output section — a section carries only `
         + `${[...sectionKeys].join(' / ')}. It would be silently ignored.`
@@ -2311,7 +2288,8 @@ export const validateOutput = (
         `output source "${s.source}" must reference a step (e.g. "step.metrics")`);
     } else if (!declaredStepIds.has(sourceId)) {
       add('error', 'output_source_not_a_step', `${path}.source`,
-        `output source references "${sourceId}" but no step with that id exists`);
+        `output source references "${sourceId}" but no step with that id exists`,
+        { offset: s.source.length - s.source.trimStart().length + 5, length: sourceId.length, target: 'value' });
     }
 
     if (s.type === 'filter') {
@@ -2408,7 +2386,7 @@ const validateTableOutputSection = (
       } else if (!Object.prototype.hasOwnProperty.call(variables, edit.into)) {
         add('error', 'table_edit_into_undeclared', `${path}.edit.into`,
           `table.edit.into names '${edit.into}', which this recipe does not declare — `
-          + 'the variable IS the argument boundary the submission is bounded by');
+          + 'the variable IS the argument boundary the submission is bounded by', { offset: 0, length: edit.into.length, target: 'value' });
       }
       if (typeof edit.submit !== 'string' || edit.submit.trim().length === 0) {
         add('error', 'table_edit_shape', `${path}.edit.submit`,
@@ -2423,28 +2401,28 @@ const validateTableOutputSection = (
             'table.edit.hidden must be an array of declared variable names');
         } else {
           const seen = new Set<string>();
-          for (const key of edit.hidden as string[]) {
+          for (const [index, key] of (edit.hidden as string[]).entries()) {
             if (!Object.prototype.hasOwnProperty.call(variables, key)) {
-              add('error', 'table_edit_hidden_undeclared', `${path}.edit.hidden`,
+              add('error', 'table_edit_hidden_undeclared', `${path}.edit.hidden[${index}]`,
                 `table.edit.hidden names '${key}', which this recipe does not declare — `
-                + 'the variable IS the argument boundary the submission is bounded by');
+                + 'the variable IS the argument boundary the submission is bounded by', { offset: 0, length: key.length, target: 'value' });
             }
             // ⛔ The rows key is not a run setting. Listing it would send a
             // snapshot of the rows alongside the rows themselves — one of the
             // two must lose, and which one is an ordering accident.
             if (key === edit.into) {
-              add('error', 'table_edit_shape', `${path}.edit.hidden`,
+              add('error', 'table_edit_shape', `${path}.edit.hidden[${index}]`,
                 `table.edit.hidden names '${key}', which is already the rows variable`);
             }
             if (seen.has(key)) {
-              add('error', 'table_edit_shape', `${path}.edit.hidden`,
+              add('error', 'table_edit_shape', `${path}.edit.hidden[${index}]`,
                 `table.edit.hidden lists '${key}' twice`);
             }
             seen.add(key);
           }
         }
       }
-      if (edit.rows !== undefined && edit.rows !== 'fixed' && edit.rows !== 'add_remove') {
+      if (edit.rows !== undefined && !(TABLE_EDIT_ROW_MODES as readonly unknown[]).includes(edit.rows)) {
         add('error', 'table_edit_shape', `${path}.edit.rows`,
           "table.edit.rows must be 'fixed' or 'add_remove' when present");
       }
@@ -2505,7 +2483,7 @@ const validateTableOutputSection = (
         }
       }
       for (const key of Object.keys(edit)) {
-        if (['into', 'submit', 'rows', 'columns', 'hidden', 'scopes'].includes(key)) continue;
+        if ((TABLE_EDIT_KEYS as readonly string[]).includes(key)) continue;
         add('error', 'table_edit_shape', `${path}.edit.${key}`,
           `table.edit has no field '${key}' — nothing reads it`);
       }
@@ -2538,7 +2516,7 @@ const validateTableOutputSection = (
       } else if (!Object.prototype.hasOwnProperty.call(variables, select.into)) {
         add('error', 'table_select_into_undeclared', `${path}.select.into`,
           `table.select.into names '${select.into}', which this recipe does not declare — `
-          + 'the variable IS the argument boundary the submission is bounded by');
+          + 'the variable IS the argument boundary the submission is bounded by', { offset: 0, length: select.into.length, target: 'value' });
       } else {
         // ⛔ A SELECTION IS ALWAYS AN ARRAY, even of one. A variable declared
         // `string` receives `["job_1"]` and the recipe reads it as a value it
@@ -2552,7 +2530,7 @@ const validateTableOutputSection = (
           && !Array.isArray(declared)
           ? (declared as Record<string, unknown>).type
           : undefined;
-        if (typeof declaredType === 'string' && declaredType !== 'array') {
+        if (tableSelectVariableProblem(declared)) {
           add('error', 'table_select_into_not_array', `${path}.select.into`,
             `table.select.into names '${select.into}', declared as '${declaredType}' — a `
             + "selection submits an ARRAY of ids, so the variable must be type 'array'");
@@ -2583,18 +2561,18 @@ const validateTableOutputSection = (
             'table.select.hidden must be an array of declared variable names');
         } else {
           const seen = new Set<string>();
-          for (const key of select.hidden as string[]) {
+          for (const [index, key] of (select.hidden as string[]).entries()) {
             if (!Object.prototype.hasOwnProperty.call(variables, key)) {
-              add('error', 'table_select_hidden_undeclared', `${path}.select.hidden`,
+              add('error', 'table_select_hidden_undeclared', `${path}.select.hidden[${index}]`,
                 `table.select.hidden names '${key}', which this recipe does not declare — `
-                + 'the variable IS the argument boundary the submission is bounded by');
+                + 'the variable IS the argument boundary the submission is bounded by', { offset: 0, length: key.length, target: 'value' });
             }
             if (key === select.into) {
-              add('error', 'table_select_shape', `${path}.select.hidden`,
+              add('error', 'table_select_shape', `${path}.select.hidden[${index}]`,
                 `table.select.hidden names '${key}', which is already the selection variable`);
             }
             if (seen.has(key)) {
-              add('error', 'table_select_shape', `${path}.select.hidden`,
+              add('error', 'table_select_shape', `${path}.select.hidden[${index}]`,
                 `table.select.hidden lists '${key}' twice`);
             }
             seen.add(key);
@@ -2602,7 +2580,7 @@ const validateTableOutputSection = (
         }
       }
       for (const key of Object.keys(select)) {
-        if (['into', 'submit', 'id_field', 'hidden'].includes(key)) continue;
+        if ((TABLE_SELECT_KEYS as readonly string[]).includes(key)) continue;
         add('error', 'table_select_shape', `${path}.select.${key}`,
           `table.select has no field '${key}' — nothing reads it`);
       }
@@ -2705,7 +2683,7 @@ const tableFieldKey = (
     ok = false;
   }
   for (const key of Object.keys(column)) {
-    if (['field', 'label', 'kind', 'control', 'options'].includes(key)) continue;
+    if ((TABLE_COLUMN_KEYS as readonly string[]).includes(key)) continue;
     add('error', 'table_shape', `${path}.${key}`,
       `an authored table column has no field '${key}' — nothing reads it`);
     ok = false;
@@ -2769,14 +2747,14 @@ const validateFilterOutputSection = (
     ? rawVariables as Record<string, unknown>
     : {};
 
-  const readKeys = (field: 'fields' | 'hidden'): string[] | null => {
+  const readKeys = (field: 'fields' | 'hidden'): { key: string; index: number }[] | null => {
     const value = section[field];
     if (!Array.isArray(value)) {
       add('error', `filter_${field}_shape`, `${path}.${field}`,
         `filter.${field} must be an array of declared variable keys`);
       return null;
     }
-    const keys: string[] = [];
+    const keys: { key: string; index: number }[] = [];
     const seen = new Set<string>();
     value.forEach((entry, index) => {
       if (typeof entry !== 'string' || entry.trim().length === 0) {
@@ -2790,7 +2768,7 @@ const validateFilterOutputSection = (
         return;
       }
       seen.add(entry);
-      keys.push(entry);
+      keys.push({ key: entry, index });
     });
     return keys;
   };
@@ -2803,51 +2781,46 @@ const validateFilterOutputSection = (
   }
 
   if (fields !== null && hidden !== null) {
-    const fieldSet = new Set(fields);
-    for (const key of hidden) {
+    const fieldSet = new Set(fields.map(entry => entry.key));
+    for (const { key, index } of hidden) {
       if (!fieldSet.has(key)) continue;
-      add('error', 'filter_fields_hidden_overlap', `${path}.hidden`,
-        `filter variable "${key}" cannot be both visible and hidden`);
+      add('error', 'filter_fields_hidden_overlap', `${path}.hidden[${index}]`,
+        `filter variable "${key}" cannot be both visible and hidden`, { offset: 0, length: key.length, target: 'value' });
     }
   }
 
-  const declared = (key: string, field: 'fields' | 'hidden'): unknown => {
+  const declared = (key: string, field: 'fields' | 'hidden', index: number): unknown => {
     if (!Object.prototype.hasOwnProperty.call(variables, key)) {
-      add('error', 'filter_variable_undeclared', `${path}.${field}`,
-        `filter.${field} names "${key}", which is absent from recipe.variables`);
+      add('error', 'filter_variable_undeclared', `${path}.${field}[${index}]`,
+        `filter.${field} names "${key}", which is absent from recipe.variables`, { offset: 0, length: key.length, target: 'value' });
       return undefined;
     }
     return variables[key];
   };
 
-  for (const key of fields ?? []) {
-    const def = declared(key, 'fields');
+  for (const { key, index } of fields ?? []) {
+    const def = declared(key, 'fields', index);
     if (def === undefined) continue;
-    const hint = def !== null && typeof def === 'object' && !Array.isArray(def)
-      ? def as Record<string, unknown>
-      : null;
-    if (hint === null
-        || typeof hint.label !== 'string' || hint.label.trim().length === 0
-        || typeof hint.type !== 'string' || hint.type.trim().length === 0) {
-      add('error', 'filter_field_not_labeled', `${path}.fields`,
-        `filter field "${key}" must name a valid labeled ValueHint`);
+    const problem = filterVariableProblem(def, 'fields');
+    const hint = def as Record<string, unknown>;
+    if (problem === 'unlabeled') {
+      add('error', 'filter_field_not_labeled', `${path}.fields[${index}]`,
+        `filter field "${key}" must name a valid labeled ValueHint`, { offset: 0, length: key.length, target: 'value' });
       continue;
     }
-    if (hint.type === 'secret' || hint.type === 'oauth') {
-      add('error', 'filter_field_credential_ineligible', `${path}.fields`,
-        `filter field "${key}" has credential type "${hint.type}" and cannot be rendered`);
+    if (problem === 'credential') {
+      add('error', 'filter_field_credential_ineligible', `${path}.fields[${index}]`,
+        `filter field "${key}" has credential type "${hint.type}" and cannot be rendered`, { offset: 0, length: key.length, target: 'value' });
     }
   }
 
-  for (const key of hidden ?? []) {
-    const def = declared(key, 'hidden');
+  for (const { key, index } of hidden ?? []) {
+    const def = declared(key, 'hidden', index);
     if (def === undefined) continue;
-    const type = def !== null && typeof def === 'object' && !Array.isArray(def)
-      ? (def as Record<string, unknown>).type
-      : undefined;
-    if (type === 'secret' || type === 'oauth') {
-      add('error', 'filter_hidden_credential_ineligible', `${path}.hidden`,
-        `filter hidden variable "${key}" has credential type "${type}" and cannot be echoed into output`);
+    const type = def !== null && typeof def === 'object' ? (def as Record<string, unknown>).type : undefined;
+    if (filterVariableProblem(def, 'hidden') === 'credential') {
+      add('error', 'filter_hidden_credential_ineligible', `${path}.hidden[${index}]`,
+        `filter hidden variable "${key}" has credential type "${type}" and cannot be echoed into output`, { offset: 0, length: key.length, target: 'value' });
     }
   }
 };

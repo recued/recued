@@ -45,6 +45,7 @@ import { hasAnyConnectionReadPermission } from './structural.js';
 import { ALLOWED_NAMESPACES } from './constants.js';
 import type { AddFn } from './helpers.js';
 import { referenceLocations, type ReferenceLocation } from './reference-locations.js';
+import { outputVariableBindings } from '../output-variable-bindings.js';
 
 export const validateReferences = (
   r: Record<string, unknown>,
@@ -55,7 +56,7 @@ export const validateReferences = (
     ? (r.variables as Record<string, unknown>)
     : {};
   const declaredVars = new Set(Object.keys(variables));
-  const referencedVars = new Set<string>();
+  const referencedVars = new Set<string>(outputVariableBindings(r).map(binding => binding.name));
 
   // D-120 Phase 4 — declared staged-trust permissions on the recipe.
   // Reading `{{data.memory.*}}` (or its `data.audit.*` alias) requires

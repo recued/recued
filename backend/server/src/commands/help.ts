@@ -20,10 +20,19 @@ export function cmdHelp(version: string): void {
 
   Server (foreground):
     (default), serve                    Start in the foreground
-    --mcp --token <token>               Start an MCP stdio server. The token, or
-                                        RECUED_MCP_TOKEN, comes from a contract on
-                                        the web app's Contracts page; without one
-                                        it offers no tools.
+    --mcp [--app <name>]                Start an MCP stdio server for an AI app.
+                                        It offers one contract's tools: the key
+                                        from --token <key> or RECUED_MCP_TOKEN,
+                                        else the key saved for this app or for
+                                        every app (mcp-key). With none, no tools.
+
+  AI apps:
+    mcp-key list                        Show the contract key each AI app uses
+    mcp-key set [--app <name> | --all]  Save a contract key for one app, or for
+                [--key-file <path>]     every app. Asks for it without showing
+                                        it, or reads it from the file or stdin.
+    mcp-key clear (--app <name> | --all)
+                                        Remove a saved key
 
   Pairing:
     pair                                Show a pairing code + the app.recued.com/pair link
