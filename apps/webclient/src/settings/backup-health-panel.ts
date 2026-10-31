@@ -1,5 +1,5 @@
 import type { ArchiveBackupHealthPolicy, ArchiveBackupHealthStatus } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel } from '@recued/ui-shared';
 import { createBackupStatusRefresh, type BackupStatusRefreshOutcome } from './backup-status-refresh.js';
 import { createBackupFormValidation, isBackupWholeNumber } from './backup-form-validation.js';
 
@@ -45,7 +45,9 @@ export const mountBackupHealth = (options: {
   const days = field('Passing recovery test within (days) ', 'days', 'number'); days.min = '1'; days.max = '365'; days.step = '1';
   validation.field(days, host, 'days', () => isBackupWholeNumber(days.value, 1, 365) ? undefined : 'Enter a whole number from 1 to 365 days.');
   host.appendChild(make('p', 'Alerts use your notification settings while this server is running. First-copy and first-test grace periods start when this destination is first monitored.'));
-  const save = make('button', 'Save health limits'), discard = make('button', 'Discard changes');
+  const save = make('button'), discard = make('button');
+  save.innerHTML = renderActionLabel('save', 'Save health limits');
+  discard.innerHTML = renderActionLabel('undo', 'Discard changes');
   for (const [button, name] of [[save, 'save'], [discard, 'discard']] as const) {
     button.type = 'button'; button.className = 'rx-btn rx-btn-secondary'; button.setAttribute(`data-backup-health-${name}`, ''); host.appendChild(button);
   }

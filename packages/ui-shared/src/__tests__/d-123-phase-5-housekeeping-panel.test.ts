@@ -143,7 +143,10 @@ describe('D-123 follow-on — Run Now dialog AI-availability warning', () => {
       'id="housekeeping-runnow-enrichment.summary-title"',
     );
     // Run Now button must NOT be disabled.
-    expect(html).toMatch(/data-action="housekeeping-run-now-confirm"[^>]*>(?:[^<]*Run now[^<]*)<\/button>/);
+    const confirm = html.match(/<button\b[^>]*data-action="housekeeping-run-now-confirm"[^>]*>([\s\S]*?)<\/button>/);
+    expect(confirm).not.toBeNull();
+    expect(confirm?.[0].split('>')[0]).not.toContain(' disabled');
+    expect(confirm?.[1].replace(/<[^>]*>/g, '').trim()).toBe('Run now');
   });
 
   it('renders the no-AI warning + disables Run Now when ai_path_available is false', () => {

@@ -82,6 +82,7 @@ import type {
 interface FakeElement {
   tagName: string;
   textContent: string;
+  innerHTML: string;
   disabled: boolean;
   checked: boolean;
   className: string;
@@ -113,9 +114,17 @@ const makeFakeElement = (
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
+  let html = '', text = '';
   const el: FakeElement = {
     tagName: tagName.toUpperCase(),
-    textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value) { html = value; text = ''; },
+    // Nested decorative markup leaves the button's readable label unchanged.
+    get textContent() {
+      return html ? html.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (_match, entity: 'amp' | 'lt' | 'gt' | 'quot' | '#39') => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]) : text;
+    },
+    set textContent(value) { text = value; html = ''; },
     disabled: false,
     checked: false,
     className: '',

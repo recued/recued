@@ -54,6 +54,7 @@ import type { RotationResult } from '@recued/contracts';
 interface FakeElement {
   tagName: string;
   textContent: string;
+  innerHTML: string;
   disabled: boolean;
   className: string;
   children: FakeElement[];
@@ -80,9 +81,19 @@ const makeFakeElement = (tagName: string, doc?: FakeDocument): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
+  let html = '';
   const el: FakeElement = {
     tagName: tagName.toUpperCase(),
     textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value: string) {
+      html = value;
+      for (const child of el.children) child.parent = null;
+      el.children.length = 0;
+      const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+      el.textContent = value.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (match, entity: string) => entities[entity] ?? match);
+    },
     disabled: false,
     className: '',
     type: '',

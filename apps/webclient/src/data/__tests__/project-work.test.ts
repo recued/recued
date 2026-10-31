@@ -11,6 +11,23 @@ const reply = (title: string): WorkEntityProjectItemsRpcResponse => ({ project_i
     updated_at: 1, stale: false, pending_write: false, done: false }] });
 
 describe('project work read ownership', () => {
+  it('retires an outstanding-only page when All is selected and never shows it under the new scope', async () => {
+    const pending: Array<(value: WorkEntityProjectItemsRpcResponse) => void> = [];
+    const caller = vi.fn<ProjectItemsCaller>(() => new Promise(resolve => pending.push(resolve)));
+    const work = createProjectWork(project, caller, () => {});
+    const old = work.load('commitment');
+    work.setCommitmentStatus('all');
+    const item = { ...reply('Already finished').items[0]!, commitment: { direction: 'inbound' as const,
+      lifecycle_state: 'fulfilled' as const, due_status: 'not_due' as const } };
+    pending[1]!({ project_id: 'p', kind: 'commitment', offset: 0, total: 1, commitment_status: 'all', items: [item] });
+    await vi.waitFor(() => expect(work.sections.commitment.loading).toBe(false));
+    pending[0]!({ project_id: 'p', kind: 'commitment', offset: 0, total: 0, commitment_status: 'open', items: [] });
+    await old;
+    expect(work.commitmentStatus).toBe('all');
+    expect(work.sections.commitment.items).toEqual([item]);
+    expect(caller.mock.calls.map(([args]) => args.commitment_status)).toEqual(['open', 'all']);
+  });
+
   it('retires older replacement reads and ignores replies after the overview is disposed', async () => {
     const pending: Array<(value: WorkEntityProjectItemsRpcResponse) => void> = [];
     const caller: ProjectItemsCaller = () => new Promise(resolve => pending.push(resolve));
@@ -50,5 +67,10 @@ describe('project work read ownership', () => {
     expect(html).not.toContain('Unknown rpc method');
     expect(html).not.toContain('project-work-retry');
     expect(html).not.toContain('role="alert"');
+    const olderCommitments = createProjectWork(project, vi.fn<ProjectItemsCaller>().mockRejectedValue(
+      Object.assign(new Error('Choose a project and either tasks or notes.'), { code: 'bad_request' })), () => {});
+    await olderCommitments.load('commitment');
+    expect(olderCommitments.sections.commitment).toMatchObject({ unsupported: true, loading: false });
+    expect(olderCommitments.sections.commitment.error).toBeUndefined();
   });
 });

@@ -1351,6 +1351,8 @@ export interface ProjectWriteInput extends WorkEntitySourceIdentityInput {
 }
 
 export interface WorkEntityListQuery {
+  /** Commitment-only exact blocking membership, before pagination and count. */
+  blocks_project_id?: string;
   /** Note-only exact membership, applied before pagination and count. */
   related_project_id?: string;
   /** Filter on `sync_state`. Default: rows in `live` or
@@ -1454,6 +1456,7 @@ const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): Normali
     include_deleted: q?.include_deleted ?? false,
     parent_project_id: q?.parent_project_id ?? '',
     related_project_id: q?.related_project_id ?? '',
+    blocks_project_id: q?.blocks_project_id ?? '',
     limit,
     offset,
     search,
@@ -1492,6 +1495,11 @@ const buildListWhere = (
     // members as OFFSET rows when paging through the recency index.
     clauses.push('EXISTS (SELECT 1 FROM json_each(related_project_ids) WHERE value = ? LIMIT 1)');
     params.push(q.related_project_id);
+  }
+  if (q.blocks_project_id) {
+    if (!commitmentFilters) throw new WorkEntityValidationError('blocks_project_id requires commitments', 'blocks_project_id');
+    clauses.push('EXISTS (SELECT 1 FROM json_each(blocks_project_ids) WHERE value = ? LIMIT 1)');
+    params.push(q.blocks_project_id);
   }
   if (q.commitment_lifecycle_states.length > 0) {
     if (!commitmentFilters) {

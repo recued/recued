@@ -19,6 +19,10 @@ import { openDatabase } from '../open-database.js';
 import { createInternalToolRegistry } from '@recued/middleware/internal-tool-registry/index.js';
 import { buildInternalToolMcpAdapter } from '../mcp-internal-tools.js';
 import { createFileAttachmentLifecycle } from '../storage/file-attachment-lifecycle.js';
+import { createOwnerDocumentSearch } from '../owner-document-search.js';
+import { isDocumentSearchResultCurrent } from '../document-search-tool.js';
+import { makeCollectionHandlers } from '../collections/collection-handler.js';
+import type { WsClient } from '../ws-server.js';
 
 const ctx: ChatDispatchContext = { channel: 'internal_function_call', session_id: 'chat-1', turn_id: 'turn-1',
   execution_source: { channel: 'chat', actor: 'user_self', user_id: 'local', chat_session_id: 'chat-1' } };
@@ -96,6 +100,83 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe('saved document content search', () => {
+  const owner = { channel: 'user' as const, actor: 'user_self' as const, user_id: 'local', client_token_id: 'paired-token' };
+  const request = () => ({ request_id: crypto.randomUUID(), query: 'renewal' });
+  const ownerService = () => {
+    const handler = buildChatTier1Handlers(deps)['document.search']!;
+    return createOwnerDocumentSearch({ dispatch: handler, isCurrent: isDocumentSearchResultCurrent });
+  };
+
+  it('requires a paired owner, never replays a search request, and withholds collected text after access or source changes', async () => {
+    const file = add('Private renewal terms.'); const service = ownerService(), input = request();
+    let toolGranted = true;
+    deps.getOpAdmissionGate = () => ({ isOpGranted: (_source, op) => op !== 'primitive.document.search' || toolGranted,
+      isFrozenByPause: () => false, isOwnerRecipeGranted: () => true, isOwnerGoverned: () => true });
+    const slice = makeCollectionHandlers({ registry: deps.getCollectionRegistry()!, ownerDocumentSearch: service })!;
+    const client = { instance_id: 'paired-client', client_token_id: owner.client_token_id } as WsClient;
+    await expect(slice.handlers['collection.file.document.search'](input, { instance_id: null } as WsClient)).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(slice.handlers['collection.file.document.result']({ request_id: input.request_id }, { instance_id: null } as WsClient)).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(execute).not.toHaveBeenCalled();
+    await expect(service.search({ ...request(), query: '***' }, owner)).rejects.toMatchObject({ code: 'invalid_args' });
+    expect(execute).not.toHaveBeenCalled();
+    const result = await slice.handlers['collection.file.document.search'](input, client);
+    expect(result).toMatchObject({ state: 'ready', result: { matches: [{ excerpt: 'Private renewal terms.' }] } });
+    expect(execute.mock.calls[0]![0]).toMatchObject({ trigger_source: 'manual', execution_source: owner });
+    const writes = execute.mock.calls.length;
+    expect(await service.search(input, owner)).toEqual(result); expect(execute).toHaveBeenCalledTimes(writes);
+    await expect(service.search({ ...input, query: 'different' }, owner)).rejects.toMatchObject({ code: 'conflict' });
+    expect(service.get(input.request_id, { ...owner, client_token_id: 'other-client' }).state).toBe('expired');
+    toolGranted = false;
+    expect(service.get(input.request_id, owner).state).toBe('changed');
+    expect(JSON.stringify(service.get(input.request_id, owner))).not.toContain('Private renewal terms');
+    toolGranted = true;
+    allowed = false;
+    expect(service.get(input.request_id, owner).state).toBe('changed');
+    expect(service.get(input.request_id, owner).result).toBeUndefined();
+    expect(JSON.stringify(service.get(input.request_id, owner))).not.toContain('Private renewal terms');
+    allowed = true;
+    files.upsert({ ...file, modified_at: file.modified_at + 1, blob_hash: 'f'.repeat(64) });
+    expect(service.get(input.request_id, owner).state).toBe('changed');
+  });
+
+  it('lets an owner collect a finished approval without another conversion or raw bytes, then rechecks access', async () => {
+    const file = add('Renewal after approved conversion.', 'application/pdf');
+    const service = ownerService(), input = request(), run_id = 'owner-document-held';
+    execute.mockImplementationOnce(async () => stampExecuteResponseAuditRun({ ...summary({}), success: false, awaiting_approval: true }, run_id));
+    expect(await service.search(input, owner)).toMatchObject({ state: 'held', run_id });
+    const outcome = await takeResumedRunFinisher(run_id)!.finish(converted(textByRef.get(file.record_id)!));
+    service.settled({ execution_source: owner, run_id, tool_name: 'document.search', result: outcome, ts: 1 });
+    const result = service.get(input.request_id, owner);
+    expect(result).toMatchObject({ state: 'ready', result: { matches: [{ excerpt: 'Renewal after approved conversion.' }] } });
+    expect(JSON.stringify(result)).not.toContain('bytes_b64'); expect(execute).toHaveBeenCalledTimes(1);
+    readOpAllowed = false;
+    expect(service.get(input.request_id, owner).state).toBe('changed');
+    expect(JSON.stringify(service.get(input.request_id, owner))).not.toContain('Renewal after approved conversion');
+    readOpAllowed = true;
+    const declined = request(), declinedRun = 'owner-document-declined';
+    execute.mockImplementationOnce(async () => stampExecuteResponseAuditRun({ ...summary({}), success: false, awaiting_approval: true }, declinedRun));
+    expect(await service.search(declined, owner)).toMatchObject({ state: 'held' });
+    service.settled({ execution_source: owner, run_id: declinedRun, tool_name: 'read-work-document', result: { denied: true }, ts: 2 });
+    expect(service.get(declined.request_id, owner)).toMatchObject({ state: 'unavailable', message: 'This search was declined or stopped. Start a new search to try again.' });
+    expect(service.get(declined.request_id, owner).result).toBeUndefined();
+    takeResumedRunFinisher(declinedRun);
+  });
+
+  it('keeps a result whose approval settles before the original held reply is delivered', async () => {
+    const file = add('Renewal terms approved quickly.', 'application/pdf'), run_id = 'owner-document-fast-approval';
+    execute.mockImplementationOnce(async () => stampExecuteResponseAuditRun({ ...summary({}), success: false, awaiting_approval: true }, run_id));
+    const handler = buildChatTier1Handlers(deps)['document.search']!;
+    const service = createOwnerDocumentSearch({ isCurrent: isDocumentSearchResultCurrent,
+      dispatch: async (args, context) => {
+        const held = await handler(args, context);
+        const complete = await takeResumedRunFinisher(run_id)!.finish(converted(textByRef.get(file.record_id)!));
+        service.settled({ execution_source: owner, run_id, tool_name: 'document.search', result: complete, ts: 1 });
+        return held;
+      } });
+    expect(await service.search(request(), owner)).toMatchObject({ state: 'ready', result: { matches: [{ excerpt: 'Renewal terms approved quickly.' }] } });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it('finds text beyond the first reader page and returns a literal bounded excerpt with the pinned source', async () => {
     const text = 'Ordinary introduction. '.repeat(2500) + 'Cancellation requires 60 days notice. 🦊';
     const file = add(text);

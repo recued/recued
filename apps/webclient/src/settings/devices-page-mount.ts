@@ -64,6 +64,7 @@
  *  § Settings → Devices page shape. */
 
 import type { ServerPairedDevice } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared';
 import {
   DEVICE_NAME_MAX_CHARS,
   renderDevicesPage,
@@ -365,8 +366,9 @@ export const mountDevicesPage = (
         + `<span class="account-devices-list-error-text">${state.listError}</span>`
         + `<button type="button" class="account-devices-action account-devices-retry" data-action="retry-list"`
         + (state.listRetrying
-          ? ' aria-disabled="true" aria-busy="true">Retrying…'
-          : '>Retry')
+          ? ' aria-disabled="true" aria-busy="true"'
+          : '')
+        + `>${renderActionLabel('refresh', state.listRetrying ? 'Retrying…' : 'Retry')}`
         + `</button>`
         + `</div>`
       : '';
@@ -812,6 +814,10 @@ export const DEVICES_PAGE_STYLES = `
 }
 .account-devices-action-placeholder { color: var(--fg-subtle); }
 .account-devices-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   appearance: none;
   font: inherit;
   font-size: 13px;
@@ -823,6 +829,7 @@ export const DEVICES_PAGE_STYLES = `
   color: var(--fg);
   cursor: pointer;
 }
+.account-devices-action > svg { flex-shrink: 0; }
 .account-devices-action:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--surface-sunk); }
 .account-devices-action:disabled,
 .account-devices-action[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }

@@ -32,8 +32,15 @@ describe('D-148 P1 — BRIDGE_ACTIONS closed list', () => {
   it('matches spec § A.3.1', () => {
     expect([...BRIDGE_ACTIONS].sort()).toEqual([
       'click',
+      // D-335 slice B.
+      'describe',
       'extract_table',
       'fill',
+      // D-335 slice A.
+      'inspect',
+      // D-335 slice C.
+      'list_tabs',
+      'open_tab',
       'os_notification',
       'read_dom',
       'screenshot',
@@ -135,9 +142,10 @@ describe('D-148 P1 — BRIDGE_PROHIBITED_CHROME_PERMISSIONS', () => {
 });
 
 describe('D-148 P1 + D-169 P0 Slice 2B — BRIDGE_LOCAL_STORAGE_FIELDS', () => {
-  it('matches spec § A.3.4 closed list of 8 fields (post-Slice-2B substrate alignment)', () => {
-    expect(BRIDGE_LOCAL_STORAGE_FIELDS.length).toBe(8);
+  it('matches spec § A.3.4 closed list of 9 fields (post-Slice-2B, plus D-335 slice G\'s blocked sites)', () => {
+    expect(BRIDGE_LOCAL_STORAGE_FIELDS.length).toBe(9);
     expect([...BRIDGE_LOCAL_STORAGE_FIELDS].sort()).toEqual([
+      'blocked_sites',
       'cert_pin_state',
       'chrome_permissions_state',
       'idempotency_cache',

@@ -277,6 +277,10 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   // ── Browser
   'core.dom.read': t('Read from a web page', 'Reads text from a web page open in your browser, through the Browser Bridge.'),
   'core.dom.write': t('Type into a web page', 'Types into a web page open in your browser, through the Browser Bridge.'),
+  'core.dom.inspect': t('See a whole web page', 'Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty.'),
+  'core.dom.click': t('Click on a web page', 'Clicks a link or a button on a web page open in your browser, through the Browser Bridge. A click can send, post or delete, and cannot be undone.'),
+  'core.dom.tabs': t('See your open tabs', 'Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge.'),
+  'core.dom.open': t('Open a web page', 'Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site.'),
 };
 
 // ────────────────────────────────────────────────────────────────

@@ -230,6 +230,8 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
     ['capacity_gap_logged_in', 'ROLE_RESTRICTION'],
     ['authority_invalid', 'INGREDIENT_SCOPE_INSUFFICIENT'],
     ['mv3_lifecycle_killed', 'INGREDIENT_ADAPTER_ALL_FAILED'],
+    ['value_not_applied', 'DOM_WRITE_FAILED'],
+    ['field_protected', 'NOT_AUTHORIZED'],
   ] as const)('maps bridge error code %s to %s', async (bridgeCode, recipeCode) => {
     const err = await expectIngredientCode(
       () => translateDispatchOutcome(
@@ -256,6 +258,21 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
       'ACTION_DELIVERY_UNCERTAIN',
     );
     expect(err.details).toMatchObject({ status: 'cancelled', selector: '#save' });
+  });
+
+  // The bridge read the field back, so this is a known failure: retryable, not
+  // the uncertain effect a lost acknowledgement is.
+  it('reports a fill the page did not take as DOM_WRITE_FAILED, never uncertain', async () => {
+    const err = await expectIngredientCode(
+      () => translateDispatchOutcome(
+        completed(errorResult('value_not_applied', 'The editor did not take the text.')),
+        SLUG,
+        entry('dom.body', '#composer'),
+      ),
+      'DOM_WRITE_FAILED',
+    );
+    expect(err.message).toBe('The editor did not take the text.');
+    expect(err.details).toMatchObject({ bridge_error_code: 'value_not_applied', selector: '#composer' });
   });
 
   it('keeps a cancelled read as ROLE_RESTRICTION', async () => {
@@ -333,6 +350,32 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
       reason: 'bridge_online',
       capacity_gap: { kind: 'bridge_online' },
     });
+  });
+
+  // D-335 slice G — what a step no Bridge could take says, in words an AI can
+  // pass on: no Bridge, or a Bridge not allowed on the site, and how to allow it.
+  it.each([
+    ['*://*/*', 'The Browser Bridge is not allowed on every site.'],
+    ['*://mail.google.com/*', 'No connected Browser Bridge is allowed on mail.google.com.'],
+  ])('a Bridge not allowed on %s says so, and how the owner allows it', async (permission, head) => {
+    const err = await expectIngredientCode(() => translateDispatchOutcome({ kind: 'capacity_gap',
+      capacity_gap: { kind: 'permission_missing', permission }, reason: 'site_not_granted', attempts: 0 },
+    SLUG, entry('title', '#title')), 'ROLE_RESTRICTION');
+    expect(err.message).toBe(`${head} To allow it, open the Browser Bridge's side panel in Chrome and choose “Allow every site”.`);
+  });
+
+  it('no Bridge connected says so, never the internal reason', async () => {
+    const err = await expectIngredientCode(() => translateDispatchOutcome({ kind: 'capacity_gap',
+      capacity_gap: { kind: 'bridge_online' }, reason: 'bridge_online', attempts: 0 },
+    SLUG, entry('title', '#title')), 'ROLE_RESTRICTION');
+    expect(err.message).toBe('No Browser Bridge is connected to this server: open Chrome with the Recued Browser Bridge paired to it.');
+  });
+
+  it('a step the Bridge refused for its grant says the Bridge is not allowed on the site', async () => {
+    const err = await expectIngredientCode(() => translateDispatchOutcome(completed(resultBase({ status: 'rejected' })),
+      SLUG, entry('click', '#save')), 'INGREDIENT_SCOPE_INSUFFICIENT');
+    expect(err.message).toBe('The Browser Bridge refused this step: it is not allowed on this site. '
+      + 'To allow it, open the Browser Bridge\'s side panel in Chrome and choose “Allow every site”.');
   });
 
   it('maps aggregate capacity gaps to ROLE_RESTRICTION with bridge details', async () => {
@@ -558,6 +601,151 @@ describe('D-169 P0 - bridge DOM adapter dispatch', () => {
         { selector: '#subject', value: 'Hello' },
         { selector: '#send' },
       ]);
+  });
+});
+
+// D-335 slice A — `core.dom.inspect` is one `inspect` command built from its
+// args, and the Bridge's answer is the step's output.
+describe('D-335 - core.dom.inspect', () => {
+  const INSPECT = 'dom-inspect';
+  const inspectManifest = manifest({ slug: INSPECT, risk_tier: 'read', surface_kind: 'reading' });
+  const call = (input: Record<string, unknown>) => resolved({ slug: INSPECT, risk_tier: 'read', input, output: {} });
+  const answer = { page: '7:ABC123', url: 'https://app.example.com/deals', title: 'Deals', html: '<body></body>',
+    truncated: false };
+
+  it('sends one inspect for the target with only the args given, and answers what the Bridge read', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: inspectManifest,
+      dispatch: async () => completed(okResult(answer)) });
+    await expect(adapter(call({ target: TARGET_A, page: '7:ABC123', ref: 'e3', selector: null })))
+      .resolves.toEqual(answer);
+    expect(requests(dispatch)).toEqual([expect.objectContaining({
+      action: 'inspect', args: { page: '7:ABC123', ref: 'e3' },
+      expects_output_keys: ['page', 'url', 'title', 'html', 'truncated'],
+      ingredient: expect.objectContaining({ slug: INSPECT, domain_allowlist: [TARGET_A] }),
+    })]);
+  });
+
+  it.each([
+    [{ target: TARGET_A, ref: 'e3' }, 'a ref needs the page it came from'],
+    [{ target: TARGET_A, page: '7:ABC123', ref: 'e3', selector: '#x' }, 'give a ref or a selector, not both'],
+    [{ page: '7:ABC123' }, "requires a non-empty 'target' arg"],
+  ])('refuses %j before any Bridge is asked', async (input, message) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: inspectManifest });
+    const err = await expectIngredientCode(() => adapter(call(input)), 'DOM_SELECTOR_MISSING');
+    expect(err.message).toContain(message);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  // A read changes nothing on the page, so a lost answer is a failed read.
+  it('reports a timed-out inspect as a failed read, never as an uncertain effect', async () => {
+    const { adapter } = setupAdapter({ manifest: inspectManifest,
+      dispatch: async () => ({ kind: 'timeout', command_id: 'cmd-1', attempts: 1 }) });
+    await expectIngredientCode(() => adapter(call({ target: TARGET_A })), 'INGREDIENT_ADAPTER_ALL_FAILED');
+  });
+
+  it('tells the owner to update a Bridge that cannot inspect', async () => {
+    const { adapter } = setupAdapter({ manifest: inspectManifest, dispatch: async () => ({ kind: 'capacity_gap',
+      capacity_gap: { kind: 'bridge_online' }, reason: 'bridge_update_required', attempts: 0 }) });
+    const err = await expectIngredientCode(() => adapter(call({ target: TARGET_A })), 'ROLE_RESTRICTION');
+    expect(err.message).toBe("Update the Browser Bridge: the connected one cannot run 'inspect'.");
+  });
+
+  // Only an op sets an entry's action: a recipe's own DOM field named
+  // `inspect` is still read as text.
+  it('keeps a manifest field called inspect a read', () => {
+    expect(classifyEntryAction(entry('inspect'))).toBe('read_dom');
+  });
+});
+
+// D-335 slice B — `core.dom.click`, and `core.dom.write` by page handle and ref.
+describe('D-335 - core.dom.click and core.dom.write by ref', () => {
+  const op = (slug: string, risk: 'write') => ({
+    manifest: manifest({ slug, risk_tier: risk, surface_kind: 'authoring' }),
+    call: (input: Record<string, unknown>) => resolved({ slug, risk_tier: risk, input, output: {} }),
+  });
+  const click = op('dom-click', 'write');
+  const write = op('dom-write', 'write');
+
+  it('sends one click bound to the page, naming the ref', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: click.manifest,
+      dispatch: async () => completed(okResult({ clicked: true })) });
+    await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' }))).resolves.toEqual({ clicked: 1 });
+    expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'click', args: { page: '7:ABC123', ref: 'e3' },
+      expects_output_keys: ['clicked'] })]);
+  });
+
+  it('types by ref, and presses the submit on the same page', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: write.manifest,
+      dispatch: async request => completed(okResult(request.action === 'fill' ? { filled: true } : { clicked: true })) });
+    await adapter(write.call({ target: TARGET_A, page: '7:ABC123', ref: 'e5', value: 'Grace', submit_selector: '#send' }));
+    expect(requests(dispatch).map(request => [request.action, request.args])).toEqual([
+      ['fill', { page: '7:ABC123', ref: 'e5', value: 'Grace' }],
+      ['click', { page: '7:ABC123', selector: '#send' }],
+    ]);
+  });
+
+  // An unbound write is what every Bridge has always run.
+  it('keeps a selector-only write the shape it always had', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: write.manifest,
+      dispatch: async () => completed(okResult({ filled: true })) });
+    await adapter(write.call({ target: TARGET_A, selector: '#name', value: 'Grace' }));
+    expect(requests(dispatch)[0]!.args).toEqual({ selector: '#name', value: 'Grace' });
+  });
+
+  it.each([
+    [click, { target: TARGET_A, ref: 'e3' }, 'a ref needs the page it came from'],
+    [click, { target: TARGET_A, page: '7:ABC123' }, "needs the element: a 'selector', or a 'ref' with its 'page'"],
+    [write, { target: TARGET_A, page: '7:ABC123', ref: 'e5', selector: '#name', value: 'x' }, 'give a ref or a selector, not both'],
+  ])('refuses %#: %j before any Bridge is asked', async (subject, input, message) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: subject.manifest });
+    const err = await expectIngredientCode(() => adapter(subject.call(input)), 'DOM_SELECTOR_MISSING');
+    expect(err.message).toContain(message);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
+// D-335 slice C — `core.dom.tabs` and `core.dom.open`, one command each.
+describe('D-335 - core.dom.tabs and core.dom.open', () => {
+  const tabs = { manifest: manifest({ slug: 'dom-tabs', risk_tier: 'read', surface_kind: 'reading' }),
+    call: (input: Record<string, unknown>) => resolved({ slug: 'dom-tabs', risk_tier: 'read', input, output: {} }) };
+  const open = { manifest: manifest({ slug: 'dom-open', risk_tier: 'write', surface_kind: 'reading' }),
+    call: (input: Record<string, unknown>) => resolved({ slug: 'dom-open', risk_tier: 'write', input, output: {} }) };
+  const listed = { tabs: [{ page: '7:ABC123', url: 'https://app.example.com/deals', title: 'Deals' }], truncated: false };
+
+  it('lists the tabs on the target in one command, and answers the list', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: tabs.manifest, dispatch: async () => completed(okResult(listed)) });
+    await expect(adapter(tabs.call({ target: TARGET_A }))).resolves.toEqual(listed);
+    expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'list_tabs', args: {},
+      expects_output_keys: ['tabs', 'truncated'], ingredient: expect.objectContaining({ domain_allowlist: [TARGET_A] }) })]);
+  });
+
+  it('opens one address on the target, and answers its page', async () => {
+    const page = { page: '8:DEF456', url: 'https://app.example.com/deals/1', title: 'Deal 1' };
+    const { adapter, dispatch } = setupAdapter({ manifest: open.manifest, dispatch: async () => completed(okResult(page)) });
+    await expect(adapter(open.call({ target: TARGET_A, address: 'https://app.example.com/deals/1' }))).resolves.toEqual(page);
+    expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'open_tab',
+      args: { url: 'https://app.example.com/deals/1' }, expects_output_keys: ['page', 'url', 'title'] })]);
+  });
+
+  it.each([
+    ['javascript:alert(1)', 'only an http or https address'],
+    ['https://user:pw@app.example.com/', 'only an http or https address'],
+    ['https://elsewhere.example.com/', 'is not on *://app.example.com/*'],
+    ['not an address', 'is not a web address'],
+  ])('refuses to open %s before any Bridge is asked', async (address, message) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: open.manifest });
+    const err = await expectIngredientCode(() => adapter(open.call({ target: TARGET_A, address })), 'DOM_PAGE_NOT_MATCHING');
+    expect(err.message).toContain(message);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  // Opening asked for the address: a lost answer may mean an open tab.
+  it('reports a timed-out open as uncertain, and a timed-out list as a failed read', async () => {
+    const timedOut = async () => ({ kind: 'timeout' as const, command_id: 'cmd-1', attempts: 1 });
+    await expectIngredientCode(() => setupAdapter({ manifest: open.manifest, dispatch: timedOut }).adapter(
+      open.call({ target: TARGET_A, address: 'https://app.example.com/' })), 'ACTION_DELIVERY_UNCERTAIN');
+    await expectIngredientCode(() => setupAdapter({ manifest: tabs.manifest, dispatch: timedOut }).adapter(
+      tabs.call({ target: TARGET_A })), 'INGREDIENT_ADAPTER_ALL_FAILED');
   });
 });
 

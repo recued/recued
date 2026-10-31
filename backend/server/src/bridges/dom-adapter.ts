@@ -61,12 +61,19 @@ import { currentPreapprovalIo } from '../preapproval-io-context.js';
 import { captureProviderHandoffFence } from '../execution/provider-handoff.js';
 import { currentRunAbortContext } from '../execution/run-abort-context.js';
 
-import type {
-  BridgeAction,
-  BridgeIngredientRef,
-  BridgeResult,
-  BridgeSurfaceKind,
-  IngredientManifest,
+import {
+  BRIDGE_DESCRIBE_OUTPUT_KEYS,
+  BRIDGE_INSPECT_OUTPUT_KEYS,
+  BRIDGE_OPEN_OUTPUT_KEYS,
+  BRIDGE_TABS_OUTPUT_KEYS,
+  isPatternWithinGrantedOrigins,
+  type ApprovalValueLabels,
+  type HeldBrowserTarget,
+  type BridgeAction,
+  type BridgeIngredientRef,
+  type BridgeResult,
+  type BridgeSurfaceKind,
+  type IngredientManifest,
 } from '@recued/contracts';
 import {
   IngredientError,
@@ -126,8 +133,92 @@ const CORE_DOM_WRITE_SLUG = 'dom-write';
  *  so it never collides with a real recipe field. */
 const CORE_DOM_VALUE_FIELD = '__core_dom_value';
 
+/** D-335 — `core.dom.inspect` is one `inspect` command, and `core.dom.click`
+ *  one `click`, built from their args. */
+const CORE_DOM_INSPECT_SLUG = 'dom-inspect';
+const CORE_DOM_CLICK_SLUG = 'dom-click';
+/** D-335 slice C — `core.dom.tabs` (one `list_tabs`) and `core.dom.open`
+ *  (one `open_tab`). */
+const CORE_DOM_TABS_SLUG = 'dom-tabs';
+const CORE_DOM_OPEN_SLUG = 'dom-open';
+
+/** The ops whose one command's answer is the step's whole output. */
+const WHOLE_ANSWER_ACTIONS: ReadonlySet<BridgeAction> = new Set(['inspect', 'list_tabs', 'open_tab']);
+/** The actions that change nothing on a page: a lost answer is a failed read. */
+const READ_ACTIONS: ReadonlySet<BridgeAction> = new Set(['read_dom', 'inspect', 'describe', 'list_tabs']);
+
 const isCoreDomSlug = (slug: string): boolean =>
-  slug === CORE_DOM_READ_SLUG || slug === CORE_DOM_WRITE_SLUG;
+  slug === CORE_DOM_READ_SLUG || slug === CORE_DOM_WRITE_SLUG || slug === CORE_DOM_CLICK_SLUG;
+
+/** The page, ref and selector a `core.dom` call names, checked here so a bad
+ *  call fails with its reason before it reaches a Bridge (which checks them
+ *  again). A ref only means something on the page it came from, so it needs
+ *  that page's handle. `label` names the element, for the call's errors. */
+const coreDomElement = (
+  input: Record<string, unknown>,
+  slug: string,
+): { element: Record<string, string>; label: string } => {
+  const op = slug === CORE_DOM_INSPECT_SLUG ? 'core.dom.inspect'
+    : slug === CORE_DOM_CLICK_SLUG ? 'core.dom.click' : 'core.dom.write';
+  const optional = (key: string): string | undefined => {
+    const value = input[key];
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value !== 'string') {
+      throw new IngredientError('DOM_SELECTOR_MISSING', `${op}: '${key}' must be text`, { slug, key });
+    }
+    return value;
+  };
+  const page = optional('page');
+  const ref = optional('ref');
+  const selector = optional('selector');
+  if (ref !== undefined && selector !== undefined) {
+    throw new IngredientError('DOM_SELECTOR_MISSING', `${op}: give a ref or a selector, not both`, { slug });
+  }
+  if (ref !== undefined && page === undefined) {
+    throw new IngredientError('DOM_SELECTOR_MISSING',
+      `${op}: a ref needs the page it came from — pass the page handle that inspect answered`, { slug, ref });
+  }
+  return {
+    element: { ...(page !== undefined ? { page } : {}), ...(ref !== undefined ? { ref } : {}),
+      ...(selector !== undefined ? { selector } : {}) },
+    label: selector ?? (ref !== undefined ? `ref ${ref}` : 'the page'),
+  };
+};
+
+/** A one-command `core.dom` call: its target, action and command args.
+ *  `core.dom.open` checks its address here, so an address that is not a web
+ *  address or not on the target fails before any Bridge is asked (the Bridge
+ *  checks it again). */
+const buildWholeAnswerCall = (
+  slug: string,
+  input: Record<string, unknown>,
+): { target: string; action: BridgeAction; args: Record<string, string>; label: string } => {
+  const target = reqDomArg(input, 'target', slug);
+  if (slug === CORE_DOM_TABS_SLUG) return { target, action: 'list_tabs', args: {}, label: 'the open tabs' };
+  if (slug === CORE_DOM_OPEN_SLUG) {
+    // The op takes `address`: a manifest input named `url` is an HTTP
+    // ingredient's fixed endpoint, which no caller may supply. The Bridge's
+    // `open_tab` still names it `url`.
+    const url = reqDomArg(input, 'address', slug);
+    let address: URL;
+    try {
+      address = new URL(url);
+    } catch {
+      throw new IngredientError('DOM_PAGE_NOT_MATCHING', `core.dom.open: '${url}' is not a web address`, { slug, url });
+    }
+    if ((address.protocol !== 'http:' && address.protocol !== 'https:') || address.username || address.password) {
+      throw new IngredientError('DOM_PAGE_NOT_MATCHING',
+        'core.dom.open: only an http or https address, without a user name or password, can be opened', { slug, url });
+    }
+    if (!isPatternWithinGrantedOrigins(address.href, [target])) {
+      throw new IngredientError('DOM_PAGE_NOT_MATCHING', `core.dom.open: ${address.href} is not on ${target}`,
+        { slug, url, target });
+    }
+    return { target, action: 'open_tab', args: { url: address.href }, label: address.href };
+  }
+  const { element, label } = coreDomElement(input, CORE_DOM_INSPECT_SLUG);
+  return { target, action: 'inspect', args: element, label };
+};
 
 /** Pull a required non-empty string arg off a `core.dom` op's resolved input. */
 const reqDomArg = (
@@ -156,13 +247,13 @@ const buildCoreDomCall = (
   input: Record<string, unknown>,
 ): { domain_allowlist: string[]; entries: DomEntry[]; input: Record<string, unknown> } => {
   const target = reqDomArg(input, 'target', slug);
-  const selector = reqDomArg(input, 'selector', slug);
   // `target` rides in the synthesized input so it folds into the per-entry
   // idempotency hash (`buildIdempotencyKey`) — two distinct calls to the same
   // selector against different domains must not share a Bridge dedup cell. The
   // underscore-fenced key is never read by `buildArgsForEntry` (which only pulls
   // the `dom.<field>` fill value), so it affects the hash only.
   if (slug === CORE_DOM_READ_SLUG) {
+    const selector = reqDomArg(input, 'selector', slug);
     // One read entry; the marker IS the output field name (`text`).
     return {
       domain_allowlist: [target],
@@ -170,22 +261,40 @@ const buildCoreDomCall = (
       input: { __core_dom_target: target },
     };
   }
-  // core.dom.write — fill `value` into `selector`, then optionally press Enter on
-  // `submit_selector` (the web-chat submit pattern). The fill marker is
-  // `dom.<CORE_DOM_VALUE_FIELD>`, so `buildArgsForEntry` pulls the value from the
-  // synthetic input below.
+  // D-335 slice B — a write or click names its element by a selector, or by a
+  // page handle with a ref (or a selector) on that page, which binds it there.
+  const { element, label } = coreDomElement(input, slug);
+  if (element.ref === undefined && element.selector === undefined) {
+    throw new IngredientError('DOM_SELECTOR_MISSING',
+      `core.dom op '${slug}' needs the element: a 'selector', or a 'ref' with its 'page'`, { slug });
+  }
+  const bound = element.page !== undefined;
+  if (slug === CORE_DOM_CLICK_SLUG) {
+    return {
+      domain_allowlist: [target],
+      entries: [{ selector: label, marker: DOM_CLICK_MARKER, index: 1, ...(bound ? { element } : {}) }],
+      input: { __core_dom_target: target, __core_dom_element: element },
+    };
+  }
+  // core.dom.write — fill `value` into the element, then optionally press Enter
+  // on `submit_selector` (the web-chat submit pattern), on the same page when
+  // the write is bound to one. The fill marker is `dom.<CORE_DOM_VALUE_FIELD>`,
+  // so `buildArgsForEntry` pulls the value from the synthetic input below.
   const value = reqDomArg(input, 'value', slug);
   const entries: DomEntry[] = [
-    { selector, marker: `${DOM_WRITE_PREFIX}${CORE_DOM_VALUE_FIELD}`, index: 1 },
+    { selector: label, marker: `${DOM_WRITE_PREFIX}${CORE_DOM_VALUE_FIELD}`, index: 1,
+      ...(bound ? { element } : {}) },
   ];
   const submit = input.submit_selector;
   if (typeof submit === 'string' && submit.length > 0) {
-    entries.push({ selector: submit, marker: DOM_ENTER_MARKER, index: 2 });
+    entries.push({ selector: submit, marker: DOM_ENTER_MARKER, index: 2,
+      ...(bound ? { element: { page: element.page!, selector: submit } } : {}) });
   }
   return {
     domain_allowlist: [target],
     entries,
-    input: { [CORE_DOM_VALUE_FIELD]: value, __core_dom_target: target },
+    // A selector-only write keeps the idempotency input it always had.
+    input: { [CORE_DOM_VALUE_FIELD]: value, __core_dom_target: target, ...(bound ? { __core_dom_element: element } : {}) },
   };
 };
 
@@ -199,6 +308,14 @@ interface DomEntry {
    *  idempotency key so multiple entries on the same step have distinct
    *  bridge dedup cells. */
   index: number;
+  /** The action, for an entry an op synthesizes rather than a manifest's
+   *  output map (`core.dom.inspect`). A manifest entry never sets it, so a
+   *  field a recipe happens to call `inspect` stays a read. */
+  action?: BridgeAction;
+  /** D-335 slice B — the element a `core.dom` write or click names by page
+   *  handle and ref (or selector), sent as the command's args in place of
+   *  `{ selector }`. A manifest entry never sets it. */
+  element?: Record<string, string>;
 }
 
 interface PerEntryOutcome {
@@ -220,6 +337,17 @@ export const describeBridgeDomCall = (
   // `buildArgsForEntry` / `buildIdempotencyKey` read: the synthetic
   // `{ [CORE_DOM_VALUE_FIELD]: value }` for a core.dom write, else the resolved
   // step input.
+  if (resolved.slug === CORE_DOM_INSPECT_SLUG || resolved.slug === CORE_DOM_TABS_SLUG
+    || resolved.slug === CORE_DOM_OPEN_SLUG) {
+    const { target, action, args, label } = buildWholeAnswerCall(resolved.slug, resolved.input);
+    const entry: DomEntry = { selector: label, marker: action, index: 1, action };
+    return {
+      ingredient: buildIngredientRef(manifest, [target]),
+      callInput: { __core_dom_target: target, ...args },
+      entries: [{ entry, action, args: args as Record<string, unknown>,
+        expects_output_keys: expectsKeysForAction(action) }],
+    };
+  }
   let domain_allowlist: string[];
   let entries: DomEntry[];
   let callInput: Record<string, unknown>;
@@ -321,10 +449,117 @@ export const createBridgeDomAdapter = (
   };
 };
 
+/** The host a URL or a match pattern names: `*://mail.google.com/*` →
+ *  `mail.google.com`. Empty for a pattern on every host (the Browser
+ *  Toolkit's), which names no site. */
+const siteOf = (urlOrPattern: string): string => {
+  const match = /^[\w*+.-]+:\/\/([^/]+)/.exec(urlOrPattern);
+  if (!match) return urlOrPattern;
+  return match[1] === '*' ? '' : match[1]!.replace(/^\*\./, '');
+};
+
+/** How long a hold waits for the Bridge to describe its element. The ask goes
+ *  out after it, so a Bridge that does not answer costs this much, once. */
+export const HELD_BROWSER_DESCRIBE_TIMEOUT_MS = 3_000;
+
+/** D-335 slice B — the element a held `core.dom.write` or `core.dom.click`
+ *  acts on, read live from the Bridge (`describe`) while the run is held, so
+ *  the owner approves what the page shows rather than what a model called it.
+ *  Undefined for any other call. Never throws: a Bridge that cannot be asked,
+ *  or does not answer within `timeoutMs`, gives `unread` with the reason, and
+ *  the ask says so. */
+export const describeHeldBrowserTarget = async (options: {
+  dispatcher: BridgeDispatcher | undefined;
+  manifests: DomBridgeManifestSource;
+  slug: string | undefined;
+  input: unknown;
+  run_id: string;
+  step_id: string;
+  timeoutMs?: number;
+}): Promise<HeldBrowserTarget | undefined> => {
+  const { slug, input } = options;
+  if ((slug !== CORE_DOM_WRITE_SLUG && slug !== CORE_DOM_CLICK_SLUG)
+    || input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const manifest = options.manifests.get(slug);
+  if (!manifest) return undefined;
+  let call: ReturnType<typeof describeBridgeDomCall>;
+  try {
+    call = describeBridgeDomCall(manifest, { slug, input: input as Record<string, unknown>, output: {} });
+  } catch {
+    return undefined;
+  }
+  const target = call.ingredient.domain_allowlist[0] ?? '';
+  const first = call.entries[0];
+  if (first === undefined) return undefined;
+  const site = siteOf(target);
+  if (!options.dispatcher) return { site, unread: 'no Browser Bridge is connected' };
+  // The element the write names, without the text it would type.
+  const { value: _value, ...element } = first.args;
+  const timeoutMs = options.timeoutMs ?? HELD_BROWSER_DESCRIBE_TIMEOUT_MS;
+  const request: DispatchRequest = {
+    recipe_run_id: options.run_id,
+    step_id: `${options.step_id}:describe`,
+    ingredient: call.ingredient,
+    action: 'describe',
+    args: element,
+    expects_output_keys: [...BRIDGE_DESCRIBE_OUTPUT_KEYS],
+    // A read for this ask only: never a replay of an earlier one.
+    idempotency_key: `${options.run_id}:describe:${randomUUID()}`,
+    timeout_ms: timeoutMs,
+    target_domain_pattern: target,
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<'late'>(resolve => {
+    timer = setTimeout(() => resolve('late'), timeoutMs);
+    timer.unref?.();
+  });
+  let outcome: DispatchOutcome | 'late';
+  try {
+    outcome = await Promise.race([options.dispatcher.dispatch(request), late]);
+  } catch {
+    return { site, unread: 'the Browser Bridge could not be asked' };
+  } finally {
+    clearTimeout(timer);
+  }
+  if (outcome === 'late' || outcome.kind === 'timeout') return { site, unread: 'the Browser Bridge did not answer in time' };
+  if (outcome.kind !== 'completed') {
+    return { site, unread: outcome.kind === 'capacity_gap' && outcome.reason === 'bridge_update_required'
+      ? 'the Browser Bridge needs an update to show it'
+      : outcome.kind === 'capacity_gap' && outcome.reason === 'site_not_granted'
+        ? 'the Browser Bridge is not allowed on that site' : 'no Browser Bridge can reach that page' };
+  }
+  const out = outcome.result.outputs;
+  if (outcome.result.status !== 'ok' || !out || typeof out.url !== 'string' || typeof out.title !== 'string'
+    || typeof out.role !== 'string' || typeof out.label !== 'string' || typeof out.protected !== 'boolean') {
+    return { site, unread: outcome.result.error?.message ?? 'the Browser Bridge could not read it' };
+  }
+  return { site: siteOf(out.url), title: out.title, role: out.role, label: out.label, protected: out.protected };
+};
+
+/** D-335 slice B — how a held browser call's arguments read on the approval's
+ *  rows: the page handle as the page's title and site, the ref or selector as
+ *  the element, and the text for a password, sign-in code or card field as
+ *  not shown. Undefined when the element could not be read. */
+export const heldBrowserValueLabels = (
+  target: HeldBrowserTarget | undefined,
+  input: unknown,
+): ApprovalValueLabels | undefined => {
+  if (target === undefined || 'unread' in target || input === null || typeof input !== 'object') return undefined;
+  const args = input as Record<string, unknown>;
+  const labels: Record<string, Record<string, string>> = {};
+  const element = target.label !== '' ? `${target.role} “${target.label}”` : target.role;
+  if (typeof args.page === 'string') labels.page = { [args.page]: target.title !== '' ? `“${target.title}” (${target.site})` : target.site };
+  if (typeof args.ref === 'string') labels.ref = { [args.ref]: element };
+  if (typeof args.selector === 'string') labels.selector = { [args.selector]: element };
+  if (target.protected && typeof args.value === 'string') labels.value = { [args.value]: 'Not shown: the field is for a password, a sign-in code or a card' };
+  return Object.keys(labels).length > 0 ? labels : undefined;
+};
+
 /** Classify a single output entry into the BridgeAction the bridge SW
  *  executes for it. Pure — no input lookups. Trigger entries are
  *  filtered upstream and never reach this helper. */
 export const classifyEntryAction = (entry: DomEntry): BridgeAction => {
+  if (entry.action !== undefined) return entry.action;
   if (entry.marker.startsWith(DOM_WRITE_PREFIX)) return 'fill';
   if (entry.marker === DOM_CLICK_MARKER || entry.marker === DOM_ENTER_MARKER) return 'click';
   return 'read_dom';
@@ -405,6 +640,14 @@ const expectsKeysForAction = (action: BridgeAction): string[] => {
       return ['data_url'];
     case 'os_notification':
       return ['notification_id'];
+    case 'inspect':
+      return [...BRIDGE_INSPECT_OUTPUT_KEYS];
+    case 'describe':
+      return [...BRIDGE_DESCRIBE_OUTPUT_KEYS];
+    case 'list_tabs':
+      return [...BRIDGE_TABS_OUTPUT_KEYS];
+    case 'open_tab':
+      return [...BRIDGE_OPEN_OUTPUT_KEYS];
     default:
       return [];
   }
@@ -434,9 +677,24 @@ const buildArgsForEntry = (
         { slug, field, selector: entry.selector },
       );
     }
-    return { selector: entry.selector, value: String(raw) };
+    return { ...(entry.element ?? { selector: entry.selector }), value: String(raw) };
   }
-  return { selector: entry.selector };
+  return entry.element ? { ...entry.element } : { selector: entry.selector };
+};
+
+/** D-335 slice G — how the owner allows the Bridge on their sites. */
+const ALLOW_EVERY_SITE = 'To allow it, open the Browser Bridge\'s side panel in Chrome and choose “Allow every site”.';
+
+/** What a step no Bridge could take says, in words an AI can pass on: the
+ *  Bridge that is missing, or the site it is not allowed on. */
+const capacityGapMessage = (outcome: Extract<DispatchOutcome, { kind: 'capacity_gap' }>, action: BridgeAction): string => {
+  if (outcome.reason === 'bridge_update_required') return `Update the Browser Bridge: the connected one cannot run '${action}'.`;
+  if (outcome.reason === 'site_not_granted') {
+    const site = outcome.capacity_gap.kind === 'permission_missing' ? siteOf(outcome.capacity_gap.permission) : '';
+    return `${site === '' ? 'The Browser Bridge is not allowed on every site' : `No connected Browser Bridge is allowed on ${site}`}. ${ALLOW_EVERY_SITE}`;
+  }
+  if (outcome.reason === 'bridge_label_unavailable') return 'The Browser Bridge this step names is not connected to this server.';
+  return 'No Browser Bridge is connected to this server: open Chrome with the Recued Browser Bridge paired to it.';
 };
 
 /** Map a bridge-side `BridgeErrorCode` to a recipe-error code. Falls
@@ -455,6 +713,13 @@ const mapBridgeErrorCode = (
       return 'DOM_SELECTOR_NOT_FOUND';
     case 'tab_navigation_blocked':
       return 'DOM_CROSS_ORIGIN';
+    // The bridge read the element back after the write: a confirmed failure,
+    // so the write is retryable rather than an uncertain effect.
+    case 'value_not_applied':
+      return 'DOM_WRITE_FAILED';
+    // A password, sign-in code or card field: this run is not allowed the read.
+    case 'field_protected':
+      return 'NOT_AUTHORIZED';
     case 'capacity_gap_logged_in':
     case 'capacity_gap_tab_unavailable':
     case 'capacity_gap_permission_missing':
@@ -562,7 +827,8 @@ export const translateDispatchOutcome = (
   slug: string,
   entry: DomEntry,
 ): Record<string, unknown> | undefined => {
-  const mayChangePage = classifyEntryAction(entry) !== 'read_dom';
+  const action = classifyEntryAction(entry);
+  const mayChangePage = !READ_ACTIONS.has(action);
   const timeoutCode = mayChangePage ? 'ACTION_DELIVERY_UNCERTAIN' : 'INGREDIENT_ADAPTER_ALL_FAILED';
   const timeoutAdvice = mayChangePage ? ' The page may have changed; check it before retrying.' : '';
   if (outcome.kind === 'completed') {
@@ -589,9 +855,11 @@ export const translateDispatchOutcome = (
       );
     }
     if (result.status === 'rejected') {
+      // The Bridge checks Chrome's own grant again (slice G): it was taken
+      // back, or the server's copy of it was stale.
       throw new IngredientError(
         'INGREDIENT_SCOPE_INSUFFICIENT',
-        `DOM ingredient '${slug}' was rejected by the bridge (out of grant scope; selector '${entry.selector}')`,
+        `The Browser Bridge refused this step: it is not allowed on this site. ${ALLOW_EVERY_SITE}`,
         {
           slug,
           bridge_client_token_id: outcome.bridge_client_token_id,
@@ -629,7 +897,7 @@ export const translateDispatchOutcome = (
   if (outcome.kind === 'capacity_gap') {
     throw new IngredientError(
       'ROLE_RESTRICTION',
-      `DOM ingredient '${slug}' cannot run — ${outcome.reason} (selector '${entry.selector}')`,
+      capacityGapMessage(outcome, action),
       {
         slug,
         reason: outcome.reason,
@@ -684,6 +952,9 @@ export const translateDispatchOutcome = (
 const assembleStepOutput = (
   outcomes: PerEntryOutcome[],
 ): unknown => {
+  // D-335 — an inspect, a tab list or an opened page is one command, and its
+  // answer is the step's output.
+  if (outcomes.length === 1 && WHOLE_ANSWER_ACTIONS.has(outcomes[0]!.action)) return outcomes[0]!.outputs ?? {};
   const reads: Record<string, string | null> = {};
   let readsCount = 0;
   const writtenFields: string[] = [];

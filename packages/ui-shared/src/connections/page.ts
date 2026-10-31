@@ -47,6 +47,7 @@ import {
   renderProvenance,
 } from '../reference-provenance.js';
 import { button } from '../primitives/button.js';
+import { renderActionLabel } from '../icon-render.js';
 import { textInput, select as selectField, fieldHint } from '../primitives/field.js';
 import { inlineError, inlineHint, inlineOk } from '../primitives/message.js';
 import { emptyHint } from '../primitives/empty-hint.js';
@@ -319,7 +320,7 @@ const renderPackInventoryRecovery = (
           data-action="connections-retry-pack-context"
           data-connections-pack-inventory-retry
           aria-disabled="${retrying ? 'true' : 'false'}"
-          aria-busy="${retrying ? 'true' : 'false'}">${retrying ? 'Retrying…' : 'Retry'}</button>
+          aria-busy="${retrying ? 'true' : 'false'}">${renderActionLabel('refresh', retrying ? 'Retrying…' : 'Retry')}</button>
       </div>
     </section>
   `;
@@ -388,6 +389,7 @@ const renderRow = (
           }
           ${button({
             label: 'Edit',
+            icon: 'rename',
             size: 'xs',
             action: 'connections-edit',
             data: { kind: conn.kind, name: conn.name },
@@ -403,6 +405,7 @@ const renderRow = (
           })}
           ${button({
             label: deleting ? 'Removing…' : 'Remove',
+            icon: 'delete',
             size: 'xs',
             variant: 'danger-text',
             action: 'connections-delete',
@@ -2481,7 +2484,7 @@ const renderSavedOAuthApps = (dialog: ConnectionsDialogState): string => {
     <div class="connections-saved-apps-head">
       <h4>OAuth app</h4>
       <div class="connections-saved-apps-links">
-        ${button({ label: 'Refresh saved apps',size: 'sm',variant: 'link',action: 'connections-refresh-saved-oauth-apps',disabled: state.loading || dialog.saving || dialog.oauthInFlight })}
+        ${button({ label: 'Refresh saved apps',icon: 'refresh',size: 'sm',variant: 'link',action: 'connections-refresh-saved-oauth-apps',disabled: state.loading || dialog.saving || dialog.oauthInFlight })}
         ${state.canManage ? button({ label: 'Manage saved apps', size: 'sm', variant: 'link', action: 'connections-manage-oauth-apps', disabled: dialog.saving || dialog.oauthInFlight }) : ''}
       </div>
     </div>
@@ -3739,6 +3742,7 @@ const renderForm = (
                 ? managedConsent ? 'Save authorization' : 'Verify and replace'
                 : 'Save changes'
               : 'Save and test',
+          icon: 'save',
           variant: 'primary',
           size: 'sm',
           action: 'connections-submit-form',
@@ -3875,6 +3879,7 @@ const renderDeleteConfirm = (props: ConnectionsPageProps): string => {
           })}
           ${button({
             label: dc.deleting ? 'Removing…' : 'Remove',
+            icon: 'delete',
             size: 'sm',
             variant: 'danger',
             action: 'connections-delete-confirm',

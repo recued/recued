@@ -13,6 +13,11 @@ export class FakeEl {
     return this.ownText ?? this.children.map((child) => typeof child === 'string' ? child : child.textContent).join('');
   }
   set textContent(value: string) { this.ownText = value; this.children = []; }
+  set innerHTML(value: string) {
+    const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+    this.textContent = value.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+      (match, entity: string) => entities[entity] ?? match);
+  }
   setAttribute(key: string, value: string): void { this.attrs.set(key, value); }
   getAttribute(key: string): string | null { return this.attrs.get(key) ?? null; }
   removeAttribute(key: string): void { this.attrs.delete(key); }

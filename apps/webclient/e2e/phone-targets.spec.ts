@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   ACCOUNT_MENU_TRIGGER,
-  GLOBAL_RUN_PALETTE_TRIGGER,
+  openGlobalRunPalette,
   HARNESS_URL,
   LIVE_CONTROL_RUN_CONTROL,
   LIVE_CONTROL_TOGGLE,
@@ -179,7 +179,7 @@ const STATES: State[] = [
   {
     name: 'the run palette',
     at: '?devices=ready&account=bound&server_profiles=multiple#chat',
-    open: async (page) => { await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click(); },
+    open: async (page) => { await openGlobalRunPalette(page); },
     shows: (page) => page.getByRole('dialog', { name: 'Run a Recipe' }),
   },
   {

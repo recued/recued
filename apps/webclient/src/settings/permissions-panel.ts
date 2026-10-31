@@ -54,6 +54,7 @@ import type {
   OverrideView,
 } from '@recued/contracts';
 import { isEmptyOverridePolicy } from '@recued/contracts';
+import { renderActionLabel, type IconName } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -566,6 +567,7 @@ export const mountPermissionsPanel = (
       attr: string,
       className: string,
       text: string,
+      icon: IconName,
     ): HTMLElement => {
       const btn = doc.createElement('button');
       btn.setAttribute(attr, '');
@@ -574,12 +576,12 @@ export const mountPermissionsPanel = (
       btn.setAttribute('data-ingredient-id', view.ingredient_id);
       btn.setAttribute('data-operation-id', opId);
       btn.className = className;
-      btn.textContent = text;
+      btn.innerHTML = renderActionLabel(icon, text);
       return btn;
     };
 
     if (pendingByRow.has(key)) {
-      const del = makeButton(PERMISSIONS_DELETE_BUTTON_ATTR, 'perm-delete', 'Removing…');
+      const del = makeButton(PERMISSIONS_DELETE_BUTTON_ATTR, 'perm-delete', 'Removing…', 'delete');
       del.setAttribute('disabled', '');
       row.appendChild(del);
     } else if (state.confirmingKey === key) {
@@ -593,6 +595,7 @@ export const mountPermissionsPanel = (
         PERMISSIONS_DELETE_CONFIRM_ATTR,
         'perm-delete perm-confirm-yes',
         'Confirm',
+        'delete',
       );
       confirm.addEventListener('click', () => {
         void runDelete(view);
@@ -602,6 +605,7 @@ export const mountPermissionsPanel = (
         PERMISSIONS_DELETE_CANCEL_ATTR,
         'perm-cancel',
         'Cancel',
+        'close',
       );
       cancel.addEventListener('click', () => {
         state = { ...state, confirmingKey: null };
@@ -610,7 +614,7 @@ export const mountPermissionsPanel = (
       controls.appendChild(cancel);
       row.appendChild(controls);
     } else {
-      const del = makeButton(PERMISSIONS_DELETE_BUTTON_ATTR, 'perm-delete', 'Delete');
+      const del = makeButton(PERMISSIONS_DELETE_BUTTON_ATTR, 'perm-delete', 'Delete', 'delete');
       del.addEventListener('click', () => {
         // Arm THIS row (single-row confirm — replacing any other armed row).
         state = { ...state, confirmingKey: key };
@@ -732,7 +736,7 @@ export const mountPermissionsPanel = (
     const messageClass = catalogLoading ? 'perm-catalog-error perm-catalog-loading' : 'perm-catalog-error';
     if (catalogMessage.className !== messageClass) catalogMessage.className = messageClass;
     const retryLabel = catalogLoading ? 'Trying…' : 'Try again';
-    if (catalogRetry.textContent !== retryLabel) catalogRetry.textContent = retryLabel;
+    if (catalogRetry.textContent !== retryLabel) catalogRetry.innerHTML = renderActionLabel('refresh', retryLabel);
     catalogRetry.setAttribute('aria-disabled', catalogLoading ? 'true' : 'false');
     catalogRetry.setAttribute('aria-busy', catalogLoading ? 'true' : 'false');
     renderContent(options.catalogOnly === true);
@@ -1101,7 +1105,7 @@ export const mountPermissionsPanel = (
     save.setAttribute('type', 'button');
     save.className = 'perm-create-save';
     if (state.creating || ingredientDisabled) save.setAttribute('disabled', '');
-    save.textContent = state.creating ? 'Saving…' : 'Add the rule';
+    save.innerHTML = renderActionLabel('save', state.creating ? 'Saving…' : 'Add the rule');
     if (!state.creating && !ingredientDisabled) {
       save.addEventListener('click', () => {
         void submitCreate();
@@ -1366,5 +1370,17 @@ export const PERMISSIONS_PANEL_STYLES = `
 [data-recued-permissions-panel] .perm-create-error {
   font-size: 13px;
   color: var(--fail);
+}
+[data-recued-permissions-panel] :is(.perm-catalog-retry, .perm-delete, .perm-cancel, .perm-create-save) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+[data-recued-permissions-panel] :is(.perm-catalog-retry, .perm-delete, .perm-cancel, .perm-create-save) > svg {
+  flex-shrink: 0;
+}
+[data-recued-permissions-panel] :is(.perm-catalog-retry, .perm-delete, .perm-cancel, .perm-create-save)[hidden] {
+  display: none;
 }
 `;

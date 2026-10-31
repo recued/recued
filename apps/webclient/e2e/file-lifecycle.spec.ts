@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { createFileLifecycleFixture as Factory } from './harness/file-lifecycle-backend.js';
 
-const setup = async (browser: Browser, fullApp = false) => {
+const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedListSupported = true) => {
   const target = resolve(`node_modules/.cache/file-lifecycle-${crypto.randomUUID()}.mjs`);
   await mkdir(resolve(target, '..'), { recursive: true });
   await build({ entryPoints: [new URL('./harness/file-lifecycle-backend.ts', import.meta.url).pathname], outfile: target,
@@ -15,6 +15,8 @@ const setup = async (browser: Browser, fullApp = false) => {
   const fixture = await createFileLifecycleFixture({ emit: event => { for (const page of pages) void page.evaluate(event => {
     (window as unknown as { queueTestEvent?(e: unknown): void }).queueTestEvent?.(event);
   }, { ...event, cursor: Date.now() }).catch(() => {}); } });
+  for (let i = 1; i < libraryCount; i++) await fixture.files!.ingest({ filename: `Invoice ${String(i).padStart(3, '0')}.txt`,
+    bytes: Buffer.from(`Invoice body ${i}`), mime_type: 'text/plain', origin: 'webclient_upload', source_id: `saved-test-${i}`, scan_status: 'clean' });
   const context = await browser.newContext();
   const calls: string[] = []; let loseAck = false, restoreSupport = true;
   let mutationGate: Promise<void> | undefined, releaseMutation: (() => void) | undefined;
@@ -26,9 +28,12 @@ const setup = async (browser: Browser, fullApp = false) => {
       if (method === 'data.file.mutate' && mutationGate) {
         const pending = mutationGate; mutationGate = undefined; await pending;
       }
-      if (method === 'collection.list' && listGate) {
+      if (['collection.list', 'data.file.attachments.list'].includes(method) && listGate) {
         const pending = listGate; listGate = undefined; waitingForList = true; await pending;
         waitingForList = false; throw new Error('The file list refresh was interrupted.');
+      }
+      if (method === 'data.file.attachments.list' && !savedListSupported) {
+        await route.fulfill({ json: { error: { code: 'unknown_method', message: 'Unknown rpc method: data.file.attachments.list' } } }); return;
       }
       let result = await fixture.rpc(method, args ?? {});
       if (method === 'data.file.usage' && !restoreSupport && result && typeof result === 'object') {
@@ -42,16 +47,16 @@ const setup = async (browser: Browser, fullApp = false) => {
   if (fullApp) {
     await data.addInitScript(() => {
       Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
-        if (['collection.listInstances', 'collection.list', 'collection.get', 'data.file.usage', 'data.file.mutate', 'data.file.read'].includes(method)) {
+        if (['collection.listInstances', 'collection.list', 'collection.get', 'data.file.usage', 'data.file.mutate', 'data.file.read', 'data.file.attachments.list', 'data.file.attachments.preview'].includes(method)) {
           const response = await fetch('/file-lifecycle-rpc', { method: 'POST', body: JSON.stringify({ method, args }) });
           const envelope = await response.json();
-          return envelope.error ? { error: { code: 'bad_request', message: String(envelope.error) } } : envelope;
+          return envelope.error ? { error: typeof envelope.error === 'string' ? { code: 'bad_request', message: envelope.error } : envelope.error } : envelope;
         }
         if (method === 'data.file.attachments.sources') return { result: { sources: [] } };
         return undefined;
       } });
     });
-    await data.goto(`/full-app-harness.html?journey=verification#data/files/record/received/${encodeURIComponent(fixture.fileId)}`);
+    await data.goto(`/full-app-harness.html?journey=verification${libraryCount ? '#data/files' : `#data/files/record/received/${encodeURIComponent(fixture.fileId)}`}`);
     await data.waitForFunction(() => window.__app?.ready === true);
   } else {
     await data.goto(`/file-lifecycle-harness.html?file=${encodeURIComponent(fixture.fileId)}`);
@@ -60,6 +65,7 @@ const setup = async (browser: Browser, fullApp = false) => {
   await chat.goto('/chat-queue-harness.html');
   await expect(chat.locator('body')).toHaveAttribute('data-ready', 'true');
   return { data, chat, fixture, calls, loseAck: () => { loseAck = true; },
+    listSupport: (supported: boolean) => { savedListSupported = supported; },
     restoreSupport: (enabled: boolean) => { restoreSupport = enabled; },
     holdMutation: () => { mutationGate = new Promise(resolve => { releaseMutation = resolve; }); },
     releaseMutation: () => { if (!releaseMutation) throw new Error('No file write is waiting'); releaseMutation(); releaseMutation = undefined; },
@@ -73,6 +79,101 @@ const setup = async (browser: Browser, fullApp = false) => {
 };
 const openUsage = async (page: Page) => { await page.getByRole('button', { name: 'Manage file', exact: true }).click();
   await expect(page.locator('[data-file-lifecycle]')).toContainText('1 message in 1 conversation'); };
+
+test('Saved files pages past 100 and searches the complete retained library, with a distinct no-match state', async ({ browser }) => {
+  const f = await setup(browser, true, 137);
+  try {
+    const rows = f.data.locator('[data-collection-record]');
+    await expect(rows).toHaveCount(30);
+    await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toHaveCount(0);
+    for (const count of [60, 90, 120, 137]) {
+      await f.data.getByRole('button', { name: 'Load more files', exact: true }).click();
+      await expect(rows).toHaveCount(count);
+    }
+    expect(new Set(await rows.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-collection-record')))).size).toBe(137);
+    await expect(f.data.getByRole('button', { name: 'Load more files', exact: true })).toHaveCount(0);
+    const search = f.data.getByRole('searchbox', { name: 'Search saved files' });
+    await search.fill('Attachment'); await search.press('Enter');
+    await expect(rows).toHaveCount(1);
+    await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toBeVisible();
+    await search.fill('does-not-exist'); await f.data.getByRole('button', { name: 'Search files', exact: true }).click();
+    await expect(rows).toHaveCount(0); await expect(f.data.getByText('No saved files match this filename.', { exact: true })).toBeVisible();
+    await search.fill(''); await search.press('Enter'); await expect(rows).toHaveCount(30);
+  } finally { await f.close(); }
+});
+
+test('Saved files keeps the searched page and reading position through preview and download on a narrow screen', async ({ browser }) => {
+  const f = await setup(browser, true, 137);
+  try {
+    await f.data.setViewportSize({ width: 390, height: 844 });
+    const search = f.data.getByRole('searchbox', { name: 'Search saved files' });
+    await search.fill('Invoice'); await search.press('Enter');
+    const rows = f.data.locator('[data-collection-record]'); await expect(rows).toHaveCount(30);
+    for (const count of [60, 90]) { await f.data.getByRole('button', { name: 'Load more files', exact: true }).click(); await expect(rows).toHaveCount(count); }
+    const row = rows.nth(79); const id = (await row.getAttribute('data-collection-record'))!;
+    const filename = f.fixture.files!.get(id)!.hot_fields.filename;
+    const reads = f.calls.filter(method => method === 'data.file.attachments.list').length;
+    await search.fill('Unsubmitted search');
+    await row.scrollIntoViewIfNeeded(); await row.click();
+    await f.data.getByRole('button', { name: 'Preview file', exact: true }).click();
+    const preview = f.data.getByRole('dialog', { name: 'File preview' });
+    await expect(preview.getByLabel('File text')).toContainText('Invoice body'); await preview.press('Escape');
+    const downloading = f.data.waitForEvent('download');
+    await f.data.getByRole('button', { name: 'Download file', exact: true }).click();
+    const download = await downloading; expect(download.suggestedFilename()).toBe(filename); await download.delete();
+    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(rows).toHaveCount(90); await expect(search).toHaveValue('Unsubmitted search');
+    await expect(f.data.locator('[data-saved-file-status]')).toContainText('for “Invoice”');
+    await expect(f.data.locator(`[data-collection-record="${id}"]`)).toBeFocused();
+    await expect(f.data.locator(`[data-collection-record="${id}"]`)).toBeInViewport();
+    expect(f.calls.filter(method => method === 'data.file.attachments.list').length).toBe(reads);
+  } finally { await f.close(); }
+});
+
+test('Saved files retains loaded rows on a failed next page, retries it and ignores a late error after another search', async ({ browser }) => {
+  const f = await setup(browser, true, 137);
+  try {
+    const rows = f.data.locator('[data-collection-record]'); await expect(rows).toHaveCount(30);
+    f.holdListFailure(); await f.data.getByRole('button', { name: 'Load more files', exact: true }).click();
+    await expect.poll(f.waitingForList).toBe(true); await expect(rows).toHaveCount(30); f.releaseList();
+    await expect(f.data.getByRole('alert').filter({ hasText: 'Saved files could not be loaded' })).toBeVisible();
+    await f.data.getByRole('button', { name: 'Retry', exact: true }).click(); await expect(rows).toHaveCount(60);
+    f.holdListFailure(); await f.data.getByRole('button', { name: 'Load more files', exact: true }).click();
+    await expect.poll(f.waitingForList).toBe(true);
+    await f.data.getByRole('searchbox', { name: 'Search saved files' }).fill('Attachment');
+    await f.data.getByRole('button', { name: 'Search files', exact: true }).click(); await expect(rows).toHaveCount(1);
+    const response = f.data.waitForResponse(res => res.url().endsWith('/file-lifecycle-rpc') && !!res.request().postDataJSON().args.cursor);
+    f.releaseList(); await (await response).finished(); await f.data.evaluate(() => new Promise(requestAnimationFrame));
+    await expect(f.data.getByRole('alert').filter({ hasText: 'Saved files could not be loaded' })).toHaveCount(0);
+    await expect(rows).toHaveCount(1); await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toBeVisible();
+  } finally { await f.close(); }
+});
+
+test('an older server retains its saved-file list and archive browsing; an updated server can use the new search', async ({ browser }) => {
+  const f = await setup(browser, true, 137, false);
+  try {
+    await expect(f.data.getByRole('status').filter({ hasText: 'Update your Recued server to search saved files' })).toBeVisible();
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(100);
+    f.holdListFailure();
+    await f.data.getByRole('button', { name: 'Check again', exact: true }).click();
+    await expect.poll(f.waitingForList).toBe(true);
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(100);
+    f.releaseList();
+    await expect(f.data.getByRole('alert').filter({ hasText: 'The previous results are still shown.' })).toBeVisible();
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(100);
+    await expect(f.data.getByRole('status').filter({ hasText: 'Update your Recued server to search saved files' })).toBeVisible();
+    f.listSupport(true);
+    await f.data.getByRole('button', { name: 'Check again', exact: true }).click();
+    const search = f.data.getByRole('searchbox', { name: 'Search saved files' }); await expect(search).toBeVisible();
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(30);
+    await search.fill('Attachment'); await search.press('Enter');
+    await f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`).click(); await openUsage(f.data);
+    await f.data.getByRole('button', { name: 'Archive', exact: true }).click();
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(0);
+    await f.data.getByRole('button', { name: 'Show archived files', exact: true }).click();
+    await expect(search).toHaveValue('Attachment'); await expect(f.data.locator('[data-collection-record]')).toHaveCount(1);
+  } finally { await f.close(); }
+});
 
 test('Data file deletion previews usage, links to the exact message and updates another client without rewriting text', async ({ browser }) => {
   const f = await setup(browser);

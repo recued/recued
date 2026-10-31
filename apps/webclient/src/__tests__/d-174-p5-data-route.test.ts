@@ -76,6 +76,7 @@ import {
   DATA_ROUTE_VERIFICATION_ACTION_ATTR,
   DATA_ROUTE_VERIFICATION_NEXT_ATTR,
   DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR,
+  MEMORY_SAVES_WAIT_MS,
   bootstrapDataRoute,
   type DataCollectionSearchAllCaller,
   type BootstrapDataRouteOptions,
@@ -130,6 +131,8 @@ import {
   MEMORY_DELETE_CONFIRM_ACTION,
   MEMORY_REPLACE_ACTION,
   MEMORY_RESTORE_ACTION,
+  MEMORY_REVOKE_ACTION,
+  MEMORY_UNREVOKE_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
   MEMORY_EDIT_ACTION,
   MEMORY_FIELD_ATTR,
@@ -619,6 +622,9 @@ const mountRoute = (overrides: {
   memoryImportCaller?: NonNullable<BootstrapDataRouteOptions['memoryImportCaller']>;
   memoryRestoreCaller?: NonNullable<BootstrapDataRouteOptions['memoryRestoreCaller']>;
   memoryReplaceCaller?: NonNullable<BootstrapDataRouteOptions['memoryReplaceCaller']>;
+  memoryRevokeCaller?: NonNullable<BootstrapDataRouteOptions['memoryRevokeCaller']>;
+  memoryUnrevokeCaller?: NonNullable<BootstrapDataRouteOptions['memoryUnrevokeCaller']>;
+  memorySavesCaller?: NonNullable<BootstrapDataRouteOptions['memorySavesCaller']>;
   collectionListInstancesCaller?: BootstrapDataRouteOptions['collectionListInstancesCaller'];
   collectionListCaller?: BootstrapDataRouteOptions['collectionListCaller'];
   collectionGetCaller?: BootstrapDataRouteOptions['collectionGetCaller'];
@@ -865,6 +871,15 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.memoryReplaceCaller !== undefined
       ? { memoryReplaceCaller: overrides.memoryReplaceCaller }
+      : {}),
+    ...(overrides.memoryRevokeCaller !== undefined
+      ? { memoryRevokeCaller: overrides.memoryRevokeCaller }
+      : {}),
+    ...(overrides.memorySavesCaller !== undefined
+      ? { memorySavesCaller: overrides.memorySavesCaller }
+      : {}),
+    ...(overrides.memoryUnrevokeCaller !== undefined
+      ? { memoryUnrevokeCaller: overrides.memoryUnrevokeCaller }
       : {}),
     ...(overrides.collectionListInstancesCaller !== undefined
       ? { collectionListInstancesCaller: overrides.collectionListInstancesCaller }
@@ -1748,6 +1763,275 @@ describe('D-174 P5 Data route', () => {
       expect(routeRoot.innerHTML).toContain('aria-label="Replace with your version"');
       expect(memoryCreateCaller).not.toHaveBeenCalled();
       rig.route.dispose();
+    });
+  });
+
+  describe("revoking an agent's note (D-198 §13)", () => {
+    it('Revoke and Un-revoke call their own methods and the feed is read again after each', async () => {
+      let revokedAt: number | undefined;
+      const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(async () => ({
+        entries: [{
+          memory_id: 'umem_agent', origin_actor: 'contracted_user', kind: 'chat_memory',
+          summary: 'Dana prefers phone calls', ts: NOW,
+          ...(revokedAt !== undefined ? { revoked_at: revokedAt } : {}),
+        }],
+      }));
+      const memoryRevokeCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryRevokeCaller']>>(async ({ memory_id }) => {
+        revokedAt = NOW;
+        return { memory_id, versions: 1 };
+      });
+      const memoryUnrevokeCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUnrevokeCaller']>>(async ({ memory_id }) => {
+        revokedAt = undefined;
+        return { memory_id, versions: 1 };
+      });
+      const rig = mountRoute({
+        initialTab: 'memory',
+        memoryListCaller,
+        memoryGetCaller: vi.fn(async ({ memory_id }) => ({ memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory', ts: NOW })),
+        memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+        memoryUpdateCaller: vi.fn(async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 })),
+        memoryDeleteCaller: vi.fn(async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false })),
+        memoryRevokeCaller,
+        memoryUnrevokeCaller,
+      });
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+
+      emitClick(routeRoot, MEMORY_REVOKE_ACTION, { 'data-memory-id': 'umem_agent' });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      await rig.route.whenLoaded();
+      expect(memoryRevokeCaller).toHaveBeenCalledWith({ memory_id: 'umem_agent' });
+      expect(routeRoot.innerHTML).toContain('You revoked this');
+      expect(routeRoot.innerHTML).toContain('>Un-revoke<');
+
+      emitClick(routeRoot, MEMORY_UNREVOKE_ACTION, { 'data-memory-id': 'umem_agent' });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      await rig.route.whenLoaded();
+      expect(memoryUnrevokeCaller).toHaveBeenCalledWith({ memory_id: 'umem_agent' });
+      expect(routeRoot.innerHTML).not.toContain('You revoked this');
+      expect(routeRoot.innerHTML).toContain('>Revoke<');
+      rig.route.dispose();
+    });
+
+    it('⛔ an older server without memory.revoke: says it needs an update, on the row', async () => {
+      const memoryRevokeCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryRevokeCaller']>>(async () => {
+        throw Object.assign(new Error('unknown method memory.revoke'), { code: 'unknown_method' });
+      });
+      const rig = mountRoute({
+        initialTab: 'memory',
+        memoryListCaller: vi.fn(async () => ({
+          entries: [{ memory_id: 'umem_agent', origin_actor: 'contracted_user' as const, kind: 'chat_memory', summary: 'Dana prefers phone calls', ts: NOW }],
+        })),
+        memoryGetCaller: vi.fn(async ({ memory_id }) => ({ memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory', ts: NOW })),
+        memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+        memoryUpdateCaller: vi.fn(async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 })),
+        memoryDeleteCaller: vi.fn(async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false })),
+        memoryRevokeCaller,
+      });
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+      emitClick(routeRoot, MEMORY_REVOKE_ACTION, { 'data-memory-id': 'umem_agent' });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      expect(memoryRevokeCaller).toHaveBeenCalledTimes(1);
+      expect(routeRoot.innerHTML).toContain('Your Recued server needs an update to revoke a memory.');
+      expect(routeRoot.innerHTML).toContain('>Revoke<');
+      rig.route.dispose();
+    });
+  });
+
+  describe("the Delete confirm's count (D-198 §13)", () => {
+    const COUNTED = 'An agent has saved this 3 times. Mark it wrong so it asks you first?';
+    const PLAIN = 'Delete this memory? Its text leaves your server; the chat it came from keeps a copy.';
+    const row = { 'data-memory-id': 'umem_agent' };
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    };
+    const mountCount = (
+      memorySavesCaller: BootstrapDataRouteOptions['memorySavesCaller'],
+      entry: Record<string, unknown> = {},
+    ) => {
+      let revokedAt: number | undefined;
+      const memoryRevokeCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryRevokeCaller']>>(async ({ memory_id }) => {
+        revokedAt = NOW;
+        return { memory_id, versions: 1 };
+      });
+      const memoryDeleteCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>>(
+        async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false }),
+      );
+      const rig = mountRoute({
+        initialTab: 'memory',
+        memoryListCaller: vi.fn(async () => ({
+          entries: [{
+            memory_id: 'umem_agent', origin_actor: 'contracted_user' as const, kind: 'chat_memory',
+            summary: "Dana Whitfield's daughter is called Mia", ts: NOW,
+            ...(revokedAt !== undefined ? { revoked_at: revokedAt } : {}),
+            ...entry,
+          }],
+        })),
+        memoryGetCaller: vi.fn(async ({ memory_id }) => ({ memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory', ts: NOW })),
+        memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+        memoryUpdateCaller: vi.fn(async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 })),
+        memoryDeleteCaller,
+        memoryRevokeCaller,
+        ...(memorySavesCaller !== undefined ? { memorySavesCaller } : {}),
+      });
+      return { rig, memoryRevokeCaller, memoryDeleteCaller };
+    };
+
+    it("on an agent's note, Delete asks how often it was saved, and offers to mark it wrong", async () => {
+      let answer!: (result: { memory_id: string; saves: number; agents: number }) => void;
+      const memorySavesCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memorySavesCaller']>>(
+        () => new Promise((resolve) => { answer = resolve; }),
+      );
+      const { rig, memoryRevokeCaller, memoryDeleteCaller } = mountCount(memorySavesCaller);
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+
+      emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+      expect(memorySavesCaller).toHaveBeenCalledWith({ memory_id: 'umem_agent' });
+      expect(routeRoot.innerHTML).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*aria-busy="true"[^>]*>Checking…<`));
+      expect(routeRoot.innerHTML).not.toContain(MEMORY_DELETE_CONFIRM_ACTION);
+      // Pressed again while it asks: one question.
+      emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+      expect(memorySavesCaller).toHaveBeenCalledTimes(1);
+
+      answer({ memory_id: 'umem_agent', saves: 3, agents: 1 });
+      await flush();
+      expect(routeRoot.innerHTML).toContain(COUNTED);
+      expect(routeRoot.innerHTML).toMatch(new RegExp(`"${MEMORY_REVOKE_ACTION}"[^>]*>Mark it wrong<`));
+      expect(routeRoot.innerHTML).toMatch(new RegExp(`"${MEMORY_DELETE_CONFIRM_ACTION}"[^>]*>Delete<`));
+
+      emitClick(routeRoot, MEMORY_REVOKE_ACTION, row);
+      await flush();
+      await rig.route.whenLoaded();
+      expect(memoryRevokeCaller).toHaveBeenCalledWith({ memory_id: 'umem_agent' });
+      expect(memoryDeleteCaller).not.toHaveBeenCalled();
+      expect(routeRoot.innerHTML).not.toContain(MEMORY_DELETE_CONFIRM_ACTION);
+      expect(routeRoot.innerHTML).toContain('You revoked this');
+      rig.route.dispose();
+    });
+
+    it("a late answer never opens a confirm the owner has moved on from", async () => {
+      const answers: Array<(result: { memory_id: string; saves: number; agents: number }) => void> = [];
+      const memorySavesCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memorySavesCaller']>>(
+        () => new Promise((resolve) => { answers.push(resolve); }),
+      );
+      const rig = mountRoute({
+        initialTab: 'memory',
+        memoryListCaller: vi.fn(async () => ({
+          entries: [
+            { memory_id: 'umem_agent', origin_actor: 'contracted_user' as const, kind: 'chat_memory', summary: 'Mia', ts: NOW },
+            { memory_id: 'umem_mine', origin_actor: 'user_self' as const, kind: 'note', summary: 'mine', ts: NOW - 1 },
+          ],
+        })),
+        memoryGetCaller: vi.fn(async ({ memory_id }) => ({
+          memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory', summary: 'Mia', ts: NOW, body: 'full',
+        })),
+        memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+        memoryUpdateCaller: vi.fn(async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 })),
+        memoryDeleteCaller: vi.fn(async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false })),
+        memorySavesCaller,
+      });
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+      // Delete on the agent's note, then on your own before the answer comes.
+      emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+      emitClick(routeRoot, MEMORY_DELETE_ACTION, { 'data-memory-id': 'umem_mine' });
+      answers[0]!({ memory_id: 'umem_agent', saves: 3, agents: 1 });
+      await flush();
+      expect(routeRoot.innerHTML).not.toContain(COUNTED);
+      expect(routeRoot.innerHTML).toMatch(new RegExp(`"${MEMORY_DELETE_CONFIRM_ACTION}"[^>]*data-memory-id="umem_mine"`));
+      expect(routeRoot.innerHTML).not.toMatch(new RegExp(`"${MEMORY_DELETE_CONFIRM_ACTION}"[^>]*data-memory-id="umem_agent"`));
+      emitClick(routeRoot, MEMORY_DELETE_CANCEL_ACTION, { 'data-memory-id': 'umem_mine' });
+
+      // Delete in the detail view, then Back before the answer comes.
+      emitClick(routeRoot, MEMORY_OPEN_ACTION, row);
+      await flush();
+      emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+      emitClick(routeRoot, MEMORY_DETAIL_CLOSE_ACTION, {});
+      answers[1]!({ memory_id: 'umem_agent', saves: 3, agents: 1 });
+      await flush();
+      expect(memorySavesCaller).toHaveBeenCalledTimes(2);
+      expect(routeRoot.innerHTML).not.toContain(MEMORY_DELETE_CONFIRM_ACTION);
+      expect(routeRoot.innerHTML).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="umem_agent"[^>]*>Delete<`));
+      rig.route.dispose();
+    });
+
+    it('Delete from that confirm deletes, and Cancel closes it', async () => {
+      const { rig, memoryDeleteCaller, memoryRevokeCaller } = mountCount(
+        vi.fn(async ({ memory_id }) => ({ memory_id, saves: 3, agents: 2 })),
+      );
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+      emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+      await flush();
+      expect(routeRoot.innerHTML).toContain('Agents have saved this 3 times. Mark it wrong so they ask you first?');
+      emitClick(routeRoot, MEMORY_DELETE_CANCEL_ACTION, row);
+      expect(routeRoot.innerHTML).not.toContain('have saved this');
+
+      emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+      await flush();
+      emitClick(routeRoot, MEMORY_DELETE_CONFIRM_ACTION, row);
+      expect(memoryDeleteCaller).toHaveBeenCalledWith({ memory_id: 'umem_agent' });
+      // While it deletes, marking it wrong instead does nothing.
+      emitClick(routeRoot, MEMORY_REVOKE_ACTION, row);
+      expect(memoryRevokeCaller).not.toHaveBeenCalled();
+      rig.route.dispose();
+    });
+
+    it('saved once, or an older server, or a failure: the confirm it always had', async () => {
+      for (const memorySavesCaller of [
+        vi.fn(async ({ memory_id }: { memory_id: string }) => ({ memory_id, saves: 1, agents: 1 })),
+        vi.fn(async () => { throw Object.assign(new Error('unknown method memory.saves'), { code: 'unknown_method' }); }),
+        undefined,
+      ]) {
+        const { rig } = mountCount(memorySavesCaller);
+        await rig.route.whenLoaded();
+        const routeRoot = rig.root.children[0]!;
+        emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+        await flush();
+        expect(routeRoot.innerHTML).toContain(PLAIN);
+        expect(routeRoot.innerHTML).toMatch(new RegExp(`"${MEMORY_DELETE_CONFIRM_ACTION}"[^>]*>Confirm<`));
+        expect(routeRoot.innerHTML).not.toContain('Mark it wrong');
+        rig.route.dispose();
+      }
+    });
+
+    it('a slow answer: the confirm it always had, once the wait is up', async () => {
+      const memorySavesCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memorySavesCaller']>>(() => new Promise(() => {}));
+      const { rig } = mountCount(memorySavesCaller);
+      await rig.route.whenLoaded();
+      const routeRoot = rig.root.children[0]!;
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+        await vi.advanceTimersByTimeAsync(MEMORY_SAVES_WAIT_MS - 1);
+        expect(routeRoot.innerHTML).toContain('>Checking…<');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(routeRoot.innerHTML).toContain(PLAIN);
+      } finally {
+        vi.useRealTimers();
+      }
+      rig.route.dispose();
+    });
+
+    it('is not asked on a note it could not mark wrong: yours, one revoked already, or a run', async () => {
+      for (const entry of [
+        { origin_actor: 'user_self' },
+        { revoked_at: NOW - 1 },
+        { run_id: 'run-1' },
+      ]) {
+        const memorySavesCaller = vi.fn(async ({ memory_id }: { memory_id: string }) => ({ memory_id, saves: 3, agents: 1 }));
+        const { rig } = mountCount(memorySavesCaller, entry);
+        await rig.route.whenLoaded();
+        const routeRoot = rig.root.children[0]!;
+        emitClick(routeRoot, MEMORY_DELETE_ACTION, row);
+        await flush();
+        expect(memorySavesCaller).not.toHaveBeenCalled();
+        expect(routeRoot.innerHTML).toContain(MEMORY_DELETE_CONFIRM_ACTION);
+        expect(routeRoot.innerHTML).not.toContain('Mark it wrong');
+        rig.route.dispose();
+      }
     });
   });
 

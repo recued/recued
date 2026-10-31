@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import {
   CHAT_ACTIVATION, CHAT_ANSWER_WAITING, CHAT_INPUT, CHAT_MESSAGE,
   CHAT_SEND, CHAT_SESSION_ROW, CHAT_SOURCE_HANDOFF, CONNECTIONS_ROUTE,
@@ -462,6 +463,7 @@ test('Connections account lifecycle writes keep their exact action focused and s
     method: 'collection.calendar.resync' | 'collection.calendar.reauth',
   ): Promise<void> => {
     const action = route.getByRole('button', { name: readyName, exact: true });
+    await page.evaluate((rpcMethod) => window.__app.holdRpcResponses?.(rpcMethod), method);
     await action.focus();
     await page.keyboard.press('Enter');
 
@@ -479,6 +481,7 @@ test('Connections account lifecycle writes keep their exact action focused and s
       window.__app.rpcCallCount(rpcMethod)
     ), method)).toBe(1);
 
+    await page.evaluate((rpcMethod) => window.__app.releaseRpcResponses?.(rpcMethod), method);
     await expect(action).toBeFocused();
     expect(await page.evaluate((rpcMethod) => (
       window.__app.rpcCallCount(rpcMethod)
@@ -490,7 +493,10 @@ test('Connections account lifecycle writes keep their exact action focused and s
     'Re-syncing…',
     'collection.calendar.resync',
   );
-  const beforeReview = await page.evaluate(() => window.__app.rpcCallCount('collection.connection.managedOAuth'));
+  const beforeReview = await page.evaluate(() => {
+    window.__app.holdRpcResponses?.('collection.connection.managedOAuth');
+    return window.__app.rpcCallCount('collection.connection.managedOAuth');
+  });
   await route.getByRole('button', { name: 'Manage authentication', exact: true }).click();
   await expect(route.getByText('Checking sign-in and account access…', { exact: true })).toBeVisible();
   const reviewChoice = route.locator('[data-action="accounts-authentication-choice"][data-choice="reauthorize"]');
@@ -500,6 +506,7 @@ test('Connections account lifecycle writes keep their exact action focused and s
     element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
   expect(await page.evaluate(() => window.__app.rpcCallCount('collection.connection.managedOAuth'))).toBe(beforeReview + 1);
+  await page.evaluate(() => window.__app.releaseRpcResponses?.('collection.connection.managedOAuth'));
   await expect(route.getByRole('alert')).toContainText(
     'Calendar sign-in is temporarily unavailable.',
   );
@@ -671,7 +678,7 @@ test('Connections contains long enrolled identities through removal review', asy
     }
   }
 
-  await row.getByRole('button', { name: 'Remove', exact: true }).click();
+  await clickActionGlyph(page, row.getByRole('button', { name: 'Remove', exact: true }));
   const dialog = route.getByRole('dialog', {
     name: `Remove connection ${longName}`,
   });
@@ -792,6 +799,20 @@ test('Connections recovers pack usage and setup context explicitly', async ({ pa
   await expect(recovery).toBeHidden();
   await expect(route.getByRole('button', { name: /Add Connection/ }))
     .toBeFocused();
+});
+
+test('Connections retries pack details from the action glyph', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipes=installed&packs_response=detail-fail-once-slow-retry&connection=grants#recipes`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('packs.list'))).toBe(1);
+  await page.evaluate(() => window.__app.setHash('#connections/others'));
+  const recovery = page.locator(`[${CONNECTIONS_ROUTE}] [${CONNECTIONS_PACK_INVENTORY}]`);
+  await expect(recovery).toHaveAttribute(CONNECTIONS_PACK_INVENTORY, 'error');
+  await clickActionGlyph(page, recovery.locator(`[${CONNECTIONS_PACK_INVENTORY_RETRY}]`));
+  await expect(recovery).toBeHidden();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('packs.list'))).toBe(3);
 });
 
 test('Connections serializes live pack-context refreshes without moving focus', async ({ page }) => {

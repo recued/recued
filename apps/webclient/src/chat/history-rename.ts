@@ -1,5 +1,6 @@
 import { CHAT_SESSION_TITLE_MAX_LENGTH, type ChatSessionRenameRequest, type ChatSessionRenameResult, type ChatSessionSummary } from '@recued/contracts';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
+import { renderActionLabel } from '@recued/ui-shared';
 
 const CONTROL = 'data-chat-rename-control';
 export const RENAME_SESSION_ATTR = 'data-chat-rename-session';
@@ -93,7 +94,7 @@ export const createHistoryRename = (options: {
       });
       const actions = doc.createElement('div'); actions.className = 'chat-history-guard-actions';
       const saveButton = doc.createElement('button'); saveButton.type = 'submit'; saveButton.className = 'chat-history-guard-action';
-      mark(saveButton, 'save'); saveButton.textContent = current.pending ? 'Saving…' : 'Save';
+      mark(saveButton, 'save'); saveButton.innerHTML = renderActionLabel('save', current.pending ? 'Saving…' : 'Save');
       saveButton.setAttribute('aria-disabled', String(current.pending));
       if (current.pending) saveButton.setAttribute('aria-busy', 'true');
       saveButton.addEventListener('click', () => saveButton.focus?.({ preventScroll: true }));

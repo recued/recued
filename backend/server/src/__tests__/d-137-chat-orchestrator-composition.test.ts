@@ -19,12 +19,21 @@ import type {
   ValidatedConnectionMcpAnnotationInput,
   WebChatTab,
 } from '@recued/contracts';
-import { CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE } from '@recued/contracts';
+import { CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE, OWNER_CONTRACT_ID } from '@recued/contracts';
 import { TOOLS_SEARCH_TOOL_NAME } from '../chat-tools-search-name.js';
 import { handleSend } from '../chat-handler.js';
-import { RECALL_SEARCH_TOOL_NAME } from '../chat-recall-search-tool.js';
+import {
+  RECALL_REJECTED_NOTE,
+  RECALL_SEARCH_TOOL_NAME,
+  registerRecallTurnSource,
+  type RecallSearchResult,
+} from '../chat-recall-search-tool.js';
+import { renderToolRow } from '../chat-tool-row.js';
+import type { MemoryRedactionRecord } from '../memory-rpc-handler.js';
+import { createUserMemoryStore, type UserMemoryRow } from '../user-memory-store.js';
+import type { BlobStore } from '../storage/blob-store.js';
 import { isMcpWireRegistryTool } from '../mcp-server.js';
-import type { AuditLogStore } from '@recued/storage';
+import { createInMemoryCollection, type AuditLogStore } from '@recued/storage';
 import type { EventBus } from '../events/bus.js';
 import type { KeyManager } from '../key-manager.js';
 import type {
@@ -147,6 +156,7 @@ const expectedBundleKeys = [
   'connectionMcpStore',
   'inboundTokenStore',
   'internalRegistry',
+  'ownerDocumentSearch',
   'orchestrator',
   'chatDeps',
   // D-214 — retained for plan-cancel and approval-expiry finalization.
@@ -1085,5 +1095,125 @@ describe("chat's recipe.schedule reaches the schedule store through the wire (D-
     expect(schedules.list()).toEqual([
       expect.objectContaining({ recipe_id: 'daily-digest', publisher_id: 'recued-core', cron_expression: '0 8 * * 1' }),
     ]);
+  });
+});
+
+describe('D-198 §13 — the composed recall says where a saved note stands now', () => {
+  it('a recalled memory.write row from this chat says the owner has since deleted its note', async () => {
+    const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
+    const noBlobs = { root: '/none' } as unknown as BlobStore; // a summary-only note never touches blobs
+    const memory = createUserMemoryStore(createInMemoryCollection<UserMemoryRow>(), noBlobs, {});
+    const redactions = createInMemoryCollection<MemoryRedactionRecord>();
+    // Recall resolves the owner's corpus through the contract view; without one
+    // the interaction lane fails closed, so the composed path needs a real store.
+    const contracts = createContractStore(makeDb());
+    const bundle = compose(buildDeps({
+      getUserMemoryStore: () => memory,
+      getMemoryRedactionStore: () => redactions,
+      getContractStore: () => contracts,
+    }));
+    const registry = (createChatOrchestratorMock.mock.calls[0]![0] as {
+      registry: ChatOrchestratorDeps['registry'];
+    }).registry;
+    const owner = { channel: 'chat', actor: 'user_self', chat_session_id: 's1', user_id: 'local' } as const;
+
+    // An agent saved a note in this chat, and its save call is a row of the chat.
+    const note = await memory.writeAuthored({
+      origin_actor: 'contracted_user', author_contract_id: OWNER_CONTRACT_ID,
+      kind: 'chat_memory', summary: 'Dana prefers phone calls',
+    });
+    bundle.chatStore.createSession({ id: 's1', now: 1_000 });
+    await bundle.chatStore.appendMessage({
+      id: 'tool-1', session_id: 's1', role: 'tool',
+      content: renderToolRow('memory.write', { summary: 'Dana prefers phone calls' }, { memory_id: note.memory_id }),
+      target_server: 'self', picker_at_send: { current: 'self' },
+      model_used: { provider: 'openai', model_id: 'm' }, execution_source: owner, ts: 2_000, turn_id: 'turn-a',
+    } as never);
+    // Then the owner deleted the note.
+    await redactions.set(note.memory_id, { memory_id: note.memory_id, redacted_at: Date.UTC(2026, 10, 2), deleted: true });
+
+    const turn_state = new Map<string, unknown>();
+    registerRecallTurnSource(turn_state, owner);
+    const dispatched = await registry.dispatch(
+      RECALL_SEARCH_TOOL_NAME,
+      { query: 'Dana phone calls', sources: ['interaction'] },
+      { channel: 'internal_function_call', session_id: 's1', turn_id: 'turn-b', execution_source: owner, turn_state },
+    );
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const row = (dispatched as { result: RecallSearchResult }).result.matches
+      .find((m) => m.source === 'interaction' && m.kind === 'tool');
+    expect(row, 'the memory.write row is recalled: ' + JSON.stringify((dispatched as { result: unknown }).result)).toBeDefined();
+    expect(row?.source === 'interaction' ? row.memory_now : undefined)
+      .toEqual([`${note.memory_id}: no longer in memory (removed 2026-11-02).`]);
+  });
+
+  /** Measured live first (bench task 404, 2026-10-30): asked the name after the owner
+   *  revoked the note, the model called recall.search, not memory.search, and answered
+   *  the revoked claim from the user's own earlier "remember that…", because the broker
+   *  passed on the memory leg's matches and dropped its rejections. */
+  it("a revoked note reaches recall as the owner's rejection, beside the old chat that states it", async () => {
+    const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
+    const noBlobs = { root: '/none' } as unknown as BlobStore;
+    const memory = createUserMemoryStore(createInMemoryCollection<UserMemoryRow>(), noBlobs, {});
+    const redactions = createInMemoryCollection<MemoryRedactionRecord>();
+    const contracts = createContractStore(makeDb());
+    // The memory leg asks the gate whether this caller may read the pool; with no gate it
+    // answers "not granted", and the leg (and its rejections) never reach recall.
+    const gate = createOpAdmissionGate({
+      grantEntryStore: createContractGrantEntryStore(contracts),
+      definitionStore: createContractDefinitionStore(contracts),
+      now: () => 1,
+    });
+    const bundle = compose(buildDeps({
+      getUserMemoryStore: () => memory,
+      getMemoryRedactionStore: () => redactions,
+      getContractStore: () => contracts,
+    }, {
+      ...inertLateGetters(),
+      getExecuteDeps: vi.fn(() => ({ opAdmissionGate: gate })) as never,
+    }));
+    const registry = (createChatOrchestratorMock.mock.calls[0]![0] as {
+      registry: ChatOrchestratorDeps['registry'];
+    }).registry;
+    const owner = { channel: 'chat', actor: 'user_self', chat_session_id: 's1', user_id: 'local' } as const;
+
+    // An earlier chat said it, and an agent saved it…
+    bundle.chatStore.createSession({ id: 's0', now: 1_000 });
+    await bundle.chatStore.appendMessage({
+      id: 'user-0', session_id: 's0', role: 'user',
+      content: "Remember that Dana Whitfield's daughter is called Mia.",
+      target_server: 'self', picker_at_send: { current: 'self' },
+      model_used: { provider: 'openai', model_id: 'm' },
+      execution_source: { ...owner, chat_session_id: 's0' }, ts: 2_000, turn_id: 'turn-0',
+    } as never);
+    const note = await memory.writeAuthored({
+      origin_actor: 'contracted_user', author_contract_id: OWNER_CONTRACT_ID,
+      kind: 'chat_memory', summary: "Dana Whitfield's daughter is called Mia.",
+    });
+    // …then the owner marked it wrong.
+    const revokedAt = Date.UTC(2026, 10, 2);
+    await redactions.set(note.memory_id, { memory_id: note.memory_id, redacted_at: revokedAt, revoked: true, revoke_of: note.memory_id });
+
+    bundle.chatStore.createSession({ id: 's1', now: 3_000 });
+    const turn_state = new Map<string, unknown>();
+    registerRecallTurnSource(turn_state, owner);
+    const dispatched = await registry.dispatch(
+      RECALL_SEARCH_TOOL_NAME,
+      { query: 'Dana Whitfield daughter' },
+      { channel: 'internal_function_call', session_id: 's1', turn_id: 'turn-1', execution_source: owner, turn_state },
+    );
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const result = (dispatched as { result: RecallSearchResult }).result;
+    expect(result.rejected).toEqual([{
+      memory_id: note.memory_id,
+      summary: "Dana Whitfield's daughter is called Mia.",
+      revoked_at: revokedAt,
+      note: RECALL_REJECTED_NOTE,
+    }]);
+    expect(result.matches.some((m) => m.source === 'memory' && m.memory_id === note.memory_id)).toBe(false);
+    expect(
+      result.matches.some((m) => m.source === 'interaction' && m.content.includes('is called Mia')),
+      'the old chat is recalled too: ' + JSON.stringify(result),
+    ).toBe(true);
   });
 });

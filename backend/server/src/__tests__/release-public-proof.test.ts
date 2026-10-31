@@ -275,6 +275,26 @@ describe('provePublicRelease', () => {
       expect(result.fullDownloads).toBe(0);
     });
 
+    it('uploaded in parts, is proven by the parts ETag of its exact bytes, with nothing downloaded', async () => {
+      const dir = fresh(scratch);
+      const proven = { ...headTarget(dir, 'recued-linux-x64', 'binary bytes'), expectedMultipartEtag: '0123456789abcdef0123456789abcdef-2' };
+      const other = { ...headTarget(dir, 'recued-macos-arm64', 'binary bytes'), expectedMultipartEtag: 'fedcba9876543210fedcba9876543210-2' };
+      const downloads: string[] = [];
+      const fetch: PublicProofFetch = ({ url, destination }) => {
+        downloads.push(url);
+        writeFileSync(destination, 'binary bytes');
+        return { status: 0, httpCode: '200', detail: '' };
+      };
+      const result = await provePublicRelease({
+        targets: [proven, other], attempts: 1, delayMs: 0, scratchDir: mkdtempSync(join(dir, 'work-')),
+        fetchExact: fetch,
+        headExact: head({ contentLength: 12, etag: '"0123456789ABCDEF0123456789ABCDEF-2"' }).fn,
+      });
+      // Another parts ETag proves nothing either way: that object alone is downloaded.
+      expect(result).toEqual({ failures: [], attemptsUsed: 1, fullDownloads: 1 });
+      expect(downloads).toEqual([`${ORIGIN}/recued-macos-arm64`]);
+    });
+
     it.each([
       ['a multipart upload\'s ETag', { contentLength: 12, etag: '"0123456789abcdef0123456789abcdef-2"' }],
       ['a weak ETag', { contentLength: 12, etag: `W/"${md5('binary bytes')}"` }],

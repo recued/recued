@@ -34,6 +34,9 @@ export const YOURS_STYLES = `
 [data-recued-yours] .yours-actions {display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0}
 [data-recued-yours] :is(button,.yours-button) {min-height:var(--wc-control-h,38px);padding:8px var(--wc-pad-x,14px);border:1px solid var(--border-strong);border-radius:var(--wc-radius,9px);background:var(--surface);color:var(--fg);font:inherit;font-weight:550;line-height:1.3;cursor:pointer;text-decoration:none;max-width:100%;overflow-wrap:anywhere}
 [data-recued-yours] button:hover {background:var(--surface-sunk)}
+[data-recued-yours] button.yours-action {display:inline-flex;align-items:center;justify-content:center;gap:6px}
+[data-recued-yours] button.yours-action>svg {flex-shrink:0}
+[data-recued-yours] .yours-menu-body button.yours-action {justify-content:flex-start}
 [data-recued-yours] button.yours-primary {background:var(--accent);border-color:var(--accent);color:var(--on-accent,#fff)}
 [data-recued-yours] button.yours-primary:hover {filter:brightness(.95)}
 [data-recued-yours] button.yours-quiet {background:transparent;border-color:transparent;color:var(--fg-muted)}

@@ -6,6 +6,7 @@ export type {
   MailComposeDialogState,
   MailComposeState,
   MailReplyContext,
+  MailForwardContext,
   MailSenderSourceOption,
   MailComposeAiAction,
   MailComposeRewriteAction,
@@ -23,6 +24,7 @@ export {
   initialMailComposeState,
   openCreateComposeTransition,
   openReplyComposeTransition,
+  openForwardComposeTransition,
   setComposeValuesTransition,
   addComposeAttachmentsTransition,
   removeComposeAttachmentTransition,
@@ -34,7 +36,8 @@ export {
   composeDialog,
 } from './state.js';
 
-export { addReReplyPrefix, deriveReplyValues } from './reply-context.js';
+export { addReReplyPrefix, deriveReplyValues, deriveReplyAllValues } from './reply-context.js';
+export { deriveForwardValues } from './forward-context.js';
 
 export type {
   ComposeDispatchMode,

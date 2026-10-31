@@ -35,6 +35,7 @@ import type {
   InstancePrefs,
 } from '@recued/contracts';
 import { getPref } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -274,7 +275,7 @@ export const mountLearningPanel = (
   const prefsRetry = doc.createElement('button');
   prefsRetry.type = 'button';
   prefsRetry.className = 'rx-btn rx-btn-secondary';
-  prefsRetry.textContent = 'Retry Learning settings';
+  prefsRetry.innerHTML = renderActionLabel('refresh', 'Retry Learning settings');
   prefsRetry.setAttribute(LEARNING_PANEL_RETRY_ATTR, '');
   loadFeedback.appendChild(loadStatus);
 
@@ -284,7 +285,7 @@ export const mountLearningPanel = (
   const casesRetry = doc.createElement('button');
   casesRetry.type = 'button';
   casesRetry.className = 'rx-btn rx-btn-secondary';
-  casesRetry.textContent = 'Retry learned history';
+  casesRetry.innerHTML = renderActionLabel('refresh', 'Retry learned history');
   casesRetry.setAttribute(LEARNING_PANEL_CASES_RETRY_ATTR, '');
 
   const clearChildren = (node: HTMLElement): void => {
@@ -855,7 +856,7 @@ export const mountLearningPanel = (
       label.textContent = `Finished Recipe draft: ${retained.label}`;
       card.appendChild(label);
       const button = doc.createElement('button'); button.type = 'button';
-      button.className = 'rx-btn rx-btn-secondary'; button.textContent = 'Open finished draft';
+      button.className = 'rx-btn rx-btn-secondary'; button.innerHTML = renderActionLabel('forward', 'Open finished draft');
       button.setAttribute(LEARNING_PANEL_DRAFT_ATTR, case_id);
       button.setAttribute('aria-label', `Open finished draft from what it learned: ${retained.label} (${case_id})`);
       button.setAttribute('aria-disabled', String(state.drafting !== null || state.forgetting !== null));
@@ -1026,13 +1027,13 @@ export const mountLearningPanel = (
     button.className = `rx-btn ${armed && !retained
       ? 'rx-btn-primary'
       : 'rx-btn-secondary'}`;
-    button.textContent = retained
+    button.innerHTML = renderActionLabel(retained ? 'forward' : 'rename', retained
       ? 'Open finished draft'
       : busy
         ? 'Asking your AI…'
         : armed
           ? 'Yes, write the draft'
-          : 'Make a Recipe…';
+          : 'Make a Recipe…');
     button.setAttribute(
       'aria-label',
       retained
@@ -1091,11 +1092,11 @@ export const mountLearningPanel = (
     button.setAttribute('type', 'button');
     button.setAttribute(LEARNING_PANEL_FORGET_ATTR, entry.case_id);
     button.className = 'rx-btn rx-btn-danger';
-    button.textContent = busy
+    button.innerHTML = renderActionLabel('delete', busy
       ? 'Forgetting...'
       : armed
         ? 'Tap again to forget'
-        : 'Forget';
+        : 'Forget');
     button.setAttribute(
       'aria-label',
       busy

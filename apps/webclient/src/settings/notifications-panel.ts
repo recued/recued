@@ -1,3 +1,4 @@
+import { renderActionLabel } from '@recued/ui-shared/icon-render';
 /** D-163 Slice C + R31 — Settings → Approval & notifications panel.
  *
  *  Surfaces the 5-row channel matrix per spec § A.5 / § N.6 — `ui`,
@@ -941,7 +942,7 @@ export const mountNotificationsPanel = (
       retry.setAttribute('aria-disabled', 'true');
       retry.setAttribute('aria-busy', 'true');
       retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
-      retry.textContent = COPY.retrying_label;
+      retry.innerHTML = renderActionLabel('refresh', COPY.retrying_label);
       renderedRetryButton = retry;
       wrapper.appendChild(retry);
     }
@@ -964,7 +965,7 @@ export const mountNotificationsPanel = (
     retry.type = 'button';
     retry.setAttribute(NOTIFICATIONS_RETRY_BTN_ATTR, '');
     retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
-    retry.textContent = COPY.retry_label;
+    retry.innerHTML = renderActionLabel('refresh', COPY.retry_label);
     retry.addEventListener('click', () => {
       if (retryTransition) return;
       retryTransition = true;
@@ -1361,7 +1362,7 @@ export const mountNotificationsPanel = (
       retry.type = 'button';
       retry.className = 'rx-btn rx-btn-sm rx-btn-secondary';
       retry.setAttribute(NOTIFICATIONS_BRIDGE_RETRY_ATTR, '');
-      retry.textContent = 'Retry devices';
+      retry.innerHTML = renderActionLabel('refresh', 'Retry devices');
       retry.addEventListener('click', () => { if (!bridgeLoading) void reloadBridgeRows(); });
       group.appendChild(retry);
       return;
@@ -1544,7 +1545,7 @@ export const mountNotificationsPanel = (
     save.setAttribute(NOTIFICATIONS_PHRASE_SAVE_ATTR, '');
     save.setAttribute('aria-label', `Save ${COPY.phrase_heading.toLowerCase()}`);
     save.className = 'rx-btn rx-btn-sm rx-btn-secondary notif-phrase-save';
-    save.textContent = phraseSaving ? COPY.phrase_saving : COPY.phrase_save;
+    save.innerHTML = renderActionLabel('save', phraseSaving ? COPY.phrase_saving : COPY.phrase_save);
     if (phraseSaving) {
       save.setAttribute('aria-disabled', 'true');
       save.setAttribute('aria-busy', 'true');

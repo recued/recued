@@ -34,7 +34,7 @@ import {
   type ServerRecipeListEntry,
   type ServerRpcRegistry,
 } from '@recued/contracts';
-import { RunModal } from '@recued/ui-shared';
+import { RunModal, renderActionLabel } from '@recued/ui-shared';
 
 import {
   buildFormResponseManualRunContext,
@@ -187,7 +187,7 @@ const renderPicker = (state: PickerState): string => {
   if (state.status === 'error') {
     return `<section ${FR_LENS_PICKER_ATTR}="error">
       <p role="alert">${e(state.message)}</p>
-      <button type="button" ${FR_LENS_ACTION_ATTR}="discover">Try again</button>
+      <button type="button" ${FR_LENS_ACTION_ATTR}="discover">${renderActionLabel('refresh', 'Try again')}</button>
     </section>`;
   }
   return `<section ${FR_LENS_PICKER_ATTR}="ready">
@@ -211,7 +211,7 @@ const renderPicker = (state: PickerState): string => {
             <button type="button"
               aria-label="${e(`Look at it and run ${name} (${match.entry.recipe_id})`)}"
               ${FR_LENS_ACTION_ATTR}="review"
-              ${FR_LENS_RECIPE_ATTR}="${e(match.entry.recipe_id)}">Review and run</button>
+              ${FR_LENS_RECIPE_ATTR}="${e(match.entry.recipe_id)}">${renderActionLabel('play', 'Review and run')}</button>
           </li>`;
         }).join('')}</ul>`}
   </section>`;
@@ -249,7 +249,7 @@ const renderDetail = (
           ${canRun
             ? `<button type="button" ${FR_LENS_ACTION_ATTR}="discover"${discovering
               ? ' aria-disabled="true" aria-busy="true"'
-              : ''}>${discovering ? 'Looking for things that can run…' : 'Run this response'}</button>`
+              : ''}>${renderActionLabel('play', discovering ? 'Looking for things that can run…' : 'Run this response')}</button>`
             : ''}
         </div>
       </div>
@@ -318,6 +318,7 @@ export const RECEPTION_RESPONSES_STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   padding: 7px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
@@ -337,6 +338,8 @@ export const RECEPTION_RESPONSES_STYLES = `
   text-decoration: none;
 }
 [${FR_LENS_ROOT_ATTR}] [${FR_LENS_ACTION_ATTR}="load-more"] { margin-top: 10px; }
+[${FR_LENS_ROOT_ATTR}] [${FR_LENS_ACTION_ATTR}] > svg { flex-shrink: 0; }
+[${FR_LENS_ROOT_ATTR}] [${FR_LENS_ACTION_ATTR}][hidden] { display: none; }
 .reception-responses-pill { display: inline-block; max-width: 100%; flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--surface-sunk); color: var(--fg-muted); font-size: 11px; font-weight: 640; white-space: nowrap; }
 .reception-responses-list { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
 .reception-responses-list li { border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
@@ -518,12 +521,12 @@ export const mountReceptionFormResponseLens = (
       ? ' aria-disabled="true" aria-busy="true"'
       : '';
     const retryLabel = retryingList ? 'Retrying…' : 'Retry';
-    const listRetry = `<button type="button" ${FR_LENS_ACTION_ATTR}="retry-list" ${FR_LENS_RETRY_ATTR}${retryStateAttrs}>${retryLabel}</button>`;
+    const listRetry = `<button type="button" ${FR_LENS_ACTION_ATTR}="retry-list" ${FR_LENS_RETRY_ATTR}${retryStateAttrs}>${renderActionLabel('refresh', retryLabel)}</button>`;
     const detailRetryStateAttrs = retryingDetail
       ? ' aria-disabled="true" aria-busy="true"'
       : '';
     const detailRetryLabel = retryingDetail ? 'Retrying…' : 'Retry';
-    const detailRetry = `<button type="button" ${FR_LENS_ACTION_ATTR}="retry-detail" ${FR_LENS_DETAIL_RETRY_ATTR}${detailRetryStateAttrs}>${detailRetryLabel}</button>`;
+    const detailRetry = `<button type="button" ${FR_LENS_ACTION_ATTR}="retry-detail" ${FR_LENS_DETAIL_RETRY_ATTR}${detailRetryStateAttrs}>${renderActionLabel('refresh', detailRetryLabel)}</button>`;
     const errorBlock = error === null
       ? ''
       : listLoadFailed

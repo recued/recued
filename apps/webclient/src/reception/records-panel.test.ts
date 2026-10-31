@@ -391,9 +391,10 @@ describe('mountReceptionRecordsPanel — opening one record (who the visitor was
       document: doc,
       now: () => NOW,
     });
-    const click = async (attr: string, value: string): Promise<void> => {
+    const click = async (attr: string, value: string, fromGlyph = false): Promise<void> => {
+      const button = { getAttribute: (k: string) => (k === attr ? value : null) };
       rootOf(host).listeners.get('click')?.[0]?.({
-        target: { getAttribute: (k: string) => (k === attr ? value : null) },
+        target: fromGlyph ? { getAttribute: () => null, closest: () => button } : button,
       });
       for (let n = 0; n < 4; n += 1) await Promise.resolve();
     };
@@ -407,7 +408,8 @@ describe('mountReceptionRecordsPanel — opening one record (who the visitor was
     expect(html).toContain('Buy the kit');
     expect(html).not.toContain('ep_kit');
     expect(html).toContain(`aria-expanded="false"`);
-    expect(html).toContain(`${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="sub_dana">Show details</button>`);
+    const toggle = new RegExp(`<button[^>]*${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="sub_dana"[^>]*>([\\s\\S]*?)</button>`).exec(html)?.[1];
+    expect(toggle?.replace(/<[^>]*>/g, '').trim()).toBe('Show details');
     // ⛔ Sealed until the owner opens it (D-173 I-3): no read, no value on the page.
     expect(openCalls).toEqual([]);
     expect(html).not.toContain('Dana Example');
@@ -423,7 +425,7 @@ describe('mountReceptionRecordsPanel — opening one record (who the visitor was
     const { host, panel, openCalls, click } = mountWith(ok([intake() as never]), [opened()]);
     await panel.refresh();
 
-    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana');
+    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana', true);
 
     expect(openCalls).toEqual([{ record_id: 'sub_dana' }]);
     const html = rootOf(host).innerHTML;
@@ -431,7 +433,8 @@ describe('mountReceptionRecordsPanel — opening one record (who the visitor was
     expect(html).toContain('<dt>Your name</dt><dd>Dana Example</dd>');
     expect(html).toContain('<a href="mailto:dana%40example.com">Write to dana@example.com</a>');
     expect(html).toContain(`aria-expanded="true"`);
-    expect(html).toContain('>Hide details</button>');
+    const toggle = new RegExp(`<button[^>]*${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="sub_dana"[^>]*>([\\s\\S]*?)</button>`).exec(html)?.[1];
+    expect(toggle?.replace(/<[^>]*>/g, '').trim()).toBe('Hide details');
   });
 
   it('“Hide details” takes the visitor’s values off the page, and opening again asks again', async () => {

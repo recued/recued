@@ -20,6 +20,7 @@
  *  Spec: D-198 §10. */
 
 import type Database from 'better-sqlite3';
+import { FTS_STOPWORDS, tokenizeFtsQuery } from '@recued/fts';
 import type { Collection } from '@recued/storage';
 import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
 import { createSQLiteCollection } from './sqlite-collection.js';
@@ -59,8 +60,22 @@ export const memoryRowAuthor = (row: UserMemoryRow): string | undefined =>
 /** The ids under the redaction overlay (owner redactions and agent forgets). */
 export const forgottenIds = async (
   redactions: Collection<MemoryRedactionRecord> | undefined,
-): Promise<Set<string>> =>
-  redactions ? new Set((await redactions.list()).map((r) => r.memory_id)) : new Set();
+): Promise<Set<string>> => forgottenIn(redactions ? await redactions.list() : []);
+
+/** `forgottenIds`, from marks a caller has already read. */
+export const forgottenIn = (marks: readonly MemoryRedactionRecord[]): Set<string> =>
+  new Set(marks.map((r) => r.memory_id));
+
+/** D-198 §13 — the owner's revokes among marks already read, by version id: when, and
+ *  the head the owner revoked (every version of the lineage carries the head's revoke). */
+export const revokesIn = (
+  marks: readonly MemoryRedactionRecord[],
+): Map<string, { revoked_at: number; head: string }> =>
+  new Map(
+    marks
+      .filter((r) => r.revoked === true)
+      .map((r) => [r.memory_id, { revoked_at: r.redacted_at, head: r.revoke_of ?? r.memory_id }]),
+  );
 
 /** The row that replaces `memory_id` and still counts: not forgotten. The newest
  *  wins if a race ever left two. */
@@ -89,6 +104,20 @@ export const currentVersionOf = async (
     id = next.memory_id;
   }
   return id;
+};
+
+/** D-198 §13 — the owner's own version in place of a REVOKED note's claim, if they
+ *  wrote one (they may mark an agent's note wrong and replace it with theirs) and it
+ *  stands. `head` is the note the owner revoked, `revoke_of` on any of its versions. */
+export const ownersVersionOf = async (
+  store: Pick<UserMemoryStore, 'getRow' | 'replacementsOf'>,
+  forgotten: ReadonlySet<string>,
+  head: string,
+): Promise<string | undefined> => {
+  const current = await currentVersionOf(store, forgotten, head);
+  return current !== head && (await store.getRow(current))?.origin_actor === 'user_self'
+    ? current
+    : undefined;
 };
 
 /** Why an agent may not revise an entry, in words it can act on. */
@@ -170,6 +199,196 @@ export const checkOwnerReplace = async (
     };
   }
   return { ok: true, row };
+};
+
+/** D-198 §13 — the marks that took an entry OUT of memory (a delete, an agent's forget,
+ *  the owner's old hide), without the revokes. A revoked note is out of recall as a
+ *  fact like the rest (`forgottenIds` keeps it), but the owner may still replace it with
+ *  their own version or delete it, so the owner's own checks use this. */
+export const removedIds = async (
+  redactions: Collection<MemoryRedactionRecord> | undefined,
+): Promise<Set<string>> =>
+  redactions
+    ? new Set((await redactions.list()).filter((r) => r.revoked !== true).map((r) => r.memory_id))
+    : new Set();
+
+export type OwnerRevokeCheck =
+  | { ok: true; row: UserMemoryRow }
+  | { ok: false; refusal: 'not_found' | 'not_revocable'; message: string };
+
+/** D-198 §13 — may the OWNER mark `memory_id` wrong? Only an agent's note that is live
+ *  and current, as for a replace. The words go to the owner. */
+export const checkOwnerRevoke = async (
+  store: Pick<UserMemoryStore, 'getRow' | 'replacementsOf'>,
+  redactions: Collection<MemoryRedactionRecord> | undefined,
+  memory_id: string,
+): Promise<OwnerRevokeCheck> => {
+  const row = await store.getRow(memory_id);
+  if (row === null) return { ok: false, refusal: 'not_found', message: 'memory entry not found' };
+  if (row.origin_actor === 'user_self') {
+    return { ok: false, refusal: 'not_revocable', message: 'This is your own memory. Edit or delete it instead.' };
+  }
+  if (row.origin_actor !== 'contracted_user') {
+    return { ok: false, refusal: 'not_revocable', message: 'Only a memory an agent saved can be revoked.' };
+  }
+  const mark = redactions ? await redactions.get(memory_id) : null;
+  if (mark?.revoked === true) {
+    return { ok: false, refusal: 'not_revocable', message: 'You already revoked this memory.' };
+  }
+  if (mark !== null) {
+    return { ok: false, refusal: 'not_revocable', message: 'This memory was removed, so there is nothing to revoke.' };
+  }
+  if ((await currentVersionOf(store, await forgottenIds(redactions), memory_id)) !== memory_id) {
+    return {
+      ok: false,
+      refusal: 'not_revocable',
+      message: 'A newer version already replaced this memory. Revoke that one instead.',
+    };
+  }
+  return { ok: true, row };
+};
+
+/** D-198 §13 — mark `head` and every earlier version it replaced WRONG, under one
+ *  revoke (`revoke_of`), so revoking the current wording never makes an older one
+ *  current again. A version already under the overlay keeps its own mark. */
+export const revokeAgentNote = async (input: {
+  store: Pick<UserMemoryStore, 'getRow'>;
+  redactions: Collection<MemoryRedactionRecord>;
+  head: UserMemoryRow;
+  now: number;
+}): Promise<number> => {
+  let versions = 0;
+  for (const row of await lineageBackFrom(input.store, input.head)) {
+    if ((await input.redactions.get(row.memory_id)) !== null) continue;
+    await input.redactions.set(row.memory_id, {
+      memory_id: row.memory_id,
+      redacted_at: input.now,
+      revoked: true,
+      revoke_of: input.head.memory_id,
+    });
+    versions += 1;
+  }
+  return versions;
+};
+
+/** D-198 §13 — lift one revoke: every mark it wrote, so the note and its earlier
+ *  versions are as they were. `memory_id` may be the revoked entry or any version
+ *  revoked with it. 0 when it is not revoked. */
+export const unrevokeAgentNote = async (
+  redactions: Collection<MemoryRedactionRecord>,
+  memory_id: string,
+): Promise<number> => {
+  const mark = await redactions.get(memory_id);
+  if (mark === null || mark.revoked !== true) return 0;
+  const head = mark.revoke_of ?? memory_id;
+  const marks = (await redactions.list()).filter(
+    (r) => r.revoked === true && (r.revoke_of ?? r.memory_id) === head,
+  );
+  for (const r of marks) await redactions.delete(r.memory_id);
+  return marks.length;
+};
+
+/** D-198 §13 — words a claim can use for one another, each read as the word it maps to:
+ *  "is named Mia", "her name is Mia", "their names are Mia and Leo" and "is known as Mia"
+ *  state what "is called Mia" does. A closed list, chosen by hand: a word belongs here
+ *  only if it says the same thing in any note, which no looser test can promise ("called
+ *  Maya" is one word from "called Mia", and is the owner's correction).
+ *  A key may be two words. "known as" is one, because "as" alone is a stopword, so the
+ *  pair is read before the stopwords go; "known" alone is not folded ("known for her
+ *  cooking").
+ *  ⚠ "called" can also mean phoned, so "Ana called Bob" and "Ana named Bob" are one claim
+ *  to it. A wrong match costs one question: a save refused with a way round, or the
+ *  Delete confirm offering Mark it wrong. */
+const SAME_CLAIM_WORDS: ReadonlyMap<string, string> = new Map([
+  ['named', 'called'],
+  ['name', 'called'],
+  ['names', 'called'],
+  ['known as', 'called'],
+]);
+
+const claimTokens = (text: string): string[] => {
+  const all = tokenizeFtsQuery(text).all;
+  const tokens: string[] = [];
+  for (let i = 0; i < all.length; i += 1) {
+    const word = all[i]!;
+    const phrase = i + 1 < all.length ? SAME_CLAIM_WORDS.get(`${word} ${all[i + 1]}`) : undefined;
+    if (phrase !== undefined) {
+      tokens.push(phrase);
+      i += 1;
+    } else if (!FTS_STOPWORDS.has(word)) {
+      tokens.push(SAME_CLAIM_WORDS.get(word) ?? word);
+    }
+  }
+  return tokens;
+};
+
+/** D-198 §13 — a text's content words, the words the claim tests compare. */
+export const claimWords = (text: string): Set<string> => new Set(claimTokens(text));
+
+/** D-198 §13 — a note's claim words: its summary's and its body's (a long body's preview). */
+export const noteClaimWords = (
+  row: Pick<UserMemoryRow, 'summary' | 'body_inline' | 'body_preview'>,
+): Set<string> => claimWords(`${row.summary ?? ''} ${row.body_inline ?? row.body_preview ?? ''}`);
+
+/** D-198 §13 — does `words` (`claimWords`) hold every content word of `claim`, two at
+ *  least? Then it states that claim, perhaps with more around it. One word in common says
+ *  nothing about a claim. */
+export const coversClaim = (claim: string, words: ReadonlySet<string>): boolean => {
+  const tokens = claimTokens(claim);
+  return tokens.length >= 2 && tokens.every((w) => words.has(w));
+};
+
+export interface RevokedClaimMatch {
+  memory_id: string;
+  /** The revoked note's own words, quoted back to the agent. */
+  summary: string;
+  revoked_at: number;
+}
+
+/** D-198 §13 — does a new save restate a claim the owner REVOKED? Matched against
+ *  revoked notes only, by their words, both ways round:
+ *    - the save's words are all in a revoked note: the memory search, at its exact or
+ *      relaxed rung (a loose rung only shares some words, so it never counts);
+ *    - a revoked note's content words are all in the save: the same claim restated
+ *      with more around it, which the search cannot see from the save's side.
+ *  Both are asked of the claim words too (`claimWords`), which read every naming word in
+ *  `SAME_CLAIM_WORDS` as "called": the search reads each word as it is spelled.
+ *
+ *  ⛔ No meaning match yet. An embedding threshold loose enough to catch a
+ *  paraphrase also catches other notes about the same person, and none has been
+ *  measured. A miss behaves as before: the save is held for the owner's approval
+ *  anyway, unless a standing rule lets it run. A wrong match costs one question. */
+export const matchRevokedClaim = async (
+  store: Pick<UserMemoryStore, 'getRow' | 'search'>,
+  redactions: Collection<MemoryRedactionRecord> | undefined,
+  text: string,
+): Promise<RevokedClaimMatch | undefined> => {
+  if (redactions === undefined) return undefined;
+  const revoked = new Map(
+    (await redactions.list()).filter((r) => r.revoked === true).map((r) => [r.memory_id, r]),
+  );
+  if (revoked.size === 0) return undefined;
+  const matchOf = async (memory_id: string): Promise<RevokedClaimMatch | undefined> => {
+    const row = await store.getRow(memory_id);
+    const mark = revoked.get(memory_id);
+    return row === null || mark === undefined
+      ? undefined
+      : { memory_id, summary: row.summary ?? row.body_preview ?? '', revoked_at: mark.redacted_at };
+  };
+  const searched = await store.search(text, 20);
+  if (searched.match === 'exact' || searched.match === 'relaxed') {
+    const hit = searched.hits.find((h) => revoked.has(h.memory_id));
+    if (hit !== undefined) return matchOf(hit.memory_id);
+  }
+  const saved = claimWords(text);
+  for (const memory_id of revoked.keys()) {
+    const row = await store.getRow(memory_id);
+    if (row === null) continue;
+    if (coversClaim(row.summary ?? '', saved) || coversClaim(text, noteClaimWords(row))) {
+      return matchOf(memory_id);
+    }
+  }
+  return undefined;
 };
 
 /** One revision at a time per store: a replace or forget reads, checks, then
@@ -267,6 +486,55 @@ export const forgetOwnEntry = async (input: {
     versions += 1;
   }
   return { ok: true, result: { memory_id: input.memory_id, forgotten: true, versions } };
+};
+
+/** D-198 §13 — matches a note id inside a stored chat row (`umem_` + a UUID). */
+export const MEMORY_ID_IN_TEXT = /\bumem_[A-Za-z0-9_-]+/g;
+
+/** D-198 §13 — where each named note stands NOW, for a past `memory.*` chat row a
+ *  model meets again through recall. One line per note that CHANGED since — its
+ *  END state through the lineage, never the steps — and none for a note still
+ *  current, so a row whose notes all hold carries nothing.
+ *
+ *  ⛔ "Removed" covers the owner's delete and an agent's forget alike, and says
+ *  nothing about saving it again: a delete is neutral (§13), so the line must not
+ *  read as a rule. A revoke (a different act) will get its own words. */
+export const describeMemoryNow = async (
+  store: Pick<UserMemoryStore, 'getRow' | 'replacementsOf'>,
+  redactions: Collection<MemoryRedactionRecord> | undefined,
+  ids: readonly string[],
+): Promise<Map<string, string>> => {
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  const marks = new Map((redactions ? await redactions.list() : []).map((r) => [r.memory_id, r]));
+  const removed = new Set(marks.keys());
+  for (const id of new Set(ids)) {
+    const mark = marks.get(id);
+    // A revoke is the one removal that IS a rule: the owner said it is wrong.
+    if (mark?.revoked === true) {
+      const on = new Date(mark.redacted_at).toISOString().slice(0, 10);
+      const owners = await ownersVersionOf(store, removed, mark.revoke_of ?? id);
+      out.set(id, owners === undefined
+        ? `${id}: the owner marked it wrong on ${on}. Don't rely on it; ask before saving it again.`
+        : `${id}: the owner marked it wrong on ${on} and replaced it with their own version, ${owners}.`);
+      continue;
+    }
+    if (mark !== undefined) {
+      out.set(id, `${id}: no longer in memory (removed ${new Date(mark.redacted_at).toISOString().slice(0, 10)}).`);
+      continue;
+    }
+    if ((await store.getRow(id)) === null) {
+      // Only the owner's own notes are hard-deleted, so there is no row to date it by.
+      out.set(id, `${id}: no longer in memory.`);
+      continue;
+    }
+    const current = await currentVersionOf(store, removed, id);
+    if (current === id) continue;
+    out.set(id, (await store.getRow(current))?.origin_actor === 'user_self'
+      ? `${id}: the owner replaced it with their own version, ${current}.`
+      : `${id}: a newer version replaced it, ${current}.`);
+  }
+  return out;
 };
 
 /** Undo an agent's forget (owner only): delete every overlay mark that forget

@@ -24,6 +24,7 @@ import {
 } from '@recued/ui-shared/server-settings/housekeeping';
 
 import { formatPressureBytes, pressureSurfaceRows } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared';
 import { button } from '@recued/ui-shared/primitives';
 import type {
   HousekeepingTaskStatus,
@@ -161,7 +162,7 @@ export const mountMaintenancePanel = (
         : `<button type="button" class="housekeeping-runnow-btn"`
           + ` data-action="${ACTION_RECLAIM}" data-surface="${escapeHtml(row.surface)}"`
           + `${busy ? ' disabled' : ''}>`
-          + `${busy ? 'Reclaiming…' : 'Reclaim now'}</button>`;
+          + `${renderActionLabel('refresh', busy ? 'Reclaiming…' : 'Reclaim now')}</button>`;
       return `<tr class="maintenance-storage-row${row.attention ? ' maintenance-storage-row--attention' : ''}" role="row">`
         + `<th scope="row" role="rowheader">${escapeHtml(row.surface)}</th>`
         + `<td class="maintenance-storage-state" role="cell">${cellLabel('State')}${escapeHtml(row.stateLabel)}</td>`
@@ -204,7 +205,7 @@ export const mountMaintenancePanel = (
     if (state.error) {
       return `<div class="housekeeping-panel">`
         + `<p class="housekeeping-error" role="alert">${escapeHtml(state.error)}</p>`
-        + `<div>${button({ label: 'Retry', ariaLabel: 'Retry loading maintenance tasks', action: ACTION_STATUS_RETRY })}</div>`
+        + `<div>${button({ label: 'Retry', icon: 'refresh', ariaLabel: 'Retry loading maintenance tasks', action: ACTION_STATUS_RETRY })}</div>`
         + `</div>`;
     }
     const runNowTask = state.tasks.find(

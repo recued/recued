@@ -7,6 +7,113 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.31 — 2026-10-31
+
+Your AI can work in web pages through the Browser Bridge: the new Browser Toolkit pack lists your
+open tabs, opens a page, reads it, and types into or clicks on it, and it asks you first before it
+opens, types or clicks. In Memory, Delete erases an agent's note and Revoke marks one wrong.
+Data → Search can look inside saved files, Mail has Reply all and Forward, a chat downloads as
+Markdown, a project lists the commitments that block it, and a past contact merge can be separated
+again. Search moves into the header, and buttons across the web app show an icon beside their name.
+
+### Before you update
+
+- **Update Recued before installing Browser Toolkit.** It needs this release and Browser Bridge
+  0.0.4, with Allow every site chosen in the Bridge's side panel. An older Recued refuses to install
+  it.
+
+### Added
+
+- **Browser Toolkit.** A new optional pack lets your AI list your open Chrome tabs, open a page in a
+  new background tab, read a page, and type into or click on it. It works through the Browser
+  Bridge, signed in as you. Opening, typing and clicking each ask you first. The ask names the
+  button or field the way the page shows it, shows the whole text or address, and says a click
+  cannot be undone.
+- **Choose where the Browser Bridge works.** The Bridge's side panel has a new Sites section. Allow
+  every site asks Chrome for access to every site, and Stop using every site takes it back. Under
+  Never use these sites you can list sites the Bridge never reads or acts on, including their
+  subdomains. Needs Browser Bridge 0.0.4.
+- **Mark an agent's memory note wrong.** In Memory, Revoke keeps the note for you to read, but AI no
+  longer treats it as true. A search that finds it is told you marked it wrong, and an agent that
+  tries to save the same claim again is stopped and has to ask you. Un-revoke undoes it. When
+  agents keep saving a note you delete, the Delete confirm offers Mark it wrong instead.
+- **Search inside your saved files from Data → Search.** After you type a search, choose Search
+  file contents to find the words inside files saved on your server. Each match shows the file name
+  and a short excerpt; Open file shows the file, and Back returns to the same results. Search says
+  which files it could not search and why, and it makes no AI request.
+- **Search and page your saved files.** Data → Files → Saved files loads 30 files at a time with
+  Load more files, where it used to stop at 100. Search file names searches the whole library,
+  archived files too, and going back from a file keeps your search and place.
+- **Reply all and Forward in Mail.** Reply all adds everyone the email went to, except your own
+  mailbox, for you to review. Forward starts a new message quoting the complete original as plain
+  text, from received or sent mail; original attachments are not added automatically. Recued checks
+  the sending mailbox again before you send, schedule or save to your mailbox.
+- **Download a chat as Markdown.** Export Markdown in Chat History saves the whole conversation as a
+  readable file, with speakers, times, code blocks, sources and attachment names. Export JSON is
+  still there.
+- **See what is blocking a project.** A project's overview lists the commitments that block it,
+  outstanding or all, and you can add a new one or link an existing one from there.
+- **Separate contacts that were merged by mistake.** Find duplicates → Merged history lists past
+  merges. Review separation shows the two people and lets you choose who keeps each connected
+  record, such as a HubSpot contact. Separate contacts makes them two people again in Recued, and
+  duplicate checks stop suggesting them. Records at the provider are not changed.
+
+### Changed
+
+- **Delete on an agent's memory note removes its text from your server.** Before, Forget only hid
+  it. The row stays to show who saved it and when, and the chat it came from keeps its copy. It
+  cannot be undone. Forget on a run is now called Hide from AI: it hides the run from AI apps and
+  recipes, and your Logs still show it in full.
+- **Chat knows what happened to a note it saved earlier.** When chat recalls an earlier memory
+  save, it is told whether the note was since removed, replaced by your version or marked wrong.
+  When Recued checks a save against a note you marked wrong, "named", "name", "names" and "known
+  as" count the same as "called".
+- **Search is in the header, and Run a recipe is in the navigation menu.** The Search your data
+  button opens Search with the cursor in the box, as Cmd+/ or Ctrl+/ does; on a phone it is a
+  search icon. Run a recipe is the first item when you open the menu, and Cmd+K or Ctrl+K still
+  opens it from any page.
+- **Buttons show an icon beside their name.** Most buttons across the web app now show a small icon,
+  such as refresh, save, edit, delete or run. Names, busy messages and confirmation steps are
+  unchanged, and screen readers read the same names. In the Mail reader, Refresh email is now an
+  icon with a tooltip.
+- **A browser step that cannot run says why**: no Bridge is connected, the Bridge is not allowed on
+  the site (and how to allow it), the Bridge needs an update, or the site is on your list. A recipe
+  that acts on web pages is refused before anything runs when no Bridge is connected. A step that
+  reads a web page is never answered from Recued's cache, so a read after a click shows the page as
+  it is now.
+- **The pack check points at the mistake in an operation's input schema.** When a pack declares a
+  closed input schema with a mistake, such as an unsupported keyword, a wrong type or a required
+  field that is not declared, the check reports it at that exact field. The same packs are accepted
+  and refused as before.
+- **Update the server for the new controls.** The hosted web app needs 26.10.31 to revoke a memory
+  note, to remove a note's text on Delete, to search inside files from Data → Search, to list a
+  project's blocking commitments and to separate merged contacts. On an older server, Revoke and
+  those places say to update it, and Delete only hides the note. Reply all and Forward appear once
+  the server is updated.
+
+### Fixed
+
+- **Recipe steps that act on web pages run.** The server refused every such step, even with a
+  Browser Bridge connected, and the Bridge from the Chrome Web Store refused every page command,
+  because nothing ever gave it a site. Both now work with this release and Browser Bridge 0.0.4, on
+  the sites you allow.
+- **The Bridge reads and fills form fields correctly.** Reading a field returns what it holds, such
+  as a list's choices or true or false for a checkbox. Password, hidden, sign-in code and card
+  fields are never read. Typing into a rich-text editor works, and a fill the page did not keep
+  fails instead of reporting success. Needs Browser Bridge 0.0.4.
+- **An agent's memory note can no longer be edited under its name.** An edit sent to it is refused
+  and points you to Replace.
+- **A contact merge keeps track of where each connected record came from.** Merging contacts used
+  to drop the connection a moved provider record belonged to.
+- **Turning off Search document contents stops a search already running** from returning text to
+  Chat or an AI app.
+- **Pinned apps can be reached with the keyboard in the navigation menu**, and hidden buttons stay
+  hidden: in Settings → Backup & Recovery, a recovery test shows Cancel test only while it runs, and
+  Retry cleanup only while cleanup is pending.
+- **Connection example appears in Exposure** once the browser has read the server's saved address,
+  even if the page drew first. A commitment opened from Search has Cancel in its edit form, where it
+  said Back to search.
+
 ## 26.10.30 — 2026-10-30
 
 Create a one-off event from the calendar agenda, on this server or on a Google, Outlook or CalDAV

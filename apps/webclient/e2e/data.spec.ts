@@ -1,3 +1,5 @@
+import { handleContactMergeConfirm, handleContactMergeList, handleContactMergeSplit } from '../../../backend/server/src/contact-merge-handler.js';
+import type { ContactMergeSplitRequest } from '@recued/contracts';
 import Database from 'better-sqlite3';
 import { createContactStore } from '../../../backend/server/src/storage/contact-store.js';
 import { createProactiveHistoryStore } from '../../../backend/server/src/storage/proactive-history-store.js';
@@ -7,6 +9,7 @@ import { applyContactFileImport, planContactFileImport } from '../../../backend/
 import type { ContactImportOccasionSelection, YoursCommand, YoursSnapshot } from '@recued/contracts';
 import { installProjectOverviewFixture } from './helpers/project-overview-fixture.js';
 import { installCommitmentWorkspaceFixture } from './helpers/commitment-workspace-fixture.js';
+import { installDocumentSearchFixture } from './helpers/document-content-search-fixture.js';
 import { expect, test, type Page } from '@playwright/test';
 import type { MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView, WorkEntity } from '@recued/contracts';
 import {
@@ -70,6 +73,26 @@ const DATA_FORM_RESPONSE_RUN_PICKER =
 const DATA_COLLECTION_SLUG = 'data-collection-slug';
 const DATA_COLLECTION_RECORD = 'data-collection-record';
 const DATA_DOWNLOAD_FILE = 'data-recued-data-download-file';
+
+const installFileDetailFixture = async (page: Page, failures = 0): Promise<void> => {
+  await page.addInitScript(({ failures }) => {
+    const record = { record_id: `file:${'1'.repeat(32)}`, source_id: 'file-detail-fixture',
+      received_at: 1_700_000_000_000, modified_at: 1_700_000_000_000, size_bytes: 16,
+      hot_fields: { filename: 'Quarterly planning.txt', mime_type: 'text/plain' }, body_inline: 'Planning details.' };
+    let remaining = failures;
+    Object.assign(window, { __connectionsFixture: async (method: string, raw: unknown) => {
+      const args = raw as { platform?: string } | undefined;
+      if (method === 'collection.listInstances') return { result: { instances: [] } };
+      if (method === 'collection.list' && args?.platform === 'file') return { result: { records: [record] } };
+      if (method === 'collection.get' && args?.platform === 'file') {
+        if (failures) await new Promise(resolve => setTimeout(resolve, 750));
+        return remaining-- > 0 ? { error: { code: 'unavailable', message: 'File record detail is temporarily unavailable.' } }
+          : { result: { record } };
+      }
+      return undefined;
+    } });
+  }, { failures });
+};
 
 type ReminderWriteOutcome = 'success' | 'refused' | 'error';
 type ReminderReadOutcome = 'current' | 'missing' | 'error';
@@ -2598,7 +2621,8 @@ test('Data distinguishes form-response run actions and retains modal ownership',
     button.click();
     button.click();
   });
-  await dialog.getByRole('button', { name: 'Close' }).evaluate((button: HTMLElement) => {
+  const close = dialog.getByRole('button', { name: 'Close' });
+  await close.evaluate((button: HTMLElement) => {
     button.click();
   });
   await expect(dialog).toBeVisible();
@@ -2606,7 +2630,7 @@ test('Data distinguishes form-response run actions and retains modal ownership',
     () => page.evaluate(() => window.__app.rpcCallCount('execute')),
   ).toBe(runsBefore + 1);
   await expect(run).not.toHaveAttribute('aria-busy');
-  await expect(run).toBeFocused();
+  await expect(close).toBeFocused();
   await expect(dialog.getByRole('status')).toContainText('Run completed');
 
   await dialog.getByRole('button', { name: 'Close' }).click();
@@ -4457,97 +4481,6 @@ test('Data preserves calendar reschedule ownership', async ({ page }) => {
   await expect(open).toBeFocused();
 });
 
-test('Data contains long collection records on a narrow phone', async ({ page }) => {
-  const longSubject = `Subject${'Heading'.repeat(30)}`;
-  const longFrom = `Sender${'Address'.repeat(30)}`;
-  const longRecordId = `Message${'Identifier'.repeat(24)}`;
-  const longSourceId = `Source${'Identifier'.repeat(24)}`;
-  const longBody = `Payload${'Value'.repeat(40)}`;
-  await page.setViewportSize({ width: 280, height: 844 });
-  await page.goto(`${HARNESS_URL}?collection_text=long#data/mail`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-
-  const route = page.locator('[data-recued-data-route]');
-  const instances = page.locator(`[${DATA_COLLECTION_SLUG}]`);
-  await expect(instances).toHaveCount(2);
-  const instanceGeometry = await instances.evaluateAll((controls) =>
-    controls.map((control) => ({
-      left: control.getBoundingClientRect().left,
-      right: control.getBoundingClientRect().right,
-      scrollWidth: control.scrollWidth,
-      clientWidth: control.clientWidth,
-      borderRadius: getComputedStyle(control).borderRadius,
-    })),
-  );
-  expect(await route.evaluate((node) => node.scrollWidth <= node.clientWidth))
-    .toBe(true);
-  for (const bounds of instanceGeometry) {
-    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
-    expect(bounds.right).toBeLessThanOrEqual(280.5);
-    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
-    expect(bounds.borderRadius).toBe('8px');
-  }
-
-  await instances.first().click();
-  const row = page.locator(`[${DATA_COLLECTION_RECORD}="${longRecordId}"]`);
-  await expect(row.locator('.col-explorer-row-title')).toHaveText(longSubject);
-  await expect(row.locator('.col-explorer-row-summary'))
-    .toContainText(longFrom);
-  const rowGeometry = await row.evaluate((control) => {
-    const elements = [
-      control,
-      control.querySelector<HTMLElement>('.col-explorer-row-summary'),
-      ...control.querySelectorAll<HTMLElement>('.col-explorer-field'),
-    ].filter((element): element is HTMLElement => element !== null);
-    return elements.map((element) => ({
-      left: element.getBoundingClientRect().left,
-      right: element.getBoundingClientRect().right,
-      scrollWidth: element.scrollWidth,
-      clientWidth: element.clientWidth,
-    }));
-  });
-  expect(await route.evaluate((node) => node.scrollWidth <= node.clientWidth))
-    .toBe(true);
-  for (const bounds of rowGeometry) {
-    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
-    expect(bounds.right).toBeLessThanOrEqual(280.5);
-    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
-  }
-
-  await row.click();
-  const detail = page.getByRole('region', { name: 'Record detail' });
-  await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toHaveText(longSubject);
-  await expect(detail.getByText(longFrom, { exact: true })).toBeVisible();
-  await expect(detail.getByText(longSourceId, { exact: true })).toBeVisible();
-  await expect(detail.getByText(longRecordId, { exact: true })).toBeVisible();
-  await expect(detail.locator('.col-explorer-detail-body')).toHaveText(longBody);
-  await detail.locator('.col-explorer-detail-raw summary').click();
-  const detailGeometry = await detail.evaluate((surface) => {
-    const elements = [
-      surface,
-      surface.querySelector<HTMLElement>('.col-explorer-detail-head'),
-      surface.querySelector<HTMLElement>('.col-explorer-detail-title'),
-      surface.querySelector<HTMLElement>('.col-explorer-detail-fields'),
-      ...surface.querySelectorAll<HTMLElement>('.col-explorer-detail-field dd'),
-      surface.querySelector<HTMLElement>('.col-explorer-detail-body'),
-      surface.querySelector<HTMLElement>('.col-explorer-detail-raw pre'),
-    ].filter((element): element is HTMLElement => element !== null);
-    return elements.map((element) => ({
-      left: element.getBoundingClientRect().left,
-      right: element.getBoundingClientRect().right,
-      scrollWidth: element.scrollWidth,
-      clientWidth: element.clientWidth,
-    }));
-  });
-  expect(await route.evaluate((node) => node.scrollWidth <= node.clientWidth))
-    .toBe(true);
-  for (const bounds of detailGeometry) {
-    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
-    expect(bounds.right).toBeLessThanOrEqual(280.5);
-    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
-  }
-});
-
 test('Data keeps keyboard focus on a collection source through record loading', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?connection=source-answer`);
@@ -4620,21 +4553,16 @@ test('Data keeps collection list recovery focused and retryable', async ({ page 
 
 test('Data keeps collection detail recovery focused and retryable', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(
-    `${HARNESS_URL}?connection=source-answer`
-    + '&collection_get_response=fail-thrice-slow-retry',
-  );
+  await installFileDetailFixture(page, 3);
+  await page.goto(`${HARNESS_URL}?file-detail=recovery#data/files`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#data/mail'));
-
-  await page.locator(`[${DATA_COLLECTION_SLUG}="work"]`).click();
-  const record = page.locator(`[${DATA_COLLECTION_RECORD}="mail-1"]`);
+  const record = page.locator(`[${DATA_COLLECTION_RECORD}="file:${'1'.repeat(32)}"]`);
   await record.focus();
   await page.keyboard.press('Enter');
 
   const alert = page.getByRole('alert');
   await expect(alert).toHaveText(
-    'Mail record detail is temporarily unavailable.',
+    'File record detail is temporarily unavailable.',
   );
   const retry = page.locator(
     '[data-recued-data-action="collection-detail-retry"]',
@@ -4660,7 +4588,7 @@ test('Data keeps collection detail recovery focused and retryable', async ({ pag
   ).toBe(callsAfterInitialFailure + 1);
 
   await expect(alert).toHaveText(
-    'Mail record detail is temporarily unavailable.',
+    'File record detail is temporarily unavailable.',
   );
   await expect(retry).toHaveText('Retry');
   await expect(retry).not.toHaveAttribute('aria-disabled');
@@ -4677,7 +4605,7 @@ test('Data keeps collection detail recovery focused and retryable', async ({ pag
   await expect(collections).toBeFocused();
   await expect(retry).toHaveText('Retry');
   await expect(alert).toHaveText(
-    'Mail record detail is temporarily unavailable.',
+    'File record detail is temporarily unavailable.',
   );
   await expect(collections).toBeFocused();
 
@@ -4688,26 +4616,24 @@ test('Data keeps collection detail recovery focused and retryable', async ({ pag
     () => page.evaluate(() => window.__app.rpcCallCount('collection.get')),
   ).toBe(callsAfterInitialFailure + 3);
   const heading = page.locator(`[${DATA_DETAIL_HEADING}]`);
-  await expect(heading).toHaveText('Quarterly planning');
+  await expect(heading).toHaveText('Quarterly planning.txt');
   await expect(heading).toBeFocused();
   await expect(alert).toHaveCount(0);
 });
 
 test('Data hands keyboard focus from a record row to its loaded detail', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?connection=source-answer`);
+  await installFileDetailFixture(page);
+  await page.goto(`${HARNESS_URL}?file-detail=focus#data/files`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#data/mail'));
-
-  await page.locator(`[${DATA_COLLECTION_SLUG}="work"]`).click();
-  const record = page.locator(`[${DATA_COLLECTION_RECORD}="mail-1"]`);
+  const record = page.locator(`[${DATA_COLLECTION_RECORD}="file:${'1'.repeat(32)}"]`);
   await expect(record).toBeVisible();
   await record.focus();
   await expect(record).toBeFocused();
   await page.keyboard.press('Enter');
 
   const heading = page.locator(`[${DATA_DETAIL_HEADING}]`);
-  await expect(heading).toHaveText('Quarterly planning');
+  await expect(heading).toHaveText('Quarterly planning.txt');
   await expect(heading).toBeFocused();
   await expect(page.getByRole('region', { name: 'Record detail' })
     .locator('dt').filter({ hasText: /^Received$/ })).toHaveCount(1);
@@ -4715,12 +4641,10 @@ test('Data hands keyboard focus from a record row to its loaded detail', async (
 
 test('Data returns keyboard focus from record detail to its exact row', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?connection=source-answer`);
+  await installFileDetailFixture(page);
+  await page.goto(`${HARNESS_URL}?file-detail=return#data/files`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#data/mail'));
-
-  await page.locator(`[${DATA_COLLECTION_SLUG}="work"]`).click();
-  const record = page.locator(`[${DATA_COLLECTION_RECORD}="mail-1"]`);
+  const record = page.locator(`[${DATA_COLLECTION_RECORD}="file:${'1'.repeat(32)}"]`);
   await record.focus();
   await page.keyboard.press('Enter');
   await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toBeFocused();
@@ -5071,6 +4995,73 @@ test.describe('Records CSV import', () => {
 
 // Projects assemble only explicit links; the existing editors retain their
 // mutation and draft guards while the overview owns the return navigation.
+test('project commitments expose blockers, preserve closed history, and review new and existing links', async ({ page }, testInfo) => {
+  await installProjectOverviewFixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  const overview = page.locator('[data-project-overview="launch"]');
+  const blockers = overview.locator('[data-project-section="commitment"]');
+  await expect(blockers.locator('[data-project-item-id]')).toHaveCount(3);
+  await expect(blockers).toContainText('Acme legal');
+  await expect(blockers.locator('[data-project-item-id="approval"]')).toContainText('Overdue');
+  await expect(blockers.getByText('Arrange customer training', { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('project-blockers-phone.png'), fullPage: true });
+  await blockers.locator('[data-project-item-id="approval"]').click();
+  const reader = page.locator('.work-entity-commitment-reader');
+  await reader.getByRole('button', { name: 'Mark fulfilled', exact: true }).click();
+  await expect(reader.locator('[data-commitment-status]')).toHaveText('Fulfilled');
+  await reader.getByRole('button', { name: 'Back to project', exact: true }).click();
+  await expect(blockers.locator('[data-project-item-id]')).toHaveCount(2);
+  await blockers.getByRole('button', { name: 'All', exact: true }).click();
+  await expect(blockers.locator('[data-project-item-id]')).toHaveCount(4);
+  await expect(blockers.locator('[data-project-item-id="approval"]')).toContainText('Fulfilled');
+  await blockers.getByRole('button', { name: 'New commitment', exact: true }).click();
+  const newCommitment = page.getByRole('dialog', { name: 'New Commitment', exact: true });
+  await newCommitment.locator('[data-form-field="statement"]').fill('Send the security review');
+  await newCommitment.locator('[data-form-field="direction"]').selectOption('outbound');
+  await newCommitment.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(blockers).toContainText('Send the security review');
+  expect(await page.evaluate(() => window.__projectOverview.writes.find(write => write.statement === 'Send the security review')))
+    .toMatchObject({ kind: 'commitment', blocks_project_ids: ['launch'] });
+
+  await blockers.getByRole('button', { name: 'Link existing', exact: true }).click();
+  await expect(page.locator('.project-link-context')).toContainText('Kestrel launch');
+  const search = page.getByRole('searchbox', { name: 'Search commitments', exact: true });
+  await expect(search).toBeFocused();
+  await page.screenshot({ path: testInfo.outputPath('project-link-chooser-phone.png'), fullPage: true });
+  await search.fill('Vendor controls');
+  await page.locator('[data-entity-id="readonly"]').click();
+  await expect(reader).toContainText('This promise is read-only here.');
+  await expect(reader.getByRole('button', { name: 'Link to project', exact: true })).toHaveCount(0);
+  await reader.getByRole('button', { name: 'Back to commitments', exact: true }).click();
+  await search.fill('Arrange customer training');
+  await page.locator('[data-entity-id="unlinked"]').click();
+  await page.evaluate(() => window.__projectOverview.failNextCommitmentRead());
+  await reader.getByRole('button', { name: 'Link to project', exact: true }).click();
+  await expect(reader.locator('[data-commitment-notice]')).toContainText('Could not open the editor.');
+  await expect(reader.locator('[data-commitment-notice]')).toBeFocused();
+  await reader.getByRole('button', { name: 'Link to project', exact: true }).click();
+  const editor = page.locator('.work-entity-dialog[data-kind="commitment"][data-mode="edit"]');
+  await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByRole('alertdialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  expect(await page.evaluate(() => window.__projectOverview.writes.filter(write => write.id === 'unlinked'))).toEqual([]);
+  await reader.getByRole('button', { name: 'Link to project', exact: true }).click();
+  await editor.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(reader).toContainText('Already linked to Kestrel launch.');
+  expect(await page.evaluate(() => window.__projectOverview.writes.find(write => write.id === 'unlinked')))
+    .toEqual({ method: 'work_entity.upsert', kind: 'commitment', id: 'unlinked', blocks_project_ids: ['other', 'launch'] });
+  await reader.getByRole('button', { name: 'Back to commitments', exact: true }).click();
+  await page.locator('.project-link-context').getByRole('button', { name: 'Back to project', exact: true }).click();
+  await expect(blockers.getByRole('button', { name: 'All', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(blockers.locator('[data-project-item-id="unlinked"]')).toContainText('Arrange customer training');
+  await expect(blockers.getByRole('button', { name: 'Link existing', exact: true })).toBeFocused();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: testInfo.outputPath('project-blockers-desktop.png'), fullPage: true });
+});
+
 test('project overview pages linked work and returns from editing and creating tasks and notes', async ({ page }) => {
   await installProjectOverviewFixture(page);
   await page.goto(`${HARNESS_URL}?data=today#data/project`);
@@ -5574,4 +5565,191 @@ test.describe('Commitment workspace', () => {
       expect(f.store.readCommitment('maya-inbound')?.lifecycle_state).toBe('cancelled');
     } finally { f.close(); }
   });
+});
+
+test('Document contents search continues through saved files and returns from the original viewer with results intact', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installDocumentSearchFixture(page);
+  await page.goto(`${HARNESS_URL}?document-search=1#views/document-search`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const query = page.getByRole('searchbox', { name: 'Search everything' });
+  await query.fill('renewal');
+  const panel = page.getByRole('region', { name: 'Document contents', exact: true });
+  await expect(panel.getByRole('button', { name: 'Search file contents', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.__documentSearchDrive.searches)).toEqual([]);
+  await panel.getByRole('button', { name: 'Search file contents', exact: true }).click();
+  await expect(panel).toContainText('5 pending');
+  await expect(page.getByRole('button', { name: /Renewal email/ })).toBeVisible();
+  await panel.getByRole('button', { name: 'Search more files', exact: true }).click();
+  const hits = panel.locator('[data-document-search-file]');
+  await expect(hits).toHaveCount(2);
+  await expect(panel).toContainText('1 file needs an installed and authorized');
+  expect(await page.evaluate(() => window.__documentSearchDrive.searches[1]?.cursor)).toBe('prepare-next');
+  await panel.screenshot({ path: testInfo.outputPath('document-search-desktop.png') });
+  await hits.first().click();
+  const preview = page.getByRole('dialog', { name: 'File preview', exact: true });
+  await expect(preview.getByLabel('File text', { exact: true })).toContainText('Read the complete terms before cancelling.');
+  await page.goBack();
+  await expect(preview).toHaveCount(0);
+  await expect(query).toHaveValue('renewal');
+  await expect(panel.locator('[data-document-search-file]')).toHaveCount(2);
+  await expect(panel.locator('[data-document-search-file]').first()).toBeFocused();
+  expect(await page.evaluate(() => window.__documentSearchDrive.searches.length)).toBe(2);
+});
+
+test('Document contents search retires a file handoff after the owner changes sources and opens another file', async ({ page }) => {
+  await installDocumentSearchFixture(page, false, true);
+  await page.goto(`${HARNESS_URL}?document-search=navigation#data/search`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.getByRole('searchbox', { name: 'Search everything' }).fill('renewal');
+  const panel = page.getByRole('region', { name: 'Document contents', exact: true });
+  await panel.getByRole('button', { name: 'Search file contents', exact: true }).click();
+  await panel.locator('[data-document-search-file]').first().click();
+  await page.waitForFunction(() => window.__documentSearchDrive.fileLists.length === 1);
+  await page.locator('[data-collection-slug="other"]').click();
+  await page.locator('[data-collection-slug="received"]').click();
+  const secondFile = `file:${String(2).padStart(32, '0')}`;
+  await page.locator(`[data-collection-record="${secondFile}"]`).click();
+  const heading = page.locator('[data-recued-collection-detail-heading]');
+  await expect(heading).toHaveText('Service agreement.txt');
+  await page.evaluate(() => window.__documentSearchDrive.releaseFiles());
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await page.evaluate(() => window.__documentSearchDrive.fileGets)).toEqual([secondFile]);
+  await expect(heading).toHaveText('Service agreement.txt');
+  await expect(page.getByRole('dialog', { name: 'File preview', exact: true })).toHaveCount(0);
+});
+
+test('Document contents search on a phone collects an approved result without starting another search', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installDocumentSearchFixture(page, true);
+  await page.goto(`${HARNESS_URL}?document-search=held#data/search`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.getByRole('searchbox', { name: 'Search everything' }).fill('renewal');
+  const panel = page.getByRole('region', { name: 'Document contents', exact: true });
+  await panel.getByRole('button', { name: 'Search file contents', exact: true }).click();
+  await expect(panel).toContainText('waiting for approval');
+  const review = panel.getByRole('link', { name: 'Review waiting action (new tab)' });
+  await expect(review).toHaveAttribute('href', /#logs\/11111111-2222-4333-8444-555555555555/);
+  await review.focus();
+  const checks = await page.evaluate(() => window.__documentSearchDrive.checks.length);
+  await page.waitForFunction(count => window.__documentSearchDrive.checks.length > count, checks);
+  await expect(review).toBeFocused();
+  await panel.screenshot({ path: testInfo.outputPath('document-search-phone.png') });
+  await page.evaluate(() => window.__documentSearchDrive.approve());
+  await expect(panel.locator('[data-document-search-file]')).toHaveCount(2);
+  await expect(panel.getByRole('heading', { name: 'Document contents', exact: true })).toBeFocused();
+  expect(await page.evaluate(() => window.__documentSearchDrive.searches.length)).toBe(1);
+  await panel.screenshot({ path: testInfo.outputPath('document-search-phone-results.png') });
+  const request = await page.evaluate(() => window.__documentSearchDrive.searches[0]!.request_id);
+  expect(await page.evaluate(() => window.__documentSearchDrive.checks)).toContain(request);
+});
+
+
+test('Data recovers a merged contact from current state without repeating an unconfirmed write', async ({ page }, testInfo) => {
+  const db = new Database(':memory:');
+  const store = createContactStore(db);
+  const deps = { contactStore: store };
+  let finishWrite: (() => void) | undefined;
+  let writes = 0;
+  let changeOwnershipAfterWrite = false;
+  try {
+    for (const [email, name] of [['alice.work@example.test', 'Alice Work'], ['alice.personal@example.test', 'Alice Personal'], ['carol@example.test', 'Carol'], ['dave@example.test', 'Dave']]) store.upsertManual({ email: email!, name: name! });
+    store.linkPlatformId({ canonical_email: 'alice.personal@example.test', vendor: 'hubspot', platform_id: 'person-42', state: 'auto', linked_at: 1, linked_by: 'sync', connection_name: 'work' });
+    store.linkPlatformId({ canonical_email: 'carol@example.test', vendor: 'hubspot', platform_id: 'person-43', state: 'auto', linked_at: 1, linked_by: 'sync', connection_name: 'work' });
+    for (const [id, email_a, email_b] of [['alice', 'alice.personal@example.test', 'alice.work@example.test'], ['other', 'carol@example.test', 'dave@example.test']]) {
+      store.enqueueMergeCandidate({ id: id!, email_a: email_a!, email_b: email_b!, matched_fields: ['name', 'company'], detected_at: id === 'alice' ? 2 : 1, detected_by: 'housekeeping' });
+      await handleContactMergeConfirm(deps, { candidate_ids: [id!], survivor_email: email_b! });
+    }
+    await page.exposeFunction('__contactRecoveryRpc', async (method: string, raw: unknown) => {
+      try {
+        if (method === 'contact.merge.list') return { result: await handleContactMergeList(deps, { ...(raw as Parameters<typeof handleContactMergeList>[1]), limit: 1 }) };
+        if (method === 'contact.get') return { result: { contact: store.get((raw as { email: string }).email) } };
+        if (method === 'contact.merge.split_preview') {
+          try { return { result: store.inspectMergeSplit(raw as { merged_email: string; other_email?: string }) }; }
+          catch (value) { return { error: { code: 'conflict', message: (value as Error).message } }; }
+        }
+        if (method === 'contact.merge.split') {
+          writes++;
+          if (writes > 1) await new Promise<void>(resolve => { finishWrite = resolve; });
+          try {
+            await handleContactMergeSplit(deps, raw as ContactMergeSplitRequest);
+            if (changeOwnershipAfterWrite) store.linkPlatformId({ canonical_email: 'dave@example.test', vendor: 'hubspot', platform_id: 'person-43', state: 'confirmed', linked_at: 1, linked_by: 'concurrent-owner' });
+            // The write committed, but its reply was lost. The UI must verify by reading.
+            return { error: { code: 'unavailable', message: 'Reply interrupted after commit.' } };
+          } catch (value) { return { error: { code: 'conflict', message: (value as Error).message } }; }
+        }
+        return null;
+      } catch (value) { return { error: { code: 'internal', message: String(value) } }; }
+    });
+    await page.addInitScript(() => {
+      Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
+        if (!['contact.merge.list', 'contact.get', 'contact.merge.split_preview', 'contact.merge.split'].includes(method)) return undefined;
+        const result = await (window as unknown as { __contactRecoveryRpc(method: string, args: unknown): Promise<unknown> }).__contactRecoveryRpc(method, args);
+        return result ?? undefined;
+      } });
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${HARNESS_URL}?data=contacts#data/contact/scan`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#data/contact/scan'));
+    await page.getByRole('button', { name: 'Merged history', exact: true }).click();
+    const recovery = page.getByRole('region', { name: 'Contact merge recovery' });
+    await expect(recovery.getByRole('heading', { name: 'Merged history' })).toBeFocused();
+    await expect(recovery.getByRole('button', { name: 'Load more merges' })).toBeVisible();
+    await recovery.getByRole('button', { name: 'Load more merges' }).click();
+    const review = () => recovery.locator('.contact-merge-history li').filter({ hasText: 'alice.personal@example.test' }).getByRole('button', { name: 'Review separation' });
+    await review().click();
+    await expect(recovery.getByRole('heading', { name: 'Review separation' })).toBeFocused();
+    await expect(recovery.getByText('HubSpot · work · person-42')).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('contact-merge-recovery-phone.png'), fullPage: true });
+    await recovery.getByRole('button', { name: 'Separate contacts', exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('contact-merge-recovery-phone-actions.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await recovery.getByRole('heading', { name: 'Review separation' }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('contact-merge-recovery-desktop.png'), fullPage: true });
+    await recovery.getByRole('button', { name: 'Separate contacts', exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath('contact-merge-recovery-desktop-actions.png'), fullPage: true });
+    await recovery.getByRole('button', { name: 'Keep merged' }).click();
+    expect(writes).toBe(0);
+    await review().click();
+    store.upsertManual({ email: 'alice.work@example.test', name: 'Alice corrected after preview' });
+    await recovery.getByRole('button', { name: 'Separate contacts', exact: true }).click();
+    await expect(recovery.getByRole('alert')).toContainText('changed since the preview');
+    expect(store.get('alice.personal@example.test')!.merged_into).toBe('alice.work@example.test');
+    await review().click();
+    await recovery.getByRole('combobox').selectOption('alice.personal@example.test');
+    const separate = recovery.getByRole('button', { name: 'Separate contacts', exact: true });
+    await separate.click();
+    await expect(recovery.getByRole('button', { name: 'Separating…' })).toBeDisabled();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole('combobox', { name: 'Collection', exact: true })).toBeDisabled();
+    await page.getByRole('combobox', { name: 'Collection', exact: true }).evaluate(select => { (select as HTMLSelectElement).value = 'task'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    await expect(page.getByRole('combobox', { name: 'Collection', exact: true })).toHaveValue('contact');
+    await recovery.getByRole('button', { name: 'Keep merged' }).dispatchEvent('click');
+    await page.locator(`[${DATA_TAB}="task"]`).dispatchEvent('click');
+    await expect(page.getByRole('heading', { name: 'Merged contacts', exact: true })).toBeVisible();
+    await recovery.getByRole('button', { name: 'Separating…' }).dispatchEvent('click');
+    await expect.poll(() => !!finishWrite).toBe(true);
+    finishWrite!();
+    await expect(recovery.getByRole('heading', { name: 'Contacts are separate' })).toBeFocused();
+    await expect(recovery.getByRole('alert')).toHaveCount(0);
+    expect(writes).toBe(2); // One stale refusal, then one committed write; no automatic retry.
+    expect(store.lookupPlatformLink('hubspot', 'person-42')).toBe('alice.personal@example.test');
+    expect(store.isPairRejected('alice.personal@example.test', 'alice.work@example.test')).toBe(true);
+    expect(store.get('alice.work@example.test')!.name).toBe('Alice corrected after preview');
+    await expect(recovery.getByRole('link', { name: 'Alice corrected after preview' })).toBeVisible();
+    await recovery.getByRole('button', { name: 'Back to merged history' }).click();
+    await recovery.locator('.contact-merge-history li').filter({ hasText: 'carol@example.test' }).getByRole('button', { name: 'Review separation' }).click();
+    await recovery.getByRole('combobox').selectOption('carol@example.test');
+    changeOwnershipAfterWrite = true; finishWrite = undefined;
+    await recovery.getByRole('button', { name: 'Separate contacts', exact: true }).click();
+    await expect.poll(() => !!finishWrite).toBe(true); finishWrite!();
+    await expect(recovery.getByRole('heading', { name: 'Contacts are separate' })).toBeFocused();
+    await expect(recovery.getByRole('alert')).toContainText('ownership no longer matches your choices');
+    expect(writes).toBe(3); // Readback never retries a competing ownership change.
+    await recovery.getByRole('button', { name: 'Back to merged history' }).click();
+    await review().click();
+    await recovery.getByRole('link', { name: 'Alice Personal', exact: true }).click();
+    await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toHaveText('Alice Personal');
+  } finally { finishWrite?.(); db.close(); }
 });

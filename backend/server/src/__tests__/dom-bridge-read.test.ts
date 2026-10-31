@@ -162,6 +162,8 @@ describe('classifyDomReadOutcome — `policy` (grant/scope, counts toward the ca
     'authority_expired',
     'authority_invalid_grant_scope',
     'ingredient_domain_signature_invalid',
+    // A watch on a password, sign-in code or card field: never read.
+    'field_protected',
   ])('an error result coded %s → policy', (code) => {
     const out = classifyDomReadOutcome(
       completed(bridgeResult('error', { error: { code, message: 'denied' } })),

@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { clickActionGlyph } from './helpers/action-glyph.js';
+import { readFile } from 'node:fs/promises';
 import { openChatHistory } from './helpers/chat-history.js';
 import {
   CHAT_ACTIVATION, CHAT_ACTIVATION_ACTION, CHAT_COMPOSER_ACTION,
@@ -20,6 +22,7 @@ const CHAT_THREAD = 'data-recued-chat-route-thread';
 const CHAT_THREAD_TITLE = 'data-recued-chat-route-thread-title';
 const CHAT_SESSION_ACTIONS = 'data-recued-chat-route-session-actions';
 const CHAT_SESSION_EXPORT = 'data-recued-chat-route-session-export';
+const CHAT_SESSION_MARKDOWN_EXPORT = 'data-recued-chat-route-session-export-markdown';
 const CHAT_SESSION_DELETE = 'data-recued-chat-route-session-delete';
 const CHAT_SESSION_DELETE_CONFIRM =
   'data-recued-chat-route-session-delete-confirm';
@@ -802,14 +805,80 @@ test('Chat returns rejected Continue to its exact retry command', async ({ page 
   )).toBe(1);
 });
 
-test('Chat keeps pending export feedback visible, focused, and single-flight', async ({ page }) => {
+test('Chat downloads a readable full-history Markdown transcript and preserves JSON export', async ({ page }) => {
+  await page.addInitScript(() => Object.assign(window, {
+    __connectionsFixture: async (method: string) => {
+      if (method !== 'chat.session.export' && method !== 'chat.session.get') return undefined;
+      const session = { id: 'chat_1', title: 'Planning — café', created_at: 1_700_000_000_000,
+        last_active_at: 1_700_000_010_000, archived: false, picker_state: { current: 'self' },
+        model_routing: { current: 'byok', provider: 'openai', model_id: 'fixture' } };
+      const messages = Array.from({ length: 160 }, (_, index) => ({
+        id: `export-${String(index).padStart(3, '0')}`, session_id: 'chat_1', ts: 1_700_000_000_000 + index,
+        role: index % 2 ? 'assistant' : 'user', target_server: 'self', contributor: index % 2 ? 'model' : 'user',
+        picker_at_send: { display_name: 'This server', signature: { server_kind: 'recued', instance_id: 'fixture', version: '1' } },
+        model_used: { provider: 'openai', model_id: 'fixture' },
+        content: index === 0 ? 'Oldest exported message' : index === 159
+          ? 'Latest exported message\n\n```js\nconsole.log("café");\n```\n\n[Saved source](#source/src_aaaaaaaaaaaaaaaaaaaaaaaa)'
+          : `Exported message ${index}`,
+        ...(index === 159 ? {
+          attachments: [{ file_id: `file:${'c'.repeat(32)}`, media_class: 'document', filename: 'estimate — café.pdf' }],
+          source_citations: [{ kind: 'asset', id: 'src_aaaaaaaaaaaaaaaaaaaaaaaa', asset_id: 'saved-asset',
+            label: 'Saved source', read_at: 1_700_000_000_000, read_version: 'b'.repeat(64) }],
+        } : {}),
+      }));
+      return { result: method === 'chat.session.export'
+        ? { session, messages, format: 'json', exported_at: 1_700_000_010_000 }
+        : { ...session, messages: messages.slice(-2), plans: [], has_more: true,
+          oldest_cursor: { ts: messages[158]!.ts, message_id: messages[158]!.id },
+          newest_cursor: { ts: messages[159]!.ts, message_id: messages[159]!.id } } };
+    },
+  }));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?chat=session&export_private=do-not-copy#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator(`[${CHAT_MESSAGE}]`)).toHaveCount(2);
+  await expect(page.locator(`[${CHAT_MESSAGE}]`).filter({ hasText: 'Oldest exported message' })).toHaveCount(0);
+  const reads = await page.evaluate(() => window.__app.rpcCallCount('chat.session.get'));
+  await openChatHistory(page);
+  const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
+  await actions.locator('summary').click();
+  const markdownDownload = page.waitForEvent('download');
+  await actions.getByRole('button', { name: 'Export Markdown', exact: true }).click();
+  const markdownFile = await markdownDownload;
+  expect(markdownFile.suggestedFilename()).toMatch(/\.md$/);
+  const markdown = await readFile((await markdownFile.path())!, 'utf8');
+  expect(markdown).toContain('# Planning — café');
+  expect(markdown.indexOf('Oldest exported message')).toBeLessThan(markdown.indexOf('Latest exported message'));
+  expect(markdown).toContain('Exported message 100');
+  expect(markdown).toContain('```js\nconsole.log("café");\n```');
+  expect(markdown).toContain('estimate — café.pdf');
+  expect(markdown).toContain('### Sources');
+  expect(markdown).not.toContain('do-not-copy');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('chat.session.get'))).toBe(reads);
+  await expect(page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`)).toBeFocused();
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  if (!(await actions.locator('summary').evaluate(node => (node.parentElement as HTMLDetailsElement).open)))
+    await actions.locator('summary').click();
+  const jsonDownload = page.waitForEvent('download');
+  await actions.getByRole('button', { name: 'Export JSON', exact: true }).click();
+  const jsonFile = await jsonDownload;
+  expect(jsonFile.suggestedFilename()).toMatch(/\.json$/);
+  const json = JSON.parse(await readFile((await jsonFile.path())!, 'utf8'));
+  expect(json.messages).toHaveLength(160);
+  expect(json.format).toBe('json');
+  expect(json.messages[159].attachments[0].filename).toBe('estimate — café.pdf');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('chat.session.export'))).toBe(2);
+});
+
+test('Chat keeps pending Markdown export feedback visible, focused, and single-flight across formats', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?chat=session`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
   await actions.locator('summary').click();
   const exportAction = actions.locator(
-    `[${CHAT_SESSION_EXPORT}="chat_1"]`,
+    `[${CHAT_SESSION_MARKDOWN_EXPORT}="chat_1"]`,
   );
   await exportAction.click();
 
@@ -824,6 +893,9 @@ test('Chat keeps pending export feedback visible, focused, and single-flight', a
   )).toBe(1);
 
   await page.keyboard.press('Enter');
+  const jsonAction = actions.locator(`[${CHAT_SESSION_EXPORT}="chat_1"]`);
+  await expect(jsonAction).toBeDisabled();
+  await jsonAction.dispatchEvent('click');
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('chat.session.export'),
   )).toBe(1);
@@ -893,7 +965,7 @@ test('Chat returns rejected history actions to visible retry controls', async ({
 
   const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
   await actions.locator('summary').click();
-  const exportAction = actions.locator(`[${CHAT_SESSION_EXPORT}="chat_1"]`);
+  const exportAction = actions.locator(`[${CHAT_SESSION_MARKDOWN_EXPORT}="chat_1"]`);
   await exportAction.click();
 
   await expect(page.getByRole('alert')).toContainText(
@@ -1464,7 +1536,7 @@ test('the docked Chat composer action menu dismisses predictably', async ({ page
   );
   expect(Math.min(...expandedHeights)).toBeGreaterThanOrEqual(36);
   await input.fill('Check the composer actions');
-  await page.locator(`[${CHAT_SEND}]`).click();
+  await clickActionGlyph(page, page.locator(`[${CHAT_SEND}]`));
 
   const more = page.locator(`[${CHAT_COMPOSER_MORE}]`);
   const trigger = more.locator('summary');

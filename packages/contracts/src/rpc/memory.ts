@@ -107,6 +107,13 @@ export interface MemoryListEntry {
   forgotten_by?: string;
   /** D-198 §10 — the reason the agent gave when it forgot the entry. */
   forgotten_reason?: string;
+  /** D-198 §13 — when the owner DELETED this agent's note. Its text is gone from
+   *  the server; the entry stays as who saved what kind of note when. Nothing
+   *  restores it. Absent on a forget, which redacts without deleting. */
+  deleted_at?: number;
+  /** D-198 §13 — when the owner REVOKED this agent's note (marked it wrong). Its text
+   *  stays, shown to the owner; out of recall as a fact. `memory.unrevoke` lifts it. */
+  revoked_at?: number;
 }
 
 /** Outbound shape for `memory.list`. `next_cursor` present iff another
@@ -152,6 +159,13 @@ export interface MemoryGetResponse {
   forgotten_by?: string;
   /** D-198 §10 — the reason the agent gave when it forgot the entry. */
   forgotten_reason?: string;
+  /** D-198 §13 — when the owner DELETED this agent's note. Its text is gone from
+   *  the server; the entry stays as who saved what kind of note when. Nothing
+   *  restores it. Absent on a forget, which redacts without deleting. */
+  deleted_at?: number;
+  /** D-198 §13 — when the owner REVOKED this agent's note (marked it wrong). Its text
+   *  stays, shown to the owner; out of recall as a fact. `memory.unrevoke` lifts it. */
+  revoked_at?: number;
 }
 
 /** Inbound shape for `memory.restore` (D-198 §10) — the owner undoes an AGENT's
@@ -217,6 +231,45 @@ export interface MemoryReplaceRequest {
   event_at?: number;
 }
 
+/** Inbound shape for `memory.revoke` (D-198 §13) — the owner marks an AGENT's note
+ *  WRONG. The note stays, shown to the owner, and leaves recall as a fact; it and every
+ *  earlier version it replaced are marked under one revoke. A method of its own, so an
+ *  older server refuses it (`unknown_method`). */
+export interface MemoryRevokeRequest {
+  memory_id: string;
+}
+
+/** Inbound shape for `memory.unrevoke` (D-198 §13) — lift the owner's revoke: the note
+ *  and the versions marked with it are as they were. */
+export interface MemoryUnrevokeRequest {
+  memory_id: string;
+}
+
+/** Result of a `memory.revoke` / `memory.unrevoke` — how many versions it marked or
+ *  lifted. */
+export interface MemoryRevokeResult {
+  memory_id: string;
+  versions: number;
+}
+
+/** Inbound shape for `memory.saves` (D-198 §13) — how many times an agent saved an AGENT
+ *  note's claim, asked by the Delete confirm before it offers Revoke ("An agent has saved
+ *  this 3 times. Mark it wrong so it asks you first?"). A method of its own, so an older
+ *  server refuses it (`unknown_method`) and the confirm asks as it always did. */
+export interface MemorySavesRequest {
+  memory_id: string;
+}
+
+/** Result of a `memory.saves`. `saves` counts the note and each earlier save of its claim
+ *  that no longer stands (deleted, forgotten, hidden or revoked), as far as the server can
+ *  still tell: a deleted note counts while the chat it was saved in still records the
+ *  save, so it is a lower bound. `agents` — how many different agents made them (≥ 1). */
+export interface MemorySavesResult {
+  memory_id: string;
+  saves: number;
+  agents: number;
+}
+
 /** Result of a `memory.create` / `memory.update` / `memory.replace` (the NEW
  *  row's id for a replace). */
 export interface MemoryMutationResult {
@@ -227,7 +280,8 @@ export interface MemoryMutationResult {
 }
 
 /** Inbound shape for `memory.delete`. Origin-split at the handler:
- *  `user_self` rows hard-delete; every other origin redacts (D-198 §5). */
+ *  `user_self` rows hard-delete; an agent's note is deleted with its text erased
+ *  and a content-free row kept (D-198 §13); a run redacts ("Hide from AI", §5). */
 export interface MemoryDeleteRequest {
   memory_id: string;
 }
@@ -236,11 +290,13 @@ export interface MemoryDeleteRequest {
  *  `deleted` / `redacted` is true on success. */
 export interface MemoryDeleteResult {
   memory_id: string;
-  /** True when the row was hard-deleted (the caller's own `user_self`
-   *  entry). */
+  /** True when the content is gone: the caller's own `user_self` entry was
+   *  hard-deleted, or an agent's note was erased (D-198 §13 — its text removed,
+   *  a content-free row kept). */
   deleted: boolean;
-  /** True when the row was redacted in place (engine/AI/contracted row —
-   *  content cleared, origin + provenance skeleton retained). */
+  /** True when the row was redacted in place (a run — content hidden from AI
+   *  readers, the signed log untouched). An older server also redacts an agent's
+   *  note this way, so its text is still on that server. */
   redacted: boolean;
 }
 

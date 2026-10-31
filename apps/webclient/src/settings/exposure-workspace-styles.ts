@@ -90,6 +90,10 @@ ${panel} :is(button, input[type="text"], .exposure-connect-snippet):focus-visibl
 ${panel} .exposure-lan-posture { align-items: flex-start; }
 ${panel} .exposure-lan-note { margin: 0; }
 ${panel} .exposure-lan-posture button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   background: var(--surface);
@@ -97,6 +101,8 @@ ${panel} .exposure-lan-posture button {
   font-family: inherit;
   cursor: pointer;
 }
+${panel} .exposure-lan-posture button > svg { flex-shrink: 0; }
+${panel} .exposure-lan-posture button[hidden] { display: none; }
 ${panel} .exposure-lan-posture button:disabled { opacity: 0.6; cursor: not-allowed; }
 ${panel} :is(.exposure-public-note, .exposure-action-error, .exposure-apex-warning) { padding: 12px; border-radius: 8px; }
 ${panel} .exposure-load-error { gap: 12px; padding: 20px; border-radius: 12px; }

@@ -1,3 +1,4 @@
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { expect, test } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
@@ -47,6 +48,24 @@ test('D-325 Settings names the selected connection and retains keyboard focus af
   await expect(choice).toHaveValue('private:100');
   await expect(choice).toBeFocused();
   expect(await page.evaluate(() => window.__app.rpcCallCount('notifications.set_channel'))).toBe(1);
+});
+
+test('notification phrase glyph saves once and keeps its settled value', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?notifications=ready#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const input = page.locator('[data-recued-notifications-phrase-input]');
+  const save = page.locator('[data-recued-notifications-phrase-save]');
+  await input.fill('harbor moon');
+  await page.evaluate(() => window.__app.holdRpcResponses?.('notifications.set_verification_phrase'));
+  const before = await page.evaluate(() => window.__app.rpcCallCount('notifications.set_verification_phrase'));
+  await clickActionGlyph(page, save);
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await clickActionGlyph(page, save);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('notifications.set_verification_phrase'))).toBe(before + 1);
+  await page.evaluate(() => window.__app.releaseRpcResponses?.('notifications.set_verification_phrase'));
+  await expect(save).toHaveText('Save');
+  await expect(input).toHaveValue('harbor moon');
 });
 
 test('notification dismiss actions stay full-sized and contained', async ({ page }) => {

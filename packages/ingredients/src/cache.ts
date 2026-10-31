@@ -167,7 +167,7 @@ export const withIngredientCache = (
       return rawExecutor(slug, input, stepOutput, stepOptions, stepMeta);
     }
 
-    const policy = derivePolicy(manifest.category, manifest.risk_tier, options.recipe_ttl);
+    const policy = derivePolicy(manifest.category, manifest.risk_tier, options.recipe_ttl, manifest.kind);
     if (!policy.enabled) {
       emit('skipped', { slug });
       return rawExecutor(slug, input, stepOutput, stepOptions, stepMeta);
@@ -317,7 +317,7 @@ export const withIngredientCache = (
         validateArguments();
         const current = await options.manifestLoader(slug);
         validateArguments();
-        if (!current || !derivePolicy(current.category, current.risk_tier, options.recipe_ttl).enabled
+        if (!current || !derivePolicy(current.category, current.risk_tier, options.recipe_ttl, current.kind).enabled
           || stepMeta?.surface_dispatch === true && (stepMeta.surface_dispatch_sensitive === true
             || stepMeta.surface_risk_tier !== undefined && stepMeta.surface_risk_tier !== 'read')) throw error;
         if (canonicalJSONStringify(current) !== retryManifest) {

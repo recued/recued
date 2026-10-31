@@ -52,6 +52,7 @@ import {
 import type { WsClient } from './ws-server.js';
 import { handleWorkEntitySearch } from './work-entity-search.js';
 import { handleWorkEntityProjectItems } from './work-entity-project-items.js';
+import { commitmentCounterparties } from './work-entity-contact-labels.js';
 import {
   SourceRegistrationError,
   WorkEntityValidationError,
@@ -365,14 +366,6 @@ const upsertMode = (
     );
   }
   return 'update';
-};
-
-const commitmentCounterparties = (entities: readonly WorkEntity[], display: WorkEntityCrudRpcDeps['contactDisplay']): Record<string, string> => {
-  const ids = new Set(entities.flatMap(entity => entity._kind === 'commitment' && entity.counterparty_contact_id ? [entity.counterparty_contact_id] : []));
-  return Object.fromEntries([...ids].map(id => {
-    const contact = display?.getByContactIdResolved(id);
-    return [id, contact?.name?.trim() || contact?.email || 'Contact unavailable'];
-  }));
 };
 
 export const handleWorkEntityList = async (

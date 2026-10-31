@@ -278,6 +278,36 @@ export interface MailingAddress {
   country: string;
 }
 
+/** Read-only, current-state review for separating a merged identity. */
+export interface ContactMergeSplitPreview {
+  merged_email: string;
+  survivor_email: string;
+  token: string;
+  separating: ContactRecord[];
+  remaining: ContactRecord[];
+  links: Array<{ owner_email: string; entry: PlatformIdEntry; connection_name?: string }>;
+}
+
+export interface ContactMergeSplitGroup {
+  canonical_email: string;
+  members: Array<{ email: string; contact_id?: string }>;
+  links: Array<{ vendor: string; platform_id: string; connection_name?: string }>;
+}
+
+export type ContactMergeSplitInspection = { status: 'merged'; preview: ContactMergeSplitPreview }
+  | { status: 'separate'; canonicals: ContactRecord[]; groups: ContactMergeSplitGroup[] };
+
+export interface ContactMergeSplitRequest {
+  merged_email: string;
+  /** Required by the recovery UI; older local clients can still submit a split. */
+  expected_preview?: string;
+  platform_id_redistribution: Array<{
+    platform_id_entry: PlatformIdEntry;
+    target_canonical_email: string;
+  }>;
+  rejected_by?: string;
+}
+
 /** D-138 — server-internal merge-candidate queue row. No cross-cloud
  *  sync (server-internal substrate, same pattern as
  *  `housekeeping_config`). Surfaced only via the local-UI
@@ -404,6 +434,7 @@ export const CONTACT_MERGE_RPC_METHODS = [
   'contact.merge.confirm',
   'contact.merge.reject',
   'contact.merge.split',
+  'contact.merge.split_preview',
   'contact.merge.undo_rejection',
   'contact.merge.resolve_remerge_prompt',
   'contact.merge.scan_now',

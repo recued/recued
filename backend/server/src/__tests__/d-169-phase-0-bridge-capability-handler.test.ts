@@ -139,6 +139,10 @@ describe('D-169 P0 - handleBridgeCapabilityProfilePush', () => {
       'user_agent is non-string',
       { ...sampleProfile(), user_agent: 123 },
     ],
+    // D-335 — dispatch decides "update the Bridge" from this list.
+    ['supported_actions is not a list', { ...sampleProfile(), supported_actions: 'inspect' }],
+    ['supported_actions holds a non-string', { ...sampleProfile(), supported_actions: ['inspect', 1] }],
+    ['supported_actions is too long', { ...sampleProfile(), supported_actions: Array.from({ length: 65 }, (_, i) => `a${i}`) }],
   ])('rejects Angle 5 element/type drift: %s', (_label, profile) => {
     expectRpcError(
       () => handleBridgeCapabilityProfilePush(
@@ -148,6 +152,14 @@ describe('D-169 P0 - handleBridgeCapabilityProfilePush', () => {
       ),
       'invalid_argument',
     );
+  });
+
+  // A newer Bridge may list an action this server does not know yet.
+  it('keeps a supported_actions list, unknown action names included', () => {
+    const registry = buildRegistry();
+    const profile = sampleProfile({ supported_actions: ['read_dom', 'inspect', 'an_action_from_later'] });
+    expect(handleBridgeCapabilityProfilePush({ registry, now: () => 1 }, 'tok-1', { profile })).toEqual({ ok: true });
+    expect(registry.updateCapabilities).toHaveBeenCalledWith('tok-1', profile, 1);
   });
 
   it('returns ok when updateCapabilities reports no existing record', () => {

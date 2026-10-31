@@ -26,6 +26,8 @@ export { testDeclaredPattern, DECLARED_PATTERN_FAST_PATHS } from './declared-pat
 export {
   isClosedRequestSchema,
   closedRequestSchemaDefinitionIssues,
+  closedRequestSchemaDefinitionFindings,
+  type ClosedRequestSchemaDefinitionFinding,
   closedRequestSchemaBacktrackingIssues,
   probePatternForBacktracking,
   closedRequestSchemaViolation,
@@ -2054,6 +2056,7 @@ export type {
 export { isCheckpoint, TIER1_HOLD_CATALOG_SLUG } from './checkpoint.js';
 export type {
   Checkpoint,
+  HeldBrowserTarget,
   PreflightApprovedTarget,
   PreflightCheckpointContext,
   PreflightForeachCover,
@@ -2107,6 +2110,8 @@ export {
   CONTRACTED_DEFAULT_TRUST_CEILING,
   OUTBOUND_SEND_INGREDIENT_SLUGS,
   isOutboundSendSlug,
+  isBrowserActionSlug,
+  BROWSER_ACTION_INGREDIENT_SLUGS,
   // D-192 F1 — the all-actor commitment-proposal approval lift.
   COMMITMENT_PROPOSAL_INGREDIENT_SLUGS,
   isCommitmentProposalSlug,
@@ -2344,6 +2349,10 @@ export type {
   PlatformIdEntry,
   MailingAddress,
   ContactMergeCandidate,
+  ContactMergeSplitPreview,
+  ContactMergeSplitInspection,
+  ContactMergeSplitGroup,
+  ContactMergeSplitRequest,
   ContactMatchField,
   ContactCompanySource,
   NicknameAliasSet,
@@ -3438,6 +3447,7 @@ export {
   CalendarAdapterError,
 } from './calendar.js';
 export { CALENDAR_EVENT_EDIT_LIMITS } from './calendar-event-rpc.js';
+export type { DocumentContentMatch, DocumentContentCoverage, DocumentContentSearchResult, OwnerDocumentSearchRequest, OwnerDocumentSearchReply } from './document-content-search.js';
 export type { CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarInvitationResponse, CalendarEventDestination, CalendarEventDestinations, CalendarEventCreateRequest, CalendarEventCreateResult } from './calendar-event-rpc.js';
 export type {
   CanonicalEvent,
@@ -4966,6 +4976,16 @@ export {
   isValidChromeMatchPattern,
   BRIDGE_REVIEW_DOCUMENT_LIMIT,
   isBridgeDocumentIdentity,
+  ORIGINAL_BRIDGE_ACTIONS,
+  bridgeRunsAction,
+  bridgeRunsCommand,
+  BRIDGE_INSPECT_MAX_CHARS,
+  BRIDGE_INSPECT_MAX_VALUE_CHARS,
+  BRIDGE_INSPECT_OUTPUT_KEYS,
+  BRIDGE_DESCRIBE_OUTPUT_KEYS,
+  BRIDGE_TABS_OUTPUT_KEYS,
+  BRIDGE_TABS_MAX,
+  BRIDGE_OPEN_OUTPUT_KEYS,
 } from './bridge.js';
 export type {
   BridgeAction,
@@ -5356,6 +5376,11 @@ export type {
   MemoryRestoreRequest,
   MemoryRestoreResult,
   MemoryReplaceRequest,
+  MemoryRevokeRequest,
+  MemoryUnrevokeRequest,
+  MemoryRevokeResult,
+  MemorySavesRequest,
+  MemorySavesResult,
   CollectListPagesOptions,
   ListPage,
   ListPageFields,
@@ -5942,6 +5967,7 @@ export type {
   MailComposeDialogState,
   MailComposeState,
   MailReplyContext,
+  MailForwardContext,
   MailSenderSourceOption,
   MailComposeAiAction,
   MailComposeRewriteAction,
@@ -5970,6 +5996,7 @@ export {
   initialMailComposeState,
   openCreateComposeTransition,
   openReplyComposeTransition,
+  openForwardComposeTransition,
   setComposeValuesTransition,
   addComposeAttachmentsTransition,
   removeComposeAttachmentTransition,
@@ -5981,6 +6008,8 @@ export {
   composeDialog,
   addReReplyPrefix,
   deriveReplyValues,
+  deriveReplyAllValues,
+  deriveForwardValues,
   composeStateToSendPayload,
   composePayloadToSendRecipeConfig,
   SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,

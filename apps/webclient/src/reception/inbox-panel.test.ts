@@ -158,6 +158,9 @@ const makeEl = (tag: string, onFocus?: (el: FakeEl) => void): FakeEl => {
     set innerHTML(html: string) {
       rawInnerHTML = html;
       el.children = [];
+      const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+      el.textContent = html.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (match, entity: string) => entities[entity] ?? match);
       const m = /data-ref-picker="([^"]+)"/.exec(html);
       if (m !== null) synthesizeRefPickerShell(el, m[1]!, onFocus);
     },
@@ -254,7 +257,7 @@ const allNodes = (root: FakeEl): FakeEl[] => {
 
 const findButton = (root: FakeEl, label: string): FakeEl => {
   const btn = allNodes(root).find(
-    (n) => n.tagName === 'BUTTON' && n.textContent === label,
+    (n) => n.tagName === 'BUTTON' && n.textContent.trim() === label,
   );
   if (btn === undefined) throw new Error(`button "${label}" not found`);
   return btn;

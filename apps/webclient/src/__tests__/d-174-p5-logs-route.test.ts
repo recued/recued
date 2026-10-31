@@ -544,8 +544,9 @@ describe('D-174 P5 - Runs route', () => {
     expect(getCaller).toHaveBeenCalledTimes(2);
     expect(shell.innerHTML).toContain(
       'data-recued-logs-action="retry-detail" data-run-id="run-1" '
-      + 'aria-disabled="true" aria-busy="true">Retrying…',
+      + 'aria-disabled="true" aria-busy="true">',
     );
+    expect(shell.innerHTML.replace(/<[^>]*>/g, '')).toContain('Retrying…');
 
     retry.resolve({ run: runDetail() });
     await Promise.resolve();
@@ -1743,8 +1744,9 @@ describe('D-181 slice 5b — Runs Active section', () => {
     expect(rig.html()).toContain(
       'data-recued-logs-action="refresh-active" '
       + 'aria-label="Refreshing… active runs" aria-disabled="true" '
-      + 'aria-busy="true">Refreshing…',
+      + 'aria-busy="true">',
     );
+    expect(rig.html().replace(/<[^>]*>/g, '')).toContain('Refreshing…');
     expect(rig.html()).not.toContain(
       'data-recued-logs-action="refresh-active" disabled',
     );
@@ -1753,7 +1755,7 @@ describe('D-181 slice 5b — Runs Active section', () => {
     await pending;
     expect(rig.html()).toContain(
       'data-recued-logs-action="refresh-active" '
-      + 'aria-label="Refresh active runs">Refresh',
+      + 'aria-label="Refresh active runs">',
     );
     rig.route.dispose();
   });
@@ -2541,8 +2543,9 @@ describe('D-186 slice C — Runs Active passes section', () => {
     expect(rig.html()).toContain(
       'data-recued-logs-action="refresh-passes" '
       + 'aria-label="Refreshing… active passes" aria-disabled="true" '
-      + 'aria-busy="true">Refreshing…',
+      + 'aria-busy="true">',
     );
+    expect(rig.html().replace(/<[^>]*>/g, '')).toContain('Refreshing…');
     expect(rig.html()).not.toContain(
       'data-recued-logs-action="refresh-passes" disabled',
     );
@@ -2551,7 +2554,7 @@ describe('D-186 slice C — Runs Active passes section', () => {
     await pending;
     expect(rig.html()).toContain(
       'data-recued-logs-action="refresh-passes" '
-      + 'aria-label="Refresh active passes">Refresh',
+      + 'aria-label="Refresh active passes">',
     );
     rig.route.dispose();
   });

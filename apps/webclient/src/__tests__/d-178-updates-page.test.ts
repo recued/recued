@@ -76,6 +76,7 @@ import {
 interface FE {
   tagName: string;
   textContent: string;
+  innerHTML: string;
   className: string;
   value: string;
   children: FE[];
@@ -100,9 +101,19 @@ const mk = (tag: string): FE => {
   const attrs = new Map<string, string>();
   const listeners = new Map<string, Array<(e: unknown) => void>>();
   const children: FE[] = [];
+  let html = '';
   const el: FE = {
     tagName: tag.toUpperCase(),
     textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value: string) {
+      html = value;
+      for (const child of children) child.parent = null;
+      children.length = 0;
+      const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+      el.textContent = value.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (match, entity: string) => entities[entity] ?? match);
+    },
     className: '',
     value: '',
     children,

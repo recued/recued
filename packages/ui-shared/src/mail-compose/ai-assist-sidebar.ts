@@ -4,6 +4,7 @@ import {
   MAIL_COMPOSE_REWRITE_ACTIONS,
   MAIL_DRAFT_BRIEF_MAX,
   type MailComposeAiAction,
+  type MailComposeMode,
   type MailComposeRewriteAction,
 } from '@recued/contracts';
 import { e } from '../template.js';
@@ -14,7 +15,7 @@ export interface AiAssistSidebarProps {
   /** The one transformation awaiting its governed execute response. */
   busyAction?: MailComposeAiAction | null;
   brief?: string;
-  mode?: 'create' | 'reply';
+  mode?: MailComposeMode;
   draftUnavailableReason?: string | null;
   /** Owner-facing failure/local conflict copy. */
   error?: string | null;

@@ -180,15 +180,25 @@ export const findMissingVaultEntries = (
 const BROWSER_ONLY_KINDS = new Set<IngredientKind>(['dom']);
 
 /** Check if a recipe has ingredients incompatible with the current role.
- *  On the server, DOM ingredients cannot execute (no browser).
+ *  On the server, a DOM ingredient runs through a connected Browser Bridge
+ *  (D-148), so it is incompatible only when none is connected
+ *  (`browserBridge` false): the run is refused before any step, rather than
+ *  failing at the page step after the steps before it ran.
+ *
+ *  ⛔ D-335 slice G — until then this refused DOM on the server outright, a
+ *  rule from before the Bridge took page steps: the real server refused every
+ *  recipe with a page step while every test passed, since no test process
+ *  calls `setRole('server')`.
+ *
  *  Returns the list of incompatible ingredient slugs + their adapter kind. */
 export const findRoleRestrictions = (
   recipe: RecipeDefinition,
   getManifest: ManifestGetter,
   role?: RuntimeRole,
+  browserBridge = false,
 ): Array<{ slug: string; adapter: string }> => {
   const effectiveRole = role ?? (ROLE.isServer ? 'server' : ROLE.isExtension ? 'extension' : null);
-  if (effectiveRole !== 'server') return [];
+  if (effectiveRole !== 'server' || browserBridge) return [];
 
   const restricted: Array<{ slug: string; adapter: string }> = [];
   for (const slug of collectIngredientSlugs(recipe)) {

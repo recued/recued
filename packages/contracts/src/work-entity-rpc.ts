@@ -40,6 +40,7 @@ import type {
   BookingHistorySummary,
   BookingLifecycleState,
   WorkEntityDeleteOutput,
+  Commitment,
 } from './work-entities.js';
 import type { WorkEntitySourceFreshness } from './work-entity-sources.js';
 import type { WorkEntityEdgeView } from './work-entity-edges.js';
@@ -83,17 +84,22 @@ export interface WorkEntitySearchRpcResponse {
   groups: WorkEntitySearchGroup[];
 }
 
-export type ProjectWorkKind = 'task' | 'note';
+export type ProjectWorkKind = 'task' | 'note' | 'commitment';
 export interface WorkEntityProjectItemsRpcRequest {
   project_id: string;
   kind: ProjectWorkKind;
   limit?: number;
   offset?: number;
+  /** Commitment-only; defaults to outstanding promises. */
+  commitment_status?: 'open' | 'all';
 }
 /** A display preview; opening an item still reads its current canonical row. */
 export interface WorkEntityProjectItem extends WorkEntitySearchMatch {
   done?: boolean;
   due_at?: number;
+  commitment?: Pick<Commitment, 'direction' | 'lifecycle_state' | 'due_status' | 'promised_for_at'> & {
+    counterparty_label?: string;
+  };
 }
 export interface WorkEntityProjectItemsRpcResponse {
   project_id: string;
@@ -103,6 +109,8 @@ export interface WorkEntityProjectItemsRpcResponse {
   offset: number;
   /** Present only for tasks, on the same visibility and project scope. */
   open_tasks?: number;
+  /** Echoes the applied commitment scope so mixed or older replies cannot masquerade as a filtered page. */
+  commitment_status?: 'open' | 'all';
   /** Provider-only sources do not contribute local rows or counts. */
   provider_only_sources?: string[];
 }

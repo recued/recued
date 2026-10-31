@@ -155,8 +155,8 @@ test('Chat stays usable when the platform getter is restricted', async ({ page }
   const find = page.getByRole('button', { name: 'Find', exact: true });
   await expect(find).toBeVisible();
   await expect(find).toHaveAttribute('title', 'Search everything on this server (Ctrl /)');
-  await expect(page.getByRole('button', { name: 'Run a Recipe', exact: true }).first())
-    .toHaveAttribute('title', 'Run a Recipe (Ctrl K)');
+  await expect(page.getByRole('button', { name: 'Search your data', exact: true }))
+    .toHaveAttribute('title', 'Search your data (Ctrl /)');
   await find.click();
   await expect(page).toHaveURL(/#data\/search$/);
   await expect(page.locator('body')).not.toContainText('private browser policy detail');

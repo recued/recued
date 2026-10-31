@@ -1,7 +1,7 @@
 import { createBackupDisclosure } from './backup-disclosure.js';
 import type { ArchiveRemoteDestination, ArchiveUnattendedSettings, ArchiveUnattendedStatus } from '@recued/contracts';
 import { ARCHIVE_UNATTENDED_ISSUE_TEXT } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel } from '@recued/ui-shared';
 import { createBackupFormValidation, isBackupUtcTime, isBackupWholeNumber } from './backup-form-validation.js';
 import { createBackupStatusRefresh, type BackupStatusRefreshOutcome } from './backup-status-refresh.js';
 
@@ -66,8 +66,10 @@ export const mountUnattendedBackups = (options: {
   words.type = 'password'; words.autocomplete = 'off'; words.spellcheck = false;
   validation.field(words, form, 'words', () => !current?.configured && words.value.trim() === '' ? 'Enter your recovery key for the first setup.' : undefined);
   form.appendChild(make('p', 'Failure alerts use your notification settings. Missed times become one backup when the server is available. Older remote copies are removed only after a new copy is verified.'));
-  const save = make('button', 'Save backup schedule'); save.type = 'button'; save.className = 'rx-btn rx-btn-primary'; save.setAttribute('data-unattended-save', ''); form.appendChild(save);
-  const discard = make('button', 'Discard changes'); discard.type = 'button'; discard.className = 'rx-btn rx-btn-secondary'; discard.disabled = true;
+  const save = make('button'); save.type = 'button'; save.className = 'rx-btn rx-btn-primary'; save.setAttribute('data-unattended-save', ''); form.appendChild(save);
+  save.innerHTML = renderActionLabel('save', 'Save backup schedule');
+  const discard = make('button'); discard.type = 'button'; discard.className = 'rx-btn rx-btn-secondary'; discard.disabled = true;
+  discard.innerHTML = renderActionLabel('undo', 'Discard changes');
   discard.setAttribute('data-unattended-discard', ''); form.appendChild(discard);
   const draftStatus = make('p'); draftStatus.setAttribute('role', 'status'); draftStatus.setAttribute('data-unattended-draft-status', ''); host.appendChild(draftStatus);
   const feedback = make('p'); feedback.setAttribute('role', 'status'); feedback.setAttribute('data-unattended-feedback', ''); host.appendChild(feedback);

@@ -11,6 +11,9 @@ import { createFileServerKeyStore } from '../keys/file-store.js';
 
 const salt = Uint8Array.from({ length: 16 }, (_, i) => i);
 const nativeAvailable = nodeArgon2 !== null;
+// These interoperability checks exercise production Argon2 costs. Leave CPU
+// headroom when the full sweep runs other files alongside the portable reader.
+const defaultCostTimeoutMs = 120_000;
 
 describe('server keyfile password KDF', () => {
   it.runIf(nativeAvailable)('matches portable default-cost derivation for ASCII and Unicode including NUL', async () => {
@@ -18,7 +21,7 @@ describe('server keyfile password KDF', () => {
       const expected = await deriveKEKFromPassword(password, salt);
       expect(new Uint8Array(await deriveKeyfileKEK(password, salt))).toEqual(expected);
     }
-  });
+  }, defaultCostTimeoutMs);
 
   it("takes Node's Argon2 only where it can run", () => {
     const argon2 = vi.fn<typeof crypto.argon2>();
@@ -84,5 +87,5 @@ describe('server keyfile password KDF', () => {
       const reopened = await createFileServerKeyStore({ filePath, passphrase: password });
       expect(reopened.loadServerVaultKey()).toEqual(serverKey);
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+  }, defaultCostTimeoutMs);
 });

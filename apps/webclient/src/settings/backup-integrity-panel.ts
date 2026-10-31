@@ -1,5 +1,5 @@
 import type { ArchiveBackupIntegrityPolicy, ArchiveBackupIntegrityStatus } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel } from '@recued/ui-shared';
 import { createBackupStatusRefresh, type BackupStatusRefreshOutcome } from './backup-status-refresh.js';
 import { createBackupFormValidation, isBackupUtcTime, isBackupWholeNumber } from './backup-form-validation.js';
 
@@ -46,7 +46,9 @@ export const mountBackupIntegrity = (options: {
   for (const [node, name] of [[status, 'status'], [run, 'run'], [alerts, 'alerts'], [feedback, 'feedback']] as const) {
     node.setAttribute(`data-backup-integrity-${name}`, ''); node.setAttribute('role', 'status');
   }
-  const save = make('button', 'Save S3 check schedule'), discard = make('button', 'Discard changes');
+  const save = make('button'), discard = make('button');
+  save.innerHTML = renderActionLabel('save', 'Save S3 check schedule');
+  discard.innerHTML = renderActionLabel('undo', 'Discard changes');
   for (const [button, name] of [[save, 'save'], [discard, 'discard']] as const) {
     button.type = 'button'; button.className = 'rx-btn rx-btn-secondary'; button.setAttribute(`data-backup-integrity-${name}`, ''); host.appendChild(button);
   }

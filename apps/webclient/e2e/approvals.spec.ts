@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 
 /** Approvals browser journeys against the deterministic full-app harness. */
 const APPROVALS_REFRESH = 'data-recued-approvals-refresh';
@@ -25,7 +26,7 @@ for (const width of [280, 1280]) {
     await page.keyboard.press('End');
     await expect.poll(() => review.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.locator(`[${APPROVALS_REFRESH}]`).click();
+    await clickActionGlyph(page, page.locator(`[${APPROVALS_REFRESH}]`));
     await expect(review).toBeVisible();
     await expect(review).toContainText('Recreated final note');
     await expect(card.getByRole('button', { name: 'Approve: Review Records batch', exact: true })).toBeEnabled();

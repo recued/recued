@@ -2,7 +2,7 @@ import { createBackupDisclosure, revealBackupControl } from './backup-disclosure
 /** Storage selection and durable delivery history are independent of the
  * adjacent recovery-word/file form. Polling never repaints those inputs. */
 import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel } from '@recued/ui-shared';
 import { mountUnattendedBackups, type UnattendedBackupsPorts } from './unattended-backups-panel.js';
 import { mountRestoreDrills, type RestoreDrillsPorts } from './restore-drills-panel.js';
 import { mountBackupHealth, type BackupHealthPorts } from './backup-health-panel.js';
@@ -77,7 +77,7 @@ export const mountRemoteBackups = (options: {
     const pending = loading || pendingChecks > 0 || healthPending || integrityPending || watchdogPending || unattendedPending;
     refreshButton.setAttribute('aria-disabled', String(pending));
     refreshButton.setAttribute('aria-busy', String(pending));
-    refreshButton.textContent = pendingChecks > 0 ? 'Waiting to refresh backup status…' : pending ? 'Refreshing backup status…' : 'Refresh backup status';
+    refreshButton.innerHTML = renderActionLabel('refresh', pendingChecks > 0 ? 'Waiting to refresh backup status…' : pending ? 'Refreshing backup status…' : 'Refresh backup status');
   };
   const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('data-remote-backups-status', '');
   const tools = createBackupDisclosure(doc, 'tools', 'More backup tools');
@@ -176,9 +176,10 @@ export const mountRemoteBackups = (options: {
     row.location.textContent = data.object_key;
     row.checksum.textContent = data.sha256 ? `${data.bytes ?? 0} bytes · SHA-256 ${data.sha256}` : 'The exported bytes have not been recorded yet.';
     const checkLabel = cleanupPending ? 'Retry upload cleanup' : 'Check stored copy';
-    if (row.check.textContent !== checkLabel) row.check.textContent = checkLabel;
+    if (row.check.textContent?.trim() !== checkLabel) row.check.innerHTML = renderActionLabel(cleanupPending ? 'refresh' : 'check', checkLabel);
     row.check.setAttribute('aria-disabled', String(row.busy || row.checkUnconfirmed || ACTIVE.has(data.state) || data.state === 'pruned' || data.state === 'pruning' || data.sha256 === undefined));
-    row.prepare.textContent = row.prepared ? 'Open restore preview' : row.previewExpired ? 'Prepare a restore again' : 'Prepare a restore';
+    const prepareLabel = row.prepared ? 'Open restore preview' : row.previewExpired ? 'Prepare a restore again' : 'Prepare a restore';
+    if (row.prepare.textContent !== prepareLabel) row.prepare.innerHTML = renderActionLabel('undo', prepareLabel);
     row.prepare.setAttribute('aria-disabled', String(row.busy || (!row.prepared && (row.checkUnconfirmed || data.state !== 'verified'))));
     row.drill?.setAttribute('aria-disabled', String(row.busy || row.checkUnconfirmed || data.state !== 'verified'));
   };
@@ -199,13 +200,16 @@ export const mountRemoteBackups = (options: {
         const cleanupLink = make('a', 'Review storage connection'); cleanupLink.setAttribute('data-remote-backup-cleanup-connection', ''); cleanupLink.hidden = true;
         const previewStatus = make('p'); previewStatus.setAttribute('role', 'status'); previewStatus.hidden = true;
         previewStatus.setAttribute('data-remote-backup-preview-status', '');
-        const check = make('button', 'Check stored copy'), prepare = make('button', 'Prepare a restore');
+        const check = make('button'), prepare = make('button');
+        check.innerHTML = renderActionLabel('check', 'Check stored copy');
+        prepare.innerHTML = renderActionLabel('undo', 'Prepare a restore');
         const details = make('details'), location = make('p'), checksum = make('p');
         details.setAttribute('data-remote-backup-details', ''); details.appendChild(make('summary', 'Details and checks')); details.appendChild(location); details.appendChild(checksum);
         check.type = prepare.type = 'button'; check.className = prepare.className = 'rx-btn rx-btn-secondary';
         node.setAttribute('data-remote-backup-id', receipt.operation_id); check.setAttribute('data-remote-backup-check', ''); prepare.setAttribute('data-remote-backup-restore', '');
         node.appendChild(summary); node.appendChild(cleanupNote); node.appendChild(cleanupLink); node.appendChild(prepare); node.appendChild(feedback); node.appendChild(previewStatus); node.appendChild(details); details.appendChild(check);
-        const drill = drills ? make('button', 'Test recovery') : undefined;
+        const drill = drills ? make('button') : undefined;
+        if (drill) drill.innerHTML = renderActionLabel('play', 'Test recovery');
         if (drill) { drill.type = 'button'; drill.className = 'rx-btn rx-btn-secondary'; drill.setAttribute('data-remote-backup-drill', ''); details.appendChild(drill); }
         row = { node, summary, cleanupNote, cleanupLink, note: feedback, check, prepare, drill, location, checksum, previewStatus, previewExpired: false, details, attentionShown: false, receipt, busy: false, checkUnconfirmed: false }; rows.set(receipt.operation_id, row);
         const current = row;

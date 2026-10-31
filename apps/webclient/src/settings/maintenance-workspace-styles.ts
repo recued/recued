@@ -90,6 +90,10 @@ ${host} :is(button, a) {
   overflow-wrap: anywhere;
 }
 ${host} .housekeeping-runnow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid var(--border-strong);
   border-radius: var(--wc-radius, 6px);
   background: var(--surface);
@@ -98,6 +102,8 @@ ${host} .housekeeping-runnow-btn {
   font-weight: 600;
   cursor: pointer;
 }
+${host} .housekeeping-runnow-btn > svg { flex-shrink: 0; }
+${host} .housekeeping-runnow-btn[hidden] { display: none; }
 ${host} .housekeeping-runnow-btn:hover:not(:disabled) { background: var(--surface-sunk); }
 ${host} .housekeeping-runnow-btn:disabled { opacity: 0.55; cursor: default; }
 ${host} :is(button, a):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

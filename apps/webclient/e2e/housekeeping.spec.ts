@@ -413,7 +413,7 @@ for (const size of [
             outcome === 'failure' ? 'housekeeping_banner_response=fail-first' : '');
           const target = owner === 'search'
             ? fields.panel.locator(`[data-action="housekeeping-producer-search"]`)
-            : page.getByRole('button', { name: 'Run a Recipe', exact: true });
+            : page.getByRole('button', { name: 'Search your data', exact: true });
           if (owner === 'search') await target.fill('summary');
           await target.focus();
           if (owner === 'search') await target.evaluate((element) => (element as HTMLInputElement).setSelectionRange(2, 5, 'backward'));
@@ -704,7 +704,7 @@ for (const size of [
           await target.fill('summary');
           await target.evaluate((element) => (element as HTMLInputElement).setSelectionRange(2, 5, 'backward'));
         } else if (owner === 'header') {
-          target = page.getByRole('button', { name: 'Run a Recipe', exact: true });
+          target = page.getByRole('button', { name: 'Search your data', exact: true });
         } else if (owner === 'dialog') {
           await fields.panel.getByRole('button', { name: 'Run enrichment.summary now', exact: true }).focus();
           await page.keyboard.press('Enter');
@@ -1018,7 +1018,7 @@ for (const size of [
             target = fields.search;
             await target.fill('summary');
             await target.evaluate((element) => (element as HTMLInputElement).setSelectionRange(2, 5, 'backward'));
-          } else if (owner === 'header') target = page.getByRole('button', { name: 'Run a Recipe', exact: true });
+          } else if (owner === 'header') target = page.getByRole('button', { name: 'Search your data', exact: true });
           else {
             await fields.panel.getByRole('button', { name: 'Run enrichment.summary now', exact: true }).focus();
             await page.keyboard.press('Enter');
@@ -1293,7 +1293,7 @@ for (const size of [
           const fields = await openHousekeepingTrustWrite(page, control,
             outcome === 'failure' ? 'housekeeping_trust_response=fail-first' : '');
           const target = owner === 'search' ? fields.search
-            : page.getByRole('button', { name: 'Run a Recipe', exact: true });
+            : page.getByRole('button', { name: 'Search your data', exact: true });
           await target.focus();
           if (owner === 'search') {
             await page.keyboard.type('summary');
@@ -1471,7 +1471,7 @@ for (const size of [
         const fields = await openHousekeepingRunNowRefresh(page,
           outcome === 'failure' ? 'housekeeping_status=fail-after-run' : '');
         const target = owner === 'search' ? fields.search
-          : page.getByRole('button', { name: 'Run a Recipe', exact: true });
+          : page.getByRole('button', { name: 'Search your data', exact: true });
         await target.focus();
         if (owner === 'search') {
           await page.keyboard.type('summary');
@@ -1780,7 +1780,7 @@ for (const size of [
       await expect(page).toHaveURL(/#contracts$/);
       const contracts = page.locator('[data-recued-contracts-route]');
       await expect(contracts).toBeVisible();
-      const outside = page.getByRole('button', { name: 'Run a Recipe', exact: true });
+      const outside = page.getByRole('button', { name: 'Search your data', exact: true });
       await outside.focus();
       await releaseScheduleWrite(page);
       await expect(contracts).toBeVisible();
@@ -1800,7 +1800,7 @@ for (const size of [
         await fields.save.focus();
         await page.keyboard.press('Enter');
         await expect(fields.save).toHaveText('Saving…');
-        const target = owner === 'search' ? fields.search : page.getByRole('button', { name: 'Run a Recipe', exact: true });
+        const target = owner === 'search' ? fields.search : page.getByRole('button', { name: 'Search your data', exact: true });
         if (owner === 'search') {
           await fields.search.fill('summary');
           await fields.search.evaluate((input: HTMLInputElement) => input.setSelectionRange(2, 4, 'backward'));
@@ -1909,7 +1909,7 @@ for (const size of [
         await expect(fields.disclosure).toHaveAttribute('open');
         const target = owner === 'read-access'
           ? fields.drawer.getByRole('link', { name: 'Manage read access in Contracts →', exact: true })
-          : page.getByRole('button', { name: 'Run a Recipe', exact: true });
+          : page.getByRole('button', { name: 'Search your data', exact: true });
         await target.focus();
         await refreshScheduleStatus(page);
         await expect(fields.disclosure).toHaveAttribute('open');

@@ -1100,8 +1100,21 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    uniform executor); `target` is the actuation domain, gated by op risk +
   //    the Bridge domain_allowlist. read → never, write → ask. Both are
   //    `SERVER_NOT_REACHABLE`-class without a paired Bridge (extension-actuated).
+  //    D-335 slice A: `core.dom.inspect(target, page?, ref?, selector?)` → an
+  //    `inspect` command → `{ page, url, title, html, truncated }`, the page or
+  //    one region of it as cleaned HTML with refs on what a person can act on.
+  //    Slice B: `core.dom.click(target, page?, ref?, selector?)` → a `click` →
+  //    `{ clicked }`; it and `core.dom.write` name the element by a selector,
+  //    or by a page handle with a ref (or selector), bound to that page.
+  //    Slice C: `core.dom.tabs(target)` → a `list_tabs` → `{ tabs, truncated }`;
+  //    `core.dom.open(target, address)` → an `open_tab` (a write: it asks for the
+  //    address as the owner) → `{ page, url, title }` of a new tab.
   op('core.dom.read', 'dom', 'dom-read', 'read', 'browser'),
   op('core.dom.write', 'dom', 'dom-write', 'write', 'browser'),
+  op('core.dom.inspect', 'dom', 'dom-inspect', 'read', 'browser'),
+  op('core.dom.click', 'dom', 'dom-click', 'write', 'browser'),
+  op('core.dom.tabs', 'dom', 'dom-tabs', 'read', 'browser'),
+  op('core.dom.open', 'dom', 'dom-open', 'write', 'browser'),
 ];
 
 // ────────────────────────────────────────────────────────────────

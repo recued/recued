@@ -50,6 +50,7 @@ import {
   type MailComposeAttachment,
 } from '@recued/contracts';
 import { e } from '../template.js';
+import { renderActionIcon } from '../icon-render.js';
 
 export interface MailComposeAttachmentPickerProps {
   /** The ids currently attached — the authoritative list, straight from
@@ -108,7 +109,7 @@ const renderChip = (
         data-action="mail-compose-attachment-remove"
         data-attachment-id="${e(id)}"
         aria-label="${e(`Remove attachment ${label}`)}"${lockAttr}
-      >×</button>
+        >${renderActionIcon('close')}</button>
     </li>
   `;
 };
@@ -150,7 +151,7 @@ export const renderMailComposeAttachmentPicker = (
           class="mail-compose-attachment-add"
           data-action="mail-compose-attachment-add"
           aria-label="Attach a file"${addLockAttr}
-        >Attach file</button>
+        >${renderActionIcon('attach')}<span>Attach file</span></button>
       </div>
       <div aria-labelledby="mail-compose-attachments-label">
         ${list}

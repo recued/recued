@@ -86,6 +86,11 @@ describe('findRoleRestrictions', () => {
     expect(r[0].adapter).toBe('dom');
   });
 
+  // D-335 slice G — on the server a page step runs through a connected Bridge.
+  it('allows DOM ingredients on server when a Browser Bridge is connected', () => {
+    expect(findRoleRestrictions(domRecipe, getManifest, 'server', true)).toEqual([]);
+  });
+
   it('allows Chat ingredients on server (delegatable to extension)', () => {
     const r = findRoleRestrictions(chatRecipe, getManifest, 'server');
     expect(r).toEqual([]);
@@ -116,6 +121,22 @@ describe('executeRecipe role restriction', () => {
     expect(result.errors[0].code).toBe('ROLE_RESTRICTION');
     expect(result.errors[0].message).toContain('email-composer-hubspot');
     expect(result.errors[0].message).toContain('dom');
+    // Words the model and the owner can act on, before any step ran.
+    expect(result.errors[0].message).toContain('no Browser Bridge is connected to this server');
+    expect(result.steps).toEqual([]);
+  });
+
+  it('runs a DOM recipe on server when a Browser Bridge is connected', async () => {
+    const executed: string[] = [];
+    const result = await executeRecipe({
+      recipe: domRecipe,
+      stores: { vault: {}, config: {}, context: {}, meta: {}, step: {} },
+      ingredientExecutor: async (slug) => { executed.push(slug); return {}; },
+      manifestGetter: getManifest,
+      browserBridge: true,
+    });
+    expect(result.errors.every(e => e.code !== 'ROLE_RESTRICTION')).toBe(true);
+    expect(executed).toEqual(['email-composer-hubspot']);
   });
 
   it('allows HTTP-only recipe on server', async () => {

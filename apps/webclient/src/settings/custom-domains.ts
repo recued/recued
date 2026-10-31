@@ -31,6 +31,7 @@
  *  re-check as often as the user likes while they edit their zone.
  */
 
+import { renderActionLabel, type IconName } from '@recued/ui-shared';
 import { relativeDnsName } from '@recued/contracts';
 import type {
   CustomDomainPreflightResult,
@@ -376,6 +377,7 @@ export const mountCustomDomainsPanel = (
 
   const makeButton = (
     label: string,
+    icon: IconName,
     attr: string,
     onClick: () => void,
     disabled = false,
@@ -384,7 +386,7 @@ export const mountCustomDomainsPanel = (
     const button = doc.createElement('button');
     button.type = 'button';
     button.className = `rx-btn rx-btn-${attr === CUSTOM_DOMAINS_ADD_BTN_ATTR ? 'primary' : 'secondary'}`;
-    button.textContent = label;
+    button.innerHTML = renderActionLabel(icon, label);
     button.setAttribute(attr, '');
     button.disabled = disabled;
     const version = resultsVersion;
@@ -460,7 +462,7 @@ export const mountCustomDomainsPanel = (
     feedback.hidden = true;
     let copying = false;
     const isCurrent = (): boolean => !destroyed && version === resultsVersion && root.isConnected !== false;
-    const button = makeButton('Copy value', CUSTOM_DOMAINS_COPY_BTN_ATTR, () => {
+    const button = makeButton('Copy value', 'copy', CUSTOM_DOMAINS_COPY_BTN_ATTR, () => {
       if (copying) return;
       copying = true;
       // Keep the native button focusable while suppressing repeat activation.
@@ -749,7 +751,7 @@ export const mountCustomDomainsPanel = (
   });
   field.appendChild(input);
   form.appendChild(field);
-  const checkButton = makeButton('Check DNS', CUSTOM_DOMAINS_CHECK_BTN_ATTR, () => { void runCheck(); }, false, false);
+  const checkButton = makeButton('Check DNS', 'refresh', CUSTOM_DOMAINS_CHECK_BTN_ATTR, () => { void runCheck(); }, false, false);
   form.appendChild(checkButton);
   root.appendChild(form);
 
@@ -860,6 +862,7 @@ export const mountCustomDomainsPanel = (
     if (opts.runEnrol !== undefined && state.enrolled === null) {
       addButton = makeButton(
         state.enrolling ? 'Adding…' : 'Add this domain',
+        'link',
         CUSTOM_DOMAINS_ADD_BTN_ATTR,
         () => { void runEnrol(); },
         state.enrolling || state.checking,
@@ -881,7 +884,7 @@ export const mountCustomDomainsPanel = (
     const checkLabel = state.checking ? 'Checking…' : 'Check DNS';
     // Replacing an unchanged label on every keystroke splits Chromium's native
     // undo transactions, even though the input itself stays mounted.
-    if (checkButton.textContent !== checkLabel) checkButton.textContent = checkLabel;
+    if (checkButton.textContent !== checkLabel) checkButton.innerHTML = renderActionLabel('refresh', checkLabel);
     status.textContent = state.enrolling
       ? `Adding ${normalize(state.hostname)}…`
       : state.checking ? `Checking DNS for ${normalize(state.hostname)}…` : '';

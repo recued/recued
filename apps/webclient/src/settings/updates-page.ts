@@ -32,6 +32,7 @@ import type {
   UpdateRevertReason,
 } from '@recued/contracts';
 import { compareToolVersions, supervisorWillRespawn } from '@recued/contracts';
+import { renderActionLabel, type IconName } from '@recued/ui-shared';
 import type {
   ServerUpdateReceiptVerificationState,
 } from '@recued/ui-shared';
@@ -622,12 +623,19 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   let pendingMode: UpdateMode | null = null;
   let queuedPostRestartCheck = false;
 
+  const actionIcons = new WeakMap<HTMLElement, IconName>();
+  const setLabel = (node: HTMLElement, label: string): void => {
+    const icon = actionIcons.get(node);
+    if (icon === undefined) node.textContent = label;
+    else node.innerHTML = renderActionLabel(icon, label);
+  };
   const make = (
     tag: string,
-    spec?: { text?: string; className?: string; attrs?: Record<string, string> },
+    spec?: { text?: string; icon?: IconName; className?: string; attrs?: Record<string, string> },
   ): HTMLElement => {
     const node = doc.createElement(tag);
-    if (spec?.text !== undefined) node.textContent = spec.text;
+    if (spec?.icon !== undefined) actionIcons.set(node, spec.icon);
+    if (spec?.text !== undefined) setLabel(node, spec.text);
     if (spec?.className !== undefined) node.className = spec.className;
     if (spec?.attrs !== undefined) {
       for (const [k, v] of Object.entries(spec.attrs)) node.setAttribute(k, v);
@@ -797,6 +805,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   setHidden(receiptBaselineEl, true);
   const receiptRecoveryRetry = make('button', {
     text: 'Check the result again',
+    icon: 'refresh',
     className: 'rx-btn rx-btn-secondary',
     attrs: { type: 'button', [UPDATES_RECEIPT_RETRY_ATTR]: '' },
   });
@@ -919,6 +928,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   receiptDiagnosticEl.appendChild(receiptDiagnosticSummaryEl);
   const receiptDiagnosticCopy = make('button', {
     text: 'Copy the details',
+    icon: 'copy',
     className: 'rx-btn rx-btn-secondary',
     attrs: {
       type: 'button',
@@ -953,6 +963,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   });
   const checkBtn = make('button', {
     text: 'Check for updates',
+    icon: 'refresh',
     className: 'rx-btn rx-btn-secondary',
     attrs: { type: 'button', [UPDATES_CHECK_BTN_ATTR]: '' },
   });
@@ -1033,6 +1044,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   );
   const rollbackBtn = make('button', {
     text: 'Roll back to previous version',
+    icon: 'undo',
     className: 'rx-btn rx-btn-danger',
     attrs: { type: 'button', [UPDATES_ROLLBACK_BTN_ATTR]: '' },
   });
@@ -1384,6 +1396,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     // release (`confirm_rollout`, sent from doApply); it just is not narrated.
     const armed = state.confirmArmed && !state.applying;
     const applyBtn = make('button', {
+      icon: 'download',
       text: state.applying
         ? 'Updating…'
         : readServerUpdateProgress() !== null
@@ -1425,6 +1438,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     if (armed && !serverActionElsewhere) {
       const cancelBtn = make('button', {
         text: 'Cancel',
+        icon: 'close',
         className: 'rx-btn',
         attrs: { type: 'button', [UPDATES_APPLY_CANCEL_ATTR]: '' },
       });
@@ -1446,6 +1460,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     if (state.applyResult?.status === 'major-blocked') {
       forceBtn = make('button', {
         text: 'Update anyway (major)',
+        icon: 'download',
         className: 'rx-btn rx-btn-danger',
         attrs: { type: 'button', [UPDATES_FORCE_APPLY_BTN_ATTR]: '' },
       });
@@ -1929,13 +1944,13 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     const showRetry = connected
       && (verification.phase === 'retryable' || verification.phase === 'unknown');
     setHidden(receiptRecoveryRetry, !showRetry);
-    receiptRecoveryRetry.textContent = connected
+    setLabel(receiptRecoveryRetry, connected
       ? verification.phase === 'checking'
         ? 'Checking the result…'
         : verification.phase === 'waiting'
           ? 'Retry now'
           : 'Check the result again'
-      : 'Retry when connected';
+      : 'Retry when connected');
     receiptRecoveryRetry.setAttribute(
       'aria-label',
       connected
@@ -2113,11 +2128,11 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       checkBtn.removeAttribute('aria-disabled');
       checkBtn.removeAttribute('aria-busy');
     }
-    checkBtn.textContent = state.phase === 'checking'
+    setLabel(checkBtn, state.phase === 'checking'
       ? 'Checking…'
       : tabProgress !== null
         ? 'Waiting for server…'
-        : 'Check for updates';
+        : 'Check for updates');
 
     if (state.phase === 'checking') statusEl.textContent = 'Checking…';
     else if (state.check !== null && state.check.status !== 'update-available') {
@@ -2201,9 +2216,9 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       rollbackBtn.removeAttribute('aria-disabled');
       rollbackBtn.removeAttribute('aria-busy');
     }
-    rollbackBtn.textContent = state.rollbackBusy
+    setLabel(rollbackBtn, state.rollbackBusy
       ? 'Rolling back…'
-      : 'Roll back to previous version';
+      : 'Roll back to previous version');
     // The server refuses a rollback it would not come back from, as it does an
     // apply; a busy one is already past that gate.
     const rollbackFromTerminal = !restartsItself() && !state.rollbackBusy;

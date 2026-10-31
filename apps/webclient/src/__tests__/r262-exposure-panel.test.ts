@@ -65,6 +65,7 @@ import { PUBLIC_MCP_MODAL_COPY } from '../settings/public-mcp-modal.js';
 interface FakeElement {
   tagName: string;
   textContent: string;
+  innerHTML: string;
   disabled: boolean;
   checked: boolean;
   value: string;
@@ -91,9 +92,19 @@ const makeFakeElement = (tagName: string): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
+  let html = '';
   const el: FakeElement = {
     tagName: tagName.toUpperCase(),
     textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value: string) {
+      html = value;
+      for (const child of el.children) child.parent = null;
+      el.children.length = 0;
+      const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+      el.textContent = value.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (match, entity: string) => entities[entity] ?? match);
+    },
     disabled: false,
     checked: false,
     value: '',
@@ -243,6 +254,7 @@ interface SetupOpts {
   /** Paired server URL for the "Connection example" button. Absent ⇒ the
    *  button does not render, which is the production fail-quiet. */
   serverUrl?: string;
+  getServerUrl?: () => string | undefined;
 }
 
 const setup = async (over: SetupOpts = {}) => {
@@ -273,7 +285,8 @@ const setup = async (over: SetupOpts = {}) => {
   const mount = mountExposurePanel({
     host: host as unknown as HTMLElement,
     document: doc as unknown as Document,
-    ...(over.serverUrl !== undefined ? { getServerUrl: () => over.serverUrl } : {}),
+    ...(over.getServerUrl !== undefined ? { getServerUrl: over.getServerUrl }
+      : over.serverUrl !== undefined ? { getServerUrl: () => over.serverUrl } : {}),
     runGet: async () => {
       calls.get += 1;
       if (getRejects) throw new Error('boom');
@@ -795,6 +808,26 @@ describe('R26.2 Delta 2 — apex picker', () => {
 });
 
 describe('Connection example — the MCP snippet lives where the endpoint is decided', () => {
+  it('adds a late saved address without repainting controls or fetching inventory', async () => {
+    let url: string | undefined;
+    const { host, mount, calls } = await setup({ getServerUrl: () => url });
+    const originalAction = findByAttr(host, EXPOSURE_PUBLIC_MCP_BTN_ATTR);
+    expect(originalAction).not.toBeNull();
+    expect(findByAttr(host, EXPOSURE_CONNECT_BTN_ATTR)).toBeNull();
+    url = 'wss://saved.example.test/ws';
+    mount.refreshConnectionExample();
+    const connect = findByAttr(host, EXPOSURE_CONNECT_BTN_ATTR);
+    expect(connect).not.toBeNull();
+    expect(findByAttr(host, EXPOSURE_PUBLIC_MCP_BTN_ATTR)).toBe(originalAction);
+    mount.refreshConnectionExample();
+    expect(findByAttr(host, EXPOSURE_CONNECT_BTN_ATTR)).toBe(connect);
+    expect(calls.get).toBe(0);
+    expect(calls.applyPreset).toEqual([]);
+    expect(calls.setPath).toEqual([]);
+    expect(calls.setAck).toEqual([]);
+    mount.dispose();
+  });
+
   it('renders the button only when a server URL is known', async () => {
     const withUrl = await setup({ serverUrl: 'ws://127.0.0.1:3001/ws' });
     expect(findByAttr(withUrl.host, EXPOSURE_CONNECT_BTN_ATTR)).not.toBeNull();
@@ -836,10 +869,16 @@ describe('Connection example — the MCP snippet lives where the endpoint is dec
     // Its second step follows it as a plain line, the command as code, and is
     // no tab stop: it carries neither the snippet attribute nor a tabindex.
     const lines = collectNotes(host);
+    // Claude Desktop's two steps, then the Codex plugin's: the saved-key command,
+    // and a plain line for older servers with no code at all.
     expect(lines.map((line) => line.children[0]?.textContent)).toEqual([
       'recued mcp-key set --app claude-desktop',
       expect.stringContaining('"RECUED_MCP_TOKEN"'),
+      'recued mcp-key set',
+      undefined,
     ]);
+    const plugin = findByAttr(host, EXPOSURE_CONNECT_SNIPPET_ATTR, 'codex-plugin');
+    expect((plugin as unknown as { textContent: string }).textContent).not.toContain('://');
     for (const line of lines) {
       expect(line.hasAttribute(EXPOSURE_CONNECT_SNIPPET_ATTR)).toBe(false);
       expect(line.hasAttribute('tabindex')).toBe(false);

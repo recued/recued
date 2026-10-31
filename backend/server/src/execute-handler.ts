@@ -214,6 +214,7 @@ import {
   type PackOpResolution,
 } from '@recued/recipes';
 import { heldSenderValueLabels, settleMailSenders, type SendCapableMailbox } from './mail-senders.js';
+import { describeHeldBrowserTarget, heldBrowserValueLabels } from './bridges/dom-adapter.js';
 import {
   buildAuditEntry,
   newRunId,
@@ -3899,7 +3900,8 @@ const handleExecuteInner = async (
         policyBySlug.set(slug, { cacheable: false, ttl_seconds: 0, category: manifest.category });
         continue;
       }
-      const p = derivePolicy(manifest.category, manifest.risk_tier, (recipe as { ttl?: number }).ttl ?? 0);
+      // A DOM read is never replayed (D-335): the policy says so by its kind.
+      const p = derivePolicy(manifest.category, manifest.risk_tier, (recipe as { ttl?: number }).ttl ?? 0, manifest.kind);
       policyBySlug.set(slug, {
         cacheable: p.enabled,
         ttl_seconds: p.ttl_seconds,
@@ -6291,6 +6293,9 @@ const handleExecuteInner = async (
       ...(deps.opDurationClassifier ? { opDurationClassifier: deps.opDurationClassifier } : {}),
       manifestGetter: (slug, requestedVersion) =>
         deps.executorConfig.manifests.get(slug, requestedVersion),
+      // D-335 slice G — a page step runs through a connected Browser Bridge;
+      // with none, the engine refuses the run before any step.
+      browserBridge: (deps.executorConfig.bridgeDispatcherRef?.()?.connectedBridges?.() ?? 0) > 0,
       // A `record_fields` output block names an entity kind, never a catalog
       // slug (an install-internal an author has no business knowing), so the
       // lookup scans installed packs for the one declaring it. Deliberately
@@ -7422,6 +7427,23 @@ const handleExecuteInner = async (
             awaitingApproval.args_preview,
             ...(foreachCover?.items ?? []).map((item) => item.args_preview),
           ], deps.listSendCapableMailboxes);
+          // D-335 slice B — a held browser write or click names its element the
+          // way the page shows it, read live from the Bridge. Bounded: the ask
+          // waits for it (`HELD_BROWSER_DESCRIBE_TIMEOUT_MS`), and says so when
+          // the Bridge does not answer.
+          const browserTarget = foreachCover === undefined
+            ? await describeHeldBrowserTarget({
+                dispatcher: deps.executorConfig.bridgeDispatcherRef?.(),
+                manifests: { get: (slug) => deps.executorConfig.manifests.get(slug) ?? null },
+                slug: awaitingApproval.tool_slug,
+                input: heldCall.input,
+                run_id,
+                step_id: gated_step_id,
+              })
+            : undefined;
+          const browserLabels = heldBrowserValueLabels(browserTarget, heldCall.input);
+          const heldValueLabels = browserLabels === undefined ? valueLabels
+            : valueLabels === undefined ? browserLabels : { ...valueLabels, ...browserLabels };
           const preflightContext = {
             ...(foreachCover !== undefined ? { foreach_cover: foreachCover } : {}),
             ...(awaitingApproval.tool_slug !== undefined
@@ -7457,7 +7479,8 @@ const handleExecuteInner = async (
             ...(typeof recipe.metadata?.name === 'string' && recipe.metadata.name.trim() !== ''
               ? { recipe_title: recipe.metadata.name.trim() }
               : {}),
-            ...(valueLabels !== undefined ? { value_labels: valueLabels } : {}),
+            ...(heldValueLabels !== undefined ? { value_labels: heldValueLabels } : {}),
+            ...(browserTarget !== undefined ? { browser_target: browserTarget } : {}),
             ...(awaitingApproval.egress_bound !== undefined
               ? { egress_bound: awaitingApproval.egress_bound }
               : {}),

@@ -5,7 +5,7 @@ import {
   type CalendarEventSnapshot, type CalendarEventUpdateRequest,
   type CalendarEventRespondRequest, type CalendarEventRespondResult, type CalendarInvitationResponse,
 } from '@recued/contracts';
-import { e } from '@recued/ui-shared';
+import { e, renderActionLabel, type IconName } from '@recued/ui-shared';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export const CALENDAR_EVENT_ACTION_PREFIX = 'calendar-event-';
@@ -154,7 +154,14 @@ export const createCalendarEventSurface = (deps: {
     return (Object.keys(initial) as Field[]).some(key =>
       (key !== 'startChoice' && key !== 'endChoice' || draft![key] !== '') && draft![key] !== initial[key]);
   };
-  const button = (action: string, label: string, primary = false): string => `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}" ${deps.actionAttr}="calendar-event-${action}" ${FOCUS}="${action}"${busy || action === 'save' && saveNeedsCheck ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${e(label)}</button>`;
+  const actionIcons: Partial<Record<string, IconName>> = {
+    edit: 'rename', save: 'save', retry: 'refresh', check: 'refresh', reload: 'refresh',
+    'response-check': 'refresh', 'response-refresh': 'refresh',
+  };
+  const button = (action: string, label: string, primary = false): string => {
+    const icon = actionIcons[action];
+    return `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}" ${deps.actionAttr}="calendar-event-${action}" ${FOCUS}="${action}"${busy || action === 'save' && saveNeedsCheck ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon ? renderActionLabel(icon, label) : e(label)}</button>`;
+  };
   const repaint = (focus?: string | CalendarEventFocus) => {
     if (focus) pendingFocus = typeof focus === 'string' ? { key: focus } : focus;
     deps.render();
@@ -441,6 +448,8 @@ ${e(draft.description)}</textarea></label>
 };
 
 export const CALENDAR_EVENT_STYLES = `
+.calendar-event .data-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+.calendar-event .data-button svg[aria-hidden=true] { flex:none; }
 .calendar-event { display: grid; gap: 1rem; min-width: 0; }
 .calendar-event h3, .calendar-event h4, .calendar-event p { margin: 0; }
 .calendar-event-head { display: grid; gap: .5rem; min-width: 0; }

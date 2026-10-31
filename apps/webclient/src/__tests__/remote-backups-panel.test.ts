@@ -121,7 +121,7 @@ describe('remote backup selection and restore continuity', () => {
     const row = h.host.querySelector(`[data-remote-backup-id="${receipt.operation_id}"]`)!, note = h.node('data-remote-backup-cleanup-note');
     expect(row.getAttribute('data-remote-backup-cleanup-pending')).toBe('true'); expect(h.host.textContent).toContain('Upload cleanup pending');
     expect(note).toHaveProperty('hidden', false); expect(note.textContent).toContain('cleanup is not confirmed');
-    expect(button.textContent).toBe('Retry upload cleanup'); button.focus(); button.click();
+    expect(button.textContent.trim()).toBe('Retry upload cleanup'); button.focus(); button.click();
     await vi.waitFor(() => expect(row.getAttribute('data-remote-backup-state')).toBe('verifying'));
     expect(row.getAttribute('data-remote-backup-cleanup-pending')).toBe('true'); expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(check).toHaveBeenCalledExactlyOnceWith({ operation_id: receipt.operation_id });
@@ -129,7 +129,7 @@ describe('remote backup selection and restore continuity', () => {
     await vi.advanceTimersByTimeAsync(250);
     expect(row.getAttribute('data-remote-backup-state')).toBe('unconfirmed'); expect(row.getAttribute('data-remote-backup-cleanup-pending')).toBe('false');
     expect(note).toHaveProperty('hidden', true); expect(note.textContent).toBe(''); expect(h.host.textContent).not.toContain('Upload cleanup pending');
-    expect(button.textContent).toBe('Check stored copy'); expect(button.getAttribute('aria-disabled')).toBe('false');
+    expect(button.textContent.trim()).toBe('Check stored copy'); expect(button.getAttribute('aria-disabled')).toBe('false');
     expect(h.node('data-remote-backup-restore').getAttribute('aria-disabled')).toBe('true');
     expect(h.node('data-remote-backup-check')).toBe(button); expect(h.document.activeElement).toBe(button);
     expect(h.retrieve).not.toHaveBeenCalled(); expect(h.onRestore).not.toHaveBeenCalled();
@@ -149,7 +149,7 @@ describe('remote backup selection and restore continuity', () => {
     expect(h.node('data-remote-backup-cleanup-note').textContent).toContain('Storage denied access');
     expect(h.node('data-remote-backup-cleanup-connection')).toHaveProperty('hidden', false);
     button.click(); expect(check).toHaveBeenCalledOnce();
-    await h.mounted.refresh(); expect(button.getAttribute('aria-disabled')).toBe('false'); expect(button.textContent).toBe('Retry upload cleanup');
+    await h.mounted.refresh(); expect(button.getAttribute('aria-disabled')).toBe('false'); expect(button.textContent.trim()).toBe('Retry upload cleanup');
     button.click(); await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(h.node('data-remote-backup-cleanup-pending').getAttribute('data-remote-backup-state')).toBe('verifying'));
     expect(h.host.textContent).toContain('Upload cleanup pending'); expect(h.host.textContent).not.toContain('private provider detail');

@@ -5,6 +5,7 @@
  *  source an AI app handed over. Each item stays here until it is saved as the real thing or
  *  discarded. */
 import type { IngredientDraftSummary, KitchenWorkItem, KitchenWorkItemList } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared';
 import { serializeShellRoute } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
@@ -73,6 +74,12 @@ export const mountKitchenHomeRoute = (options: KitchenHomeOptions): { dispose():
   const host = doc.createElement('section');
   host.setAttribute(KITCHEN_HOME_ATTR, '');
   host.style.cssText = 'max-width:1200px;margin:0 auto;padding:16px 24px 32px;box-sizing:border-box;';
+  const style = doc.createElement('style');
+  style.textContent = `
+    [${KITCHEN_HOME_ATTR}] .kitchen-home-action { display:inline-flex;align-items:center;gap:6px; }
+    [${KITCHEN_HOME_ATTR}] .kitchen-home-action > svg { flex-shrink:0; }
+  `;
+  host.append(style);
   const lead = doc.createElement('p');
   lead.textContent = 'Start something new, or pick up where you left off.';
   const start = doc.createElement('div');
@@ -111,7 +118,9 @@ export const mountKitchenHomeRoute = (options: KitchenHomeOptions): { dispose():
       const actions = doc.createElement('span');
       actions.style.cssText = 'margin-left:auto;display:flex;gap:8px;';
       const resume = link('Continue', row.href);
-      const remove = doc.createElement('button'); remove.type = 'button'; remove.textContent = 'Discard';
+      const remove = doc.createElement('button'); remove.type = 'button';
+      remove.className = 'kitchen-home-action';
+      remove.innerHTML = renderActionLabel('delete', 'Discard');
       remove.addEventListener('click', () => {
         if (!confirmDiscard(`Discard "${row.title}"? It is removed from Kitchen and cannot be brought back.`)) return;
         remove.disabled = true;

@@ -407,6 +407,8 @@ describe('makeCollectionHandlers', () => {
       'collection.calendar.updateCredentials',
       'collection.deleteRecord',
       'collection.file.delete',
+      'collection.file.document.result',
+      'collection.file.document.search',
       'collection.file.enroll',
       'collection.file.resync',
       'collection.file.update',

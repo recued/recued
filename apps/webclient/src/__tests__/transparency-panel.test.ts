@@ -19,6 +19,7 @@ interface FakeEl {
   tagName: string;
   className: string;
   textContent: string;
+  innerHTML: string;
   type: string;
   disabled: boolean;
   checked: boolean;
@@ -44,10 +45,20 @@ interface FakeDoc {
 }
 
 const makeFakeEl = (tag: string): FakeEl => {
+  let html = '';
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
     textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value: string) {
+      html = value;
+      for (const child of el.children) child.parent = null;
+      el.children.length = 0;
+      const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+      el.textContent = value.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (match, entity: string) => entities[entity] ?? match);
+    },
     type: '',
     disabled: false,
     checked: false,

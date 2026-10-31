@@ -33,6 +33,7 @@ import type {
 } from '@recued/contracts';
 
 import type { AssetSearchState } from './asset-search.js';
+import { renderDocumentContentSearch, type DocumentSearchState } from './document-content-search.js';
 import { ASSET_STATUS_WORDS } from '../yours/asset-status.js';
 
 /** Click-dispatch contract with the route's `onClick`. */
@@ -108,6 +109,7 @@ export interface UniversalContactSearch {
 }
 
 export interface UniversalSearchProps {
+  documentSearch?: DocumentSearchState;
   /** What the owner typed. */
   query: string;
   /** In flight — a query is running. */
@@ -471,12 +473,15 @@ export const renderUniversalSearch = (
 <input id="rq-search-input" class="rq-search-input" type="search" autocomplete="off" aria-describedby="rq-search-scope"
   ${SEARCH_INPUT_ATTR} value="${e(props.query)}"
   placeholder="Search your saved data…">
-<p id="rq-search-scope" class="rq-subtle">${scope}${contactScope}</p>`;
+<p id="rq-search-scope" class="rq-subtle">${scope}${contactScope}${props.documentSearch ? ' Document contents are searched separately when you choose Search file contents.' : ''}</p>${renderDocumentContentSearch(props.documentSearch, props.actionAttr)}`;
   if (q === '') {
     return `<div class="rq-search">${box}
 <p class="rq-hint">Type to search saved data on this server.</p></div>`;
   }
   const groups = props.groups ?? [];
+  const documentCount = props.documentSearch?.matches.length ?? 0;
+  const documentActive = props.documentSearch && props.documentSearch.phase !== 'idle';
+  const documentUncertain = documentActive && (props.documentSearch?.phase !== 'ready' || props.documentSearch.result?.partial);
   const workGroups = props.workGroups ?? [];
   const visibleWork = workGroups.filter(group => group.matches.length > 0 || group.error);
   const workCount = workGroups.reduce((count, group) => count + group.matches.length, 0);
@@ -499,12 +504,13 @@ export const renderUniversalSearch = (
   const errors = searchErrors.map(error => `<p class="rq-error" role="alert">${e(error)}</p>`).join('')
     + (searchErrors.length > 0 ? `<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_RETRY_ACTION}">Try again</button>` : '');
   const didYouMean = props.didYouMean !== undefined
+    && !documentActive
     && workCount === 0 && assetCount === 0 && !assetsUncertain && contactCount === 0 && !props.contactSearch?.loading && !props.contactSearch?.error && !props.contactSearch?.unsupported ? renderDidYouMean(props.didYouMean, props.actionAttr)
     : '';
-  if (groups.length === 0 && workCount === 0 && assetCount === 0 && contactCount === 0 && recipes.length === 0 && packs.length === 0) {
+  if (groups.length === 0 && workCount === 0 && assetCount === 0 && contactCount === 0 && documentCount === 0 && recipes.length === 0 && packs.length === 0) {
     // An unfinished local read cannot establish an empty result or justify
     // offering a cloud search. Completed groups remain usable while it runs.
-    if (progress || failed || props.assetSearch?.loading) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}${assetGroup}${contactGroup}
+    if (progress || failed || props.assetSearch?.loading || documentUncertain) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}${assetGroup}${contactGroup}
       ${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true)).join('')}</div>`;
     // ⛔ NAMES THE SCOPE IT SEARCHED. "No results" alone cannot be told apart
     // from "the search did not run", and an owner reading the shorter sentence
@@ -524,15 +530,16 @@ ${market.length === 0 && props.marketplaceOffered === true && !props.contactSear
   }
   const total = groups.reduce((n, g) => n + g.matches.length, 0);
   const places = groups.length + workGroups.filter(group => group.matches.length > 0).length
-    + (assetCount > 0 ? 1 : 0) + (contactCount > 0 ? 1 : 0) + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
+    + (assetCount > 0 ? 1 : 0) + (contactCount > 0 ? 1 : 0) + (documentCount > 0 ? 1 : 0) + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
   const absent = groups.length > 0 && assetCount === 0 && !assetsUncertain && contactCount === 0 && props.absentWords !== undefined && props.absentWords.length > 0
+    && !documentActive
     ? renderAbsentWords(props.absentWords)
     : '';
   return `<div class="rq-search">${box}
 ${errors}
 ${absent}
 ${didYouMean}
-<p class="rq-summary" role="status">${total + workCount + assetCount + contactCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) || props.contactSearch?.more || props.assetSearch?.more ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
+<p class="rq-summary" role="status">${total + workCount + assetCount + contactCount + documentCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) || props.contactSearch?.more || props.assetSearch?.more || props.documentSearch?.result?.next_cursor || props.documentSearch?.result?.next_offset !== undefined ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
 ${progress}
 ${assetGroup}
 ${contactGroup}

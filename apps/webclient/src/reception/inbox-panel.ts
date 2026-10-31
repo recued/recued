@@ -11,7 +11,7 @@ import type {
   ReceptionInboxView,
   ServerRpcRegistry,
 } from '@recued/contracts';
-import { RefPicker } from '@recued/ui-shared';
+import { RefPicker, renderActionLabel, type IconName } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
@@ -475,6 +475,9 @@ export const RECEPTION_INBOX_STYLES = `
   cursor: pointer;
   transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
+.reception-inbox-btn--icon { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.reception-inbox-btn--icon > svg { flex-shrink: 0; }
+.reception-inbox-btn--icon[hidden] { display: none; }
 .reception-inbox-btn:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--border-strong, var(--border));
   background: var(--surface-sunk);
@@ -545,6 +548,7 @@ const makeButton = (
   label: string,
   onClick: () => void,
   opts: {
+    icon?: IconName;
     primary?: boolean;
     danger?: boolean;
     disabled?: boolean;
@@ -556,10 +560,12 @@ const makeButton = (
   btn.type = 'button';
   btn.className = [
     'reception-inbox-btn',
+    opts.icon !== undefined ? 'reception-inbox-btn--icon' : '',
     opts.primary === true ? 'reception-inbox-btn--primary' : '',
     opts.danger === true ? 'reception-inbox-btn--danger' : '',
   ].filter(Boolean).join(' ');
-  btn.textContent = label;
+  if (opts.icon !== undefined) btn.innerHTML = renderActionLabel(opts.icon, label);
+  else btn.textContent = label;
   if (opts.disabled === true) btn.disabled = true;
   if (opts.ariaDisabled === true) btn.setAttribute('aria-disabled', 'true');
   if (opts.busy === true) {
@@ -877,7 +883,7 @@ export const mountReceptionInboxPanel = (
               : null;
           if (ensureDestinationOptions(true)) render();
         },
-        { busy: retrying },
+        { busy: retrying, icon: 'refresh' },
       );
       retry.setAttribute(RECEPTION_INBOX_DESTINATION_RETRY_ATTR, field.key);
       failure.appendChild(retry);
@@ -1176,6 +1182,7 @@ export const mountReceptionInboxPanel = (
         void refresh();
       },
       {
+        icon: 'refresh',
         disabled:
           state.in_flight
           || (state.loading && !pendingRefreshFocus),
@@ -1905,6 +1912,7 @@ export const mountReceptionInboxPanel = (
       approvePending ? 'Approving…' : 'Approve',
       () => void approveSelected(detail),
       {
+        icon: 'check',
         primary: true,
         disabled:
           !approvePending
@@ -1960,6 +1968,7 @@ export const mountReceptionInboxPanel = (
       rejectPending ? 'Rejecting…' : 'Reject',
       () => void rejectSelected(detail),
       {
+        icon: 'close',
         danger: true,
         disabled: state.in_flight && !rejectPending,
         busy: rejectPending,

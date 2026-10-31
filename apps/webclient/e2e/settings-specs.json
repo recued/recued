@@ -25,5 +25,8 @@
   "post-restore-readiness.spec.ts",
   "backup-watchdog.spec.ts",
   "backup-watchdog-drill.spec.ts",
-  "server-backup-status.spec.ts"
+  "server-backup-status.spec.ts",
+  "action-icons-admin.spec.ts",
+  "action-icons-preferences.spec.ts",
+  "action-icons-server.spec.ts"
 ]

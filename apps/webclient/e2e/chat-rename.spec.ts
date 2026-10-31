@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { createMessengerListFixture as CreateFixture } from './harness/chat-messenger-list-backend.js';
 import { openChatHistory } from './helpers/chat-history.js';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 
 let createFixture: typeof CreateFixture;
@@ -23,8 +24,8 @@ const composer = (page: Page) => page.locator('[data-recued-chat-route-input]');
 const save = (page: Page) => editor(page).getByRole('button', { name: 'Save', exact: true });
 const startRename = async (page: Page) => {
   await openChatHistory(page);
-  await page.locator('[data-recued-chat-route-session-actions="s"] summary').click();
-  await page.locator('[data-recued-chat-route-session-actions="s"]').getByRole('button', { name: 'Rename', exact: true }).click();
+  await clickActionGlyph(page, page.locator('[data-recued-chat-route-session-actions="s"] summary'));
+  await clickActionGlyph(page, page.locator('[data-recued-chat-route-session-actions="s"]').getByRole('button', { name: 'Rename', exact: true }));
   await expect(name(page)).toBeFocused();
 };
 const setup = async () => {
@@ -71,14 +72,16 @@ const setup = async () => {
   };
 };
 
-for (const width of [1280, 390]) test(`Rename stays in the existing menu, cancels safely and updates both clients at ${width}px`, async ({ browser }) => {
+for (const width of [1280, 390]) test(`Rename stays in the existing menu, cancels safely and updates both clients at ${width}px`, async ({ browser }, testInfo) => {
   const h = await setup(); const contexts = [await browser.newContext({ viewport: { width, height: 900 } }), await browser.newContext({ viewport: { width, height: 900 } })];
   try {
     const a = await h.boot(contexts[0]!); const b = await h.boot(contexts[1]!);
     await composer(a).fill('Keep my unsent draft'); await composer(b).fill('A different draft');
     await startRename(a); await name(a).fill('Discard this name'); await a.keyboard.press('Escape');
     await expect(editor(a)).toHaveCount(0); expect(h.requests).toHaveLength(0); await expect(row(a)).toBeFocused();
-    await startRename(a); await name(a).fill('Japan planning 🧭 <notes>'); await name(a).press('Enter');
+    await startRename(a); await name(a).fill('Japan planning 🧭 <notes>');
+    await a.screenshot({ path: testInfo.outputPath(`chat-icons-${width}.png`), fullPage: true });
+    await name(a).press('Enter');
     await expect(editor(a)).toHaveCount(0); await openChatHistory(b);
     for (const page of [a, b]) { await expect(row(page)).toContainText('Japan planning 🧭 <notes>'); await expect(row(page).locator('notes')).toHaveCount(0); }
     await expect(composer(a)).toHaveValue('Keep my unsent draft'); await expect(composer(b)).toHaveValue('A different draft');
@@ -90,7 +93,7 @@ for (const width of [1280, 390]) test(`Rename stays in the existing menu, cancel
 test('Rename retains its draft and retries a lost success reply without creating another message', async ({ browser }) => {
   const h = await setup(); const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   try {
-    const page = await h.boot(context); await startRename(page); await name(page).fill('Confirmed name'); h.loseNextReply(); await save(page).click();
+    const page = await h.boot(context); await startRename(page); await name(page).fill('Confirmed name'); h.loseNextReply(); await clickActionGlyph(page, save(page));
     await expect(editor(page).getByRole('alert')).toContainText('Could not rename'); await expect(name(page)).toHaveValue('Confirmed name');
     await expect(save(page)).toBeFocused(); await page.keyboard.press('Enter'); await expect(editor(page)).toHaveCount(0);
     await expect(row(page)).toContainText('Confirmed name'); expect(h.requests).toHaveLength(2);

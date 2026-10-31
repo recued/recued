@@ -155,3 +155,44 @@ describe('memory.search — match / top_margin agent guidance', () => {
     expect(memorySearchDescription).toMatch(/read `match` before using/i);
   });
 });
+
+/** D-198 §13 slice 4 — HOW A MODEL WEIGHS SEVERAL STATES OF ONE CLAIM. Recall returns
+ *  one current version per lineage, so states meet a model only as separate notes that
+ *  are not linked, the owner's rejections, and old chat rows. The order is the owner's
+ *  (§13, 2026-10-30): the owner's note first whatever the dates; a revoke is never
+ *  stated; the newest of agents' notes; a removal weighs nothing; chat is history. One
+ *  sentence, so each clause is pinned: a dropped clause is a dropped rule. */
+describe('memory.search — which of several entries about one thing holds', () => {
+  const memorySearchDescription =
+    TIER1_TOOL_DESCRIPTORS['memory.search'].description;
+
+  it("puts the owner's own entry first, whatever the dates", () => {
+    expect(memorySearchDescription).toMatch(/When entries disagree, the owner's own \(`origin_actor` `user_self`\) beats an agent's whatever the dates/);
+  });
+
+  it('⛔ never states an entry the owner rejected', () => {
+    expect(memorySearchDescription).toMatch(/an entry under `rejected` is one the owner marked wrong, so never state it as true/);
+  });
+
+  it("takes the newest of agents' entries, and asks when the difference matters", () => {
+    expect(memorySearchDescription).toMatch(/between agents' entries the newest wins, and you ask the user when the difference matters/);
+  });
+
+  /** Measured live (bench task 404, 2026-10-30): told "she's called Mia, save that" with
+   *  the owner's own entry saying Maya, the model tried `despite_revoked` together with
+   *  `replaces`, then alone, reading it as "the owner will be asked". Both are refused, so
+   *  each try only cost a slow round. The limits sit where the model reads the argument. */
+  it("⛔ despite_revoked names its limits: not with replaces, never over the owner's own entry", () => {
+    const schema = TIER1_TOOL_DESCRIPTORS['memory.write'].arg_schema as {
+      properties: { despite_revoked: { description: string } };
+    };
+    const despite = schema.properties.despite_revoked.description;
+    expect(despite).toMatch(/Not with `replaces`, and not where the owner's own entry says otherwise/);
+    expect(despite).toMatch(/change that in the Memory view/);
+  });
+
+  it('gives a removal no weight, and reads old chat as history', () => {
+    expect(memorySearchDescription).toMatch(/a removed note counts for nothing, however often it was saved/);
+    expect(memorySearchDescription).toMatch(/is only history: its `memory_now` says where that note stands now/);
+  });
+});

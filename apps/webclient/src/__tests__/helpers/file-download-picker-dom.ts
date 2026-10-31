@@ -4,6 +4,11 @@ export class PickerElement {
   listeners=new Map<string,((event:{key?:string;preventDefault():void})=>void)[]>();
   get textContent():string{return this.ownText+this.children.map(c=>c.textContent).join(' ');}
   set textContent(value:string|null){this.ownText=value??'';this.children=[];}
+  set innerHTML(value:string){
+    const entities:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"','#39':"'"};
+    this.textContent=value.replace(/<[^>]*>/g,'').replace(/&(amp|lt|gt|quot|#39);/g,
+      (match,entity:string)=>entities[entity]??match);
+  }
   get firstChild():PickerElement|null{return this.children[0]??null;}
   appendChild(child:PickerElement):PickerElement{this.children.push(child);return child;}
   removeChild(child:PickerElement):PickerElement{this.children=this.children.filter(c=>c!==child);return child;}

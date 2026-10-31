@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 import { installCalendarEventFixture, type CalendarEventFixtureMode } from './helpers/calendar-event-fixture.js';
 
@@ -19,13 +20,13 @@ const boot = async (page: Page, mode: CalendarEventFixtureMode = 'timed') => {
 test('edits a permitted Google event in its original calendar without creating or moving it', async ({ page }, testInfo) => {
   await boot(page, 'editable-google');
   const original = await page.evaluate(() => window.__calendarEvent.saved());
-  await page.getByRole('button', { name: 'Edit event', exact: true }).click();
+  await clickActionGlyph(page, page.getByRole('button', { name: 'Edit event', exact: true }));
   await expect(page.locator('.calendar-event-editor')).toContainText('Google is asked to notify existing guests');
   await field(page, 'summary').fill('Updated customer planning');
   await field(page, 'location').fill('Room 5');
   await field(page, 'end').fill('2026-10-28T11:00');
   await page.locator('.calendar-event').screenshot({ path: testInfo.outputPath('remote-edit-desktop.png') });
-  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await clickActionGlyph(page, page.getByRole('button', { name: 'Save changes', exact: true }));
   await expect(page.locator('.calendar-event')).toContainText('Event saved.');
   const writes = await page.evaluate(() => window.__calendarEvent.writes);
   expect(writes).toHaveLength(1);
@@ -77,7 +78,7 @@ test('creates an event in the chosen connected calendar and returns to its agend
   await form.getByLabel('Location (optional)', { exact: true }).fill('Room 4');
   await form.getByLabel('Notes (optional)', { exact: true }).fill('Review the release scope.');
   await form.screenshot({ path: testInfo.outputPath('new-event-desktop.png') });
-  await form.getByRole('button', { name: 'Create event', exact: true }).click();
+  await clickActionGlyph(page, form.getByRole('button', { name: 'Create event', exact: true }));
   await expect(page.locator('.calendar-event')).toContainText('Project planning');
   expect(await page.evaluate(() => window.__calendarEvent.creates[0])).toMatchObject({ slug: 'work', calendar_id: 'work',
     expected_incarnation: 'work-calendar-1', summary: 'Project planning', location: 'Room 4', description: 'Review the release scope.',
@@ -401,7 +402,8 @@ test.describe('Seven-day agenda', () => {
     await expect(agenda.getByRole('button', { name: /Customer planning/ })).toBeVisible();
     await page.evaluate(() => window.__calendarAgenda.fail(null));
     await page.evaluate(() => window.__calendarAgenda.holdNext('work'));
-    await agenda.getByRole('button', { name: 'Reload calendar', exact: true }).click();
+    const reload = agenda.getByRole('button', { name: 'Reload calendar', exact: true });
+    await reload.focus(); await reload.press('Enter');
     const retry = agenda.getByRole('button', { name: 'Reloading…', exact: true });
     await expect(retry).toBeFocused();
     await expect(retry).toHaveAttribute('aria-disabled', 'true');

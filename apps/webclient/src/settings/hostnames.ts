@@ -35,7 +35,7 @@ import type {
   NetworkLocalUrlsResponse,
   NetworkPortMappingResponse,
 } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel, type IconName } from '@recued/ui-shared';
 import type { ReachabilityExternalProbeCaller } from './reachability.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { HOSTNAMES_WORKSPACE_STYLES } from './hostnames-workspace-styles.js';
@@ -1208,6 +1208,7 @@ export const mountHostnamesPanel = (
 
   const makeButton = (
     label: string,
+    icon: IconName,
     attr: string,
     variant: 'primary' | 'secondary' | 'danger',
     onClick: (event: MouseEvent) => void,
@@ -1216,7 +1217,7 @@ export const mountHostnamesPanel = (
     const btn = doc.createElement('button');
     btn.type = 'button';
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm`;
-    btn.textContent = label;
+    btn.innerHTML = renderActionLabel(icon, label);
     btn.setAttribute(attr, '');
     btn.disabled = disabled;
     btn.addEventListener('click', onClick);
@@ -1231,7 +1232,7 @@ export const mountHostnamesPanel = (
     disabled: boolean,
   ): HTMLButtonElement => {
     const feedback = editorFeedback.get(fieldAttr);
-    return makeButton(label, buttonAttr, 'primary', (event) => {
+    return makeButton(label, 'save', buttonAttr, 'primary', (event) => {
       if (disposed || formSaving(fieldAttr) || feedback === undefined
         || editorFeedback.get(fieldAttr) !== feedback) return;
       // Only a native activation of this mounted form may move focus to its
@@ -1582,7 +1583,7 @@ export const mountHostnamesPanel = (
     const actions = doc.createElement('div');
     actions.className = 'hostnames-actions';
     actions.appendChild(
-      makeButton('Cancel', HOSTNAMES_ADD_CANCEL_BTN_ATTR, 'secondary', () => {
+      makeButton('Cancel', 'close', HOSTNAMES_ADD_CANCEL_BTN_ATTR, 'secondary', () => {
         handle.cancelAdd();
       }, state.add.saving),
     );
@@ -1714,7 +1715,7 @@ export const mountHostnamesPanel = (
     const actions = doc.createElement('div');
     actions.className = 'hostnames-actions';
     actions.appendChild(
-      makeButton('Cancel', HOSTNAMES_UPDATE_CANCEL_BTN_ATTR, 'secondary', () => {
+      makeButton('Cancel', 'close', HOSTNAMES_UPDATE_CANCEL_BTN_ATTR, 'secondary', () => {
         handle.cancelUpdate();
       }, state.update.saving),
     );
@@ -1865,7 +1866,7 @@ export const mountHostnamesPanel = (
     const actions = doc.createElement('div');
     actions.className = 'hostnames-actions';
     actions.appendChild(
-      makeButton('Close', HOSTNAMES_DETAIL_CLOSE_BTN_ATTR, 'secondary', () => {
+      makeButton('Close', 'close', HOSTNAMES_DETAIL_CLOSE_BTN_ATTR, 'secondary', () => {
         handle.closeDetail();
       }, state.detail.loading),
     );
@@ -1930,13 +1931,14 @@ export const mountHostnamesPanel = (
     const actions = doc.createElement('div');
     actions.className = 'hostnames-actions';
     actions.appendChild(
-      makeButton('Cancel', HOSTNAMES_REMOVE_CANCEL_BTN_ATTR, 'secondary', () => {
+      makeButton('Cancel', 'close', HOSTNAMES_REMOVE_CANCEL_BTN_ATTR, 'secondary', () => {
         handle.cancelRemove();
       }, state.remove.saving),
     );
     actions.appendChild(
       makeButton(
         state.remove.saving ? 'Removing...' : 'Confirm remove',
+        'delete',
         HOSTNAMES_REMOVE_CONFIRM_BTN_ATTR,
         'danger',
         () => {
@@ -2055,13 +2057,14 @@ export const mountHostnamesPanel = (
     const actions = doc.createElement('div');
     actions.className = 'hostnames-actions';
     actions.appendChild(
-      makeButton('Cancel', HOSTNAMES_VERIFY_CANCEL_BTN_ATTR, 'secondary', () => {
+      makeButton('Cancel', 'close', HOSTNAMES_VERIFY_CANCEL_BTN_ATTR, 'secondary', () => {
         handle.cancelVerify();
       }, state.verify.saving),
     );
     actions.appendChild(
       makeButton(
         state.verify.saving ? 'Verifying...' : 'Show that you own it',
+        'check',
         HOSTNAMES_VERIFY_SUBMIT_BTN_ATTR,
         'primary',
         () => {
@@ -2162,6 +2165,7 @@ export const mountHostnamesPanel = (
       actions.appendChild(
         makeButton(
           'Details',
+          'info',
           HOSTNAMES_DETAIL_OPEN_BTN_ATTR,
           'secondary',
           () => {
@@ -2173,6 +2177,7 @@ export const mountHostnamesPanel = (
       actions.appendChild(
         makeButton(
           'Edit',
+          'rename',
           HOSTNAMES_UPDATE_OPEN_BTN_ATTR,
           'secondary',
           () => {
@@ -2185,6 +2190,7 @@ export const mountHostnamesPanel = (
         actions.appendChild(
           makeButton(
             row.ownership_status === 'verified' ? 'Re-verify' : 'Verify',
+            'check',
             HOSTNAMES_VERIFY_OPEN_BTN_ATTR,
             'secondary',
             () => {
@@ -2197,6 +2203,7 @@ export const mountHostnamesPanel = (
       actions.appendChild(
         makeButton(
           'Remove',
+          'delete',
           HOSTNAMES_REMOVE_OPEN_BTN_ATTR,
           'danger',
           () => {
@@ -2287,13 +2294,13 @@ export const mountHostnamesPanel = (
         'Manage billing in the dashboard.';
       section.appendChild(warn);
       section.appendChild(
-        makeButton('Pause the address', HOSTNAMES_DDNS_TOGGLE_ATTR, 'danger', () => {
+        makeButton('Pause the address', 'pause', HOSTNAMES_DDNS_TOGGLE_ATTR, 'danger', () => {
           void doSetDdnsEnabled(false);
         }, state.ddns.busy),
       );
     } else {
       section.appendChild(
-        makeButton('Start the address again', HOSTNAMES_DDNS_TOGGLE_ATTR, 'primary', () => {
+        makeButton('Start the address again', 'play', HOSTNAMES_DDNS_TOGGLE_ATTR, 'primary', () => {
           void doSetDdnsEnabled(true);
         }, state.ddns.busy),
       );
@@ -2445,12 +2452,12 @@ export const mountHostnamesPanel = (
           const actions = doc.createElement('div');
           actions.className = 'hostnames-actions';
           actions.appendChild(
-            makeButton('Cancel', HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR, 'secondary', () => {
+            makeButton('Cancel', 'close', HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR, 'secondary', () => {
               handle.cancelAddressUse();
             }),
           );
           actions.appendChild(
-            makeButton('Change the address', HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR, 'danger', () => {
+            makeButton('Change the address', 'save', HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR, 'danger', () => {
               void handle.confirmAddressUse();
             }),
           );
@@ -2491,7 +2498,7 @@ export const mountHostnamesPanel = (
     title.textContent = 'Hostnames';
     header.appendChild(title);
     header.appendChild(
-      makeButton('Add hostname', HOSTNAMES_ADD_OPEN_BTN_ATTR, 'primary', () => {
+      makeButton('Add hostname', 'link', HOSTNAMES_ADD_OPEN_BTN_ATTR, 'primary', () => {
         handle.openAdd();
       }, state.add.open || editorBusy()),
     );

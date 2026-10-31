@@ -24,6 +24,7 @@ import {
   RECALL_SEARCH_TOOL_ENTRY,
   RECALL_SEARCH_TOOL_NAME,
   RECALL_EXACT_BUDGET_HINT,
+  RECALL_REJECTED_NOTE,
   RECALL_STALE_CONTINUATION_HINT,
   RECALL_TURN_BUDGET_HINT,
   recallJoinedPieces,
@@ -1044,5 +1045,172 @@ describe('D-213 A3 — recall.search broker', () => {
       RECALL_HISTORICAL_SESSIONS_PER_TURN,
     );
     expect(JSON.stringify(historical)).not.toContain('prior-4');
+  });
+});
+
+describe('D-198 §13 — a past memory.* row recalled says where its notes stand now', () => {
+  let db: Database.Database;
+  let definitions: ReturnType<typeof createContractDefinitionStore>;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    definitions = createContractDefinitionStore(
+      createContractStore(db, { now: () => NOW }),
+      { now: () => NOW },
+    );
+  });
+
+  afterEach(() => db.close());
+
+  const toolRow = (item_id: string, content: string): InteractionRecallCandidate => ({
+    item_id,
+    session_id: 'current',
+    kind: 'tool',
+    timestamp: 1_000,
+    content,
+    size_bytes: Buffer.byteLength(content, 'utf8'),
+    score: 1,
+    match: 'exact',
+  });
+  const wrapWith = (
+    rows: readonly InteractionRecallCandidate[],
+    describeMemoryNow?: (ids: readonly string[]) => Promise<ReadonlyMap<string, string>>,
+  ): InternalToolRegistry => wrapRegistryWithRecallSearch(makeRawRegistry().raw, {
+    backend: makeBackend(async () => completeSearch(rows)).backend,
+    getContractDefinitionStore: () => definitions,
+    now: () => NOW,
+    ...(describeMemoryNow !== undefined ? { describeMemoryNow } : {}),
+  });
+  // No `kinds`: that filter takes only 'user' | 'assistant', and leaving it out is what
+  // lets a tool row through.
+  const ask = { query: 'Dana phone', sources: ['interaction'] };
+  const interactionById = (result: RecallSearchResult) =>
+    new Map(result.matches.flatMap((m) => (m.source === 'interaction' ? [[m.item_id, m] as const] : [])));
+  const REMOVED = 'umem_1a: no longer in memory (removed 2026-11-02).';
+
+  it('adds memory_now to a memory.* tool row — and only to one — from ONE lookup', async () => {
+    const describe = vi.fn(async () => new Map([['umem_1a', REMOVED]]));
+    const registry = wrapWith([
+      toolRow('m1', 'memory.write({"summary":"Dana prefers phone calls"}): {"memory_id":"umem_1a"}'),
+      toolRow('m2', 'mail.send({"note":"Dana phone, see umem_1a"}): {"ok":true}'),
+      candidate('u1', 'current', 'Dana phone: remember umem_1a'),
+    ], describe);
+    const byId = interactionById(await resultOf(registry, ask));
+
+    expect(byId.get('m1')?.memory_now).toEqual([REMOVED]);
+    expect(byId.get('m1')?.content).toContain('Dana prefers phone calls'); // the row itself is untouched
+    expect(byId.get('m2')).toBeDefined();
+    expect(byId.get('m2')?.memory_now).toBeUndefined();
+    expect(byId.get('u1')).toBeDefined();
+    expect(byId.get('u1')?.memory_now).toBeUndefined();
+    expect(describe).toHaveBeenCalledTimes(1);
+    expect(describe).toHaveBeenCalledWith(['umem_1a']);
+  });
+
+  it('a note still current gets no line, and with no lookup wired or a failing one the rows come back as they were', async () => {
+    const row = toolRow('m1', 'memory.write({"summary":"Dana prefers phone calls"}): {"memory_id":"umem_1a"}');
+    const current = interactionById(await resultOf(wrapWith([row], async () => new Map()), ask));
+    expect(current.get('m1')?.memory_now).toBeUndefined();
+    const unwired = interactionById(await resultOf(wrapWith([row]), ask));
+    expect(unwired.get('m1')?.memory_now).toBeUndefined();
+    const failing = interactionById(await resultOf(wrapWith([row], async () => { throw new Error('store down'); }), ask));
+    expect(failing.get('m1')).toBeDefined();
+    expect(failing.get('m1')?.memory_now).toBeUndefined();
+  });
+
+  it('caps a row naming many changed notes at five lines and says how many more', async () => {
+    const ids = Array.from({ length: 7 }, (_, i) => `umem_${i}x`);
+    const registry = wrapWith(
+      [toolRow('m1', `memory.forget({"memory_ids":${JSON.stringify(ids)},"why":"Dana phone"}): {"ok":true}`)],
+      async (asked) => new Map(asked.map((id) => [id, `${id}: no longer in memory.`])),
+    );
+    const now = interactionById(await resultOf(registry, ask)).get('m1')?.memory_now ?? [];
+    expect(now).toHaveLength(6);
+    expect(now.slice(0, 5)).toEqual(ids.slice(0, 5).map((id) => `${id}: no longer in memory.`));
+    expect(now[5]).toBe('2 more notes named here have changed since; search memory for the current ones.');
+  });
+});
+
+describe("D-198 §13 — the owner's rejections reach recall, beside the history that states them", () => {
+  let db: Database.Database;
+  let definitions: ReturnType<typeof createContractDefinitionStore>;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    definitions = createContractDefinitionStore(
+      createContractStore(db, { now: () => NOW }),
+      { now: () => NOW },
+    );
+  });
+
+  afterEach(() => db.close());
+
+  const REVOKED = {
+    memory_id: 'umem_7r',
+    summary: "Dana Whitfield's daughter is called Mia.",
+    revoked_at: 1_793_418_387_938,
+    note: 'The owner marked this wrong. Do not state it as true, and ask them before saving it again.',
+  };
+  const withRejected = (rejected: readonly unknown[]): ChatDispatchResult => {
+    const base = memoryDispatchResult() as Extract<ChatDispatchResult, { ok: true }>;
+    return { ok: true, result: { ...(base.result as Record<string, unknown>), rejected } };
+  };
+  const wrapWith = (
+    memoryResult: ChatDispatchResult,
+    rows: readonly InteractionRecallCandidate[] = [],
+  ): InternalToolRegistry => wrapRegistryWithRecallSearch(makeRawRegistry(memoryResult).raw, {
+    backend: makeBackend(async () => completeSearch(rows)).backend,
+    getContractDefinitionStore: () => definitions,
+    now: () => NOW,
+  });
+
+  it("carries the memory leg's rejection beside the history rows, in recall's own words", async () => {
+    const result = await resultOf(
+      wrapWith(withRejected([REVOKED]), [candidate('u1', 'prior-1', "Remember that Dana Whitfield's daughter is called Mia.")]),
+      { query: 'Dana Whitfield daughter' },
+    );
+    expect(result.matches.map((m) => m.source)).toEqual(['interaction']);
+    expect(result.rejected).toEqual([{
+      memory_id: 'umem_7r',
+      summary: "Dana Whitfield's daughter is called Mia.",
+      revoked_at: 1_793_418_387_938,
+      note: RECALL_REJECTED_NOTE,
+    }]);
+    expect(RECALL_REJECTED_NOTE).toMatch(/even where the conversation history says it/);
+  });
+
+  it('with nothing else found, says the owner marked a match wrong instead of "nothing found"', async () => {
+    const result = await resultOf(wrapWith(withRejected([REVOKED])), { query: 'Dana Whitfield daughter' });
+    expect(result.matches).toEqual([]);
+    expect(result.rejected?.map((r) => r.memory_id)).toEqual(['umem_7r']);
+    expect(result.hint).toBe('Nothing current matches, but the owner marked a matching saved note wrong — see rejected.');
+  });
+
+  it('drops a malformed rejection and keeps the rest; with none, the result has no rejected field', async () => {
+    const result = await resultOf(
+      wrapWith(withRejected([{ summary: 'no id' }, { memory_id: 'umem_x', revoked_at: 'yesterday' }, REVOKED])),
+      { query: 'Dana Whitfield daughter' },
+    );
+    expect(result.rejected?.map((r) => r.memory_id)).toEqual(['umem_7r']);
+    const none = await resultOf(wrapWith(memoryDispatchResult()), { query: 'Dana Whitfield daughter' });
+    expect(none.rejected).toBeUndefined();
+    expect(none.hint).toBe('No matching recall item was found.');
+  });
+
+  it('fetched by its id, a revoked note comes back as the rejection, not as "nothing found"', async () => {
+    const result = await resultOf(wrapWith(withRejected([REVOKED])), { memory_id: 'umem_7r' });
+    expect(result.matches).toEqual([]);
+    expect(result.rejected?.map((r) => [r.memory_id, r.note])).toEqual([['umem_7r', RECALL_REJECTED_NOTE]]);
+    expect(result.hint).toBe('The owner marked this saved note wrong — see rejected.');
+    // Another id is still simply not found.
+    const other = await resultOf(wrapWith(withRejected([REVOKED])), { memory_id: 'umem_other' });
+    expect(other.rejected).toBeUndefined();
+    expect(other.hint).not.toMatch(/marked/);
+  });
+
+  it('the description tells a model what rejected is', () => {
+    expect(RECALL_SEARCH_TOOL_ENTRY.description).toMatch(
+      /`rejected` lists saved notes the owner marked wrong: never state one as true, whatever the history says/,
+    );
   });
 });

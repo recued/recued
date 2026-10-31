@@ -1,4 +1,4 @@
-import type { MailReplyContext } from './types.js';
+import type { MailForwardContext, MailReplyContext } from './types.js';
 
 export interface MailConversationScope { thread_id: string | null; incarnation: string }
 export interface MailMessageRef {
@@ -50,4 +50,7 @@ export interface MailMessageSnapshot extends MailMessageRef {
   read: 'provider' | 'stored';
   reply: MailReplyContext | null;
   reply_unavailable_reason?: string;
+  /** Absent on older servers; forwarding requires a fresh complete original. */
+  forward?: MailForwardContext | null;
+  forward_unavailable_reason?: string;
 }

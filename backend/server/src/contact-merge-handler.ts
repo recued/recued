@@ -1,6 +1,6 @@
 /** D-138 Phase 1 — `contact.merge.*` rpc handlers.
  *
- *  Six methods covering the cross-platform reconciliation flow.
+ *  Local owner methods covering contact reconciliation and recovery.
  *  All are local-UI / user-action only — registered here as normal
  *  WS-rpc handlers, but excluded from the MCP catalog by construction
  *  (see `packages/contracts/src/mcp-tool-catalog.ts` ratchet).
@@ -11,7 +11,8 @@
  *    + links rewrite; cascade fires
  *  - `contact.merge.reject` — write rejection rows for the surfaced
  *    candidate edges
- *  - `contact.merge.split` — reverse a merge, redistribute platform
+ *  - `contact.merge.split_preview` — inspect the current groups and source links
+ *  - `contact.merge.split` — separate a merge, redistribute platform
  *    ids, write durable rejection
  *  - `contact.merge.undo_rejection` — power-user rejection removal
  *    (Settings → Contacts → Rejected pairs)
@@ -27,10 +28,10 @@ import {
   RpcError,
   canonicalizeEmail,
   type ContactMergeCandidate,
+  type ContactMergeSplitRequest,
   type ContactMergeScanMode,
   type ContactRecord,
   type HandlerSlice,
-  type PlatformIdEntry,
   type RemergePromptResolution,
   type ServerRpcRegistry,
 } from '@recued/contracts';
@@ -355,79 +356,15 @@ export const handleContactMergeReject = async (
 
 export const handleContactMergeSplit = async (
   deps: ContactMergeRpcDeps,
-  args: {
-    merged_email: string;
-    platform_id_redistribution: Array<{
-      platform_id_entry: PlatformIdEntry;
-      target_canonical_email: string;
-    }>;
-    rejected_by?: string;
-  },
+  args: ContactMergeSplitRequest,
 ): Promise<{ canonicals: ContactRecord[] }> => {
-  const losing = canonicalizeEmail(args.merged_email);
-  if (!losing) {
-    throw new RpcError('bad_request', `contact.merge.split: invalid merged_email '${args.merged_email}'`);
+  const before = deps.contactStore.previewMergeSplit(args.merged_email);
+  const result = deps.contactStore.separateMergedContact({ ...args, expected_preview: args.expected_preview ?? before.token }, (deps.now ?? Date.now)());
+  for (const candidate of result.candidates) {
+    try { deps.emitMergeCandidate?.('resolved', candidate); } catch { /* best-effort, after commit */ }
   }
-  const tombstone = deps.contactStore.get(losing);
-  if (!tombstone) {
-    throw new RpcError('not_found', `contact.merge.split: ${losing} not found`);
-  }
-  if (!tombstone.merged_into) {
-    throw new RpcError(
-      'bad_request',
-      `contact.merge.split: ${losing} is not currently merged (no merged_into); split only applies to merged rows`,
-    );
-  }
-  const survivor = tombstone.merged_into;
-  const now = (deps.now ?? Date.now)();
-
-  // Clear merged_into on the loser row to bring it back from
-  // tombstone to standalone.
-  deps.contactStore.setMergedInto([tombstone], null, now);
-
-  // Redistribute platform_ids. Each entry routes to whichever
-  // canonical email the user picked at the split UI. Substrate
-  // applies the redistribution via linkPlatformId (which is
-  // idempotent on UNIQUE (vendor, platform_id)).
-  for (const item of args.platform_id_redistribution) {
-    const target = canonicalizeEmail(item.target_canonical_email);
-    if (!target) continue;
-    deps.contactStore.linkPlatformId({
-      canonical_email: target,
-      vendor: item.platform_id_entry.vendor,
-      platform_id: item.platform_id_entry.platform_id,
-      state: 'confirmed',
-      linked_at: item.platform_id_entry.linked_at,
-      linked_by: `user_split:${args.rejected_by ?? 'unknown'}`,
-    });
-  }
-
-  // Add the split pair to rejected_pairs (durable rejection — same
-  // semantics as `reject`, just driven by the split action).
-  deps.contactStore.addRejection({
-    email_a: losing,
-    email_b: survivor,
-    rejected_at: now,
-    ...(args.rejected_by !== undefined ? { rejected_by: args.rejected_by } : {}),
-  });
-
-  // Reverse cascade — fire identity-change so any aggregate enrichments
-  // bisect back to per-canonical rows.
-  if (deps.onIdentityChanged) {
-    try {
-      deps.onIdentityChanged({
-        survivor_email: survivor,
-        loser_emails: [losing],
-      });
-    } catch { /* best-effort */ }
-  }
-
-  const canonicals: ContactRecord[] = [];
-  for (const email of [survivor, losing]) {
-    const row = deps.contactStore.get(email);
-    if (row) canonicals.push(row);
-  }
-  return { canonicals };
+  try { deps.onIdentityChanged?.({ survivor_email: before.survivor_email, loser_emails: before.separating.map(row => row.email) }); } catch { /* best-effort */ }
+  return { canonicals: result.canonicals };
 };
 
 export const handleContactMergeUndoRejection = async (
@@ -529,6 +466,7 @@ type ContactMergeMethods =
   | 'contact.merge.confirm'
   | 'contact.merge.reject'
   | 'contact.merge.split'
+  | 'contact.merge.split_preview'
   | 'contact.merge.undo_rejection'
   | 'contact.merge.resolve_remerge_prompt'
   | 'contact.merge.scan_now';
@@ -543,6 +481,7 @@ export const makeContactMergeHandlers = (
       'contact.merge.confirm',
       'contact.merge.reject',
       'contact.merge.split',
+      'contact.merge.split_preview',
       'contact.merge.undo_rejection',
       'contact.merge.resolve_remerge_prompt',
       'contact.merge.scan_now',
@@ -554,6 +493,7 @@ export const makeContactMergeHandlers = (
         handleContactMergeConfirm(deps, args as Parameters<typeof handleContactMergeConfirm>[1]),
       'contact.merge.reject': async (args) =>
         handleContactMergeReject(deps, args as Parameters<typeof handleContactMergeReject>[1]),
+      'contact.merge.split_preview': async (args) => deps.contactStore.inspectMergeSplit(args),
       'contact.merge.split': async (args) =>
         handleContactMergeSplit(deps, args as Parameters<typeof handleContactMergeSplit>[1]),
       'contact.merge.undo_rejection': async (args) =>

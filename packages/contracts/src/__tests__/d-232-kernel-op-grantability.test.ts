@@ -48,6 +48,11 @@ describe('D-232 § 20.20 — the kernel grant fence', () => {
     // risk so it already asks.
     expect(isGrantableKernelOp('core.dom.read')).toBe(true);
     expect(isGrantableKernelOp('core.dom.write')).toBe(true);
+    // D-335 — the Browser Toolkit's page read, for AI apps the owner grants it.
+    expect(isGrantableKernelOp('core.dom.inspect')).toBe(true);
+    expect(isGrantableKernelOp('core.dom.click')).toBe(true);
+    expect(isGrantableKernelOp('core.dom.tabs')).toBe(true);
+    expect(isGrantableKernelOp('core.dom.open')).toBe(true);
   });
 
   it('✅ the everyday reads a delegated AI needs are grantable', () => {

@@ -1,3 +1,4 @@
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { expect, test, type Page } from '@playwright/test';
 
 const from = (page: Page) => page.locator('[data-recued-quiet-hours-from]');
@@ -23,6 +24,26 @@ test.afterEach(({ page }) => { expect(errors.get(page)).toEqual([]); });
 const retryRead = (page: Page) => page.getByRole('button', { name: 'Retry loading quiet hours', exact: true });
 const readCount = (page: Page) => page.evaluate(() => window.__quietHours.calls.filter(call => call.kind === 'get').length);
 const guards = (page: Page) => page.evaluate(() => window.__quietHours.guards());
+
+test('quiet-hours glyphs retry reads and save the entered window once', async ({ page }) => {
+  await page.goto('/quiet-hours-harness.html');
+  await page.waitForFunction(() => window.__quietHours !== undefined);
+  await release(page, 'get', 0, 'error');
+  await clickActionGlyph(page, retryRead(page));
+  await clickActionGlyph(page, retryRead(page));
+  expect(await readCount(page)).toBe(2);
+  await release(page, 'get', 1);
+  await expect(from(page)).toHaveValue('22:00');
+  await edit(page);
+  await clickActionGlyph(page, save(page));
+  await expect(save(page)).toBeDisabled();
+  await clickActionGlyph(page, save(page));
+  expect(await writes(page)).toEqual([{ from_minute: 1410, to_minute: 375 }]);
+  await release(page, 'set');
+  await expect(save(page)).toBeEnabled();
+  await expect(declared(page)).toContainText('23:30 → 06:15');
+});
+
 const openReadFailure = async (page: Page, width: number) => {
   await page.setViewportSize({ width, height: 900 }); await page.goto('/quiet-hours-harness.html');
   await page.waitForFunction(() => window.__quietHours !== undefined);
@@ -165,7 +186,7 @@ for (const width of [390]) {
   test(`initial read retry keeps keyboard focus through repeated failures and coalesces attempts at ${width}px`, async ({ page }) => {
     await openReadFailure(page, width); const original = await retryRead(page).elementHandle();
     expect((await retryRead(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
-    await outside(page).focus(); await page.keyboard.press('Shift+Tab'); await expect(retryRead(page)).toBeFocused();
+    await retryRead(page).focus(); await expect(retryRead(page)).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(page.getByRole('status')).toHaveText('Retrying quiet hours…');
     await expect(retryRead(page)).toBeFocused(); await expect(retryRead(page)).toHaveAttribute('aria-disabled', 'true');

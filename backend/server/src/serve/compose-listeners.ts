@@ -279,6 +279,7 @@ import { removePackOwnerRulings } from '../pack-inventory.js';
 import { mcpConnectionForPackSlug } from '@recued/ingredient-authoring';
 import { executeLLM } from '@recued/llm';
 import { createHeldPlanAskAnswerer, createHoldExpiredReader } from '../chat-held-writes.js';
+import { createChatSavesReader } from '../memory-save-count.js';
 import {
   CONNECTION_SETUP_GUIDE_MANIFEST,
   CONNECTION_SETUP_GUIDE_TIMEOUT_MS,
@@ -482,6 +483,7 @@ export interface ComposeListenersOptions {
     // `data.contact.engagements.list` pair-RPC (and the MCP read).
     | 'contactEngagementsResolveDepsRef'
     | 'chatDeps'
+    | 'ownerDocumentSearch'
     // D-315 §6.1 — Draft with AI's call through the chat's privacy layer.
     | 'privateAiCall'
     | 'keys'
@@ -1207,6 +1209,7 @@ export const composeListeners = async (
   }
 
   const collectionDeps: CollectionDeps = {
+    ...(app.ownerDocumentSearch ? { ownerDocumentSearch: app.ownerDocumentSearch } : {}),
     registry: collection.collectionRegistry,
     // D-192 Fork B — surface vendor-mirrored files (`file_meta_ref`) in the
     // `data.mirror.search` files picker alongside the CAS collection.
@@ -4527,6 +4530,16 @@ export const composeListeners = async (
             ...(app.userMemoryStore ? { userMemoryStore: app.userMemoryStore } : {}),
             ...(app.memoryRedactionStore ? { redactionStore: app.memoryRedactionStore } : {}),
             ...(storage.eventBus ? { bus: storage.eventBus } : {}),
+            // D-198 §13 — `memory.saves` reads a deleted note's words back from the chat
+            // that saved it: its call rows, and the approval cards of saves held for you.
+            ...(app.chatDeps
+              ? {
+                  readChatSaves: createChatSavesReader({
+                    chatStore: app.chatDeps.store,
+                    ...(app.chatDeps.planApprovalStore ? { plans: app.chatDeps.planApprovalStore } : {}),
+                  }),
+                }
+              : {}),
           },
         }
       : {}),

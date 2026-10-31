@@ -130,25 +130,40 @@ export const isClosedRequestSchema = (schema: unknown): boolean =>
  * Validate the definition of an opted-in schema. Non-closed schemas are
  * intentionally ignored because their legacy role is descriptive only.
  */
+export interface ClosedRequestSchemaDefinitionFinding {
+  message: string; path: (string | number)[]; kind: 'definition' | 'keyword' | 'type' | 'required_name';
+  target: 'key' | 'value'; choices?: readonly string[];
+}
+type DefinitionSink = (finding: ClosedRequestSchemaDefinitionFinding) => void;
+const definitionAdder = (issues: string[], path: (string | number)[], emit?: DefinitionSink) =>
+  (message: string, tail: (string | number)[] = [], kind: ClosedRequestSchemaDefinitionFinding['kind'] = 'definition', choices?: readonly string[], target: 'key' | 'value' = 'value') => {
+    issues.push(message);
+    emit?.({ message, path: [...path, ...tail], kind, target, ...(choices ? { choices } : {}) });
+  };
+
 const validateRequired = (
   raw: unknown,
   properties: Record<string, unknown>,
   label: string,
   issues: string[],
+  jsonPath: (string | number)[],
+  emit?: DefinitionSink,
 ): void => {
+  const add = definitionAdder(issues, jsonPath, emit);
   if (raw !== undefined
     && (!Array.isArray(raw)
       || !raw.every((value) => typeof value === 'string' && value.length > 0))) {
-    issues.push(`${label}required must be an array of non-empty property names`);
+    add(`${label}required must be an array of non-empty property names`);
     return;
   }
   if (!Array.isArray(raw)) return;
   const seen = new Set<string>();
-  for (const key of raw as string[]) {
-    if (seen.has(key)) issues.push(`${label}required property '${key}' is duplicated`);
+  const choices = emit ? Object.keys(properties) : [];
+  for (const [index, key] of (raw as string[]).entries()) {
+    if (seen.has(key)) add(`${label}required property '${key}' is duplicated`, ['required', index]);
     seen.add(key);
     if (!Object.prototype.hasOwnProperty.call(properties, key)) {
-      issues.push(`${label}required property '${key}' is not declared in properties`);
+      add(`${label}required property '${key}' is not declared in properties`, ['required', index], 'required_name', choices);
     }
   }
 };
@@ -158,18 +173,21 @@ const validatePropertyDefinition = (
   path: string,
   issues: string[],
   depth: number,
+  jsonPath: (string | number)[],
+  emit?: DefinitionSink,
 ): void => {
+  const add = definitionAdder(issues, jsonPath, emit);
   if (depth > MAX_SCHEMA_DEPTH) {
-    issues.push(`property '${path}' exceeds maximum schema depth ${MAX_SCHEMA_DEPTH}`);
+    add(`property '${path}' exceeds maximum schema depth ${MAX_SCHEMA_DEPTH}`);
     return;
   }
   if (!isRecord(rawProperty)) {
-    issues.push(`property '${path}' must be an object`);
+    add(`property '${path}' must be an object`);
     return;
   }
   const type = rawProperty.type;
   if (typeof type !== 'string' || !PROPERTY_TYPES.has(type)) {
-    issues.push(`property '${path}' type must be string, number, integer, boolean, array, object, file_ref, or file_ref[]`);
+    add(`property '${path}' type must be string, number, integer, boolean, array, object, file_ref, or file_ref[]`, ['type'], 'type', [...PROPERTY_TYPES]);
     return;
   }
 
@@ -177,7 +195,7 @@ const validatePropertyDefinition = (
     const allowed = type === 'file_ref' ? FILE_REF_PROPERTY_KEYS : FILE_REF_ARRAY_PROPERTY_KEYS;
     for (const keyword of Object.keys(rawProperty)) {
       if (!allowed.has(keyword)) {
-        issues.push(`property '${path}' uses unsupported keyword '${keyword}' for type '${type}'`);
+        add(`property '${path}' uses unsupported keyword '${keyword}' for type '${type}'`, [keyword], 'keyword', [...allowed], 'key');
       }
     }
     if (type === 'file_ref[]') {
@@ -185,16 +203,16 @@ const validatePropertyDefinition = (
       const maxItems = rawProperty.maxItems;
       if (minItems !== undefined
         && (!Number.isSafeInteger(minItems) || (minItems as number) < 0)) {
-        issues.push(`property '${path}' minItems must be a non-negative integer`);
+        add(`property '${path}' minItems must be a non-negative integer`);
       }
       // Symmetric with `array`: an unbounded list is not a closed contract.
       if (!Number.isSafeInteger(maxItems) || (maxItems as number) < 0) {
-        issues.push(`property '${path}' must declare a non-negative maxItems bound`);
+        add(`property '${path}' must declare a non-negative maxItems bound`);
       }
       if (typeof minItems === 'number'
         && typeof maxItems === 'number'
         && minItems > maxItems) {
-        issues.push(`property '${path}' minItems must not exceed maxItems`);
+        add(`property '${path}' minItems must not exceed maxItems`);
       }
     }
     return;
@@ -203,23 +221,23 @@ const validatePropertyDefinition = (
   if (type === 'object') {
     for (const keyword of Object.keys(rawProperty)) {
       if (!ROOT_KEYS.has(keyword)) {
-        issues.push(`property '${path}' uses unsupported keyword '${keyword}'`);
+        add(`property '${path}' uses unsupported keyword '${keyword}'`, [keyword], 'keyword', [...ROOT_KEYS], 'key');
       }
     }
     if (rawProperty.additionalProperties !== false) {
-      issues.push(`property '${path}' must declare additionalProperties: false`);
+      add(`property '${path}' must declare additionalProperties: false`);
     }
     if (!isRecord(rawProperty.properties)) {
-      issues.push(`property '${path}' properties must be an object`);
+      add(`property '${path}' properties must be an object`);
       return;
     }
-    validateRequired(rawProperty.required, rawProperty.properties, `property '${path}' `, issues);
+    validateRequired(rawProperty.required, rawProperty.properties, `property '${path}' `, issues, jsonPath, emit);
     for (const [key, child] of Object.entries(rawProperty.properties)) {
       if (key.length === 0) {
-        issues.push(`property '${path}' property names must be non-empty`);
+        add(`property '${path}' property names must be non-empty`);
         continue;
       }
-      validatePropertyDefinition(child, `${path}.${key}`, issues, depth + 1);
+      validatePropertyDefinition(child, `${path}.${key}`, issues, depth + 1, emit ? [...jsonPath, 'properties', key] : jsonPath, emit);
     }
     return;
   }
@@ -227,48 +245,48 @@ const validatePropertyDefinition = (
   if (type === 'array') {
     for (const keyword of Object.keys(rawProperty)) {
       if (!ARRAY_PROPERTY_KEYS.has(keyword)) {
-        issues.push(`property '${path}' uses unsupported keyword '${keyword}'`);
+        add(`property '${path}' uses unsupported keyword '${keyword}'`, [keyword], 'keyword', [...ARRAY_PROPERTY_KEYS], 'key');
       }
     }
     const minItems = rawProperty.minItems;
     const maxItems = rawProperty.maxItems;
     if (minItems !== undefined
       && (!Number.isSafeInteger(minItems) || (minItems as number) < 0)) {
-      issues.push(`property '${path}' minItems must be a non-negative integer`);
+      add(`property '${path}' minItems must be a non-negative integer`);
     }
     if (!Number.isSafeInteger(maxItems) || (maxItems as number) < 0) {
-      issues.push(`property '${path}' must declare a non-negative maxItems bound`);
+      add(`property '${path}' must declare a non-negative maxItems bound`);
     }
     if (typeof minItems === 'number'
       && typeof maxItems === 'number'
       && minItems > maxItems) {
-      issues.push(`property '${path}' minItems must not exceed maxItems`);
+      add(`property '${path}' minItems must not exceed maxItems`);
     }
     if (rawProperty.uniqueItems !== undefined
       && typeof rawProperty.uniqueItems !== 'boolean') {
-      issues.push(`property '${path}' uniqueItems must be a boolean`);
+      add(`property '${path}' uniqueItems must be a boolean`);
     }
     if (!isRecord(rawProperty.items)) {
-      issues.push(`property '${path}' items must be a schema object`);
+      add(`property '${path}' items must be a schema object`);
     } else if (typeof rawProperty.items.type !== 'string'
       || !ARRAY_ITEM_TYPES.has(rawProperty.items.type)) {
-      issues.push(`property '${path}[]' type must be string, number, integer, boolean, or object`);
+      add(`property '${path}[]' type must be string, number, integer, boolean, or object`, ['items', 'type'], 'type', [...ARRAY_ITEM_TYPES]);
     } else {
-      validatePropertyDefinition(rawProperty.items, `${path}[]`, issues, depth + 1);
+      validatePropertyDefinition(rawProperty.items, `${path}[]`, issues, depth + 1, emit ? [...jsonPath, 'items'] : jsonPath, emit);
     }
     return;
   }
 
   for (const keyword of Object.keys(rawProperty)) {
     if (!PROPERTY_KEYS.has(keyword)) {
-      issues.push(`property '${path}' uses unsupported keyword '${keyword}'`);
+      add(`property '${path}' uses unsupported keyword '${keyword}'`, [keyword], 'keyword', [...PROPERTY_KEYS], 'key');
     }
   }
   if (rawProperty.enum !== undefined) {
     if (!Array.isArray(rawProperty.enum) || rawProperty.enum.length === 0) {
-      issues.push(`property '${path}' enum must be a non-empty array`);
+      add(`property '${path}' enum must be a non-empty array`);
     } else if (!rawProperty.enum.every((value) => valueMatchesType(value, type))) {
-      issues.push(`property '${path}' enum values must match type '${type}'`);
+      add(`property '${path}' enum values must match type '${type}'`);
     }
   }
 
@@ -276,33 +294,33 @@ const validatePropertyDefinition = (
   const maxLength = rawProperty.maxLength;
   if (minLength !== undefined
     && (!Number.isSafeInteger(minLength) || (minLength as number) < 0)) {
-    issues.push(`property '${path}' minLength must be a non-negative integer`);
+    add(`property '${path}' minLength must be a non-negative integer`);
   }
   if (maxLength !== undefined
     && (!Number.isSafeInteger(maxLength) || (maxLength as number) < 0)) {
-    issues.push(`property '${path}' maxLength must be a non-negative integer`);
+    add(`property '${path}' maxLength must be a non-negative integer`);
   }
   if ((minLength !== undefined || maxLength !== undefined) && type !== 'string') {
-    issues.push(`property '${path}' length constraints require type 'string'`);
+    add(`property '${path}' length constraints require type 'string'`);
   }
   if (type === 'string' && maxLength === undefined && rawProperty.enum === undefined) {
-    issues.push(`property '${path}' must declare maxLength or a finite enum`);
+    add(`property '${path}' must declare maxLength or a finite enum`);
   }
   if (typeof minLength === 'number'
     && typeof maxLength === 'number'
     && minLength > maxLength) {
-    issues.push(`property '${path}' minLength must not exceed maxLength`);
+    add(`property '${path}' minLength must not exceed maxLength`);
   }
 
   if (rawProperty.pattern !== undefined) {
-    if (type !== 'string') issues.push(`property '${path}' pattern requires type 'string'`);
+    if (type !== 'string') add(`property '${path}' pattern requires type 'string'`);
     if (typeof rawProperty.pattern !== 'string') {
-      issues.push(`property '${path}' pattern must be a string`);
+      add(`property '${path}' pattern must be a string`);
     } else {
       try {
         new RegExp(rawProperty.pattern);
       } catch {
-        issues.push(`property '${path}' pattern is invalid`);
+        add(`property '${path}' pattern is invalid`);
       }
     }
   }
@@ -310,20 +328,20 @@ const validatePropertyDefinition = (
   const minimum = rawProperty.minimum;
   const maximum = rawProperty.maximum;
   if (minimum !== undefined && (typeof minimum !== 'number' || !Number.isFinite(minimum))) {
-    issues.push(`property '${path}' minimum must be finite`);
+    add(`property '${path}' minimum must be finite`);
   }
   if (maximum !== undefined && (typeof maximum !== 'number' || !Number.isFinite(maximum))) {
-    issues.push(`property '${path}' maximum must be finite`);
+    add(`property '${path}' maximum must be finite`);
   }
   if ((minimum !== undefined || maximum !== undefined)
     && type !== 'number'
     && type !== 'integer') {
-    issues.push(`property '${path}' numeric bounds require type 'number' or 'integer'`);
+    add(`property '${path}' numeric bounds require type 'number' or 'integer'`);
   }
   if (typeof minimum === 'number'
     && typeof maximum === 'number'
     && minimum > maximum) {
-    issues.push(`property '${path}' minimum must not exceed maximum`);
+    add(`property '${path}' minimum must not exceed maximum`);
   }
 };
 
@@ -453,27 +471,36 @@ export const projectDescriptiveRequestSchemaForJsonSchema = (schema: unknown): u
   return { ...projected, additionalProperties: true };
 };
 
-export const closedRequestSchemaDefinitionIssues = (schema: unknown): string[] => {
+const schemaDefinitionIssues = (schema: unknown, emit?: DefinitionSink): string[] => {
   if (!isClosedRequestSchema(schema)) return [];
   const root = schema as Record<string, unknown>;
   const issues: string[] = [];
+  const add = definitionAdder(issues, [], emit);
   for (const key of Object.keys(root)) {
-    if (!ROOT_KEYS.has(key)) issues.push(`unsupported root keyword '${key}'`);
+    if (!ROOT_KEYS.has(key)) add(`unsupported root keyword '${key}'`, [key], 'keyword', [...ROOT_KEYS], 'key');
   }
-  if (root.type !== 'object') issues.push("type must be 'object'");
+  if (root.type !== 'object') add("type must be 'object'", ['type'], 'type', ['object']);
   if (!isRecord(root.properties)) {
-    issues.push('properties must be an object');
+    add('properties must be an object');
     return issues;
   }
-  validateRequired(root.required, root.properties, '', issues);
+  validateRequired(root.required, root.properties, '', issues, [], emit);
   for (const [key, property] of Object.entries(root.properties)) {
     if (key.length === 0) {
-      issues.push('property names must be non-empty');
+      add('property names must be non-empty');
       continue;
     }
-    validatePropertyDefinition(property, key, issues, 1);
+    validatePropertyDefinition(property, key, issues, 1, emit ? ['properties', key] : [], emit);
   }
   return issues;
+};
+
+/** Legacy runtime messages retain their exact wording and order. */
+export const closedRequestSchemaDefinitionIssues = (schema: unknown): string[] => schemaDefinitionIssues(schema);
+/** Shared structured locations for authoring; never reconstruct paths from human messages. */
+export const closedRequestSchemaDefinitionFindings = (schema: unknown): ClosedRequestSchemaDefinitionFinding[] => {
+  const findings: ClosedRequestSchemaDefinitionFinding[] = [];
+  schemaDefinitionIssues(schema, finding => findings.push(finding)); return findings;
 };
 
 type ClosedProperty = Record<string, unknown>;

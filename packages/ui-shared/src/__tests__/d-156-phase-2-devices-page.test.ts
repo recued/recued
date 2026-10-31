@@ -403,7 +403,7 @@ describe('renderDevicesPage — optional freshness controls', () => {
 
   it('keeps the pending Refresh button focusable before the first successful check', () => {
     const html = renderDevicesPage(state({ refresh: { pending: true } }));
-    const button = /<button[^>]*data-action="refresh-devices"[^>]*>[^<]*<\/button>/.exec(html)?.[0];
+    const button = /<button[^>]*data-action="refresh-devices"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0];
     expect(button).toContain('aria-label="Refresh devices"');
     expect(button).toContain('aria-disabled="true"');
     expect(button).toContain('aria-busy="true"');

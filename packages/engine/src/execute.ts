@@ -297,7 +297,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // Role-based adapter restriction: reject recipes with browser-only
   // ingredients (DOM) when running on the server.
   if (ctx.manifestGetter) {
-    const restricted = findRoleRestrictions(recipe, ctx.manifestGetter);
+    const restricted = findRoleRestrictions(recipe, ctx.manifestGetter, undefined, ctx.browserBridge === true);
     if (restricted.length > 0) {
       const slugs = restricted.map(r => `${r.slug} (${r.adapter})`).join(', ');
       fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
@@ -310,7 +310,8 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
         errors: [{
           error_id: `role-${Date.now().toString(36)}`,
           code: 'ROLE_RESTRICTION',
-          message: `Recipe uses browser-only ingredients that cannot run on the server: ${slugs}`,
+          message: `This recipe acts on web pages through the Browser Bridge, and no Browser Bridge is connected to `
+            + `this server: open Chrome with the Recued Browser Bridge paired to it. Nothing ran. (${slugs})`,
           severity: 'fatal',
           source: { recipe_id: recipe.recipe_id, step_id: null, ingredient_slug: restricted[0].slug },
           details: { restricted },

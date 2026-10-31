@@ -26,6 +26,7 @@
  *  Spec: internal design notes D-269 REV 3 / REV 4 / REV 5 / REV 7 / REV 9. */
 
 import {
+  renderActionLabel,
   twoClockPreview,
   type TwoClockView,
 } from '@recued/ui-shared';
@@ -297,7 +298,7 @@ export const mountServerTimeZonePanel = (
         opts.host.appendChild(p);
         const retry = doc.createElement('button');
         retry.type = 'button';
-        retry.textContent = 'Retry loading timezone';
+        retry.innerHTML = renderActionLabel('refresh', 'Retry loading timezone');
         retry.setAttribute(SERVER_TZ_RETRY_ATTR, '');
         retry.addEventListener('click', () => {
           if (snapshot === null && state === 'error') void refresh();
@@ -364,7 +365,7 @@ export const mountServerTimeZonePanel = (
 
         const btn = doc.createElement('button');
         btn.type = 'button';
-        btn.textContent = saving ? 'Saving…' : 'Save';
+        btn.innerHTML = renderActionLabel('save', saving ? 'Saving…' : 'Save');
         btn.disabled = saving;
         btn.setAttribute(SERVER_TZ_SAVE_ATTR, '');
         controls.set('save', btn);
@@ -413,7 +414,7 @@ export const mountServerTimeZonePanel = (
       feedbackHost.appendChild(el('p', 'The save could not be confirmed. Check the saved timezone before trying again.'));
       const check = doc.createElement('button');
       check.type = 'button';
-      check.textContent = 'Check saved timezone';
+      check.innerHTML = renderActionLabel('refresh', 'Check saved timezone');
       check.disabled = checking;
       check.setAttribute(SERVER_TZ_CHECK_ATTR, '');
       check.addEventListener('click', () => { void refresh(true); });
@@ -541,6 +542,8 @@ export const mountServerTimeZonePanel = (
  *  actually means, and an unstyled two-clock preview is two identical-looking
  *  sentences — the comparison the panel is for. */
 export const SERVER_TIMEZONE_PANEL_STYLES = `
+[${SERVER_TZ_PANEL_ATTR}] :is([${SERVER_TZ_SAVE_ATTR}], [${SERVER_TZ_RETRY_ATTR}], [${SERVER_TZ_CHECK_ATTR}]) { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+[${SERVER_TZ_PANEL_ATTR}] button > svg { flex-shrink:0; }
 [${SERVER_TZ_PANEL_ATTR}] {
   display: flex;
   flex-direction: column;

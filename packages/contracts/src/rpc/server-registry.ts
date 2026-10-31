@@ -169,6 +169,7 @@ import type {
 } from '../annotation.js';
 import type { ContactContributionView } from '../contact-contribution.js';
 import type {
+  ContactMergeSplitInspection, ContactMergeSplitRequest,
   ContactRecord,
   ContactSource,
   ContactMergeCandidate,
@@ -362,6 +363,11 @@ import type {
   MemoryRestoreRequest,
   MemoryRestoreResult,
   MemoryReplaceRequest,
+  MemoryRevokeRequest,
+  MemoryUnrevokeRequest,
+  MemoryRevokeResult,
+  MemorySavesRequest,
+  MemorySavesResult,
 } from './memory.js';
 import type {
   ExposurePreset,
@@ -3494,21 +3500,15 @@ export type ServerRpcRegistry = {
     { candidates: ContactMergeCandidate[]; rejection_rows_written: number }
   >;
 
-  /** Split a previously-merged contact: redistribute platform_ids;
-   *  reverse cascade; adds the split pair to `rejected_pairs`
-   *  (durable rejection — same as `reject` but reversed in
-   *  intent). */
-  'contact.merge.split': RpcMethodSpec<
-    {
-      merged_email: string;
-      platform_id_redistribution: Array<{
-        platform_id_entry: PlatformIdEntry;
-        target_canonical_email: string;
-      }>;
-      rejected_by?: string;
-    },
-    { canonicals: ContactRecord[] }
+  /** Inspect the current merged group, or confirm separate groups and
+   *  their connected-record ownership in one read snapshot. */
+  'contact.merge.split_preview': RpcMethodSpec<
+    { merged_email: string; other_email?: string }, ContactMergeSplitInspection
   >;
+  /** Separate a merged branch, redistribute selected provider links and
+   *  durably reject every cross-group duplicate pair in one transaction.
+   *  Existing notes and links remain with their current contact. */
+  'contact.merge.split': RpcMethodSpec<ContactMergeSplitRequest, { canonicals: ContactRecord[] }>;
 
   /** Power-user — explicitly remove a rejection edge. Reachable only
    *  from Settings → Contacts → Rejected pairs UI; not auto-callable
@@ -6772,6 +6772,12 @@ export type ServerRpcRegistry = {
   // `user_self` row carrying `replaces`). Its own method so an older server
   // refuses it (`unknown_method`) instead of ignoring a field on `memory.create`.
   'memory.replace': RpcMethodSpec<MemoryReplaceRequest, MemoryMutationResult>;
+  // D-198 §13 — the owner marks an AGENT's note wrong (revoke) and lifts it (unrevoke).
+  'memory.revoke': RpcMethodSpec<MemoryRevokeRequest, MemoryRevokeResult>;
+  'memory.unrevoke': RpcMethodSpec<MemoryUnrevokeRequest, MemoryRevokeResult>;
+  // D-198 §13 — how many times an agent saved a note's claim, asked by the Delete confirm
+  // before it offers Revoke. Its own method, so an older server refuses it.
+  'memory.saves': RpcMethodSpec<MemorySavesRequest, MemorySavesResult>;
 
   // ── triggers.* — event-driven recipe dispatch (§Recipe triggers) ─
   'triggers.list': RpcMethodSpec<void, { triggers: EventTrigger[] }>;
@@ -6903,6 +6909,9 @@ export type ServerRpcRegistry = {
     { slug: string },
     { ok: true; probe_result: FileCollectionCaps; auth_state: CollectionAuthState }
   >;
+  /** Explicit paired-owner search; uses the normal document tool and reader gates. */
+  'collection.file.document.search': RpcMethodSpec<import('../document-content-search.js').OwnerDocumentSearchRequest, import('../document-content-search.js').OwnerDocumentSearchReply>;
+  'collection.file.document.result': RpcMethodSpec<{ request_id: string }, import('../document-content-search.js').OwnerDocumentSearchReply>;
   /** Cross-type enumeration of every instance on this server. Returns
    *  the caps + auth_state every caller needs for parseRecipe gating
    *  (the extension's install validator) + UI rendering (Options →
@@ -8783,6 +8792,7 @@ export const SERVER_RPC_METHODS = [
   'contact.merge.confirm',
   'contact.merge.reject',
   'contact.merge.split',
+  'contact.merge.split_preview',
   'contact.merge.undo_rejection',
   'contact.merge.resolve_remerge_prompt',
   // D-138 P3 — Settings → Contacts → Scan now (housekeeping run-now
@@ -9216,6 +9226,9 @@ export const SERVER_RPC_METHODS = [
   'memory.import',
   'memory.restore',
   'memory.replace',
+  'memory.revoke',
+  'memory.unrevoke',
+  'memory.saves',
   'triggers.list',
   'triggers.create',
   'triggers.update',
@@ -9228,6 +9241,8 @@ export const SERVER_RPC_METHODS = [
   'collection.file.update',
   'collection.file.delete',
   'collection.file.resync',
+  'collection.file.document.search',
+  'collection.file.document.result',
   'collection.listInstances',
   // D-117 Phase 7 — calendar enroll family.
   'collection.calendar.enrollOAuth',

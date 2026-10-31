@@ -5,6 +5,7 @@
  *  discarded. This page opens it in the recipe editor or the pack builder, keeps it as it
  *  is typed, and offers Discard. Only source that is not JSON yet opens as plain source. */
 import type { KitchenDraftDiscardResult, KitchenImportDraft, RecipeDefinition } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { createWorkItemAutosave, type WorkItemAutosave, type WorkItemAutosaveStatus } from './work-item-autosave.js';
 
@@ -66,6 +67,12 @@ export const mountKitchenWorkItemRoute = (options: WorkItemRouteOptions): Editor
   const host = doc.createElement('section');
   host.setAttribute(KITCHEN_WORK_ITEM_ATTR, '');
   host.style.cssText = 'max-width:1200px;margin:0 auto;padding:16px 24px 0;box-sizing:border-box;';
+  const style = doc.createElement('style');
+  style.textContent = `
+    [${KITCHEN_WORK_ITEM_ATTR}] .kitchen-work-action { display:inline-flex;align-items:center;gap:6px; }
+    [${KITCHEN_WORK_ITEM_ATTR}] .kitchen-work-action > svg { flex-shrink:0; }
+  `;
+  host.append(style);
   const header = doc.createElement('header');
   header.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;';
   const heading = doc.createElement('h1');
@@ -76,7 +83,9 @@ export const mountKitchenWorkItemRoute = (options: WorkItemRouteOptions): Editor
   const what = doc.createElement('span');
   const status = doc.createElement('span'); status.setAttribute('role', 'status');
   meta.append(what, status);
-  const discard = doc.createElement('button'); discard.type = 'button'; discard.textContent = 'Discard'; discard.disabled = true;
+  const discard = doc.createElement('button'); discard.type = 'button'; discard.disabled = true;
+  discard.className = 'kitchen-work-action';
+  discard.innerHTML = renderActionLabel('delete', 'Discard');
   header.append(heading, meta, discard);
   const body = doc.createElement('div');
   host.append(header, body);
@@ -133,7 +142,9 @@ export const mountKitchenWorkItemRoute = (options: WorkItemRouteOptions): Editor
     source.spellcheck = false; source.rows = 20; source.value = current.source;
     source.style.cssText = 'width:100%;max-width:100%;box-sizing:border-box;font-family:monospace;';
     label.append(source);
-    const open = doc.createElement('button'); open.type = 'button'; open.textContent = 'Open in editor';
+    const open = doc.createElement('button'); open.type = 'button';
+    open.className = 'kitchen-work-action';
+    open.innerHTML = renderActionLabel('rename', 'Open in editor');
     const sync = (): void => { open.disabled = parsed(source.value) === undefined; };
     source.addEventListener('input', () => { autosave?.changed(source.value); sync(); });
     open.addEventListener('click', () => {

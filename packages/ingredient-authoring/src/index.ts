@@ -106,3 +106,13 @@ export { tableAuthoringFields, tableAuthoringChoices, type TableAuthoringKind, t
 export { compositionArgumentFields, compositionBindingKinds, compositionBindingFields, compositionAuthoringChoices, type CompositionAuthoringField } from './composition-authoring.js';
 
 export { recipeStepSupportsForeach, foreachAuthoringHelp, foreachResultFields } from './iteration-authoring.js';
+export { declaredOperationArguments, checkDeclaredOperationArguments, type DeclaredArgumentFinding } from './operation-inputs.js';
+export { closedInputMetadata, closedInputAt, closedInputHelp, checkClosedInputs, CLOSED_INPUT_MAX_NODES, CLOSED_INPUT_MAX_BYTES,
+  type ClosedInputSchema, type ClosedInputFinding } from './closed-inputs.js';
+export { closedSchemaFields, closedSchemaTypes, closedSchemaEntries, type ClosedInputPath, type ClosedSchemaEntry, type ClosedSchemaField } from './closed-schema-authoring.js';
+export { closedInputScaffold } from './closed-input-scaffold.js';
+export { inputPrimitive, inputHintType, inputBindingCompatibility, plainConfigBinding, checkClosedInputBindings,
+  type InputPrimitive, type InputBindingFinding, type BindingInputSchema } from './input-binding-types.js';
+export { valueHintTypes, valueHintTypeHelp } from './value-hint-types.js';
+export { bindingArgumentTokens, bindingArgumentTokenAt, bindingArgumentValue, operationBindingArgumentReferences, assertBindingArgumentRename,
+  type BindingArgumentPath, type BindingArgumentSyntax, type BindingArgumentReference } from './binding-argument-references.js';

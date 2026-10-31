@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { build } from 'esbuild';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 
 const PACK_SLUG = 'mail-tools';
 const PACK_CARD = 'data-recued-discover-card';
@@ -367,6 +368,31 @@ test('Packs transfers focus through Delete reveal and Cancel', async ({ page }) 
   await cancelButton.focus();
   await page.keyboard.press('Enter');
   await expect(deleteButton).toBeFocused();
+});
+
+test('Packs glyphs retain Delete confirmation and submit removal once', async ({ page }) => {
+  await page.locator(`[${PACK_CARD}][data-id="${PACK_SLUG}"]`).focus();
+  await page.keyboard.press('Enter');
+  const remove = page.locator(`[${PACK_DELETE}="${PACK_SLUG}"]`);
+  const confirm = page.locator(`[${PACK_DELETE_CONFIRM}="${PACK_SLUG}"]`);
+  await clickActionGlyph(page, remove);
+  await expect(confirm).toHaveText('Confirm delete');
+  expect(await page.evaluate(() => (globalThis as typeof globalThis & {
+    __packsFocusRig: { getUninstallCalls(): number };
+  }).__packsFocusRig.getUninstallCalls())).toBe(0);
+  await page.locator(`[${PACK_DELETE_CANCEL}="${PACK_SLUG}"]`).click();
+  await expect(confirm).toHaveCount(0);
+  await clickActionGlyph(page, remove);
+  await clickActionGlyph(page, confirm);
+  await expect(confirm).toHaveText('Deleting…');
+  await clickActionGlyph(page, confirm);
+  expect(await page.evaluate(() => (globalThis as typeof globalThis & {
+    __packsFocusRig: { getUninstallCalls(): number };
+  }).__packsFocusRig.getUninstallCalls())).toBe(1);
+  await page.evaluate(() => (globalThis as typeof globalThis & {
+    __packsFocusRig: { finishUninstall(): void };
+  }).__packsFocusRig.finishUninstall());
+  await expect(page.locator(`[${PACK_INSTALL}="${PACK_SLUG}"]`)).toBeVisible();
 });
 
 test('Packs keeps Confirm focused while deleting and lands on Install', async ({ page }) => {

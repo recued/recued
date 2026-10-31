@@ -245,12 +245,15 @@ test('native work results page, open the right kind, and return from edits to th
   await expect(overview).toBeVisible();
   await overview.getByRole('button', { name: 'Back to search', exact: true }).click();
   await expect(result('project', 'project-one')).toBeFocused();
-  for (const [kind, id, name] of [['commitment', 'promise-one', 'Edit Commitment']] as const) {
-    await result(kind, id).click();
-    const dialog = page.getByRole('dialog', { name, exact: true });
-    await expect(dialog).toBeVisible(); await dialog.getByRole('button', { name: 'Back to search', exact: true }).click();
-    await expect(result(kind, id)).toBeFocused();
-  }
+  await result('commitment', 'promise-one').click();
+  const promise = page.locator('[data-commitment-id="promise-one"][data-mode="read"]');
+  await expect(promise).toBeVisible();
+  await promise.getByRole('button', { name: 'Edit', exact: true }).click();
+  const commitment = page.getByRole('dialog', { name: 'Edit Commitment', exact: true });
+  await expect(commitment).toBeVisible();
+  await commitment.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await promise.getByRole('button', { name: 'Back to search', exact: true }).click();
+  await expect(result('commitment', 'promise-one')).toBeFocused();
   await expect(input(page)).toHaveValue('kestrel');
   expect(await calls(page, 'marketplace')).toEqual([]);
 });

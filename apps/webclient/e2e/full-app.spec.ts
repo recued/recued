@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
-  DRAWER_TOGGLE, SHELL_CONTENT, SHELL_HOST, SHELL_TOPBAR,
+  CREATE_OVERLAY, DRAWER_ACTION, DRAWER_TOGGLE, HARNESS_URL,
+  SHELL_CONTENT, SHELL_HOST, SHELL_SEARCH_TRIGGER, SHELL_TOPBAR,
   installFullAppHooks,
 } from './helpers/full-app.js';
 
@@ -53,6 +54,64 @@ const ROUTES: ReadonlyArray<{ hash: string; route: string; marker: string }> = [
 ];
 
 installFullAppHooks();
+
+test('shell Search reaches the existing input and restores its query, focus and visibility across phone and desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.goto(`${HARNESS_URL}#settings`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const launcher = page.locator(`[${SHELL_SEARCH_TRIGGER}]`);
+  await launcher.click();
+  await expect(page).toHaveURL(/#data\/search$/);
+  const search = page.getByRole('searchbox', { name: 'Search everything' });
+  await expect(search).toBeFocused();
+  await search.fill('keep this query');
+
+  // Supply scroll room independently of asynchronous result providers.
+  const content = page.locator(`[${SHELL_CONTENT}]`);
+  await content.evaluate(node => {
+    const spacer = document.createElement('div');
+    spacer.style.height = '2000px';
+    node.appendChild(spacer);
+    node.scrollTop = node.scrollHeight;
+  });
+  await expect(search).not.toBeInViewport();
+  await launcher.click();
+  await expect(search).toHaveValue('keep this query');
+  await expect(search).toBeFocused();
+  await expect(search).toBeInViewport();
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await content.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await launcher.click();
+  await expect(search).toHaveValue('keep this query');
+  await expect(search).toBeFocused();
+  await expect(search).toBeInViewport();
+  await content.focus();
+  await content.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.keyboard.press('Control+/');
+  await expect(search).toBeFocused();
+  await expect(search).toBeInViewport();
+  await expect(search).toHaveValue('keep this query');
+});
+
+test('shell Search respects the capture modal before navigating', async ({ page }) => {
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+  const capture = page.locator(`[${CREATE_OVERLAY}]`);
+  await expect(capture).toBeVisible();
+  const draft = capture.locator('[data-recued-compose-capture]');
+  await draft.fill('Keep this unsaved capture');
+  const address = page.url();
+  // Pointer events are shielded by the modal; an invoked launcher must also
+  // honor the shared guard rather than bypass it with a direct hash write.
+  await page.locator(`[${SHELL_SEARCH_TRIGGER}]`).evaluate(node => {
+    (node as HTMLButtonElement).click();
+  });
+  await page.keyboard.press('Control+/');
+  await expect(page).toHaveURL(address);
+  await expect(capture).toBeVisible();
+  await expect(draft).toHaveValue('Keep this unsaved capture');
+});
 
 test('boots the full app + mounts the persistent shell on the chat home', async ({ page }) => {
   // The persistent shell owns the app root; the content slot + drawer are chrome.

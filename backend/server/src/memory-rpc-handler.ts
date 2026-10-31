@@ -39,6 +39,11 @@ import {
   type MemoryMutationResult,
   type MemoryReplaceRequest,
   type MemoryRestoreRequest,
+  type MemoryRevokeRequest,
+  type MemoryRevokeResult,
+  type MemorySavesRequest,
+  type MemorySavesResult,
+  type MemoryUnrevokeRequest,
   type MemoryRestoreResult,
   type MemoryUpdateRequest,
   type ServerRpcRegistry,
@@ -46,11 +51,16 @@ import {
 import type { AuditEntry, AuditLogStore, Collection } from '@recued/storage';
 import type { EventBus } from './events/bus.js';
 import { emitMemoryUser } from './events/emit-sites.js';
+import { countAgentSaves, type ChatSavesReader } from './memory-save-count.js';
 import {
   checkOwnerReplace,
-  forgottenIds,
+  checkOwnerRevoke,
+  lineageBackFrom,
   liveReplacementOf,
+  removedIds,
   restoreAgentForget,
+  revokeAgentNote,
+  unrevokeAgentNote,
   withRevisionLock,
 } from './memory-revision.js';
 import {
@@ -80,6 +90,17 @@ export interface MemoryRedactionRecord {
   forget_of?: string;
   /** D-198 §10 — the agent's stated reason, shown to the owner. */
   reason?: string;
+  /** D-198 §13 — the OWNER deleted this agent's note: its text is gone from the
+   *  server (`UserMemoryStore.erase`), and this mark is what keeps every reader that
+   *  honours the overlay from returning the empty row. Nothing restores it. */
+  deleted?: true;
+  /** D-198 §13 — the OWNER marked this agent's note WRONG. Unlike a delete or a
+   *  forget the text stays, and the owner's feed shows it; under the overlay it is out
+   *  of recall as a fact. `memory.unrevoke` lifts it. */
+  revoked?: true;
+  /** D-198 §13 — the entry the owner revoked, when this mark covers an earlier version
+   *  of it: `memory.unrevoke` lifts every mark of that one revoke. */
+  revoke_of?: string;
 }
 
 export interface MemoryRpcDeps {
@@ -95,6 +116,9 @@ export interface MemoryRpcDeps {
   bus?: EventBus;
   /** Injected clock (tests pass a fixed value). Default `Date.now`. */
   now?: () => number;
+  /** D-198 §13 — the saves each chat records, for `memory.saves` to find a deleted note's
+   *  words. Absent → a deleted note is not counted (the count is a lower bound). */
+  readChatSaves?: ChatSavesReader;
 }
 
 /** Registered-client boundary. The owner-trusted read runs WITHOUT a
@@ -287,22 +311,26 @@ const revisionMarks = async (
   deps: MemoryRpcDeps,
   memory_id: string,
   redactions: ReadonlyMap<string, MemoryRedactionRecord>,
-): Promise<Pick<MemoryListEntry, 'forgotten_by' | 'forgotten_reason' | 'replaced_by'>> => {
+): Promise<Pick<MemoryListEntry, 'forgotten_by' | 'forgotten_reason' | 'replaced_by' | 'deleted_at' | 'revoked_at'>> => {
   const mark = redactions.get(memory_id);
-  if (mark !== undefined) {
+  if (mark !== undefined && mark.revoked !== true) {
+    if (mark.deleted === true) return { deleted_at: mark.redacted_at };
     if (mark.by_contract_id === undefined) return {};
     return {
       forgotten_by: forgottenByLabel(mark.by_contract_id),
       ...(mark.reason !== undefined ? { forgotten_reason: mark.reason } : {}),
     };
   }
-  if (!deps.userMemoryStore || !isUserMemoryId(memory_id)) return {};
+  // §13 — a revoked note keeps its text and its place in a lineage: the owner may
+  // still have replaced it with their own version, and the feed says both.
+  const revoked = mark?.revoked === true ? { revoked_at: mark.redacted_at } : {};
+  if (!deps.userMemoryStore || !isUserMemoryId(memory_id)) return revoked;
   const next = await liveReplacementOf(
     deps.userMemoryStore,
     new Set(redactions.keys()),
     memory_id,
   );
-  return next !== undefined ? { replaced_by: next.memory_id } : {};
+  return next !== undefined ? { ...revoked, replaced_by: next.memory_id } : revoked;
 };
 
 /** Overlay a redaction (§5): the row still displays (transparency), but with its
@@ -444,7 +472,7 @@ export const handleMemoryList = async (
   // `memory_id` + effective time, so the cursor is unaffected.
   const redactions = await fetchRedactions(deps);
   const entries = await Promise.all(page.map(async (e) => ({
-    ...(redactions.has(e.memory_id) ? redactEntry(e) : e),
+    ...(redactions.has(e.memory_id) && redactions.get(e.memory_id)?.revoked !== true ? redactEntry(e) : e),
     ...(await revisionMarks(deps, e.memory_id, redactions)),
   })));
 
@@ -519,9 +547,9 @@ export const handleMemoryGet = async (
     throw new RpcError('bad_request', 'memory.get requires a memory_id', 400);
   }
 
-  const isRedacted = deps.redactionStore
-    ? (await deps.redactionStore.get(memory_id)) !== null
-    : false;
+  // §13 — a revoke is under the overlay, but its text is the owner's to see.
+  const mark = deps.redactionStore ? await deps.redactionStore.get(memory_id) : null;
+  const isRedacted = mark !== null && mark.revoked !== true;
 
   let res: MemoryGetResponse;
   if (deps.userMemoryStore && isUserMemoryId(memory_id)) {
@@ -635,7 +663,13 @@ export const handleMemoryReplace = async (
   if (body !== undefined) input.body = body;
 
   const row = await withRevisionLock(store, async () => {
-    const checked = await checkOwnerReplace(store, await forgottenIds(deps.redactionStore), memory_id);
+    // §13 — a deleted note is under the overlay like a forgotten one, but nothing
+    // restores it, so "Restore it first" would be wrong advice.
+    if ((await deps.redactionStore?.get(memory_id))?.deleted === true) {
+      throw new RpcError('unsupported', 'You deleted this memory. Add a new memory instead.', 409);
+    }
+    // A revoked note may still get the owner's version, so only removals count here.
+    const checked = await checkOwnerReplace(store, await removedIds(deps.redactionStore), memory_id);
     if (!checked.ok) {
       throw checked.refusal === 'not_found'
         ? new RpcError('not_found', checked.message, 404)
@@ -660,7 +694,15 @@ export const handleMemoryReplace = async (
 
 /** `memory.update` — edit the caller's OWN `user_self` entry. Only owner rows
  *  are mutable (§3); an audit-row id is rejected (view + redact only). Origin
- *  is never patchable — `update` cannot touch it. */
+ *  is never patchable — `update` cannot touch it.
+ *
+ *  ⛔ SPLIT BY THE ROW'S REAL ORIGIN, NOT THE ID PREFIX — as `memory.delete`
+ *  already does. Since Slice 4 an agent's note is a `umem_` row too, and the
+ *  prefix check alone let an edit put the owner's words in it while it stayed
+ *  labelled the agent's (`contracted_user`, its author contract kept): the feed
+ *  then showed the owner's words as the agent's, and the agent, seeing its own
+ *  entry (`by_you`), could later "correct" or forget them. The lens never
+ *  offered Edit there; only this check stops a direct call. */
 export const handleMemoryUpdate = async (
   deps: MemoryRpcDeps,
   args: MemoryUpdateRequest,
@@ -674,6 +716,18 @@ export const handleMemoryUpdate = async (
   }
   if (!deps.userMemoryStore) {
     throw new RpcError('not_configured', 'memory.update requires the user_memory store', 501);
+  }
+  // Origin is immutable, so checking before the write cannot race a change of it.
+  const existing = await deps.userMemoryStore.getRow(memory_id);
+  if (existing === null) throw new RpcError('not_found', 'memory entry not found', 404);
+  if (existing.origin_actor !== 'user_self') {
+    throw new RpcError(
+      'unsupported',
+      existing.origin_actor === 'contracted_user'
+        ? 'An agent saved this memory, so it can’t be edited. Replace it with your version instead.'
+        : 'Only your own memory can be edited.',
+      409,
+    );
   }
 
   const patch: UserMemoryUpdateInput = {};
@@ -700,7 +754,15 @@ export const handleMemoryUpdate = async (
  *  Slice 4 — the `user_memory` store now also holds `contracted_user` rows (AI /
  *  customer writes, all `umem_`), so the split is by the ROW's real
  *  `origin_actor`, NOT the id prefix: a `umem_` row is hard-deleted only when it
- *  is `user_self`; a `contracted_user` store row redacts like an audit row. */
+ *  is `user_self`.
+ *
+ *  D-198 §13 — an agent's note is now DELETED, not redacted: the owner's redaction
+ *  hid it from everyone (the owner included) and could not be undone, while its
+ *  text stayed on disk — neither private nor reversible. Its text, and that of
+ *  every earlier version it replaced (so a delete never brings an older wording
+ *  back), is erased; each row stays without content, with a `deleted` mark that
+ *  keeps every overlay-honouring reader from returning it. A run is still
+ *  redacted ("Hide from AI"): the signed audit log cannot be erased. */
 export const handleMemoryDelete = async (
   deps: MemoryRpcDeps,
   args: MemoryDeleteRequest,
@@ -723,16 +785,38 @@ export const handleMemoryDelete = async (
   };
 
   // `umem_` store rows split by the ROW's real origin (§3): `user_self` hard-
-  // deletes (cascades its body blob); a `contracted_user` AI/customer write is
-  // redacted, never hard-deleted — origin + provenance survive.
+  // deletes (cascades its body blob); an agent's note is erased (§13) — its text
+  // goes, its origin and times stay.
   if (isUserMemoryId(memory_id)) {
     if (!deps.userMemoryStore) {
       throw new RpcError('not_configured', 'memory.delete requires the user_memory store', 501);
     }
-    const resolved = await deps.userMemoryStore.get(memory_id);
+    const store = deps.userMemoryStore;
+    const resolved = await store.get(memory_id);
     if (resolved === null) throw new RpcError('not_found', 'memory entry not found', 404);
-    if (resolved.row.origin_actor !== 'user_self') return redact();
-    const deleted = await deps.userMemoryStore.delete(memory_id);
+    if (resolved.row.origin_actor !== 'user_self') {
+      if (!deps.redactionStore) {
+        throw new RpcError('not_configured', 'memory.delete requires the redaction store', 501);
+      }
+      const redactions = deps.redactionStore;
+      const now = (deps.now ?? Date.now)();
+      // Under the §10 revision lock, so an agent's replace or forget of the same
+      // lineage cannot interleave. ERASE before MARK: if the mark fails, the empty
+      // row is still in the feed and Delete can simply be pressed again.
+      await withRevisionLock(store, async () => {
+        for (const version of await lineageBackFrom(store, resolved.row)) {
+          await store.erase(version.memory_id);
+          await redactions.set(version.memory_id, {
+            memory_id: version.memory_id,
+            redacted_at: now,
+            deleted: true,
+          });
+        }
+      });
+      emitMemoryUser(deps.bus, memory_id);
+      return { memory_id, deleted: true, redacted: false };
+    }
+    const deleted = await store.delete(memory_id);
     if (!deleted) throw new RpcError('not_found', 'memory entry not found', 404);
     emitMemoryUser(deps.bus, memory_id);
     return { memory_id, deleted: true, redacted: false };
@@ -766,6 +850,95 @@ export const handleMemoryRestore = async (
   }
   emitMemoryUser(deps.bus, memory_id);
   return { memory_id, restored };
+};
+
+/** `memory.revoke` (D-198 §13) — the owner marks an AGENT's note WRONG. Its text stays,
+ *  shown to the owner; under the overlay it is out of recall as a fact. It and every
+ *  earlier version it replaced are marked under one revoke, under the §10 revision lock.
+ *  Only a live, current agent note; a run cannot be revoked (it is hidden instead). */
+export const handleMemoryRevoke = async (
+  deps: MemoryRpcDeps,
+  args: MemoryRevokeRequest,
+): Promise<MemoryRevokeResult> => {
+  const memory_id = args.memory_id;
+  if (typeof memory_id !== 'string' || memory_id.length === 0) {
+    throw new RpcError('bad_request', 'memory.revoke requires a memory_id', 400);
+  }
+  const store = deps.userMemoryStore;
+  const redactions = deps.redactionStore;
+  if (!store || !redactions) {
+    throw new RpcError('not_configured', 'memory.revoke requires the user_memory and redaction stores', 501);
+  }
+  if (!isUserMemoryId(memory_id)) {
+    if ((await deps.auditLog.get(memory_id)) !== null) {
+      throw new RpcError('unsupported', 'A run can’t be revoked. Hide it from AI instead.', 409);
+    }
+    throw new RpcError('not_found', 'memory entry not found', 404);
+  }
+  const now = (deps.now ?? Date.now)();
+  const versions = await withRevisionLock(store, async () => {
+    const checked = await checkOwnerRevoke(store, redactions, memory_id);
+    if (!checked.ok) {
+      throw checked.refusal === 'not_found'
+        ? new RpcError('not_found', checked.message, 404)
+        : new RpcError('unsupported', checked.message, 409);
+    }
+    return revokeAgentNote({ store, redactions, head: checked.row, now });
+  });
+  emitMemoryUser(deps.bus, memory_id);
+  return { memory_id, versions };
+};
+
+/** `memory.unrevoke` (D-198 §13) — the owner lifts their revoke: every mark that one
+ *  revoke wrote goes, and the note and its earlier versions are as they were. */
+export const handleMemoryUnrevoke = async (
+  deps: MemoryRpcDeps,
+  args: MemoryUnrevokeRequest,
+): Promise<MemoryRevokeResult> => {
+  const memory_id = args.memory_id;
+  if (typeof memory_id !== 'string' || memory_id.length === 0) {
+    throw new RpcError('bad_request', 'memory.unrevoke requires a memory_id', 400);
+  }
+  const store = deps.userMemoryStore;
+  const redactions = deps.redactionStore;
+  if (!store || !redactions) {
+    throw new RpcError('not_configured', 'memory.unrevoke requires the user_memory and redaction stores', 501);
+  }
+  const versions = await withRevisionLock(store, () => unrevokeAgentNote(redactions, memory_id));
+  if (versions === 0) throw new RpcError('not_found', 'That memory is not revoked.', 404);
+  emitMemoryUser(deps.bus, memory_id);
+  return { memory_id, versions };
+};
+
+/** `memory.saves` (D-198 §13) — how many times an agent saved this note's claim, for the
+ *  Delete confirm's "An agent has saved this 3 times. Mark it wrong so it asks you
+ *  first?" (`countAgentSaves`). Read-only. Only an agent's note still in memory: one
+ *  removed or revoked has nothing to offer. */
+export const handleMemorySaves = async (
+  deps: MemoryRpcDeps,
+  args: MemorySavesRequest,
+): Promise<MemorySavesResult> => {
+  const memory_id = args.memory_id;
+  if (typeof memory_id !== 'string' || memory_id.length === 0) {
+    throw new RpcError('bad_request', 'memory.saves requires a memory_id', 400);
+  }
+  const store = deps.userMemoryStore;
+  if (!store) throw new RpcError('not_configured', 'memory.saves requires the user_memory store', 501);
+  const row = isUserMemoryId(memory_id) ? await store.getRow(memory_id) : null;
+  if (row === null) throw new RpcError('not_found', 'memory entry not found', 404);
+  if (row.origin_actor !== 'contracted_user') {
+    throw new RpcError('unsupported', 'Only a memory an agent saved has saves to count.', 409);
+  }
+  if (deps.redactionStore !== undefined && (await deps.redactionStore.get(memory_id)) !== null) {
+    throw new RpcError('unsupported', 'This memory is no longer in memory.', 409);
+  }
+  const count = await countAgentSaves({
+    store,
+    redactions: deps.redactionStore,
+    ...(deps.readChatSaves !== undefined ? { readChatSaves: deps.readChatSaves } : {}),
+    note: row,
+  });
+  return { memory_id, ...count };
 };
 
 /** `memory.import` — bulk restore / ingest into the `user_memory` store (§5).
@@ -818,7 +991,10 @@ type MemoryRpcMethods =
   | 'memory.delete'
   | 'memory.import'
   | 'memory.restore'
-  | 'memory.replace';
+  | 'memory.replace'
+  | 'memory.revoke'
+  | 'memory.unrevoke'
+  | 'memory.saves';
 
 export const makeMemoryRpcHandlers = (
   deps: MemoryRpcDeps | undefined,
@@ -827,7 +1003,7 @@ export const makeMemoryRpcHandlers = (
   // Registered-client gate at every slice arrow (enforces the owner-only
   // boundary the no-contract-gate read/write relies on).
   return {
-    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import', 'memory.restore', 'memory.replace'],
+    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import', 'memory.restore', 'memory.replace', 'memory.revoke', 'memory.unrevoke', 'memory.saves'],
     handlers: {
       'memory.list': async (args, client) => {
         requireRegisteredClient(client);
@@ -860,6 +1036,18 @@ export const makeMemoryRpcHandlers = (
       'memory.replace': async (args, client) => {
         requireRegisteredClient(client);
         return handleMemoryReplace(deps, args as MemoryReplaceRequest);
+      },
+      'memory.revoke': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleMemoryRevoke(deps, args as MemoryRevokeRequest);
+      },
+      'memory.unrevoke': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleMemoryUnrevoke(deps, args as MemoryUnrevokeRequest);
+      },
+      'memory.saves': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleMemorySaves(deps, args as MemorySavesRequest);
       },
     },
   };

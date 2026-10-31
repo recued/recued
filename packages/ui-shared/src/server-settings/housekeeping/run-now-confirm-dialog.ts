@@ -194,12 +194,14 @@ export const renderHousekeepingRunNowConfirmDialog = (
         <div class="housekeeping-runnow-dialog-actions">
           ${button({
             label: 'Cancel',
+            icon: 'close',
             variant: 'secondary',
             action: 'housekeeping-run-now-cancel',
             disabled: props.state.running,
           })}
           ${button({
             label: props.state.running ? 'Running…' : 'Run now',
+            icon: 'play',
             variant: 'primary',
             action: 'housekeeping-run-now-confirm',
             data: { taskId: task.meta.id },

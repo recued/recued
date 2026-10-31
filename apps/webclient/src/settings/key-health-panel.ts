@@ -75,7 +75,7 @@ import {
   type RotationResult,
   type ServerSystemStatus,
 } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel, type IconName } from '@recued/ui-shared';
 
 import {
   describeKeyfilePosture,
@@ -504,6 +504,7 @@ export const mountKeyHealthPanel = (
 
   const makeButton = (
     label: string,
+    icon: IconName,
     attr: string,
     attrValue: string,
     variant: 'danger' | 'primary' | 'secondary',
@@ -513,7 +514,7 @@ export const mountKeyHealthPanel = (
     const btn = doc.createElement('button');
     btn.setAttribute(attr, attrValue);
     btn.type = 'button';
-    btn.textContent = label;
+    btn.innerHTML = renderActionLabel(icon, label);
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm key-health-btn`;
     if (disabledFlag) btn.disabled = true;
     btn.addEventListener('click', () => {
@@ -577,6 +578,7 @@ export const mountKeyHealthPanel = (
       if (rotateOp !== undefined) {
         const rotateButton = makeButton(
           'Replace it now',
+          'refresh',
           KEY_HEALTH_ROTATE_BTN_ATTR,
           key_class,
           'primary',
@@ -594,6 +596,7 @@ export const mountKeyHealthPanel = (
       }
       const compromiseButton = makeButton(
         'Say it may have leaked',
+        'shield-alert',
         KEY_HEALTH_COMPROMISE_BTN_ATTR,
         key_class,
         'danger',
@@ -710,7 +713,7 @@ export const mountKeyHealthPanel = (
     hint.textContent = loadErrorMessage || 'Check the server is connected, then try again.';
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
-    const retry = makeButton('Retry', KEY_HEALTH_RETRY_BTN_ATTR, '', 'primary', () => {
+    const retry = makeButton('Retry', 'refresh', KEY_HEALTH_RETRY_BTN_ATTR, '', 'primary', () => {
       pendingLoadPromise = runLoad();
     });
     retry.setAttribute('aria-label', 'Retry loading key health');
@@ -778,6 +781,7 @@ export const mountKeyHealthPanel = (
     actions.className = 'key-health-actions';
     const cancelButton = makeButton(
       'Cancel',
+      'close',
       KEY_HEALTH_CANCEL_BTN_ATTR,
       '',
       'secondary',
@@ -793,7 +797,7 @@ export const mountKeyHealthPanel = (
     );
     actions.appendChild(cancelButton);
     actions.appendChild(
-      makeButton('Yes, continue', KEY_HEALTH_CONFIRM_BTN_ATTR, '', 'danger', () => {
+      makeButton('Yes, continue', action.op === 'mark_compromised' ? 'shield-alert' : 'refresh', KEY_HEALTH_CONFIRM_BTN_ATTR, '', 'danger', () => {
         pendingRotatePromise = runRotate(action);
       }),
     );
@@ -868,7 +872,7 @@ export const mountKeyHealthPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
-    const close = makeButton('Close', KEY_HEALTH_CLOSE_BTN_ATTR, '', 'secondary', () => {
+    const close = makeButton('Close', 'close', KEY_HEALTH_CLOSE_BTN_ATTR, '', 'secondary', () => {
       pendingAction = null;
       lastSuccess = null;
       pendingLoadPromise = runLoad();
@@ -904,7 +908,7 @@ export const mountKeyHealthPanel = (
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
     actions.appendChild(
-      makeButton('Back', KEY_HEALTH_BACK_BTN_ATTR, '', 'secondary', () => {
+      makeButton('Back', 'undo', KEY_HEALTH_BACK_BTN_ATTR, '', 'secondary', () => {
         const focusTarget = pendingActionFocus;
         pendingAction = null;
         transitionTo('idle');

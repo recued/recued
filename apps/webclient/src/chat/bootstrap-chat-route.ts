@@ -33,6 +33,7 @@ import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
 import { ANSWER_SOURCES_STYLES, buildAnswerSources } from './source-citations.js';
 import { ANSWER_TEXT_STYLES, renderAnswerText } from './answer-text.js';
+import { formatChatMarkdownExport, type ChatExportFormat } from './transcript-export.js';
 import { createAnswerCodeCopy } from './answer-code-copy.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
@@ -48,6 +49,7 @@ import {
   MAIL_COMPOSE_STYLES,
   REFERENCE_PROVENANCE_STYLES,
   buildReferenceDisclosure,
+  renderActionIcon, renderActionLabel,
   type Upload,
 } from '@recued/ui-shared';
 import { createComposerAttachments } from './composer-attachments.js';
@@ -224,6 +226,8 @@ export const CHAT_ROUTE_SESSION_ACTIONS_ATTR =
   'data-recued-chat-route-session-actions';
 export const CHAT_ROUTE_SESSION_EXPORT_ATTR =
   'data-recued-chat-route-session-export';
+export const CHAT_ROUTE_SESSION_MARKDOWN_EXPORT_ATTR =
+  'data-recued-chat-route-session-export-markdown';
 export const CHAT_ROUTE_SESSION_DELETE_ATTR =
   'data-recued-chat-route-session-delete';
 export const CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR =
@@ -964,6 +968,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   color: var(--danger);
 }
 [${CHAT_ROUTE_SESSION_EXPORT_ATTR}][aria-disabled="true"],
+[${CHAT_ROUTE_SESSION_MARKDOWN_EXPORT_ATTR}][aria-disabled="true"],
 [${CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR}][aria-disabled="true"] {
   cursor: wait;
   opacity: .65;
@@ -1426,6 +1431,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_ATTACH_ATTR}],
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_VOICE_ATTR}],
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_SEND_ATTR}] {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   flex: 0 0 auto;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-model {
@@ -1931,7 +1937,16 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   font-size: 12px;
   color: var(--danger, #c0392b);
 }
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-action,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-more > summary,
+[${CHAT_ROUTE_HOST_ATTR}] [${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] > summary {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] button svg[aria-hidden="true"],
+[${CHAT_ROUTE_HOST_ATTR}] summary svg[aria-hidden="true"] { flex: none; vertical-align: middle; }
 [${CHAT_ROUTE_ATTACH_ATTR}] {
+  display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid var(--border);
   border-radius: var(--chat-radius-control);
   background: var(--surface);
@@ -2829,8 +2844,8 @@ export interface BootstrapChatRouteOptions {
   ) => void;
   /** Clock seam for relative history timestamps and date buckets. */
   now?: () => number;
-  /** Export download seam. Production falls back to a JSON Blob download;
-   * tests/embedders can capture the server-authored bundle directly. */
+  /** Export download seam: the server-authored object for JSON, or rendered
+   * Markdown text for a .md file. Production downloads a Blob in either format. */
   downloadExport?: (
     bundle: unknown,
     filename: string,
@@ -3040,6 +3055,7 @@ const groupChatHistory = (
 
 const chatExportFilename = (
   session: Pick<ChatSessionSummary, 'id' | 'title'>,
+  format: ChatExportFormat,
 ): string => {
   const base = (session.title ?? `chat-${session.id}`)
     .trim()
@@ -3047,7 +3063,7 @@ const chatExportFilename = (
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64);
-  return `${base.length > 0 ? base : 'recued-chat'}.json`;
+  return `${base.length > 0 ? base : 'recued-chat'}.${format === 'markdown' ? 'md' : 'json'}`;
 };
 
 /** Shell-frame Step 3 — lazy-session title from the first words of the
@@ -4182,6 +4198,7 @@ export const bootstrapChatRoute = (
         readonly sessionId: string;
         readonly kind: 'delete-confirm' | 'delete-busy' | 'export-busy' | 'error';
         readonly message?: string;
+        readonly exportFormat?: ChatExportFormat;
       }
     | null = null;
   const historyActionInFlight = (): boolean =>
@@ -4694,10 +4711,16 @@ export const bootstrapChatRoute = (
 
   const downloadExportBundle = async (
     bundle: unknown,
-    filename: string,
+    session: ChatSessionSummary,
+    format: ChatExportFormat,
   ): Promise<void> => {
+    const filename = chatExportFilename(session, format);
+    const markdown = format === 'markdown' ? formatChatMarkdownExport(bundle, {
+      sessionId: session.id,
+      baseUrl: doc.defaultView?.location?.href,
+    }) : null;
     if (opts.downloadExport !== undefined) {
-      await opts.downloadExport(bundle, filename);
+      await opts.downloadExport(markdown ?? bundle, filename);
       return;
     }
     const view = doc.defaultView;
@@ -4710,8 +4733,8 @@ export const bootstrapChatRoute = (
       throw new Error('This browser cannot download your chats.');
     }
     const blob = new BlobCtor(
-      [JSON.stringify(bundle, null, 2)],
-      { type: 'application/json' },
+      [markdown ?? JSON.stringify(bundle, null, 2)],
+      { type: format === 'markdown' ? 'text/markdown;charset=utf-8' : 'application/json' },
     );
     const href = urlApi.createObjectURL(blob);
     const anchor = doc.createElement('a');
@@ -7002,12 +7025,9 @@ export const bootstrapChatRoute = (
       details.setAttribute('aria-label', 'Things you can do here');
       const summary = doc.createElement('summary');
       summary.setAttribute('aria-label', 'More Things you can do here');
-      // ⛔ WAS ALSO '+', THE SAME GLYPH THE ATTACH BUTTON USES, and both are
-      // on screen at once — two controls saying the same thing and meaning
-      // different ones. Only visible by looking at it. This is the overflow
-      // menu, and the session-row actions beside it already spell that idiom
-      // '•••'; '+' now means attach and nothing else.
-      summary.textContent = '•••';
+      summary.title = 'More Things you can do here';
+      // Keep overflow actions distinct from file attachments.
+      summary.innerHTML = renderActionIcon('more');
       details.appendChild(summary);
       const menu = doc.createElement('div');
       menu.className = 'chat-composer-actions chat-composer-actions--menu';
@@ -8117,7 +8137,7 @@ export const bootstrapChatRoute = (
           input.setAttribute('aria-describedby', '');
         }
         input.setAttribute('placeholder', 'Ask Recued...');
-        send.textContent = state.sending ? 'Sending...' : 'Send';
+        send.innerHTML = renderActionLabel('send', state.sending ? 'Sending...' : 'Send');
       } else if (connectedSourceFollowupDraft !== null) {
         const edited = connectedSourceFollowupWasEdited(
           connectedSourceFollowupDraft,
@@ -8258,7 +8278,7 @@ export const bootstrapChatRoute = (
     send.type = 'button';
     send.setAttribute(CHAT_ROUTE_SEND_ATTR, '');
     send.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter');
-    send.textContent = state.sending
+    const sendLabel = state.sending
       ? dataVerificationDiagnosisDraft !== null
         ? 'Asking...'
         : approvedPlanContinuationDraft !== null
@@ -8281,6 +8301,7 @@ export const bootstrapChatRoute = (
           : connectedSourceFollowupDraft === null
             ? 'Send'
             : 'Ask Chat';
+    send.innerHTML = renderActionLabel('send', sendLabel);
     const aiUnavailable = state.aiAvailable === false;
     // ⛔ D-172 P2 — Send WAITS on a climbing upload. Sending now would drop the
     // file silently: only finalized ids ride on `chat.send`, so the message
@@ -8371,7 +8392,8 @@ export const bootstrapChatRoute = (
       attach.setAttribute(CHAT_ROUTE_ATTACH_ATTR, '');
       markAttachmentControl(attach, 'attach');
       attach.setAttribute('aria-label', 'Attach a file');
-      attach.textContent = '+';
+      attach.innerHTML = renderActionIcon('attach');
+      attach.title = 'Attach a file';
       if (state.sending || hasPendingInitialDraft()) attach.disabled = true;
       if (opts.fileListCaller) {
         const menu = doc.createElement('div'); menu.setAttribute('hidden', '');
@@ -9323,7 +9345,8 @@ export const bootstrapChatRoute = (
             actionDetails.setAttribute('aria-label', actionLabel);
             const summary = doc.createElement('summary');
             summary.setAttribute('aria-label', actionLabel);
-            summary.textContent = '•••';
+            summary.title = actionLabel;
+            summary.innerHTML = renderActionIcon('more');
             actionDetails.appendChild(summary);
             const menu = doc.createElement('div');
             menu.className = 'chat-session-action-menu';
@@ -9362,34 +9385,34 @@ export const bootstrapChatRoute = (
               openHistoryActions = actionDetails;
               dismissOpenHistoryActions(true);
             });
-            const exportButton = doc.createElement('button');
-            exportButton.type = 'button';
-            exportButton.className = 'chat-session-action';
-            exportButton.setAttribute(CHAT_ROUTE_SESSION_EXPORT_ATTR, session.id);
-            const exportingThisSession =
-              sessionAction?.sessionId === session.id
-              && sessionAction.kind === 'export-busy';
-            exportButton.textContent = exportingThisSession
-              ? 'Exporting…'
-              : 'Export JSON';
             const historyActionLocked =
               openingSessionId !== null
               || historyRename.session() !== null
               || (sessionAction !== null && sessionAction.kind !== 'error');
             const renameButton = doc.createElement('button'); renameButton.type = 'button'; renameButton.className = 'chat-session-action';
-            renameButton.setAttribute(RENAME_SESSION_ATTR, session.id); renameButton.textContent = 'Rename'; renameButton.disabled = historyActionLocked;
+            renameButton.setAttribute(RENAME_SESSION_ATTR, session.id); renameButton.innerHTML = renderActionLabel('rename', 'Rename'); renameButton.disabled = historyActionLocked;
             renameButton.addEventListener('click', () => { dismissOpenHistoryActions(false); historyRename.open(session); });
             menu.appendChild(renameButton);
-            if (exportingThisSession) {
-              exportButton.setAttribute('aria-disabled', 'true');
-              exportButton.setAttribute('aria-busy', 'true');
-            } else {
-              exportButton.disabled = historyActionLocked;
+            for (const format of ['json', 'markdown'] as const) {
+              const exportButton = doc.createElement('button');
+              exportButton.type = 'button';
+              exportButton.className = 'chat-session-action';
+              exportButton.setAttribute(format === 'markdown'
+                ? CHAT_ROUTE_SESSION_MARKDOWN_EXPORT_ATTR : CHAT_ROUTE_SESSION_EXPORT_ATTR, session.id);
+              const exportingThisFormat = sessionAction?.sessionId === session.id
+                && sessionAction.kind === 'export-busy'
+                && (sessionAction.exportFormat ?? 'json') === format;
+              exportButton.textContent = exportingThisFormat ? 'Exporting…'
+                : format === 'markdown' ? 'Export Markdown' : 'Export JSON';
+              if (exportingThisFormat) {
+                exportButton.setAttribute('aria-disabled', 'true');
+                exportButton.setAttribute('aria-busy', 'true');
+              } else {
+                exportButton.disabled = historyActionLocked;
+              }
+              exportButton.addEventListener('click', () => { void exportSession(session, format); });
+              menu.appendChild(exportButton);
             }
-            exportButton.addEventListener('click', () => {
-              void exportSession(session);
-            });
-            menu.appendChild(exportButton);
             const deleteButton = doc.createElement('button');
             deleteButton.type = 'button';
             deleteButton.className = 'chat-session-action';
@@ -10442,6 +10465,9 @@ export const bootstrapChatRoute = (
               : active?.getAttribute?.(CHAT_ROUTE_SESSION_EXPORT_ATTR)
               === activeHistoryActionsSessionId
               ? 'export' as const
+              : active?.getAttribute?.(CHAT_ROUTE_SESSION_MARKDOWN_EXPORT_ATTR)
+              === activeHistoryActionsSessionId
+              ? 'export-markdown' as const
               : active?.getAttribute?.(CHAT_ROUTE_SESSION_DELETE_ATTR)
                   === activeHistoryActionsSessionId
                 ? 'delete' as const
@@ -10649,6 +10675,8 @@ export const bootstrapChatRoute = (
           ? nextActions.querySelector(
               `[${CHAT_ROUTE_SESSION_EXPORT_ATTR}]`,
             ) as HTMLElement | null
+          : focusedHistoryActions.control === 'export-markdown'
+          ? nextActions.querySelector(`[${CHAT_ROUTE_SESSION_MARKDOWN_EXPORT_ATTR}]`) as HTMLElement | null
           : focusedHistoryActions.control === 'delete'
             ? nextActions.querySelector(
                 `[${CHAT_ROUTE_SESSION_DELETE_ATTR}]`,
@@ -11241,6 +11269,7 @@ export const bootstrapChatRoute = (
     sessionId: string,
     actionAttr:
       | typeof CHAT_ROUTE_SESSION_EXPORT_ATTR
+      | typeof CHAT_ROUTE_SESSION_MARKDOWN_EXPORT_ATTR
       | typeof CHAT_ROUTE_SESSION_DELETE_ATTR,
   ): void => {
     const queryable = routeRoot as unknown as {
@@ -11268,8 +11297,9 @@ export const bootstrapChatRoute = (
     button.focus?.({ preventScroll: true });
   };
 
-  const focusSessionExport = (sessionId: string): void => {
-    focusSessionHistoryAction(sessionId, CHAT_ROUTE_SESSION_EXPORT_ATTR);
+  const focusSessionExport = (sessionId: string, format: ChatExportFormat): void => {
+    focusSessionHistoryAction(sessionId, format === 'markdown'
+      ? CHAT_ROUTE_SESSION_MARKDOWN_EXPORT_ATTR : CHAT_ROUTE_SESSION_EXPORT_ATTR);
   };
 
   const focusSessionDelete = (sessionId: string): void => {
@@ -11278,7 +11308,7 @@ export const bootstrapChatRoute = (
 
   const focusHistoryActionOwner = (): void => {
     if (sessionAction?.kind === 'export-busy') {
-      focusSessionExport(sessionAction.sessionId);
+      focusSessionExport(sessionAction.sessionId, sessionAction.exportFormat ?? 'json');
     } else if (sessionAction?.kind === 'delete-busy') {
       focusSessionDeleteConfirm(sessionAction.sessionId);
     }
@@ -11849,17 +11879,18 @@ export const bootstrapChatRoute = (
 
   const exportSession = async (
     session: ChatSessionSummary,
+    format: ChatExportFormat,
   ): Promise<void> => {
-    if (sessionAction?.kind === 'export-busy') return;
-    sessionAction = { sessionId: session.id, kind: 'export-busy' };
+    if (historyActionInFlight()) return;
+    sessionAction = { sessionId: session.id, kind: 'export-busy', exportFormat: format };
     render();
-    focusSessionExport(session.id);
+    focusSessionExport(session.id, format);
     try {
       const bundle = await opts.conn('chat.session.export', {
         session_id: session.id,
       });
       if (disposed) return;
-      await downloadExportBundle(bundle, chatExportFilename(session));
+      await downloadExportBundle(bundle, session, format);
       if (disposed) return;
       historyAnnouncement = `Exported ${sessionTitle(session)}.`;
       sessionAction = null;
@@ -11870,12 +11901,13 @@ export const bootstrapChatRoute = (
       sessionAction = {
         sessionId: session.id,
         kind: 'error',
+        exportFormat: format,
         message: `Recued could not save this chat to a file. ${classifyRpcError(err).copy}`,
       };
       render();
       // Keep the rejected operation visible and keyboard-owned so retrying
       // does not require rediscovering the row disclosure.
-      focusSessionExport(session.id);
+      focusSessionExport(session.id, format);
     }
   };
 

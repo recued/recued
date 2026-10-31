@@ -450,6 +450,65 @@ const heldConsequence = (
     ? LOCAL_WRITE_CLAUSE
     : tierClause(riskTier);
 
+/** D-335 slice B — what a held browser click or typing does, on the page the
+ *  Bridge read while the run was held (`preflight_context.browser_target`):
+ *  "On “Inbox” (mail.google.com), this clicks the button “Send”. A click cannot
+ *  be undone." The owner approves the element the page shows, never the one a
+ *  model described, and for typing reads the whole text, which is how a page
+ *  that steered the model into sending something out is caught. Read
+ *  defensively: the target round-trips through JSON, and an older binary may
+ *  have written none.
+ *
+ *  ⛔ NO INDENTED `Label: value` LINE: the approval card reads one as an
+ *  operation argument. The typed text goes on its own line as one quoted
+ *  string, newlines escaped, so nothing in it can become a line of its own. */
+const BROWSER_DOING: Readonly<Record<string, 'clicks' | 'types into'>> = {
+  'dom-click': 'clicks',
+  'dom-write': 'types into',
+};
+
+const heldBrowserLine = (
+  named: string | undefined,
+  target: unknown,
+  args: Record<string, unknown> | undefined,
+): string | undefined => {
+  // Slice C — an opened page has no element yet: the ask shows the whole
+  // address, which is what can carry the owner's data to a site.
+  if (named === 'dom-open') {
+    return typeof args?.address === 'string'
+      ? `This opens a new tab in your browser at this address:\n${JSON.stringify(args.address)}`
+      : undefined;
+  }
+  const doing = named !== undefined && Object.hasOwn(BROWSER_DOING, named) ? BROWSER_DOING[named] : undefined;
+  if (doing === undefined || target === null || typeof target !== 'object') return undefined;
+  const read = target as Record<string, unknown>;
+  if (typeof read.site !== 'string') return undefined;
+  const quoted = (text: string) => `“${text}”`;
+  let head: string;
+  if (typeof read.unread === 'string') {
+    const element = typeof args?.ref === 'string' ? `ref ${args.ref}`
+      : typeof args?.selector === 'string' ? quoted(args.selector) : 'an element';
+    // A call on every site (the Browser Toolkit's) names none until the page is read.
+    const where = read.site !== '' ? `On ${read.site}` : 'In your browser';
+    head = `${where}, this ${doing} ${element}. It could not be shown here: ${read.unread.replace(/\.$/, '')}.`;
+  } else if (read.site !== '' && typeof read.title === 'string' && typeof read.role === 'string'
+    && typeof read.label === 'string') {
+    const page = read.title !== '' ? `${quoted(read.title)} (${read.site})` : read.site;
+    const element = read.label !== '' ? `the ${read.role} ${quoted(read.label)}` : `a ${read.role}`;
+    head = `On ${page}, this ${doing} ${element}.`;
+  } else {
+    return undefined;
+  }
+  if (doing === 'clicks') return `${head} A click cannot be undone.`;
+  if (typeof args?.value !== 'string') return head;
+  if (read.protected === true) {
+    return `${head} The text is not shown here, because the field is for a password, a sign-in code or a card.`;
+  }
+  const submit = typeof args.submit_selector === 'string' && args.submit_selector !== ''
+    ? '\nIt then presses Enter to send it.' : '';
+  return `${head} The text:\n${JSON.stringify(args.value)}${submit}`;
+};
+
 /** D-329 — who proposed a held Tier-1 write, in the owner's words: their own chat in the
  *  app, their own chat on a messenger, or an AI agent (an AI app, or anyone acting under a
  *  contract; a door's starter is named on its own line, `startedByPhrase`). The owner reads
@@ -1029,10 +1088,17 @@ export const buildPreflightAsk = (args: {
       ? `Approve: ${subject}${scope}${tierTitleWords(context.risk_tier)}`
       : 'Approval required';
 
+  // D-335 slice B — the page and element a held browser call acts on, for one
+  // call only: a batch or a foreach cover lists its own items.
+  const browserLine = count === 1 && moreArgs.length === 0
+    ? heldBrowserLine(named, checkpoint.preflight_context?.browser_target, heldArgs)
+    : undefined;
+  const browserBlock = browserLine !== undefined ? `\n\n${browserLine}` : '';
+
   const message: NotificationMessage = {
     title,
     text:
-      `${opening}\n${held}${technicalLine}${startedByLine}${egressBoundLine}${reasonLine}`
+      `${opening}\n${held}${technicalLine}${startedByLine}${browserBlock}${egressBoundLine}${reasonLine}`
       + `${resourceBlock}${clampWarning}${itemsBlock}${grantBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {

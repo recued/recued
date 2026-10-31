@@ -138,6 +138,27 @@ export const OUTBOUND_SEND_INGREDIENT_SLUGS: ReadonlySet<string> = new Set([
 export const isOutboundSendSlug = (slug: string): boolean =>
   OUTBOUND_SEND_INGREDIENT_SLUGS.has(stripCorePrefix(slug));
 
+/** D-335 slice B — the kernel ingredients that type or click on a web page in
+ *  the owner's browser, signed in as them. Like a send, each acts outside
+ *  Recued under the owner's identity, and a click can send, post, pay or
+ *  delete. So the owner's own attended runs (their chat, the app, a messenger),
+ *  which the owner ceiling would otherwise admit, ask for each one as they do
+ *  for a send; a contracted AI app already asks through its low ceiling, and a
+ *  scheduled run is left to its channel's ceiling, as a send's is.
+ *
+ *  It reports `review_send`: the closed `lift_reason` list does not grow for
+ *  it, as it did not for `peer-ask`, and `ingredient_slug` tells it apart. */
+export const BROWSER_ACTION_INGREDIENT_SLUGS: ReadonlySet<string> = new Set([
+  'dom-write',
+  'dom-click',
+  // Slice C — opening a page asks for its address as the owner, and an
+  // address can carry data out.
+  'dom-open',
+]);
+
+export const isBrowserActionSlug = (slug: string): boolean =>
+  BROWSER_ACTION_INGREDIENT_SLUGS.has(stripCorePrefix(slug));
+
 // ════════════════════════════════════════════════════════════════
 // Trust-ceiling resolution
 // ════════════════════════════════════════════════════════════════
@@ -369,7 +390,7 @@ const liftOutboundSend = (
 ): CatalogOperationResolution => {
   if (res.verdict !== 'admit') return res;
   if (source.actor !== 'user_self') return res;
-  if (!isOutboundSendSlug(slug)) return res;
+  if (!isOutboundSendSlug(slug) && !isBrowserActionSlug(slug)) return res;
   return {
     ...res,
     verdict: 'ask',
@@ -609,6 +630,8 @@ const mapResolutionToAdmission = (
           ? 'This puts your question on another server owner\'s screen, so Recued always asks you first.'
           : isOutboundSendSlug(slug)
             ? 'This sends a message to someone outside this server, so Recued always asks you first.'
+            : isBrowserActionSlug(slug)
+              ? 'This acts on a web page in your browser, signed in as you, so Recued always asks you first.'
             : stripCorePrefix(slug) === 'customer-refund-correct'
               ? 'Review the refund reversal, replacement and exact refund balance change before applying it.'
             : stripCorePrefix(slug) === 'customer-invoice-credit-correct'

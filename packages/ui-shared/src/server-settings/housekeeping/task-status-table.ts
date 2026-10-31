@@ -103,6 +103,7 @@ const renderRow = (
       ${showRunNow
         ? `<td class="housekeeping-task-action"${tableRole(responsive, 'cell')}>${button({
             label: 'Run now',
+            icon: 'play',
             ariaLabel: `Run ${status.meta.id} now`,
             size: 'xs',
             action: 'housekeeping-run-now-open',

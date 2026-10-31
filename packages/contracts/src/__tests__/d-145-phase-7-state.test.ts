@@ -20,12 +20,14 @@ import {
   initialMailComposeState,
   openCreateComposeTransition,
   openReplyComposeTransition,
+  openForwardComposeTransition,
   setComposeErrorsTransition,
   setComposeSubmitErrorTransition,
   setComposeSubmittingTransition,
   setComposeValuesTransition,
   type MailComposeState,
   type MailReplyContext,
+  type MailForwardContext,
 } from '../index.js';
 
 const replyContext: MailReplyContext = {
@@ -77,6 +79,19 @@ describe('D-145 PA7 — openCreateComposeTransition', () => {
 });
 
 describe('D-145 PA7 — openReplyComposeTransition', () => {
+  it('opens a reviewed group reply in the existing reply mode with no blind recipients', () => {
+    const context = { ...replyContext, mailbox_address: 'owner@example.test', original_message: {
+      ...replyContext.original_message, to: ['owner@example.test'], cc: ['copy@example.test'],
+    } };
+    const state = openReplyComposeTransition(initialMailComposeState(), context, 'all');
+    expect(state.dialog).toMatchObject({ mode: 'reply', reply_all: true, values: {
+      to: ['alice@example.com'], cc: ['copy@example.test'], bcc: [],
+      in_reply_to: 'mail-123', sender_source: 'recued.mail_message',
+    } });
+    const closed = initialMailComposeState();
+    expect(openReplyComposeTransition(closed, replyContext, 'all')).toBe(closed);
+  });
+
   it('opens a dialog with reply-context applied', () => {
     const state = openReplyComposeTransition(initialMailComposeState(), replyContext);
     expect(state.dialog?.mode).toBe('reply');
@@ -85,6 +100,21 @@ describe('D-145 PA7 — openReplyComposeTransition', () => {
     expect(state.dialog?.values.in_reply_to).toBe('mail-123');
     expect(state.dialog?.values.sender_source).toBe('recued.mail_message');
     expect(state.dialog?.values.body).toBe('');
+  });
+});
+
+describe('D-145 PA7 — openForwardComposeTransition', () => {
+  it('opens a new conversation and keeps attachment omissions visible, refusing partial originals', () => {
+    const context: MailForwardContext = { original_source_id: 'work', mailbox_address: 'owner@example.test',
+      original_message: { from: 'sender@example.test', to: ['owner@example.test'], cc: [], subject: 'A request',
+        received_at: 1, body: 'Original text', body_truncated: false, has_attachments: true } };
+    const closed = initialMailComposeState();
+    const state = openForwardComposeTransition(closed, context);
+    expect(state.dialog).toMatchObject({ mode: 'forward', original_attachments_omitted: true,
+      values: { to: [], cc: [], bcc: [], in_reply_to: null, attachments: [], subject: 'Fwd: A request' } });
+    expect(state.dialog?.values.references).toBeUndefined();
+    context.original_message.body_truncated = true;
+    expect(openForwardComposeTransition(closed, context)).toBe(closed);
   });
 });
 

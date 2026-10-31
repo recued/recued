@@ -1,4 +1,5 @@
 import type { ChatDeliverySnapshot } from '@recued/contracts';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { test, expect, type Browser } from '@playwright/test';
 import { build } from 'esbuild';
 import { mkdir, rm } from 'node:fs/promises';
@@ -48,7 +49,7 @@ const setup = async (browser: Browser, data = false, messenger = false) => {
       let release!: () => void; heldRpcs.set(method, new Promise<void>(done => { release = done; }));
       const resume = (): void => { heldRpcs.delete(method); release(); }; releases.push(resume); return resume;
     },
-    pick: async () => { await page.getByRole('button', { name: 'Attach a file', exact: true }).click(); await page.getByRole('button', { name: 'Choose from Files', exact: true }).click(); },
+    pick: async () => { await clickActionGlyph(page, page.getByRole('button', { name: 'Attach a file', exact: true })); await page.getByRole('button', { name: 'Choose from Files', exact: true }).click(); },
     close: async () => { for (const release of releases) release(); fixture.release(); await context.close(); fixture.close(); },
   };
 };

@@ -23,11 +23,7 @@ import { activeBlockingModal } from './blocking-modal.js';
 /** `aria-keyshortcuts` spelling for any control that advertises this chord. */
 export const UNIVERSAL_SEARCH_SHORTCUT = 'Control+/ Meta+/';
 
-/** How to SAY the chord to a person, per platform. ⛔ Exported because a chord
- *  with no visible spelling is a chord nobody finds: the Run palette earns its
- *  ⌘K by putting it on a top-bar trigger, and search has no such trigger — the
- *  Find chip is where this one has to be said. Keeping the spelling here means
- *  the chord and the label it advertises cannot drift apart. */
+/** Shared platform spelling for the shell Search launcher and Chat Find chip. */
 export const universalSearchShortcutLabel = (doc: Document): string => {
   try {
     const platform = doc.defaultView?.navigator?.platform

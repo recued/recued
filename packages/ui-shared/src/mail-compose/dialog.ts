@@ -28,6 +28,7 @@ import type {
   MailSenderSourceOption,
 } from '@recued/contracts';
 import { e } from '../template.js';
+import { renderActionIcon } from '../icon-render.js';
 import { renderForm } from '../form-renderer/render.js';
 import { renderAiAssistSidebar } from './ai-assist-sidebar.js';
 import type { AiAssistSidebarProps } from './ai-assist-sidebar.js';
@@ -117,8 +118,9 @@ export interface MailComposeDialogProps {
   replySubject?: string;
 }
 
-const dialogTitle = (mode: MailComposeDialogState['mode']): string =>
-  mode === 'reply' ? 'Reply' : 'New mail';
+const dialogTitle = (state: MailComposeDialogState): string =>
+  state.mode === 'reply' ? state.reply_all ? 'Reply all' : 'Reply'
+    : state.mode === 'forward' ? 'Forward' : 'New mail';
 
 /** D-264 — locator for the draft-only notice. Exported so a test finds it the
  *  way the DOM does rather than matching prose that can be reworded. */
@@ -221,13 +223,13 @@ export const renderMailComposeDialog = (
         data-mode="${e(props.state.mode)}"
       >
         <header class="mail-compose-header">
-          <h2 class="mail-compose-title" id="mail-compose-title">${e(dialogTitle(props.state.mode))}</h2>
+          <h2 class="mail-compose-title" id="mail-compose-title">${e(dialogTitle(props.state))}</h2>
           <button
             type="button"
             class="mail-compose-close"
             data-action="close-mail-compose"
             aria-label="Close"${closeLockAttr}
-          >×</button>
+          >${renderActionIcon('close')}</button>
         </header>
         ${props.discardConfirm ? `<div class="mail-compose-discard" role="alert"><p>Discard this unsaved draft?</p><button type="button" data-action="keep-mail-compose">Keep editing</button><button type="button" data-action="discard-mail-compose">Discard draft</button></div>` : ''}
         <div class="mail-compose-body">
@@ -241,6 +243,7 @@ export const renderMailComposeDialog = (
               ${fields('copies')}
             </details>
             ${fields('message')}
+            ${props.state.original_attachments_omitted ? '<p role="status" class="mail-compose-reply-context">Original attachments are not added automatically. Add any files you want to forward below.</p>' : ''}
             ${renderMailComposeAttachmentPicker({
               attachment_ids: props.state.values.attachments,
               known: props.attachments ?? [],
@@ -264,13 +267,13 @@ export const renderMailComposeDialog = (
                 })()}
                 <p>You will review the complete message and timing before approving the scheduled send.</p>` : ''}` : ''}
             <footer class="mail-compose-actions">
-              ${props.savedDraft ? `<button type="button" data-action="save-mail-draft"${draftAttr}>Save draft</button>
+              ${props.savedDraft ? `<button type="button" data-action="save-mail-draft"${draftAttr}>${renderActionIcon('save')}<span>Save draft</span></button>
                 <button type="button" data-action="save-mail-draft-to-mailbox"${mailboxAttr} title="${
                   cannotSaveToMailbox
                     ? 'This mailbox cannot keep drafts in its own Drafts folder.'
                     : 'Save a copy into this account&#39;s Drafts folder so you can finish it in your mail app.'
-                }">${props.savedDraft.mailboxStatus ?? 'Save to mailbox'}</button>
-                <button type="button" data-action="schedule-mail-draft"${submittingAttr}>${props.savedDraft.scheduling ? 'Review scheduled send' : 'Schedule…'}</button>` : ''}
+                }">${renderActionIcon('mailbox')}<span>${props.savedDraft.mailboxStatus ?? 'Save to mailbox'}</span></button>
+                <button type="button" data-action="schedule-mail-draft"${submittingAttr}>${renderActionIcon('schedule')}<span>${props.savedDraft.scheduling ? 'Review scheduled send' : 'Schedule…'}</span></button>` : ''}
               <button
                 type="button"
                 class="mail-compose-cancel"
@@ -280,7 +283,7 @@ export const renderMailComposeDialog = (
                 type="button"
                 class="mail-compose-submit"
                 data-action="submit-mail-compose"${submittingAttr}
-              >${e(submitLabel)}</button>
+              >${renderActionIcon('send')}<span>${e(submitLabel)}</span></button>
             </footer>
             </fieldset>
           </form>

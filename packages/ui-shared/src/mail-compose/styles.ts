@@ -310,9 +310,13 @@ export const MAIL_COMPOSE_STYLES = `
   .mail-compose-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
   .mail-compose-body { grid-template-columns: minmax(0, 1fr); }
   .mail-compose-ai-assist { grid-row: 1; border-left: 0; border-bottom: 1px solid var(--border); padding: 0 0 16px; }
+  [data-mode="forward"] .mail-compose-ai-assist { grid-row: auto; border-top: 1px solid var(--border); border-bottom: 0; padding: 16px 0 0; }
   .mail-compose-ai-actions { flex-direction: row; flex-wrap: wrap; }
   .mail-compose-ai-actions button { flex: 1 1 auto; text-align: center; }
   .mail-compose-actions { flex-wrap: wrap; }
   .mail-compose-actions > button { min-height: 44px; }
+}
+.mail-compose-actions > button, .mail-compose-attachment-add, .mail-compose-close {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
 `;

@@ -236,15 +236,20 @@ describe('D-169 P0 Slice 4 - filterEligible', () => {
     expect(filterEligible([bridge], target_pattern)).toEqual([]);
   });
 
-  it('uses v1 exact-membership semantics rather than wildcard overlap matching', () => {
-    const bridge = buildRecord(
-      'bridge-a',
-      1_000,
-      undefined,
-      capabilitiesWithOrigins(['*://*.hubspot.com/*']),
-    );
+  // D-335 slice G — a grant covers the targets inside it. Exact membership
+  // left a Bridge the owner allowed on every site eligible for no step aimed
+  // at one site.
+  it('admits a bridge whose granted origins cover the target, not only list it', () => {
+    const subdomains = buildRecord('bridge-a', 1_000, undefined, capabilitiesWithOrigins(['*://*.hubspot.com/*']));
+    const everySite = buildRecord('bridge-b', 2_000, undefined, capabilitiesWithOrigins(['*://*/*']));
+    expect(bridgeIds(filterEligible([subdomains, everySite], target_pattern))).toEqual(['bridge-a', 'bridge-b']);
+    expect(bridgeIds(filterEligible([subdomains, everySite], '*://*/*'))).toEqual(['bridge-b']);
+  });
 
-    expect(filterEligible([bridge], target_pattern)).toEqual([]);
+  it('never admits a bridge whose grant is narrower than the target', () => {
+    const bridge = buildRecord('bridge-a', 1_000, undefined, capabilitiesWithOrigins([target_pattern]));
+    expect(filterEligible([bridge], '*://*.hubspot.com/*')).toEqual([]);
+    expect(filterEligible([bridge], '*://*/*')).toEqual([]);
   });
 });
 
@@ -520,7 +525,21 @@ describe('D-169 P0 Slice 4 - dispatcher eligibility branching', () => {
     }
   });
 
-  it('returns bridge_online capacity_gap when connected bridges are not eligible', async () => {
+  // D-335 slice G — what a run reads to refuse a page step before it starts.
+  it('counts the Bridges connected now', () => {
+    const setup = buildSetup();
+    const dispatcher = buildDispatcher(setup);
+    expect(dispatcher.connectedBridges?.()).toBe(0);
+    setup.registry.attach(buildRecord('bridge-a', 1_000));
+    setup.registry.attach(buildRecord('bridge-b', 2_000));
+    expect(dispatcher.connectedBridges?.()).toBe(2);
+    setup.registry.detach('bridge-a');
+    expect(dispatcher.connectedBridges?.()).toBe(1);
+  });
+
+  // D-335 slice G — a Bridge is connected, so "no Bridge" would send the owner
+  // looking for the wrong thing: the gap names the site it is not allowed on.
+  it('returns a site_not_granted capacity_gap, naming the target, when connected bridges are not eligible', async () => {
     const setup = buildSetup();
     setup.registry.attach(buildRecord(
       'bridge-a',
@@ -533,7 +552,8 @@ describe('D-169 P0 Slice 4 - dispatcher eligibility branching', () => {
 
     expect(out.kind).toBe('capacity_gap');
     if (out.kind === 'capacity_gap') {
-      expect(out.reason).toBe('bridge_online');
+      expect(out.reason).toBe('site_not_granted');
+      expect(out.capacity_gap).toEqual({ kind: 'permission_missing', permission: target_pattern });
       expect(out.attempts).toBe(0);
     }
     expect(setup.send).not.toHaveBeenCalled();
@@ -852,5 +872,68 @@ describe('D-169 P0 Slice 4 - AggregateCapacityGap contract shape', () => {
       gap_reason: { kind: 'tab_unavailable', url_pattern: target_pattern },
     });
     expect(readonly_bridges[1].gap_reason.kind).toBe('logged_in');
+  });
+});
+
+// D-335 — a Bridge lists what it runs (`supported_actions`). One that predates
+// `inspect` would answer "unsupported" after the send, so the dispatcher says
+// "update the Bridge" before, and still sends it what it has always run.
+describe('D-335 - a Bridge is only sent an action it runs', () => {
+  const current: BridgeCapabilityProfile = { ...sample_capabilities,
+    supported_actions: ['read_dom', 'click', 'fill', 'inspect'] };
+  const inspect = buildRequest({ action: 'inspect', expects_output_keys: ['page', 'url', 'title', 'html', 'truncated'] });
+  const withDocument = (capabilities: BridgeCapabilityProfile): BridgeCapabilityProfile => ({ ...capabilities,
+    dom_documents: { version: 1, documents: [{ tab_id: 4, document_id: 'D4', url: 'https://app.hubspot.com/deals' }] } });
+
+  it('asks for an update instead of sending inspect to a Bridge that predates it', async () => {
+    const setup = buildSetup({ onSend: respondByBridge({ old: okResult({ text: 'still read' }) }) });
+    setup.registry.attach(buildRecord('old', 1_000, 'Old'));
+    const dispatcher = buildDispatcher(setup);
+    expect(await dispatcher.dispatch(inspect)).toMatchObject({ kind: 'capacity_gap', reason: 'bridge_update_required',
+      attempts: 0 });
+    expect(setup.send).not.toHaveBeenCalled();
+    expect(await dispatcher.dispatch(buildRequest())).toMatchObject({ kind: 'completed', bridge_client_token_id: 'old' });
+  });
+
+  it('sends inspect to the Bridge that runs it, passing over an older one tried first', async () => {
+    const setup = buildSetup({ onSend: respondByBridge({ new: okResult({ html: '<body></body>' }) }) });
+    setup.registry.attach(buildRecord('old', 2_000, 'Old'));
+    setup.registry.attach(buildRecord('new', 1_000, 'New', current));
+    expect(await buildDispatcher(setup).dispatch(inspect)).toMatchObject({ kind: 'completed',
+      bridge_client_token_id: 'new' });
+    expect(setup.sent.map(row => row.client_token_id)).toEqual(['new']);
+  });
+
+  it('asks for an update when the Bridge named by label predates the action', async () => {
+    const setup = buildSetup();
+    setup.registry.attach(buildRecord('old', 1_000, 'Old'));
+    expect(await buildDispatcher(setup).dispatch({ ...inspect, preferred_bridge_label: 'Old' }))
+      .toMatchObject({ kind: 'capacity_gap', reason: 'bridge_update_required' });
+    expect(setup.send).not.toHaveBeenCalled();
+  });
+
+  // Slice B — fill and click took a page and a ref in the Bridge that added `describe`.
+  it('sends a write by page or ref only to a Bridge that runs describe', async () => {
+    const sliceA: BridgeCapabilityProfile = { ...sample_capabilities,
+      supported_actions: ['read_dom', 'click', 'fill', 'inspect'] };
+    const setup = buildSetup({ onSend: respondByBridge({ old: okResult({ filled: true }) }) });
+    setup.registry.attach(buildRecord('old', 1_000, 'Old', sliceA));
+    const dispatcher = buildDispatcher(setup);
+    const fill = (args: Record<string, unknown>) => buildRequest({ action: 'fill', args, expects_output_keys: ['filled'] });
+    expect(await dispatcher.dispatch(fill({ page: '7:DOC7', ref: 'e5', value: 'x' })))
+      .toMatchObject({ kind: 'capacity_gap', reason: 'bridge_update_required' });
+    expect(setup.send).not.toHaveBeenCalled();
+    expect(await dispatcher.dispatch(fill({ selector: '#name', value: 'x' })))
+      .toMatchObject({ kind: 'completed', bridge_client_token_id: 'old' });
+  });
+
+  it('never prepares a reviewed inspect on a Bridge that cannot run it', () => {
+    const older = buildSetup();
+    older.registry.attach(buildRecord('old', 1_000, 'Old', withDocument(sample_capabilities)));
+    expect(buildDispatcher(older).describeDocument!(inspect)).toBeNull();
+    const newer = buildSetup();
+    newer.registry.attach(buildRecord('new', 1_000, 'New', withDocument(current)));
+    expect(buildDispatcher(newer).describeDocument!(inspect)).toMatchObject({ client_token_id: 'new',
+      document: { document_id: 'D4' } });
   });
 });

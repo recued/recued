@@ -50,7 +50,7 @@ import type {
 //   🔑 Output is unchanged for every current call site: `'` and `&#39;` render
 //   identically as text and both are inert inside `"..."`. Strictly more
 //   escaping, same pixels.
-import { escapeHtml } from '@recued/ui-shared';
+import { escapeHtml, renderActionLabel } from '@recued/ui-shared';
 import type { Conn } from '@recued/contracts';
 import type { ServerRpcRegistry } from '@recued/contracts';
 
@@ -215,7 +215,7 @@ const renderDetails = (record_id: string, details: RecordDetails): string => {
   if (details.state === 'error') {
     return `<div class="reception-records-details" id="${domId}" ${RECEPTION_RECORDS_DETAILS_ATTR}="${id}">`
       + `<p class="reception-records-details-error" role="alert">${escapeHtml(details.message)} `
-      + `<button type="button" class="reception-records-details-button" ${RECEPTION_RECORDS_DETAILS_RETRY_ATTR}="${id}">Try again</button></p>`
+      + `<button type="button" class="reception-records-details-button" ${RECEPTION_RECORDS_DETAILS_RETRY_ATTR}="${id}">${renderActionLabel('refresh', 'Try again')}</button></p>`
       + '</div>';
   }
   const { result } = details;
@@ -247,7 +247,7 @@ const renderRow = (row: ReceptionRecordRowModel, details: RecordDetails | undefi
     ? `<span class="reception-records-endpoint">${escapeHtml(row.form_name)}</span>`
     : `<span class="reception-records-endpoint">Endpoint <code>${endpointId}</code></span>`;
   const expanded = details !== undefined;
-  const toggle = `<button type="button" class="reception-records-details-button" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="${escapeHtml(detailsDomId(row.record_id))}" ${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="${recordId}">${expanded ? 'Hide details' : 'Show details'}</button>`;
+  const toggle = `<button type="button" class="reception-records-details-button" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="${escapeHtml(detailsDomId(row.record_id))}" ${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="${recordId}">${renderActionLabel(expanded ? 'close' : 'info', expanded ? 'Hide details' : 'Show details')}</button>`;
   return `
     <li class="reception-records-row${waitingClass}" ${RECEPTION_RECORDS_ROW_ATTR}="${recordId}">
       <div class="reception-records-row-head">
@@ -311,6 +311,9 @@ export const RECEPTION_RECORDS_STYLES = `
 .reception-records-error { padding: 10px 12px; border: 1px solid var(--danger); border-radius: 9px; font-size: 13px; }
 .reception-records-details-button { box-sizing: border-box; min-height: 36px; margin-left: auto; padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); font-size: 12px; font-weight: 640; cursor: pointer; }
 .reception-records-details-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reception-records-details-button, .reception-records-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.reception-records-details-button > svg, .reception-records-action > svg { flex-shrink: 0; }
+.reception-records-details-button[hidden], .reception-records-action[hidden] { display: none; }
 .reception-records-details { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 13px; }
 .reception-records-answers { display: grid; gap: 6px; margin: 0; }
 .reception-records-answer { display: grid; grid-template-columns: minmax(0, 160px) minmax(0, 1fr); gap: 10px; }
@@ -448,7 +451,7 @@ export const mountReceptionRecordsPanel = (
     const retryLabel = retrying ? 'Retrying…' : 'Retry';
     const errorBlock =
       error !== null
-        ? `<div class="reception-records-error" role="${errorRole}" ${RECEPTION_RECORDS_ERROR_ATTR}>${escapeHtml(error)} <button type="button" ${RECEPTION_RECORDS_RETRY_ATTR}${retryStateAttrs}>${retryLabel}</button></div>`
+        ? `<div class="reception-records-error" role="${errorRole}" ${RECEPTION_RECORDS_ERROR_ATTR}>${escapeHtml(error)} <button type="button" class="reception-records-action" ${RECEPTION_RECORDS_RETRY_ATTR}${retryStateAttrs}>${renderActionLabel('refresh', retryLabel)}</button></div>`
         : '';
     // ⛔ Truncation is SURFACED, never swallowed — on a reception list "I see all of them" has
     // to be either true or visibly false (contract note on `truncated`).
@@ -576,7 +579,8 @@ export const mountReceptionRecordsPanel = (
   };
 
   const onClick = (ev: Event): void => {
-    const target = ev.target as HTMLElement | null;
+    const origin = ev.target as HTMLElement | null;
+    const target = origin?.closest?.('button') ?? origin;
     if (target === null || typeof target.getAttribute !== 'function') return;
     const toggleId = target.getAttribute(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR);
     if (toggleId !== null) {

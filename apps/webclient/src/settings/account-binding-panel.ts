@@ -25,7 +25,7 @@ import type {
   ProConvenienceItem,
   ProConvenienceStatusResponse,
 } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel } from '@recued/ui-shared';
 
 import type {
   AccountBindingAuthSession,
@@ -547,7 +547,7 @@ export const mountAccountBindingPanel = (
       connect.setAttribute(ACCOUNT_BINDING_CONNECT_ATTR, '');
       const connecting = state.action === 'connecting';
       const user = signedInUser();
-      connect.textContent = connecting
+      const connectLabel = connecting
         ? 'Connecting…'
         : state.bindingStatus.status !== 'bound'
           ? 'Connect your recued.com account'
@@ -556,6 +556,11 @@ export const mountAccountBindingPanel = (
             : addressHeldElsewhere()
               ? 'Make this your public server'
               : 'Check the connection again';
+      connect.innerHTML = renderActionLabel(
+        state.bindingStatus.status === 'bound' && !boundToAnotherAccount() && !addressHeldElsewhere()
+          ? 'refresh' : 'link',
+        connectLabel,
+      );
       if (addressHeldElsewhere()) connect.setAttribute('aria-describedby', ACCOUNT_BINDING_PUBLIC_SERVER_NOTE_ID);
       if (isBusy()) connect.setAttribute('aria-disabled', 'true');
       if (connecting) connect.setAttribute('aria-busy', 'true');
@@ -567,7 +572,7 @@ export const mountAccountBindingPanel = (
         const unbind = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
         unbind.setAttribute('type', 'button');
         unbind.setAttribute(ACCOUNT_BINDING_UNBIND_ATTR, '');
-        unbind.textContent = 'Disconnect';
+        unbind.innerHTML = renderActionLabel('unlink', 'Disconnect');
         unbind.disabled = isBusy();
         unbind.addEventListener('click', () => {
           openUnbindConfirmation(true);
@@ -583,7 +588,7 @@ export const mountAccountBindingPanel = (
       signOutBtn.setAttribute('type', 'button');
       signOutBtn.setAttribute(ACCOUNT_BINDING_SIGNOUT_ATTR, '');
       const signingOut = state.action === 'signing-out';
-      signOutBtn.textContent = signingOut ? 'Signing out…' : 'Sign out';
+      signOutBtn.innerHTML = renderActionLabel('sign-out', signingOut ? 'Signing out…' : 'Sign out');
       if (isBusy()) signOutBtn.setAttribute('aria-disabled', 'true');
       if (signingOut) signOutBtn.setAttribute('aria-busy', 'true');
       signOutBtn.addEventListener('click', () => {
@@ -601,7 +606,7 @@ export const mountAccountBindingPanel = (
     dashboard.setAttribute('target', '_blank');
     dashboard.setAttribute('rel', 'noopener noreferrer');
     dashboard.setAttribute(ACCOUNT_BINDING_DASHBOARD_LINK_ATTR, '');
-    dashboard.textContent = 'Open dashboard';
+    dashboard.innerHTML = renderActionLabel('external-link', 'Open dashboard');
   };
 
   const renderReadRecovery = (parent: HTMLElement): void => {
@@ -610,9 +615,9 @@ export const mountAccountBindingPanel = (
     const retry = append(doc, parent, 'button', 'rx-btn rx-btn-secondary');
     retry.setAttribute('type', 'button');
     retry.setAttribute(ACCOUNT_BINDING_RETRY_ATTR, '');
-    retry.textContent = refreshing
+    retry.innerHTML = renderActionLabel('refresh', refreshing
       ? 'Checking your account again…'
-      : 'Check your account again';
+      : 'Check your account again');
     if (refreshing) {
       retry.setAttribute('aria-disabled', 'true');
       retry.setAttribute('aria-busy', 'true');
@@ -643,7 +648,7 @@ export const mountAccountBindingPanel = (
     const destination = user !== null && user.id === state.conflict.incoming.account_id
       ? user.email
       : 'the account asking';
-    confirm.textContent = confirming ? 'Moving…' : `Yes, move it to ${destination}`;
+    confirm.innerHTML = renderActionLabel('link', confirming ? 'Moving…' : `Yes, move it to ${destination}`);
     if (isBusy()) confirm.setAttribute('aria-disabled', 'true');
     if (confirming) confirm.setAttribute('aria-busy', 'true');
     confirm.addEventListener('click', () => {
@@ -652,7 +657,7 @@ export const mountAccountBindingPanel = (
     const cancel = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
     cancel.setAttribute('type', 'button');
     cancel.setAttribute(ACCOUNT_BINDING_CANCEL_REBIND_ATTR, '');
-    cancel.textContent = 'Cancel';
+    cancel.innerHTML = renderActionLabel('close', 'Cancel');
     if (isBusy()) cancel.setAttribute('aria-disabled', 'true');
     cancel.addEventListener('click', () => cancelRebind(true));
   };
@@ -676,7 +681,7 @@ export const mountAccountBindingPanel = (
     confirm.setAttribute('type', 'button');
     confirm.setAttribute(ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR, '');
     const unbinding = state.action === 'unbinding';
-    confirm.textContent = unbinding ? 'Disconnecting…' : 'Disconnect server';
+    confirm.innerHTML = renderActionLabel('unlink', unbinding ? 'Disconnecting…' : 'Disconnect server');
     if (isBusy()) confirm.setAttribute('aria-disabled', 'true');
     if (unbinding) confirm.setAttribute('aria-busy', 'true');
     confirm.addEventListener('click', () => {
@@ -685,7 +690,7 @@ export const mountAccountBindingPanel = (
     const cancel = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
     cancel.setAttribute('type', 'button');
     cancel.setAttribute(ACCOUNT_BINDING_CANCEL_UNBIND_ATTR, '');
-    cancel.textContent = 'Cancel';
+    cancel.innerHTML = renderActionLabel('close', 'Cancel');
     if (isBusy()) cancel.setAttribute('aria-disabled', 'true');
     cancel.addEventListener('click', () => cancelUnbind(true));
   };
@@ -836,7 +841,7 @@ export const mountAccountBindingPanel = (
       manage.setAttribute('target', '_blank');
       manage.setAttribute('rel', 'noopener noreferrer');
       manage.setAttribute(ACCOUNT_BINDING_PUBLISHING_LINK_ATTR, '');
-      manage.textContent = 'Manage in dashboard';
+      manage.innerHTML = renderActionLabel('external-link', 'Manage in dashboard');
     } else {
       const claim = append(doc, card, 'p', 'account-bind-message');
       claim.setAttribute(ACCOUNT_BINDING_FREE_CLAIM_ATTR, '');
@@ -851,7 +856,7 @@ export const mountAccountBindingPanel = (
       link.setAttribute('target', '_blank');
       link.setAttribute('rel', 'noopener noreferrer');
       link.setAttribute(ACCOUNT_BINDING_PUBLISHING_LINK_ATTR, '');
-      link.textContent = 'Pick your name in the dashboard';
+      link.innerHTML = renderActionLabel('external-link', 'Pick your name in the dashboard');
     }
   };
 
@@ -895,7 +900,7 @@ export const mountAccountBindingPanel = (
     cta.setAttribute('target', '_blank');
     cta.setAttribute('rel', 'noopener noreferrer');
     cta.setAttribute(ACCOUNT_BINDING_PRO_SUBSCRIBE_ATTR, '');
-    cta.textContent = entitled ? 'Manage billing in dashboard' : 'Subscribe in dashboard';
+    cta.innerHTML = renderActionLabel('external-link', entitled ? 'Manage billing in dashboard' : 'Subscribe in dashboard');
   };
 
   function render(): void {
@@ -1322,6 +1327,8 @@ export const ACCOUNT_BINDING_PANEL_STYLES = `
   text-decoration: none;
   font-size: 13px;
 }
+[${ACCOUNT_BINDING_PANEL_ATTR}] .account-bind-dashboard-link > svg { flex-shrink: 0; }
+[${ACCOUNT_BINDING_PANEL_ATTR}] .account-bind-dashboard-link[hidden] { display: none; }
 [${ACCOUNT_BINDING_PANEL_ATTR}] .account-bind-dashboard-link:hover {
   text-decoration: underline;
 }
@@ -1336,6 +1343,7 @@ export const ACCOUNT_BINDING_PANEL_STYLES = `
   min-height: 36px;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   padding: 4px 2px;
   border-radius: 5px;
 }

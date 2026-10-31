@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_URL } from './helpers/full-app.js';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 
 /** D-333 — Kitchen's work in progress in a real browser: Kitchen lists it, an item opens
  *  straight into its editor and is kept as it is typed, and it leaves Kitchen once it is
@@ -116,7 +117,7 @@ test('source that is not JSON yet stays editable, is kept as typed, and opens on
   }));
   await expect(open).toBeEnabled();
   await expect.poll(() => calls(page, 'kitchen.draft.update')).toBe(1);
-  await open.click();
+  await clickActionGlyph(page, open);
   await expect(recipeName(page)).toHaveValue('Fixed recipe');
 });
 
@@ -137,7 +138,7 @@ test('Discard on the item removes it and goes back to Kitchen', async ({ page })
   await page.goto(url('recipe'));
   await expect(recipeEditor(page)).toBeVisible();
   page.once('dialog', (dialog) => void dialog.accept());
-  await workHeader(page).getByRole('button', { name: 'Discard', exact: true }).click();
+  await clickActionGlyph(page, workHeader(page).getByRole('button', { name: 'Discard', exact: true }));
   await expect.poll(() => hash(page)).toBe('#kitchen');
   await expect(home(page).getByRole('status')).toHaveText('Nothing in progress.');
   expect(await calls(page, 'kitchen.draft.discard')).toBe(1);
@@ -150,7 +151,7 @@ test('Discard in the Kitchen list removes the item after asking', async ({ page 
   // `confirm` blocks the click until it is answered, so answer it from the handler.
   let asked = '';
   page.once('dialog', (dialog) => { asked = dialog.message(); void dialog.accept(); });
-  await row.getByRole('button', { name: 'Discard', exact: true }).click();
+  await clickActionGlyph(page, row.getByRole('button', { name: 'Discard', exact: true }));
   await expect(row).toHaveCount(0);
   expect(asked).toBe('Discard "Send a composed email"? It is removed from Kitchen and cannot be brought back.');
   await expect(home(page).getByRole('status')).toHaveText('Nothing in progress.');

@@ -71,6 +71,8 @@ export interface CollectionExplorerProps {
   selectedSlug: string | null;
   /** Records for the selected instance (from `collection.list`). */
   records: readonly CollectionRecord[];
+  /** A filtered list is empty without claiming the whole collection is empty. */
+  emptyCopy?: string;
   /** The open record detail (from `collection.get`), or null/absent = the list. */
   detail?: CollectionExplorerDetailState | null;
   /** True only when the open detail failed an available `collection.get`. */
@@ -584,7 +586,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
   } else if (props.loading && props.records.length === 0) {
     body = `<p class="col-explorer-loading">Loading records…</p>`;
   } else if (props.records.length === 0) {
-    body = `<p class="col-explorer-empty">No records in this collection yet.</p>`;
+    body = `<p class="col-explorer-empty">${e(props.emptyCopy ?? 'No records in this collection yet.')}</p>`;
   } else {
     body = `<ul class="col-explorer-list" role="list">${props.records
       .map((r) => props.collection === 'mail' ? renderMailRow(r, props.actionAttr) : renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr))

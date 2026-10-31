@@ -137,7 +137,21 @@ export interface PreflightCheckpointContext {
    *  below does not check it (`approvalValueLabel` reads it defensively), so a
    *  malformed one names nothing instead of losing the hold. */
   value_labels?: ApprovalValueLabels;
+  /** D-335 slice B — the element a held browser write or click acts on, as the
+   *  paired Bridge read it (`describe`) while the run was held, so every
+   *  channel's ask names it the way the page shows it, never the way a model
+   *  described it. `unread` says why the Bridge could not show it. Display
+   *  only, like `recipe_title`: an older binary ignores it, and the ask reads
+   *  it defensively. */
+  browser_target?: HeldBrowserTarget;
 }
+
+/** D-335 slice B — see `PreflightCheckpointContext.browser_target`. `site` is the page's
+ *  host, or the call's target when the page could not be read; empty then when the
+ *  target is every site (the Browser Toolkit's), which names none. */
+export type HeldBrowserTarget =
+  | { site: string; title: string; role: string; label: string; protected: boolean }
+  | { site: string; unread: string };
 
 /** D-182 §8 (GRANT HALF, Inc B-writes) — the recipe-LESS raw-op door hold.
  *

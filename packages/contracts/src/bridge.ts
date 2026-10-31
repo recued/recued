@@ -28,13 +28,35 @@
  *  manifests declare `permitted_actions` from this list at publish
  *  time. */
 export type BridgeAction =
+  /** What the element shows, as `{ text }`: a form field's value (a list's
+   *  chosen options, `true`/`false` for a checkbox or radio button), else its
+   *  `innerText`. A password, hidden, sign-in code or payment card field
+   *  answers `field_protected` instead of its value. */
   | 'read_dom'
   | 'click'
+  /** Types `value` into an input, textarea, list (by option value or text),
+   *  checkbox or radio button (`true`/`false`), or rich-text editor, then
+   *  confirms the element holds it; otherwise answers `value_not_applied`. */
   | 'fill'
   | 'wait_for_selector'
   | 'extract_table'
   | 'screenshot'
-  | 'os_notification';
+  | 'os_notification'
+  /** D-335 — the page, or one region of it, as cleaned HTML for an AI to read,
+   *  as `{ page, url, title, html, truncated }`. `args.selector` names a region
+   *  by CSS; `args.page` (a handle an earlier inspect answered) with `args.ref`
+   *  names an element that inspect marked. `apps/bridge/src/actions/page-inspect.ts`. */
+  | 'inspect'
+  /** D-335 slice B — one element as a person would name it, read live for an
+   *  approval ask: `{ page, url, title, role, label, protected }`. Named like
+   *  an inspect region: `args.selector`, or `args.page` with `args.ref`. */
+  | 'describe'
+  /** D-335 slice C — the open tabs on the command's site, never the owner
+   *  client: `{ tabs: [{ page, url, title }], truncated }`. `page-tabs.ts`. */
+  | 'list_tabs'
+  /** D-335 slice C — opens `args.url` in a new background tab, never in one
+   *  already open, and answers the loaded page: `{ page, url, title }`. */
+  | 'open_tab';
 
 export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'read_dom',
@@ -44,7 +66,61 @@ export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'extract_table',
   'screenshot',
   'os_notification',
+  'inspect',
+  'describe',
+  'list_tabs',
+  'open_tab',
 ] as const;
+
+/** The actions every Bridge has run since D-148. A Bridge whose capability
+ *  profile has no `supported_actions` predates `inspect` and runs only these. */
+export const ORIGINAL_BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
+  'read_dom',
+  'click',
+  'fill',
+  'wait_for_selector',
+  'extract_table',
+  'screenshot',
+  'os_notification',
+] as const;
+
+/** Whether a Bridge with this profile runs `action`, so the server can say
+ *  "update the Bridge" before sending one it would answer "unsupported". */
+export const bridgeRunsAction = (
+  profile: Pick<BridgeCapabilityProfile, 'supported_actions'>,
+  action: BridgeAction,
+): boolean => {
+  const actions: readonly string[] = profile.supported_actions ?? ORIGINAL_BRIDGE_ACTIONS;
+  return actions.includes(action);
+};
+
+/** Whether a Bridge with this profile runs this command. A `fill` or `click`
+ *  that names a page handle or a ref needs a Bridge that runs `describe`: the
+ *  two came in the same Bridge (D-335 slice B), and an older Bridge answers a
+ *  write with no selector "requires selector argument". */
+export const bridgeRunsCommand = (
+  profile: Pick<BridgeCapabilityProfile, 'supported_actions'>,
+  action: BridgeAction,
+  args: Record<string, unknown>,
+): boolean => bridgeRunsAction(profile, action)
+  && (action === 'inspect' || action === 'describe' || (args.page === undefined && args.ref === undefined)
+    || bridgeRunsAction(profile, 'describe'));
+
+/** D-335 §3.2 — the most HTML one `inspect` answers, about 10k tokens. A page
+ *  that does not fit is cut at an element boundary and answers `truncated`. */
+export const BRIDGE_INSPECT_MAX_CHARS = 40_000;
+/** D-335 §3.2 — the most of one text node, field value or attribute `inspect`
+ *  keeps; a longer one is cut and ends with an ellipsis. */
+export const BRIDGE_INSPECT_MAX_VALUE_CHARS = 2_000;
+/** The keys of an `inspect` answer. */
+export const BRIDGE_INSPECT_OUTPUT_KEYS = ['page', 'url', 'title', 'html', 'truncated'] as const;
+/** The keys of a `describe` answer. */
+export const BRIDGE_DESCRIBE_OUTPUT_KEYS = ['page', 'url', 'title', 'role', 'label', 'protected'] as const;
+/** The keys of a `list_tabs` answer, and the most tabs it lists. */
+export const BRIDGE_TABS_OUTPUT_KEYS = ['tabs', 'truncated'] as const;
+export const BRIDGE_TABS_MAX = 50;
+/** The keys of an `open_tab` answer. */
+export const BRIDGE_OPEN_OUTPUT_KEYS = ['page', 'url', 'title'] as const;
 
 /** D-148 § A.3.1 — the surface kind a bridge-bound ingredient
  *  represents. `messaging` is permanently rejected by the marketplace
@@ -166,6 +242,14 @@ export type BridgeErrorCode =
   | 'tab_navigation_blocked'
   | 'idempotency_violation'
   | 'delivery_uncertain'
+  /** A `fill` ran and read the element back, and it does not hold the value:
+   *  an editor that ignored the text, a list with no matching option, a date or
+   *  number field that emptied what it could not parse, an element that takes
+   *  no typing. Confirmed, unlike `delivery_uncertain`. */
+  | 'value_not_applied'
+  /** A `read_dom` reached a password, hidden, sign-in code or payment card
+   *  field. The bridge never returns what such a field holds. */
+  | 'field_protected'
   | 'mv3_lifecycle_killed'
   | 'queue_full'
   | 'unknown';
@@ -182,6 +266,8 @@ export const BRIDGE_ERROR_CODES: ReadonlyArray<BridgeErrorCode> = [
   'tab_navigation_blocked',
   'idempotency_violation',
   'delivery_uncertain',
+  'value_not_applied',
+  'field_protected',
   'mv3_lifecycle_killed',
   'queue_full',
   'unknown',
@@ -398,6 +484,10 @@ export interface BridgeCapabilityProfile {
   /** Private preparation metadata. The server registry removes this inventory
    * from public presence/context/diagnostic profiles. No page content. */
   dom_documents?: { version: 1; documents: BridgeDocumentIdentity[] };
+  /** The `BridgeAction`s this Bridge runs (D-335). Absent on a Bridge that
+   *  predates `inspect`: it runs {@link ORIGINAL_BRIDGE_ACTIONS}. Strings, since
+   *  a newer Bridge may list an action this server does not know. */
+  supported_actions?: string[];
 }
 
 /** D-148 § A.3.4 — closed list of fields the bridge persists in
@@ -429,6 +519,10 @@ export const BRIDGE_LOCAL_STORAGE_FIELDS: ReadonlyArray<string> = [
   'chrome_permissions_state',
   'idempotency_cache',
   'pending_outbox',
+  // D-335 slice G — the owner's list of sites Recued must never use: hosts,
+  // kept when the Bridge is disconnected (`clear`), since dropping it would
+  // let the Bridge act on a site the owner listed.
+  'blocked_sites',
 ] as const;
 
 /** Per-ingredient grant record persisted by the bridge. Three-way

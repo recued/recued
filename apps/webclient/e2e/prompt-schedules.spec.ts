@@ -1,4 +1,5 @@
 import { test, expect, type Route } from '@playwright/test';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { build } from 'esbuild';
 import type { Dish, PromptSchedule, PromptScheduleInput, ServerSchedule } from '@recued/contracts';
 
@@ -88,7 +89,7 @@ test('Chat and Automation manage the same scheduled prompt and preserve edits du
   await automation.getByLabel('Request to run').fill('Summarize unread work mail.');
   await automation.getByLabel('Run', { exact: true }).selectOption('recurring');
   await automation.getByLabel('Recurring timezone').fill('America/Los_Angeles');
-  await automation.getByRole('button', { name: 'Create schedule' }).click();
+  await clickActionGlyph(page, automation.getByRole('button', { name: 'Create schedule' }));
   await expect(automation.getByRole('link', { name: 'Open conversation' })).toHaveAttribute('href', '#chat/session/scheduled-session');
   expect(schedule?.cron_expression).toBe('0 9 * * *');
   const chat = await context.newPage(); await chat.goto('/prompt-harness.html');
@@ -102,7 +103,7 @@ test('Chat and Automation manage the same scheduled prompt and preserve edits du
   await expect(automation.getByRole('article', { name: 'Morning mail' }).getByText('Paused', { exact: true })).toBeVisible();
   await expect(refresh).toBeFocused();
   hasRun = true; await chat.reload(); await panel.locator('summary').click();
-  await panel.getByRole('button', { name: 'Edit', exact: true }).click();
+  await clickActionGlyph(chat, panel.getByRole('button', { name: 'Edit', exact: true }));
   await expect(panel.getByRole('region', { name: 'Schedule preview' }).getByRole('heading')).toContainText('Next runs if resumed');
   await panel.getByLabel('Request to run').fill('Summarize unread work mail and flag urgent items.');
   await chat.getByRole('button', { name: 'New chat', exact: true }).click();
@@ -116,7 +117,7 @@ test('Chat and Automation manage the same scheduled prompt and preserve edits du
   await expect(panel.getByRole('article', { name: 'Morning mail' }).getByText('Paused', { exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'Resume', exact: true }).click();
   await expect(panel.getByRole('article', { name: 'Morning mail' }).getByText('Active', { exact: true })).toBeVisible();
-  await panel.getByRole('button', { name: 'Remove', exact: true }).click();
+  await clickActionGlyph(chat, panel.getByRole('button', { name: 'Remove', exact: true }));
   await expect(panel).toContainText('Its conversation stays.');
   await chat.evaluate(() => (window as unknown as { promptEvent(event: unknown): void }).promptEvent({ kind: 'chat.session_changed', session_id: 'scheduled-session', field: 'queue', value: true }));
   await expect(panel.getByRole('button', { name: 'Keep schedule', exact: true })).toBeFocused();

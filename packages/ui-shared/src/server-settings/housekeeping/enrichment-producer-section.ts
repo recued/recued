@@ -262,6 +262,7 @@ const renderRow = (
         <td class="housekeeping-producer-action">
           ${button({
             label: 'Run now',
+            icon: 'play',
             ariaLabel: `Run ${status.meta.id} now`,
             size: 'xs',
             action: 'housekeeping-run-now-open',

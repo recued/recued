@@ -7,15 +7,17 @@ export type ProjectItemsCaller = (args: WorkEntityProjectItemsRpcRequest) => Pro
 /** One overview owns its reads, including while a child editor is open. */
 export const createProjectWork = (project: Extract<WorkEntity, { _kind: 'project' }>, caller: ProjectItemsCaller | undefined, changed: () => void) => {
   const sections: Record<ProjectWorkKind, ProjectWorkSection> = {
-    task: { items: [], loading: false }, note: { items: [], loading: false },
+    task: { items: [], loading: false }, note: { items: [], loading: false }, commitment: { items: [], loading: false },
   };
-  const sequences = { task: 0, note: 0 };
-  const offsets = { task: 0, note: 0 };
+  const sequences = { task: 0, note: 0, commitment: 0 };
+  const offsets = { task: 0, note: 0, commitment: 0 };
+  let commitmentStatus: 'open' | 'all' = 'open';
   let disposed = false;
   const load = async (kind: ProjectWorkKind, replace = false): Promise<void> => {
     const section = sections[kind];
     if (disposed || section.loading && !replace) return;
     const sequence = ++sequences[kind];
+    const status = commitmentStatus;
     const current = () => !disposed && sequence === sequences[kind];
     section.loading = true; delete section.error; delete section.unsupported; changed();
     let offset = replace ? 0 : offsets[kind];
@@ -25,12 +27,14 @@ export const createProjectWork = (project: Extract<WorkEntity, { _kind: 'project
       if (!caller) throw new Error('This server cannot load project work.');
       let response: WorkEntityProjectItemsRpcResponse;
       do {
-        response = await caller({ project_id: project.id, kind, offset, limit: Math.min(50, goal - offset) });
+        response = await caller({ project_id: project.id, kind, offset, limit: Math.min(50, goal - offset),
+          ...(kind === 'commitment' ? { commitment_status: status } : {}) });
         if (!current()) return;
         if (!replace && response.total < offset) throw new Error('Project work changed. Try again to refresh its items.');
         if (response.project_id !== project.id || response.kind !== kind || response.offset !== offset
           || !Number.isSafeInteger(response.total) || response.total < 0
-          || kind === 'task' && (!Number.isSafeInteger(response.open_tasks) || response.open_tasks! < 0 || response.open_tasks! > response.total)) {
+          || kind === 'task' && (!Number.isSafeInteger(response.open_tasks) || response.open_tasks! < 0 || response.open_tasks! > response.total)
+          || kind === 'commitment' && (response.commitment_status !== status || response.items.some(item => !item.commitment))) {
           throw new Error('The project page could not be confirmed. Try again.');
         }
         if (response.items.length === 0 && offset < response.total) throw new Error('The project page did not advance. Try again.');
@@ -45,12 +49,22 @@ export const createProjectWork = (project: Extract<WorkEntity, { _kind: 'project
       section.more = offset < response.total;
     } catch (error) {
       if (!current()) return;
-      if (classifyRpcError(error).code === 'unknown_method') section.unsupported = true;
+      const code = classifyRpcError(error).code;
+      if (code === 'unknown_method' || kind === 'commitment' && code === 'bad_request'
+        && error instanceof Error && error.message.includes('either tasks or notes')) section.unsupported = true;
       else section.error = error instanceof Error ? error.message : 'Project work could not be loaded. Try again.';
     } finally {
       if (current()) { section.loading = false; changed(); }
     }
   };
-  return { project, freshness: undefined as WorkEntityGetRpcResponse['source_freshness'], sections, load, dispose() { disposed = true; } };
+  return { project, freshness: undefined as WorkEntityGetRpcResponse['source_freshness'], sections, load,
+    get commitmentStatus() { return commitmentStatus; },
+    setCommitmentStatus(status: 'open' | 'all') {
+      if (disposed || status === commitmentStatus) return;
+      commitmentStatus = status; sequences.commitment++; offsets.commitment = 0;
+      sections.commitment = { items: [], loading: false };
+      void load('commitment', true);
+    },
+    dispose() { disposed = true; } };
 };
 export type ProjectWork = ReturnType<typeof createProjectWork>;

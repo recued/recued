@@ -31,6 +31,20 @@ describe('derivePolicy — non-read risk tiers never cache', () => {
   );
 });
 
+// D-335 — a page in the browser changes without the read's input changing.
+describe('derivePolicy — a browser page read never caches', () => {
+  it.each(['data', 'ai', 'action'] as const)('dom + %s + read → disabled, whatever the recipe ttl', (category) => {
+    const p = derivePolicy(category, 'read', 3_600, 'dom');
+    expect(p.enabled).toBe(false);
+    expect(p.ttl_seconds).toBe(0);
+  });
+
+  it('any other kind of data read still caches', () => {
+    expect(derivePolicy('data', 'read', 0, 'http').enabled).toBe(true);
+    expect(derivePolicy('data', 'read', 0).enabled).toBe(true);
+  });
+});
+
 describe('derivePolicy — data + read', () => {
   it('enables caching with data MIN_TTL floor (60s)', () => {
     const p = derivePolicy('data', 'read', 10);

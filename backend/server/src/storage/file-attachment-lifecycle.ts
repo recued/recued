@@ -17,6 +17,15 @@ interface VersionRow {
   version_id: string; source_id: string; blob_hash: string | null; content_hash: string;
   record_json: string; state: 'retained' | 'deleted' | 'missing'; legacy: number; scan_status: string;
 }
+interface LibraryRow {
+  record_id: string; received_at: number; modified_at: number; hot_fields: string;
+  size_bytes: number; source_id: string; blob_hash: string | null;
+}
+const libraryRecord = (row: LibraryRow | undefined): DataFileRecord | undefined => {
+  if (!row?.blob_hash) return undefined;
+  return { ...row, hot_fields: JSON.parse(row.hot_fields), blob_hash: row.blob_hash,
+    storage_ref: { kind: 'cas', blob_hash: row.blob_hash } };
+};
 interface PreparedFile {
   attachment: ChatMessageAttachment; version: VersionRow;
   /** Original library row identity, rechecked after asynchronous encryption. */
@@ -68,11 +77,7 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
     'SELECT * FROM collection_file_attachment_versions WHERE version_id=?').get(id) as VersionRow | undefined;
   const library = (id: string): DataFileRecord | undefined => {
     const table = sourceTable(); if (!table) return undefined;
-    const row = db.prepare(`SELECT * FROM ${quoteSqliteIdent(table)} WHERE record_id=?`).get(id) as
-      { record_id: string; received_at: number; modified_at: number; hot_fields: string; size_bytes: number; source_id: string; blob_hash: string | null } | undefined;
-    if (!row?.blob_hash) return undefined;
-    return { ...row, hot_fields: JSON.parse(row.hot_fields), blob_hash: row.blob_hash,
-      storage_ref: { kind: 'cas', blob_hash: row.blob_hash } };
+    return libraryRecord(db.prepare(`SELECT * FROM ${quoteSqliteIdent(table)} WHERE record_id=?`).get(id) as LibraryRow | undefined);
   };
   const rootId = (id: string): string => version(id)?.source_id ?? id;
   const selectionFor = (record: DataFileRecord): FileAttachmentSelection => {
@@ -109,15 +114,19 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
     }
     const table = sourceTable(); if (!table) throw new RpcError('not_configured', 'Retained files are unavailable.', 503);
     // Filter before limiting: older matching files must remain discoverable.
-    const rows = db.prepare(`SELECT record_id,modified_at FROM ${quoteSqliteIdent(table)}
+    const rows = db.prepare(`SELECT record_id,source_id,received_at,modified_at,hot_fields,size_bytes,blob_hash FROM ${quoteSqliteIdent(table)}
       WHERE blob_hash IS NOT NULL AND COALESCE(json_extract(hot_fields,'$.archived'),0)=?
         AND instr(lower(json_extract(hot_fields,'$.filename')),lower(?))>0
         ${after ? 'AND (modified_at < ? OR (modified_at = ? AND record_id > ?))' : ''}
       ORDER BY modified_at DESC,record_id ASC LIMIT ?`).all(
       archived ? 1 : 0, query, ...(after ? [after.time, after.time, after.id] : []), limit + 1,
-    ) as Array<{ record_id: string; modified_at: number }>;
+    ) as LibraryRow[];
     const page = rows.slice(0, limit); const last = page.at(-1);
-    return { files: page.map(row => selection(row.record_id)),
+    return { files: page.map(row => {
+      const record = libraryRecord(row);
+      if (!record) throw new RpcError('file_not_found', 'This file is no longer available. Choose another file.', 409);
+      return selectionFor(record);
+    }),
       ...(rows.length > limit && last ? { next_cursor: Buffer.from(JSON.stringify({ scope, time: last.modified_at, id: last.record_id })).toString('base64url') } : {}) };
   };
   const preparedOne = (attachment: ChatMessageAttachment, legacy: boolean): PreparedFile => {

@@ -19,7 +19,7 @@
  *  window with no zone is a setting whose failure the owner only discovers at
  *  3am. */
 
-import { twoClockWindowPreview, type TwoClockWindowView } from '@recued/ui-shared';
+import { renderActionLabel, twoClockWindowPreview, type TwoClockWindowView } from '@recued/ui-shared';
 import {
   isValidIanaZone,
   isValidQuietHoursMinute,
@@ -178,7 +178,7 @@ export const mountQuietHoursPanel = (
   const retry = doc.createElement('button');
   retry.type = 'button';
   retry.className = 'rx-btn rx-btn-secondary';
-  retry.textContent = 'Retry loading quiet hours';
+  retry.innerHTML = renderActionLabel('refresh', 'Retry loading quiet hours');
   retry.setAttribute(QUIET_HOURS_RETRY_ATTR, '');
   retry.addEventListener('click', () => {
     if (!disposed && snapshot === null && state === 'error') void refresh();
@@ -339,7 +339,7 @@ export const mountQuietHoursPanel = (
     view.from.disabled = saving;
     view.to.disabled = saving;
     view.save.disabled = saving;
-    view.save.textContent = saving ? 'Saving…' : 'Save';
+    view.save.innerHTML = renderActionLabel('save', saving ? 'Saving…' : 'Save');
     view.feedbackHost.innerHTML = '';
     view.feedbackHost.hidden = error === null && !saving;
     savingStatus = null;
@@ -618,6 +618,8 @@ export const QUIET_HOURS_PANEL_STYLES = `
   background: var(--bg);
   color: var(--fg);
 }
+[${QUIET_HOURS_PANEL_ATTR}] :is([${QUIET_HOURS_SAVE_ATTR}], [${QUIET_HOURS_RETRY_ATTR}]) { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+[${QUIET_HOURS_PANEL_ATTR}] button > svg { flex-shrink:0; }
 [${QUIET_HOURS_PANEL_ATTR}] .qh-range {
   display: flex;
   flex-wrap: wrap;

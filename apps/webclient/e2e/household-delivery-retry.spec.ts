@@ -1,3 +1,4 @@
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 const panel = (page: Page) => page.locator('[data-household-delivery]');
@@ -51,11 +52,22 @@ test('Household says the group only reads, and saves the group chosen with nobod
   await page.evaluate(() => { window.__householdDelivery.addGroup(); window.__householdDelivery.refresh(); });
   await expect.poll(() => reads(page)).toBe(2); await release(page, 'read', 1);
   await group(page).selectOption('1'); expect(await guards(page)).toEqual({ work: false, dirty: true });
-  await press(save(page, 'telegram')); await release(page, 'save');
+  await clickActionGlyph(page, save(page, 'telegram')); await release(page, 'save');
   await expect.poll(() => reads(page)).toBe(3); await release(page, 'read', 2);
   await expect(notice(page)).toHaveText('Household Telegram saved.'); await expect(group(page)).toHaveValue('1');
   expect((await writes(page)).map(call => call.input)).toEqual([{ action: 'household.telegram', connection_name: 'Cousins', connection_enrolled_at: 150 }]);
   expect(await guards(page)).toEqual({ work: false, dirty: false });
+});
+
+test('Household retry glyph recovers the read without saving either form', async ({ page }) => {
+  await open(page, 390);
+  await clickActionGlyph(page, retry(page));
+  await clickActionGlyph(page, retry(page));
+  expect(await reads(page)).toBe(2);
+  await release(page, 'read', 1);
+  await expect(group(page)).toBeEnabled();
+  await expect(retry(page)).toHaveCount(0);
+  expect(await writes(page)).toEqual([]);
 });
 
 test('Household hides the list ID while Home Assistant is Off, and a choice put back is no draft', async ({ page }) => {

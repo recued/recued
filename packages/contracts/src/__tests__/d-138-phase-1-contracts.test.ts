@@ -76,6 +76,7 @@ describe('D-138 P1 — closed-list constants', () => {
       // D-138 P3 — Settings → Contacts → "Scan now" trigger
       'contact.merge.scan_now',
       'contact.merge.split',
+      'contact.merge.split_preview',
       'contact.merge.undo_rejection',
     ]);
   });
@@ -480,6 +481,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
     for (const m of [
       ...CONTACT_MERGE_RPC_METHODS,
       'contact.search.local',
+      'collection.file.document.search',
+      'collection.file.document.result',
       'collection.calendar.event.get',
       'collection.calendar.event.destinations',
       'collection.calendar.event.create',
@@ -621,6 +624,7 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'collection.calendar.event.',
       'collection.connection.',
       'collection.contract.',
+      'collection.file.document.',
       'collection.hostname.',
       // D-318 step 1 — the email chat door's chat mailbox is the owner's door setting.
       'collection.mail.chat_door.',

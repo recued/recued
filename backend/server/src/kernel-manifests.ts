@@ -2839,7 +2839,7 @@ const MANIFESTS = [
   {
     "slug": "dom-read",
     "name": "DOM Read",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.read` op. Given a `target` URL pattern + a CSS `selector` (both op args), reads the matched element's trimmed text from the page actuated by the paired Browser Bridge and returns it as `{ text }` (null when no element matches). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. read-tier (no DOM mutation).",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.read` op. Given a `target` URL pattern + a CSS `selector` (both op args), reads what the matched element shows on the page actuated by the paired Browser Bridge and returns it as `{ text }` (null when no element matches): a form field's value (a list's chosen options, one per line; `true`/`false` for a checkbox or radio button), else its text. A password, hidden, sign-in code or payment card field is never read: the step fails NOT_AUTHORIZED. No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. read-tier (no DOM mutation).",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "reading",
@@ -2864,7 +2864,7 @@ const MANIFESTS = [
   {
     "slug": "dom-write",
     "name": "DOM Write",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a CSS `selector`, and a `value` (op args), fills the value into the matched element on the page actuated by the paired Browser Bridge; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a `value`, and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the write to it (D-335) — types the value into the element on the page actuated by the paired Browser Bridge — an input or textarea, a list (the option whose value or text matches), a checkbox or radio button (`true`/`false`), or a rich-text editor — and fails DOM_WRITE_FAILED when the element does not end up holding it; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "authoring",
@@ -2881,11 +2881,123 @@ const MANIFESTS = [
     "input": {
       "target": null,
       "selector": null,
+      "page": null,
+      "ref": null,
       "value": null,
       "submit_selector": null
     },
     "output": {
       "written": "written"
+    }
+  },
+  {
+    "slug": "dom-inspect",
+    "name": "DOM Inspect",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.inspect` op (D-335). Given a `target` URL pattern (op arg), reads the page open in the paired Browser Bridge as cleaned HTML: no styles, scripts, frames, SVG drawing data, comments or hidden elements; a closed list of attributes, at most three readable class names per element, and each form field's current value (a password, hidden, sign-in code or payment card field comes back without its value). Every element a person can act on carries `ref=\"eN\"`. To read one region instead, pass `selector`, or `page` (the handle an earlier inspect returned) with a `ref` from that page. Returns `{ page, url, title, html, truncated }`: at most 40,000 characters, cut at an element boundary, with `truncated: true` when the page did not fit. A ref from a page that has since navigated or reloaded fails DOM_SELECTOR_NOT_FOUND: inspect again.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "read"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "ref": null,
+      "selector": null
+    },
+    "output": {
+      "page": "page",
+      "url": "url",
+      "title": "title",
+      "html": "html",
+      "truncated": "truncated"
+    }
+  },
+  {
+    "slug": "dom-click",
+    "name": "DOM Click",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.click` op (D-335). Given a `target` URL pattern and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the click to it — clicks the element on the page actuated by the paired Browser Bridge, the way a person would. Returns `{ clicked: 1 }` once the click is dispatched; what the page does with it is the page's. A page or ref that has gone since it was inspected fails DOM_SELECTOR_NOT_FOUND and nothing is clicked; a click whose answer the page took with it (a navigation) fails ACTION_DELIVERY_UNCERTAIN. write-tier: approval-gated, and a click cannot be undone.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "authoring",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "write"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "ref": null,
+      "selector": null
+    },
+    "output": {
+      "clicked": "clicked"
+    }
+  },
+  {
+    "slug": "dom-tabs",
+    "name": "DOM Tabs",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.tabs` op (D-335). Given a `target` URL pattern (op arg), lists the tabs open in the browser of the paired Browser Bridge on that site, each as `{ page, url, title }` read from the page itself, where `page` is the handle `core.dom.inspect`, `core.dom.write` and `core.dom.click` take. The owner's own Recued client is never listed. Returns `{ tabs, truncated }`: at most 50 tabs, with `truncated: true` when there were more. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "read"
+    ],
+    "input": {
+      "target": null
+    },
+    "output": {
+      "tabs": "tabs",
+      "truncated": "truncated"
+    }
+  },
+  {
+    "slug": "dom-open",
+    "name": "DOM Open",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.open` op (D-335). Given a `target` URL pattern and an `address` on it (op args; not `url`, which a manifest reserves for an HTTP ingredient's fixed endpoint), opens the address in a new background tab of the browser of the paired Browser Bridge, never in a tab already open, waits for the page to load, and returns `{ page, url, title }` of the loaded page; `page` is the handle `core.dom.inspect` takes next. Only an http or https address on `target` is opened (DOM_PAGE_NOT_MATCHING otherwise); a page that redirects off `target` has its tab closed. write-tier and approval-gated, with the whole address shown: the page is asked for as the owner, signed in, and an address can carry data to its site. A tab that opened but could not be read in time fails ACTION_DELIVERY_UNCERTAIN: list the tabs before opening it again.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "write"
+    ],
+    "input": {
+      "target": null,
+      "address": null
+    },
+    "output": {
+      "page": "page",
+      "url": "url",
+      "title": "title"
     }
   },
   {

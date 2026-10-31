@@ -249,7 +249,7 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
         // A watched file goes to the converter by its id: the CLI reads it from
         // its folder (`input_materialize`); there is no content address to pin.
         config: { source: converter && !cached && !watched ? { backing: 'cas', record_id: args.file_ref, content_sha256: hash } : args.file_ref },
-        trigger_source: ctx.channel === 'mcp_wire' ? 'mcp' : 'chat', execution_source: ctx.execution_source,
+        trigger_source: ctx.execution_source?.channel === 'user' ? 'manual' : ctx.channel === 'mcp_wire' ? 'mcp' : 'chat', execution_source: ctx.execution_source,
         ...(ctx.contract_snapshot ? { contract_snapshot: ctx.contract_snapshot } : {}),
         ...(ctx.dispatch_depth === undefined ? {} : { dispatch_depth: ctx.dispatch_depth }),
       }));

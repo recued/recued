@@ -89,6 +89,16 @@ describe('D-145 PA7 — renderMailComposeDialog', () => {
     expect(html).toContain('data-mode="reply"');
   });
 
+  it('labels a forward separately and explains omitted original attachments beside the picker', () => {
+    const html = renderMailComposeDialog({ definition: def, sources: [senderRecued, senderHubspot],
+      state: baseState({ mode: 'forward', original_attachments_omitted: true }) });
+    expect(html).toMatch(/>Forward</);
+    expect(html).toContain('Original attachments are not added automatically.');
+    expect(html).toContain('data-action="select-mail-compose-sender"');
+    const ordinary = renderMailComposeDialog({ definition: def, sources: [senderRecued], state: baseState() });
+    expect(ordinary).not.toContain('Original attachments are not added automatically.');
+  });
+
   it('renders the sender picker as a static label when only one send-capable Source', () => {
     const html = renderMailComposeDialog({
       definition: def,

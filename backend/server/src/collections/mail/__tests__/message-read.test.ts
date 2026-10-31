@@ -26,7 +26,7 @@ const fixture = () => {
       { slug: 'other', send_capable: true, auth_state: 'healthy' },
       { slug: 'work', send_capable: sending, auth_state: 'healthy' },
     ] }) };
-  return { deps, record, message, fetch, setSending(value: boolean) { sending = value; }, remove() { present = false; } };
+  return { deps, record, message, fetch, collection, setSending(value: boolean) { sending = value; }, remove() { present = false; } };
 };
 const ref = { slug: 'work', record_id: 'mail:1' };
 
@@ -43,35 +43,56 @@ describe('owner message read and reply context', () => {
     const f = fixture();
     const read = await getMailMessage(f.deps, ref);
     expect(read).toMatchObject({ ...ref, read: 'provider', body: f.message.body_text, body_truncated: false,
-      reply: { original_source_id: 'work', original_message: { id: '<request@example.test>',
+      reply: { original_source_id: 'work', mailbox_address: 'owner@example.test', original_message: { id: '<request@example.test>',
+        to: ['owner@example.test'], cc: ['copy@example.test'],
         reply_to: ['reply@example.test'], references: ['<root@example.test>', '<parent@example.test>'], body: f.message.body_text } } });
     expect(f.fetch).toHaveBeenCalledWith(f.record.source_id);
     expect(JSON.stringify(read.reply)).not.toContain('opaque-provider-thread');
     expect(JSON.stringify(read.reply)).not.toContain('uid-1@INBOX');
   });
 
-  it('does not borrow another mailbox’s sending capability or fetch reply details for non-received mail', async () => {
+  it('does not borrow another mailbox’s sending capability, and allows sent mail to be forwarded independently of Reply', async () => {
     const f = fixture(); f.setSending(false);
-    expect(await getMailMessage(f.deps, ref)).toMatchObject({ body: 'Stored email', reply: null,
+    expect(await getMailMessage(f.deps, ref)).toMatchObject({ body: 'Stored email', reply: null, forward: null,
       reply_unavailable_reason: expect.stringContaining('Sending is unavailable') });
     expect(f.fetch).not.toHaveBeenCalled();
     f.setSending(true); f.record.hot_fields.direction = 'outbound';
-    expect((await getMailMessage(f.deps, ref)).reply).toBeNull();
-    expect(f.fetch).not.toHaveBeenCalled();
+    const read = await getMailMessage(f.deps, ref);
+    expect(read.reply).toBeNull();
+    expect(read.forward).toMatchObject({ original_source_id: 'work', mailbox_address: 'owner@example.test',
+      original_message: { body: f.message.body_text } });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['message-replaced', 'missing-id', 'provider-id', 'control-id', 'self-reply-to', 'read-failed'] as const)(
+  it.each(['message-replaced', 'provider-id', 'source-replaced', 'read-failed'] as const)(
     'keeps the stored reader and refuses an unverifiable reply: %s', async mode => {
       const f = fixture();
       if (mode === 'message-replaced') f.message.rfc_message_id = '<other@example.test>';
-      if (mode === 'missing-id') delete f.record.hot_fields.rfc_message_id;
       if (mode === 'provider-id') f.message.rfc_message_id = 'gmail-provider-id';
-      if (mode === 'control-id') { f.record.hot_fields.rfc_message_id = 'request\u0000@example.test'; f.message.rfc_message_id = '<request\u0000@example.test>'; }
-      if (mode === 'self-reply-to') f.message.headers = { 'reply-to': 'owner@example.test' };
+      if (mode === 'source-replaced') f.message.source_id = 'another-provider-message';
       if (mode === 'read-failed') f.fetch.mockRejectedValueOnce(new Error('offline'));
       const read = await getMailMessage(f.deps, ref);
-      expect(read).toMatchObject({ body: 'Stored email', read: 'stored', reply: null });
+      expect(read).toMatchObject({ body: 'Stored email', read: 'stored', reply: null, forward: null });
       expect(read.reply_unavailable_reason).toEqual(expect.any(String));
+    });
+
+  it.each(['missing-id', 'control-id', 'self-reply-to', 'invalid-reply-to'] as const)(
+    'offers a fresh forward even when Reply is unavailable: %s', async mode => {
+      const f = fixture(); f.message.has_attachments = true;
+      if (mode === 'missing-id') delete f.record.hot_fields.rfc_message_id;
+      if (mode === 'control-id') { f.record.hot_fields.rfc_message_id = 'request\u0000@example.test'; f.message.rfc_message_id = '<request\u0000@example.test>'; }
+      if (mode === 'self-reply-to') f.message.headers = { 'reply-to': 'owner@example.test' };
+      if (mode === 'invalid-reply-to') f.message.headers = { 'reply-to': 'sender@example.test\r\nBcc: hidden@example.test' };
+      const read = await getMailMessage(f.deps, ref);
+      expect(read).toMatchObject({ read: 'provider', body: f.message.body_text, reply: null,
+        reply_unavailable_reason: expect.any(String), forward: {
+          original_source_id: 'work', mailbox_address: 'owner@example.test', original_message: {
+            from: 'sender@example.test', to: ['owner@example.test'], cc: ['copy@example.test'],
+            subject: 'A request', received_at: 1, body: f.message.body_text, body_truncated: false, has_attachments: true,
+          },
+        } });
+      expect(JSON.stringify(read.forward)).not.toContain('hidden@example.test');
+      expect(JSON.stringify(read.forward)).not.toContain('opaque-provider-thread');
     });
 
   it.each(['disconnect', 'revoke-send', 'disconnect-during-capability-check'] as const)('fences a provider read that outlives %s', async mode => {
@@ -87,8 +108,24 @@ describe('owner message read and reply context', () => {
     if (mode === 'disconnect') f.remove();
     if (mode === 'revoke-send') f.setSending(false);
     release(f.message);
-    expect((await pending).reply).toBeNull();
+    expect(await pending).toMatchObject({ reply: null, forward: null });
   });
+
+  it.each(['mailbox-address', 'incarnation', 'record-identity', 'source-identity'] as const)(
+    'refuses forwarding if a pending source read outlives a change to %s', async change => {
+      const f = fixture(); let incarnation = 'v1'; f.deps.getIncarnation = () => incarnation;
+      let release!: (message: CanonicalMessage) => void;
+      f.fetch.mockImplementationOnce(() => new Promise(done => { release = done; }));
+      const pending = getMailMessage(f.deps, ref);
+      await vi.waitFor(() => expect(f.fetch).toHaveBeenCalled());
+      if (change === 'mailbox-address') f.collection.accountEmail = 'replacement@example.test';
+      if (change === 'incarnation') incarnation = 'v2';
+      if (change === 'record-identity') f.record.hot_fields.rfc_message_id = 'replacement@example.test';
+      if (change === 'source-identity') f.record.source_id = 'replacement-source-id';
+      release(f.message);
+      expect(await pending).toMatchObject({ read: 'stored', reply: null, forward: null,
+        forward_unavailable_reason: expect.stringContaining('mailbox changed') });
+    });
 
   it('binds lazy body reads to the same conversation and mailbox incarnation across asynchronous reads', async () => {
     const f = fixture(); let incarnation = 'v1';
@@ -114,5 +151,7 @@ describe('owner message read and reply context', () => {
     expect(read.body).toHaveLength(65_536);
     expect(read.body_truncated).toBe(true);
     expect(read.reply?.original_message.body_truncated).toBe(true);
+    expect(read.forward).toBeNull();
+    expect(read.forward_unavailable_reason).toContain('full email text');
   });
 });

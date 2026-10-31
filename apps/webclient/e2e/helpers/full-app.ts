@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_ORIGIN } from './harness-origin.js';
 
 export const HARNESS_URL = `${HARNESS_ORIGIN}/full-app-harness.html`;
@@ -30,6 +30,7 @@ export const CHAT_COMPOSER_ACTION = 'data-recued-chat-route-composer-action';
 export const CHAT_HISTORY_LANDING = 'data-recued-chat-route-history-landing';
 export const RUN_PALETTE = 'data-recued-run-palette';
 export const SHELL_TOPBAR = 'data-recued-webclient-topbar';
+export const SHELL_SEARCH_TRIGGER = 'data-recued-webclient-search-trigger';
 export const DRAWER_ACTION = 'data-recued-webclient-drawer-action';
 export const CREATE_OVERLAY = 'data-recued-create-overlay';
 export const GLOBAL_RUN_PALETTE_TRIGGER =
@@ -56,4 +57,14 @@ export const installFullAppHooks = (): void => {
       `uncaught page errors: ${pageErrors.map((e) => e.message).join(' | ')}`,
     ).toHaveLength(0);
   });
+};
+
+/** Open the shell-owned palette through its navigation action. */
+export const openGlobalRunPalette = async (page: Page): Promise<void> => {
+  const trigger = page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`);
+  if (!(await trigger.isVisible())) {
+    await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  }
+  await trigger.click();
+  await expect(page.locator('[data-recued-webclient-drawer]')).toBeHidden();
 };

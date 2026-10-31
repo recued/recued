@@ -196,6 +196,9 @@ export interface UserMemoryStore {
   /** D-198 §10 — every row whose `replaces` names `memory_id` (normally 0 or 1).
    *  Indexed on a db-backed store; the in-memory harness scans. */
   replacementsOf(memory_id: string): Promise<UserMemoryRow[]>;
+  /** D-198 §13 — every row saved in one chat (`channel_session_id`), a deleted note's
+   *  content-free row included. Indexed on a db-backed store; the in-memory harness scans. */
+  listSession(channel_session_id: string): Promise<UserMemoryRow[]>;
   list(): Promise<UserMemoryRow[]>;
   /** ⛔ A BOUNDED PAGE OF THE FEED, newest-effective-time first.
    *
@@ -215,6 +218,13 @@ export interface UserMemoryStore {
   /** Hard-delete + free the body blob if no remaining row references it.
    *  Returns false when the id is unknown. */
   delete(memory_id: string): Promise<boolean>;
+  /** D-198 §13 — remove an entry's TEXT for good, keeping the row as a record of
+   *  who saved what kind of note when. Summary, body (inline or its CAS blob),
+   *  preview, size, content hash and links go; origin, kind, times, authorship and
+   *  `replaces` stay, so a lineage that points at it stays valid. Out of word and
+   *  meaning search. The CALLER marks it deleted in the redaction overlay, which is
+   *  what keeps readers from returning the empty row. False when the id is unknown. */
+  erase(memory_id: string): Promise<boolean>;
   /** Bulk import (§5): `user_self` entries merge-by-`memory_id` (idempotent
    *  restore of your own); "other" entries content-dedup (owner-vouched,
    *  stamped `reason_code: 'imported'`, stored `user_self`). Returns a tally. */
@@ -508,7 +518,7 @@ export const createUserMemoryStore = (
    *  ⚠ Feature-detected, so the in-memory collection that backs tests keeps
    *  working through the `list()` fallback below. */
   const queryable = isFieldQueryable(collection) ? collection : undefined;
-  queryable?.ensureFieldIndexes(['blob_hash', 'replaces']);
+  queryable?.ensureFieldIndexes(['blob_hash', 'replaces', 'channel_session_id']);
 
   /** The feed's ordering index. Same feature-detect, same reason: the in-memory
    *  collection keeps working through the sort-in-JS fallback in `listWindow`. */
@@ -700,6 +710,12 @@ export const createUserMemoryStore = (
       return queryable
         ? queryable.queryByField({ equals: { replaces: memory_id } })
         : (await collection.list()).filter((r) => r.replaces === memory_id);
+    },
+
+    async listSession(channel_session_id) {
+      return queryable
+        ? queryable.queryByField({ equals: { channel_session_id } })
+        : (await collection.list()).filter((r) => r.channel_session_id === channel_session_id);
     },
 
     async list() {
@@ -905,6 +921,26 @@ export const createUserMemoryStore = (
       if (existing === null) return false;
       await collection.delete(memory_id);
       unindexRow(memory_id);
+      if (existing.blob_hash !== undefined) {
+        await freeBlobIfOrphan(existing.blob_hash, memory_id);
+      }
+      return true;
+    },
+
+    async erase(memory_id) {
+      const existing = await collection.get(memory_id);
+      if (existing === null) return false;
+      const next: UserMemoryRow = { ...existing, size_bytes: 0 };
+      delete next.summary;
+      delete next.body_inline;
+      delete next.blob_hash;
+      delete next.body_preview;
+      delete next.content_hash;
+      delete next.provenance_entity_ids;
+      await collection.set(memory_id, next);
+      unindexRow(memory_id);
+      // After the row lands without the hash, so the refcount sees it gone — and
+      // only when no OTHER row shares the blob (the same text saved twice).
       if (existing.blob_hash !== undefined) {
         await freeBlobIfOrphan(existing.blob_hash, memory_id);
       }

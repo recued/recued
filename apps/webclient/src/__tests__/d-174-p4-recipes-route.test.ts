@@ -1724,7 +1724,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).toContain(`${RECIPES_ROUTE_RUN_BUTTON_ATTR}="reply-action"`);
     // D-319 — a dish's settings are on its recipe's own page.
     expect(html).not.toContain('data-recipe-id="reply-action">Config</button>');
-    expect(html).toContain('data-recipe-id="reply-action">Schedule</button>');
+    expect(html).toMatch(/<button[^>]*data-recued-recipes-action="open-schedule"[^>]*data-recipe-id="reply-action"[^>]*>/);
     expect(html).toContain('href="#automation/reply-action"');
     expect(html).toContain('href="#logs/recipe/reply-action"');
     expect(html).toContain('aria-label="Open Reply action (reply-action)"');
@@ -2177,8 +2177,9 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(packRecipeRefsCaller).toHaveBeenCalledTimes(2);
     expect(shellHtml(rig.root)).toContain('Trying again…');
     const busyRetry = shellHtml(rig.root).match(
-      /<button[^>]*data-recued-recipes-bundle-retry="task-closure"[^>]*>Retrying…<\/button>/,
+      /<button[^>]*data-recued-recipes-bundle-retry="task-closure"[^>]*>[\s\S]*?<\/button>/,
     )?.[0] ?? '';
+    expect(busyRetry).toContain('Retrying…');
     expect(busyRetry).toContain('aria-disabled="true"');
     expect(busyRetry).toContain('aria-busy="true"');
     expect(busyRetry).not.toMatch(/\sdisabled(?:[ >])/);
@@ -4853,7 +4854,7 @@ describe('R24 — Recipes route runnability consumer', () => {
       /<button type="button" class="recipes-button recipes-button--primary"[\s\S]*?<\/button>/,
     )?.[0];
     const blockedOverride = html.match(
-      /<button type="button" class="recipes-button"[\s\S]*?>Run with overrides<\/button>/,
+      /<button[^>]*data-recued-recipes-action="open-run"[^>]*>[\s\S]*?<\/button>/,
     )?.[0];
     expect(blockedPrimary).toContain(' disabled');
     expect(blockedOverride).toContain(' disabled');

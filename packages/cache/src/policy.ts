@@ -9,6 +9,11 @@
  *    - Non-read risk tiers (write/admin/destructive): NEVER cache. Even
  *      if the ingredient is categorized 'data', a destructive read is
  *      not a thing we should memoize.
+ *    - A page in the browser (`kind: 'dom'`): NEVER cache, read or not
+ *      (D-335). The page changes without the read's input changing: after a
+ *      click the same page handle has other HTML, and an inspection's refs
+ *      are the ones its own read handed out, so a replay shows the page as it
+ *      was.
  *    - Read + data/ai: cache with max(recipe_ttl, MIN_TTL[category]) floor.
  *    - Stream on write: broadcast expensive outputs to the paired peer.
  *      Currently applies to data and ai; transforms are not broadcast.
@@ -19,7 +24,7 @@
  *      broadcast, to avoid WS storms.
  */
 
-import type { IngredientCategory, RiskTier } from '@recued/contracts';
+import type { IngredientCategory, IngredientKind, RiskTier } from '@recued/contracts';
 import { MIN_TTL } from '@recued/contracts';
 
 export interface CachePolicy {
@@ -49,7 +54,10 @@ export const derivePolicy = (
   category: IngredientCategory,
   risk_tier: RiskTier,
   recipe_ttl: number,
+  /** The manifest's `kind`. Optional so a caller that has none decides as before. */
+  kind?: IngredientKind,
 ): CachePolicy => {
+  if (kind === 'dom') return DISABLED;
   if (category === 'action') return DISABLED;
   if (risk_tier !== 'read') return DISABLED;
 

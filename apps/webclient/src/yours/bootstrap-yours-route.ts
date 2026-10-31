@@ -2,6 +2,7 @@ import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTI
   type AssetEvidence, type AssetPatch, type AssetRule, type ContactRecord, type Episode, type EpisodeInput, type Link, type Occasion, type ProactiveProposal,
   type TimelineRequest, type TimelineResponse, type TripDetails, type YoursAssetFilter, type YoursAssetSphere, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
 import type { DataCommitmentCloseCaller } from '../data/bootstrap-data-route.js';
+import { renderActionLabel, type IconName } from '@recued/ui-shared/icon-render';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { serializeLogsRunAddress, serializeSourceRecordAddress } from '../shell/route.js';
 import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
@@ -204,8 +205,13 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const candidate = focusTarget(node);
     return candidate?.key === target.key && candidate.scope === target.scope && candidate.menu === target.menu && !node.closest('[hidden]');
   });
-  const button = (parent: HTMLElement, label: string, action: (origin: EditorReturnFocus) => void | Promise<void>, key = label) => {
-    const node = el('button', label, parent); node.type = 'button'; node.dataset.yoursFocus = key; node.disabled = busy;
+  const buttonIcons = new WeakMap<HTMLButtonElement, IconName>();
+  const setButtonLabel = (node: HTMLButtonElement, label: string, icon = buttonIcons.get(node)) => {
+    if (icon) { buttonIcons.set(node, icon); node.classList.add('yours-action'); node.innerHTML = renderActionLabel(icon, label); }
+    else node.textContent = label;
+  };
+  const button = (parent: HTMLElement, label: string, action: (origin: EditorReturnFocus) => void | Promise<void>, key = label, icon?: IconName) => {
+    const node = el('button', undefined, parent); setButtonLabel(node, label, icon); node.type = 'button'; node.dataset.yoursFocus = key; node.disabled = busy;
     node.addEventListener('click', () => { const origin = focusTarget(node); if (!origin) return; void Promise.resolve().then(() => {
       const previous = openingTrigger; openingTrigger = origin;
       try { return action(origin); } finally { openingTrigger = previous; }
@@ -222,7 +228,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     // Keep its identity, but restore it only if the owner has not focused elsewhere.
     if (loading && refreshButton === doc.activeElement) refreshingFocus = focusTarget(refreshButton);
     if (!loading) refreshingFocus = undefined;
-    if (refreshButton) { refreshButton.textContent = loading ? 'Refreshing…' : 'Refresh'; refreshButton.disabled = busy || loading; }
+    if (refreshButton) { setButtonLabel(refreshButton, loading ? 'Refreshing…' : 'Refresh'); refreshButton.disabled = busy || loading; }
     root.setAttribute('aria-busy', String(busy || loading || opening));
   };
   const restoreEditorFocus = (target: EditorReturnFocus | undefined) => {
@@ -287,7 +293,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const intent = ++editorIntent; const draftAtStart = draftVersion;
     openingIntent = intent;
     const title = control?.textContent ?? '';
-    if (control) { control.dataset.yoursOpening = ''; control.textContent = 'Opening…'; control.disabled = true; }
+    if (control) { control.dataset.yoursOpening = ''; setButtonLabel(control, 'Opening…'); control.disabled = true; }
     paintStatus();
     // A newer request wins before either read finishes. Opening and closing
     // another editor, writing or typing cannot make an older load current again.
@@ -297,7 +303,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     catch (error) { if (current()) showError(error); }
     finally {
       if (openingIntent === intent) openingIntent = 0;
-      if (control?.isConnected) { delete control.dataset.yoursOpening; control.textContent = title; control.disabled = busy; }
+      if (control?.isConnected) { delete control.dataset.yoursOpening; setButtonLabel(control, title); control.disabled = busy; }
       if (!disposed) paintStatus();
     }
   };
@@ -346,7 +352,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const formActions = (node: HTMLFormElement, label = 'Save', back?: () => void) => { const actions = el('div', undefined, node); actions.className = 'yours-actions';
     actions.dataset.yoursEditorActions = '';
     const alert = root.querySelector<HTMLElement>('[data-yours-error]')!; alert.dataset.yoursFormError = ''; actions.append(alert);
-    const save = el('button', label, actions); save.type = 'submit'; save.dataset.yoursFocus = 'save'; save.className = 'yours-primary';
+    const save = el('button', undefined, actions); save.type = 'submit'; save.dataset.yoursFocus = 'save'; save.className = 'yours-primary'; setButtonLabel(save, label, 'save');
     button(actions, 'Cancel', () => { if (dirty && doc.defaultView?.confirm && !doc.defaultView.confirm('Discard these unsaved changes?')) return; if (back) { back(); return; }
       editorIntent++; const returnFocus = editorReturnFocus; editor = undefined; dirty = false; editorReturnFocus = undefined; render(); restoreEditorFocus(returnFocus); }); };
   const field = (node: HTMLFormElement, key: string) => (node.elements.namedItem(key) as HTMLInputElement | null)?.value ?? '';
@@ -980,7 +986,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       if (asset) return { type: 'asset', asset, correction: proposal }; else throw new Error('Asset not found. Refresh this proposal.'); }));
     if (proposal.kind === 'recall') button(more, 'That’s wrong', loadEditor(async () => { const episode = (await options.read({ episode_id: String(proposal.payload.episode_id), include_derived: true })).episodes[0];
       if (!episode) throw new Error('The precedent is unavailable'); return { type: 'episode', episode, correction: proposal }; }));
-    button(more, 'Delete proposal', () => { if (!doc.defaultView?.confirm || doc.defaultView.confirm('Delete this proposal?')) return change({ action: 'proposal.delete', id: proposal.id }); }).className = 'yours-danger';
+    button(more, 'Delete proposal', () => { if (!doc.defaultView?.confirm || doc.defaultView.confirm('Delete this proposal?')) return change({ action: 'proposal.delete', id: proposal.id }); }, undefined, 'delete').classList.add('yours-danger');
     if (proposal.merchant) button(more, `Stop proposing ${proposal.merchant}`, () => change({ action: 'merchant.stop', merchant: proposal.merchant! }));
   };
   const render = () => {
@@ -1019,7 +1025,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       } else if (focused) restoreEditorFocus(focused);
     };
     el('p', 'Your things, the facts, and what comes next.', introduction);
-    button(masthead, 'Refresh', () => editor?.type === 'context' ? refreshContext?.() : editor?.type === 'writer_setup' ? writerSetup?.refresh() : refresh(!editor), 'refresh').className = 'yours-quiet';
+    button(masthead, 'Refresh', () => editor?.type === 'context' ? refreshContext?.() : editor?.type === 'writer_setup' ? writerSetup?.refresh() : refresh(!editor), 'refresh', 'refresh').classList.add('yours-quiet');
     const navigation = yoursNavigation(root, 'Yours'); navigationDisposers.push(navigation.dispose); const nav = navigation.nav;
     for (const id of TABS) { const node = link(nav, TAB_LABELS[id], `#yours/${id}`); node.dataset.yoursFocus = `tab-${id}`; if (id === tab) node.setAttribute('aria-current', 'page'); }
     doc.defaultView?.requestAnimationFrame(() => {
@@ -1058,11 +1064,11 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const assetHeader = yoursPageHeader(content, asset.name, [snapshot.classes.find(item => item.id === asset.class_id)?.name ?? 'Unclassified', ASSET_STATUS_WORDS[asset.status],
         `${asset.audience === 'household' ? 'Shared with your household' : 'Only you'}${asset.inherited_fields?.audience ? ` (same as ${parentName(asset.inherited_fields.audience)})` : ''}`].join(' · '));
       assetHeader.header.classList.add('yours-asset-header');
-      const editAsset = button(assetHeader.actions, 'Edit asset', () => open({ type: 'asset', asset })); editAsset.textContent = 'Edit'; editAsset.setAttribute('aria-label', 'Edit asset');
+      const editAsset = button(assetHeader.actions, 'Edit asset', () => open({ type: 'asset', asset }), undefined, 'rename'); setButtonLabel(editAsset, 'Edit'); editAsset.setAttribute('aria-label', 'Edit asset');
       if (options.askAsset) { const ask = button(assetHeader.actions, 'Ask about this asset', () => options.askAsset!(assetChatContext(asset, files, filesAvailable))); ask.textContent = 'Ask'; ask.setAttribute('aria-label', 'Ask about this asset'); }
       const assetMenu = yoursMenu(assetHeader.actions, asset.name, ['asset', asset.id]);
-      button(assetMenu, 'Save as class', () => open({ type: 'class', preset: presetForAsset(asset), creating: true }));
-      button(assetMenu, 'Delete asset', () => { if (doc.defaultView?.confirm && !doc.defaultView.confirm(`Remove ${asset.name}, its open clocks and bindings? Its ${snapshot!.retirement_impact?.parts ?? 0} parts and ${snapshot!.retirement_impact?.contracts ?? 0} contracts are shown below.`)) return; return change({ action: 'asset.delete', id: asset.id, confirmed: true }); }).className = 'yours-danger';
+      button(assetMenu, 'Save as class', () => open({ type: 'class', preset: presetForAsset(asset), creating: true }), undefined, 'save');
+      button(assetMenu, 'Delete asset', () => { if (doc.defaultView?.confirm && !doc.defaultView.confirm(`Remove ${asset.name}, its open clocks and bindings? Its ${snapshot!.retirement_impact?.parts ?? 0} parts and ${snapshot!.retirement_impact?.contracts ?? 0} contracts are shown below.`)) return; return change({ action: 'asset.delete', id: asset.id, confirmed: true }); }, undefined, 'delete').classList.add('yours-danger');
       const metadata = el('div', undefined, assetHeader.text); metadata.className = 'yours-asset-identity';
       if (asset.holder_contact) el('p', `Held by ${holderName(asset.holder_contact)}`, metadata).setAttribute('data-yours-holder', '');
       placementChip(metadata, { collection: 'asset', id: asset.id });
@@ -1108,7 +1114,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           const path = `${rule.when.kind === 'condition' ? 'observations' : 'readings'}.${rule.when.field}`;
           if (!(snapshot.observation_bindings ?? []).some(binding => binding.enabled && binding.available !== false && binding.asset_id === asset.id && binding.fields.includes(path))) el('p', 'Nothing writes this yet. Enroll an observation writer below, or record it yourself.', item);
         }
-        const actions = yoursActions(item); button(actions, 'Edit rule', () => open({ type: 'rule', asset, rule }));
+        const actions = yoursActions(item); button(actions, 'Edit rule', () => open({ type: 'rule', asset, rule }), undefined, 'rename');
         if (options.context) button(actions, 'Explain this rule', () => open({ type: 'context', request: { root: { kind: 'rule', asset_id: asset.id, rule_id: rule.id } } }), `explain-rule-${rule.id}`);
         button(actions, rule.muted ? 'Unmute' : 'Mute', () => { const confirmed = rule.consequence !== 'floor' || rule.muted || !doc.defaultView?.confirm || doc.defaultView.confirm('Stop reminders for this safety, legal or travel clock? Its obligation stays open.');
           if (confirmed) return change({ action: 'rule.save', asset_id: asset.id, rule: { ...rule, muted: !rule.muted }, confirm_floor_mute: true }); });
@@ -1233,7 +1239,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         if ((path.startsWith('attributes.') || path.startsWith('settings.')) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)) && !['nationality', 'valid_for'].includes(name)) {
           const actionHost = el('dd', undefined, row); actionHost.className = 'yours-fact-actions';
           const more = yoursMenu(actionHost, name.replaceAll('_', ' '), ['fact', asset.id, path]);
-          button(more, 'Edit fact', () => open({ type: 'fact', asset, group: path.startsWith('attributes.') ? 'attributes' : 'settings', field: name }), `edit-fact-${path}`);
+          button(more, 'Edit fact', () => open({ type: 'fact', asset, group: path.startsWith('attributes.') ? 'attributes' : 'settings', field: name }), `edit-fact-${path}`, 'rename');
           if (path.startsWith('attributes.') && typeof value === 'string') button(more, 'Record as a reading', () => open({ type: 'attribute_reading', asset, attribute: name, request_id: globalThis.crypto.randomUUID() }), `record-attribute-${name}`);
         }
       }

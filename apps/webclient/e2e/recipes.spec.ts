@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { HARNESS_URL, LIST_PREVIEW, SHELL_CONTENT, installFullAppHooks } from './helpers/full-app.js';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 
 /** Recipes browser journeys against the deterministic full-app harness. */
 installFullAppHooks();
@@ -316,7 +317,7 @@ test('Recipes gives list Open and Run separate focus ownership', async ({ page }
     exact: true,
   });
   await run.focus();
-  await page.keyboard.press('Enter');
+  await clickActionGlyph(page, run);
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeVisible();
@@ -513,6 +514,22 @@ test('Recipes preserves direct default Run focus through execution', async ({ pa
   await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
 });
 
+test('Recipes opens Schedule from its glyph without running the recipe', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed#recipes/autorun-live-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  const schedule = detail.getByRole('button', { name: 'Schedule', exact: true });
+  const executions = await page.evaluate(() => window.__app.rpcCallCount('execute'));
+  await clickActionGlyph(page, schedule);
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
+  await expect(dialog.getByRole('tab', { name: 'Schedule', exact: true }))
+    .toHaveAttribute('aria-selected', 'true');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(executions);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(schedule).toBeFocused();
+});
+
 test('Recipes keeps the audit-backed Run facts receipt in modal and result', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?recipes=installed&recipe_run_facts=1#recipes/autorun-live-1`,
@@ -521,9 +538,7 @@ test('Recipes keeps the audit-backed Run facts receipt in modal and result', asy
 
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await expect(detail).toBeVisible();
-  await detail.locator('[data-recued-recipes-action="open-run"]')
-    .filter({ hasText: /^Run$/ })
-    .click();
+  await detail.getByRole('button', { name: 'Run', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
 
@@ -545,9 +560,7 @@ test('Recipes protects editable result work through its save', async ({ page }) 
     .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
     .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
-  await detail.locator('[data-recued-recipes-action="open-run"]')
-    .filter({ hasText: /^Run$/ })
-    .click();
+  await detail.getByRole('button', { name: 'Run', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(detail.locator('[data-recued-recipes-result-panel]'))
@@ -657,9 +670,7 @@ test('Recipes owns result search and paging through every repaint', async ({ pag
     .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
     .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
-  await detail.locator('[data-recued-recipes-action="open-run"]')
-    .filter({ hasText: /^Run$/ })
-    .click();
+  await detail.getByRole('button', { name: 'Run', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(detail.getByText('page-one-row', { exact: true })).toBeVisible();
@@ -753,8 +764,7 @@ test('Recipes restores the replaced detail Run opener after execution', async ({
     .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
     .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
-  const opener = detail.locator('[data-recued-recipes-action="open-run"]')
-    .filter({ hasText: /^Run$/ });
+  const opener = detail.getByRole('button', { name: 'Run', exact: true });
   await opener.focus();
   await page.keyboard.press('Enter');
 
@@ -1296,6 +1306,13 @@ test('Recipes preserves Refresh focus through its RPC lifecycle', async ({ page 
     calls,
   );
   await expect(refresh).toBeFocused();
+  const beforePointer = await page.evaluate(() => window.__app.rpcCallCount('recipe.list'));
+  await clickActionGlyph(page, refresh);
+  await page.waitForFunction(
+    (before) => window.__app.rpcCallCount('recipe.list') > before,
+    beforePointer,
+  );
+  await expect(refresh).toHaveAttribute('aria-busy', 'false');
 });
 
 test('Recipes Discover keeps focus on a facet chip through query repaints', async ({ page }) => {

@@ -36,8 +36,13 @@ import { isContactAnnualDate } from '@recued/contracts';
 
 import type Database from 'better-sqlite3';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
+  RpcError,
+  type ContactMergeSplitPreview,
+  type ContactMergeSplitInspection,
+  type ContactMergeSplitGroup,
+  type ContactMergeSplitRequest,
   aliasIncomingOutranks,
   canonicalizeEmail,
   canonicalPairKey,
@@ -1479,6 +1484,11 @@ export interface ContactStore {
    *  only the redirect (per spec § A.8). Pass `survivor = null` to
    *  resurrect a tombstone (split). */
   setMergedInto(rows: ReadonlyArray<ContactRecord>, survivor: string | null, now: number): void;
+  previewMergeSplit(email: string): ContactMergeSplitPreview;
+  inspectMergeSplit(input: { merged_email: string; other_email?: string }): ContactMergeSplitInspection;
+  separateMergedContact(input: ContactMergeSplitRequest, now: number): {
+    canonicals: ContactRecord[]; candidates: ContactMergeCandidate[];
+  };
 
   // ── D-145 PA8 — Contact identity extensions ──────────────────────
   /** Look up by `contact_id` (substrate-stable identifier; survives
@@ -1987,7 +1997,7 @@ export const createContactStore = (
          state = excluded.state,
          linked_at = MIN(linked_at, excluded.linked_at),
          linked_by = excluded.linked_by,
-         connection_name = excluded.connection_name`,
+         connection_name = COALESCE(excluded.connection_name, ${CONTACT_PLATFORM_LINK_TABLE}.connection_name)`,
   );
   const platformLinkDeleteStmt = db.prepare(
     `DELETE FROM ${CONTACT_PLATFORM_LINK_TABLE}
@@ -3541,6 +3551,124 @@ export const createContactStore = (
       for (const contact_id of reproject) materializeContactProjection(contact_id, now);
     });
     tx();
+  };
+
+  const platformOwnershipFor = (members: ContactRecord[]): PlatformLinkRow[] =>
+    members.flatMap(member => platformLinkListByEmailStmt.all(member.email) as PlatformLinkRow[])
+      .sort((a, b) => JSON.stringify([a.vendor, a.platform_id]).localeCompare(JSON.stringify([b.vendor, b.platform_id])));
+
+  const splitGroupFor = (head: ContactRecord): ContactMergeSplitGroup => {
+    const emails = [head.email, ...listMergedSourceEmails(head.email)].sort();
+    if (emails.length > 100) throw new RpcError('bad_request', 'This contact group is too large to review here.');
+    const records = emails.map(email => get(email));
+    if (records.some(record => !record)) throw new RpcError('conflict', 'The contacts changed. Refresh the history.');
+    const members = records as ContactRecord[];
+    const ownership = platformOwnershipFor(members);
+    if (ownership.length > 1000) throw new RpcError('bad_request', 'This contact has too many connected records to review here.');
+    return { canonical_email: head.email,
+      members: members.map(member => ({ email: member.email, ...(member.contact_id ? { contact_id: member.contact_id } : {}) })),
+      links: ownership.map(link => ({ vendor: link.vendor, platform_id: link.platform_id,
+        ...(link.connection_name ? { connection_name: link.connection_name } : {}) })) };
+  };
+
+  const readMergeSplit = (input: string): ContactMergeSplitPreview => {
+    const email = canonicalizeEmail(input);
+    const row = email ? get(email) : null;
+    if (!row?.merged_into) throw new RpcError('conflict', 'This contact is no longer merged. Refresh the history to check its current state.');
+    const survivor = resolveCanonicalEmail(row.email).canonical_email;
+    const emails = [survivor, ...listMergedSourceEmails(survivor)].sort();
+    if (emails.length > 100) throw new RpcError('bad_request', 'This merge group is too large to separate here.');
+    const detached = new Set([row.email, ...listMergedSourceEmails(row.email)]);
+    const records = emails.map(value => get(value));
+    if (records.some(value => !value)) throw new RpcError('conflict', 'The contact group changed. Refresh the preview.');
+    const members = records as ContactRecord[];
+    const separating = members.filter(value => detached.has(value.email));
+    const remaining = members.filter(value => !detached.has(value.email));
+    if (!remaining.some(value => value.email === survivor && !value.merged_into)) throw new RpcError('conflict', 'The contact group changed. Refresh the preview.');
+    const ownership = platformOwnershipFor(members);
+    const links = ownership.map(link => ({ owner_email: link.canonical_email,
+      entry: { vendor: link.vendor, platform_id: link.platform_id, state: link.state, linked_at: link.linked_at, linked_by: link.linked_by },
+      ...(link.connection_name ? { connection_name: link.connection_name } : {}) }));
+    if (links.length > 1000) throw new RpcError('bad_request', 'This merge has too many connected records to review here.');
+    // Hash the exact reviewed state, including later edits and provider ownership.
+    // The check is repeated inside the write transaction, before any mutation.
+    const token = createHash('sha256').update(JSON.stringify({ separating, remaining, links, ownership })).digest('hex');
+    return { merged_email: row.email, survivor_email: survivor, token, separating, remaining, links };
+  };
+
+  const previewMergeSplit = (input: string): ContactMergeSplitPreview => db.transaction(() => readMergeSplit(input))();
+
+  const inspectMergeSplit: ContactStore['inspectMergeSplit'] = input => db.transaction((): ContactMergeSplitInspection => {
+    const email = canonicalizeEmail(input.merged_email);
+    const a = email ? get(email) : null;
+    if (!a) throw new RpcError('conflict', 'This contact is no longer available. Refresh the history.');
+    if (!input.other_email) return { status: 'merged', preview: previewMergeSplit(a.email) };
+    const other = canonicalizeEmail(input.other_email);
+    const b = other ? get(other) : null;
+    if (!b || a.email === b.email) throw new RpcError('conflict', 'The contacts changed. Refresh the history.');
+    if (!a.merged_into && !b.merged_into) return { status: 'separate', canonicals: [a, b], groups: [splitGroupFor(a), splitGroupFor(b)] };
+    if (resolveCanonicalEmail(a.email).canonical_email !== resolveCanonicalEmail(b.email).canonical_email) {
+      throw new RpcError('conflict', 'These contacts no longer share the same merged identity. Refresh the history.');
+    }
+    return { status: 'merged', preview: previewMergeSplit(a.merged_into ? a.email : b.email) };
+  })();
+
+  const splitLinkOwnerStmt = db.prepare(`UPDATE ${CONTACT_PLATFORM_LINK_TABLE}
+    SET canonical_email = ?, state = 'confirmed', linked_by = ? WHERE vendor = ? AND platform_id = ?`);
+  const separateMergedContact: ContactStore['separateMergedContact'] = (input, now) => {
+    const changes: PlatformLinkChange[] = [];
+    const result = db.transaction(() => {
+      const preview = previewMergeSplit(input.merged_email);
+      if (input.expected_preview !== undefined && input.expected_preview !== preview.token) {
+        throw new RpcError('conflict', 'These contacts changed since the preview. Review them again before separating.');
+      }
+      if (!Array.isArray(input.platform_id_redistribution) || input.platform_id_redistribution.length > 1000) {
+        throw new RpcError('bad_request', 'Review the connected records before separating these contacts.');
+      }
+      const known = new Map(preview.links.map(link => [JSON.stringify([link.entry.vendor, link.entry.platform_id]), link]));
+      const selected = new Set<string>();
+      const moves = input.platform_id_redistribution.map(item => {
+        const entry = item?.platform_id_entry;
+        const key = JSON.stringify([entry?.vendor, entry?.platform_id]);
+        const link = known.get(key);
+        const target = typeof item?.target_canonical_email === 'string' ? canonicalizeEmail(item.target_canonical_email) : null;
+        if (!link || selected.has(key) || target !== preview.merged_email && target !== preview.survivor_email) {
+          throw new RpcError('bad_request', 'A connected record or its selected contact is no longer part of this separation.');
+        }
+        selected.add(key);
+        return { link, target };
+      });
+      const losing = preview.separating.find(row => row.email === preview.merged_email)!;
+      setMergedInto([losing], null, now);
+      const refreshed = new Set<string>();
+      for (const { link, target } of moves) {
+        if (link.owner_email === target) continue;
+        // Keep connection scoping and original first-link time. The old split
+        // path upserted an incomplete link and erased its connection_name.
+        splitLinkOwnerStmt.run(target, `user_split:${input.rejected_by ?? 'owner'}`, link.entry.vendor, link.entry.platform_id);
+        refreshed.add(link.owner_email); refreshed.add(target);
+        changes.push({ kind: 'removed', canonical_email: link.owner_email, vendor: link.entry.vendor, platform_id: link.entry.platform_id },
+          { kind: 'added', canonical_email: target, vendor: link.entry.vendor, platform_id: link.entry.platform_id });
+      }
+      for (const email of refreshed) materializePlatformIdsJson(email, now);
+      const candidates: ContactMergeCandidate[] = [];
+      // Separating a branch separates all its members from the remaining group.
+      // Persist that decision for every cross-group pair, including old queued pairs.
+      for (const a of preview.separating) for (const b of preview.remaining) {
+        const pair = orderedPair(a.email, b.email);
+        rejectionUpsertStmt.run(pair.email_a, pair.email_b, now, input.rejected_by ?? null, null);
+        const candidate = candidateLookupByPairKeyStmt.get(`${pair.email_a}|${pair.email_b}`) as MergeCandidateRow | undefined;
+        if (candidate?.status === 'pending') {
+          const updated = setMergeCandidateStatus(candidate.id, 'rejected', now, input.rejected_by);
+          if (updated) candidates.push(updated);
+        }
+      }
+      for (const member of [...preview.separating, ...preview.remaining]) materializeRejectedPairsJson(member.email, now);
+      return { canonicals: [get(preview.survivor_email)!, get(preview.merged_email)!], candidates };
+    })();
+    // Observers see committed ownership only; no event escapes a rolled-back split.
+    for (const change of changes) fireLinkChange(change);
+    return result;
   };
 
   // ── D-145 PA8 — Contact identity extensions ──────────────────────
@@ -5500,6 +5628,9 @@ export const createContactStore = (
     setMergeCandidateStatus,
     resolveCompanyForDomain,
     setMergedInto,
+    previewMergeSplit,
+    inspectMergeSplit,
+    separateMergedContact,
     // D-145 PA8
     getByContactId,
     // D-192 P5

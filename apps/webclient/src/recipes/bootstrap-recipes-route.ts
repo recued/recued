@@ -19,6 +19,7 @@
  *  in a recipe's context would falsely read as recipe-local.
  */
 
+import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import type {
   AutoRunStatusEntry,
   ConnectionView,
@@ -918,6 +919,7 @@ const RECIPES_ROUTE_STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -927,6 +929,9 @@ const RECIPES_ROUTE_STYLES = `
   font-size: 13px;
   text-decoration: none;
   cursor: pointer;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-button > svg {
+  flex-shrink: 0;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-button--primary {
   border-color: var(--accent);
@@ -2061,7 +2066,7 @@ const renderRecipeListCard = (
           ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
           aria-label="Run ${e(name)}"${missingPackRunAttrs(missingPacks)}>
-          Run
+          ${renderActionLabel('play', 'Run')}
         </button>`
           : `<a class="recipes-button recipes-button--primary"
           href="${serializeShellRoute('automation', entry.recipe_id)}"
@@ -2345,11 +2350,11 @@ const renderRelatedRecipeRow = (
           ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
           aria-label="${actionName('Run')}"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Run</button>` : ''}
+          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">${renderActionLabel('play', 'Run')}</button>` : ''}
         ${canSchedule ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
           aria-label="${actionName('Schedule')}"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
+          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">${renderActionLabel('schedule', 'Schedule')}</button>` : ''}
         ${hasAutomationSurface ? `<a class="recipes-button"
           href="${serializeShellRoute('automation', entry.recipe_id)}"
           aria-label="${actionName('Automation for')}"
@@ -2402,7 +2407,7 @@ const renderRelatedRecipesSection = (
             ? `<button type="button" class="recipes-button"
                 ${RECIPES_ROUTE_ACTION_ATTR}="retry-bundle-carrier"
                 ${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="${e(carrierRead.slug)}"
-                aria-disabled="true" aria-busy="true">Retrying…</button>`
+                aria-disabled="true" aria-busy="true">${renderActionLabel('refresh', 'Retrying…')}</button>`
             : ''}
         </div>`
       : `<div class="recipes-bundle-status" role="alert"
@@ -2410,7 +2415,7 @@ const renderRelatedRecipesSection = (
           <p>Couldn’t verify this recipe’s workflow pack contents. The installed recipe remains usable; retry to restore the pack handoff.</p>
           <button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="retry-bundle-carrier"
-            ${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="${e(carrierRead.slug)}">Retry workflow pack</button>
+            ${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="${e(carrierRead.slug)}">${renderActionLabel('refresh', 'Retry workflow pack')}</button>
         </div>`;
   return `
     <section class="recipes-detail-section" ${RECIPES_ROUTE_RELATED_ATTR}="${e(recipeBundleKey(selected) ?? '')}">
@@ -2560,13 +2565,13 @@ const renderRecipeDetail = (
                 ${RECIPES_ROUTE_ACTION_ATTR}="${canRunDefaultsDirectly ? 'run-defaults' : 'open-run'}"
                 ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy
                   ? ' aria-disabled="true" aria-busy="true"'
-                  : ''}${missingPackRunAttrs(missingPacks)}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
+                  : ''}${missingPackRunAttrs(missingPacks)}>${renderActionLabel('play', defaultRunBusy ? 'Running…' : 'Run')}</button>
               ${defaultPrimitiveOnly || mainDishAnswersAll ? `<button type="button" class="recipes-button"
                 ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
-                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${missingPackRunAttrs(missingPacks)}>Run with overrides</button>` : ''}
+                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${missingPackRunAttrs(missingPacks)}>${renderActionLabel('play', 'Run with overrides')}</button>` : ''}
               <button type="button" class="recipes-button"
                 ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
-                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
+                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">${renderActionLabel('schedule', 'Schedule')}</button>` : ''}
               ${actionKind === 'autorun' && autoRun?.preapproval
                 ? `<a class="recipes-button" href="${e(preapprovalHref(autoRun.preapproval.proposal_id))}">Look at this run</a>`
                 : actionKind === 'autorun' && canPreapprove && autoRun?.lifecycle_revision !== undefined && !autoRun.auto_disabled
@@ -3300,7 +3305,7 @@ export const bootstrapRecipesRoute = (
         <button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="refresh"
           aria-disabled="${String(loading)}" aria-busy="${String(loading)}">
-          ${loading ? 'Refreshing…' : 'Refresh'}
+          ${renderActionLabel('refresh', loading ? 'Refreshing…' : 'Refresh')}
         </button>
         <a class="recipes-inline-link" href="${serializeShellRoute('kitchen')}" ${RECIPES_ROUTE_KITCHEN_LINK_ATTR}>Author in Kitchen</a>
         <a class="recipes-inline-link" href="#packs">Manage packs</a>

@@ -52,6 +52,7 @@ interface FakeEl {
   listeners: Map<string, Array<(event: FakeEvent) => void>>;
   _text: string;
   textContent: string;
+  innerHTML: string;
   type?: string;
   value?: string;
   placeholder?: string;
@@ -84,6 +85,7 @@ interface FakeDoc {
 }
 
 const makeEl = (tag: string, doc?: FakeDoc): FakeEl => {
+  let html = '';
   const el = {
     tag,
     className: '',
@@ -114,6 +116,15 @@ const makeEl = (tag: string, doc?: FakeDoc): FakeEl => {
     contains(node: FakeEl | null): boolean { return node === el || el.children.some(child => child.contains(node)); },
     get childNodes() { return el.children; },
   } as unknown as FakeEl;
+  Object.defineProperty(el, 'innerHTML', {
+    get() { return html; },
+    set(value: string) {
+      html = value;
+      const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+      el.textContent = value.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (match, entity: string) => entities[entity] ?? match);
+    },
+  });
   Object.defineProperty(el, 'textContent', {
     get() {
       // Mirrors the DOM: an element's textContent is its own text plus every

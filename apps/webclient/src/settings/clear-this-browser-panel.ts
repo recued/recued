@@ -108,6 +108,7 @@ import {
   unregisterServiceWorker,
   type ServiceWorkerEnvironment,
 } from '../runtime/service-worker.js';
+import { renderActionLabel, type IconName } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -368,6 +369,7 @@ export const mountClearThisBrowserPanel = (
 
   const makeButton = (
     label: string,
+    icon: IconName,
     attr: string,
     variant: 'danger' | 'primary' | 'secondary',
     onClick: () => void,
@@ -376,7 +378,7 @@ export const mountClearThisBrowserPanel = (
     const btn = doc.createElement('button');
     btn.setAttribute(attr, '');
     btn.type = 'button';
-    btn.textContent = label;
+    btn.innerHTML = renderActionLabel(icon, label);
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm clear-this-browser-btn clear-this-browser-btn-${variant}`;
     if (disabledFlag) btn.disabled = true;
     btn.addEventListener('click', onClick);
@@ -397,6 +399,7 @@ export const mountClearThisBrowserPanel = (
     actions.appendChild(
       makeButton(
         'Clear this browser',
+        'delete',
         CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR,
         'danger',
         () => {
@@ -432,6 +435,7 @@ export const mountClearThisBrowserPanel = (
     actions.appendChild(
       makeButton(
         'Cancel',
+        'close',
         CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR,
         'secondary',
         () => {
@@ -446,7 +450,7 @@ export const mountClearThisBrowserPanel = (
       ),
     );
     actions.appendChild(
-      makeButton('Yes, clear', CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR, 'danger', () => {
+      makeButton('Yes, clear', 'delete', CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR, 'danger', () => {
         pendingClearPromise = runClear(
           elementHasFocus(CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR),
         );
@@ -477,6 +481,7 @@ export const mountClearThisBrowserPanel = (
     // let a second click re-enter runClear before the first finished).
     const cancelBtn = makeButton(
       'Cancel',
+      'close',
       CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR,
       'secondary',
       () => undefined,
@@ -484,6 +489,7 @@ export const mountClearThisBrowserPanel = (
     );
     const confirmBtn = makeButton(
       'Yes, clear',
+      'delete',
       CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR,
       'danger',
       () => undefined,
@@ -545,6 +551,7 @@ export const mountClearThisBrowserPanel = (
     actions.appendChild(
       makeButton(
         'Load the page again to pair',
+        'refresh',
         CLEAR_THIS_BROWSER_RELOAD_BTN_ATTR,
         'primary',
         runReload,
@@ -578,6 +585,7 @@ export const mountClearThisBrowserPanel = (
     actions.appendChild(
       makeButton(
         'Cancel',
+        'close',
         CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR,
         'secondary',
         () => {
@@ -594,6 +602,7 @@ export const mountClearThisBrowserPanel = (
     actions.appendChild(
       makeButton(
         'Retry',
+        'refresh',
         CLEAR_THIS_BROWSER_RETRY_BTN_ATTR,
         'danger',
         () => {

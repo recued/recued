@@ -1,7 +1,7 @@
 /** Content retrieval over saved files. Extraction uses document.read's ordinary
  * executor; this tool never calls a converter or reads a blob itself. */
 import { createHash } from 'node:crypto';
-import type { ChatDispatchContext, ChatDispatchResult, CollectionRecord } from '@recued/contracts';
+import type { ChatDispatchContext, ChatDispatchResult, CollectionRecord, DocumentContentSearchResult } from '@recued/contracts';
 import type { Tier1Handler } from '@recued/middleware/internal-tool-registry/index.js';
 import { toFtsMatch } from '@recued/fts';
 import { createDocumentReadHandler, documentReadPlanner } from './document-read-tool.js';
@@ -17,6 +17,13 @@ const INDEX_BATCH = 5;
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const fileId = (value: unknown): value is string => typeof value === 'string' && /^file:[0-9a-f]{32}$/.test(value);
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+// Process-local guards for owner pages collecting an approved search later.
+// A serialized or restarted result has no guard and cannot return cached text.
+const resultGuards = new WeakMap<object, () => boolean>();
+export const isDocumentSearchResultCurrent = (result: unknown): boolean => {
+  if (!result || typeof result !== 'object') return false;
+  try { return resultGuards.get(result)?.() === true; } catch { return false; }
+};
 const refused = (hint: string): ChatDispatchResult => ({ ok: true, result: { status: 'unavailable', matches: [], partial: true, hint } });
 
 /** Reused before and after asynchronous reads so scope membership is never
@@ -48,11 +55,21 @@ const savedScope = (files: Pick<Collection, 'get' | 'list'>, refs: readonly stri
 
 const permitted = (deps: ChatToolHandlerDeps, ctx: ChatDispatchContext): boolean => {
   if (!ctx.execution_source || !isCollectionReadGrantedForDispatch(deps, ctx, 'file')) return false;
+  if (deps.getOpAdmissionGate?.()?.isOpGranted(ctx.execution_source, 'primitive.document.search') === false) return false;
   // Resolve again after every await: a read admitted earlier in this batch
   // does not license returning it after the source-read operation is revoked.
   if (deps.getReadGrantResolver?.()?.resolveForSource(ctx.execution_source).isVerbOpGranted('core.storage.data-file-read') === false) return false;
   const access = deps.getSituationAccess?.();
   try { return !access || !createReadScope(access, ctx.execution_source).limited; } catch { return false; }
+};
+
+const scopeVersion = (scope: ReturnType<typeof savedScope>, plan: ReturnType<typeof documentReadPlanner>) =>
+  hash([scope.limited, scope.missing, scope.rows.map(row => [row.record_id, plan(row).key])]);
+const resultGuard = (deps: ChatToolHandlerDeps, ctx: ChatDispatchContext, refs: string[] | undefined,
+  converter: string, authority: string, version: string): (() => boolean) => () => {
+  const files = deps.getCollectionRegistry()?.get('file', 'received');
+  return !!files && permitted(deps, ctx) && documentIndexAuthority(ctx) === authority
+    && scopeVersion(savedScope(files, refs), documentReadPlanner(deps, converter)) === version;
 };
 
 export const documentExcerpt = (text: string, query: string): { excerpt: string; excerpt_offset: number } => {
@@ -174,10 +191,10 @@ export const createDocumentSearchHandler = (deps: ChatToolHandlerDeps): Tier1Han
       const visible = citations.slice(0, Number(limit));
       const partial = latestScope.limited || scopeChanged || coverage.pending > 0 || coverage.unreadable > 0 || coverage.missing_converter > 0
         || coverage.too_large > 0 || coverage.empty_extraction > 0 || coverage.unsupported_encoding > 0 || coverage.converted > 0;
-      return { ok: true, source_citations: visible.map(hit => hit.citation),
-        ...(coverage.missing_converter ? { missing_packs: converter === 'auto' ? ['recued-core.markitdown', 'recued-core.docling'] : [`recued-core.${String(converter)}`] } : {}),
-        result: { status: 'searched', query, scope, matches: visible.map(({ entry, row, citation }) => ({
-          file_ref: entry.file_ref, filename: row.hot_fields.filename, content_hash: entry.content_hash,
+      const scope_version = scopeVersion(latestScope, latestPlan);
+      const result: DocumentContentSearchResult = { status: 'searched', query, scope: scope === 'session' ? 'session' : 'all', scope_version,
+        matches: visible.map(({ entry, row, citation }) => ({
+          file_ref: entry.file_ref, filename: typeof row.hot_fields.filename === 'string' ? row.hot_fields.filename : 'Document', content_hash: entry.content_hash,
           converter: entry.converter, extraction_complete: entry.extraction_complete, ...documentExcerpt(entry.text, query), ...sourceCitationHint(citation),
         })), coverage, partial, matches_truncated: matchesTruncated,
         ...(indexUnavailable ? { index_unavailable: true } : {}),
@@ -192,7 +209,14 @@ export const createDocumentSearchHandler = (deps: ChatToolHandlerDeps): Tier1Han
           + (partial ? 'Coverage is incomplete. Do not treat no matches as proof that every relevant document lacks the text. ' : '')
           + (indexUnavailable ? 'The search index is unavailable. document.read can still read an exact file; repeating this search may not restore the index. ' : '')
           + (coverage.pending && !resumeAfter && !scopeChanged && !indexUnavailable ? 'Restart the search or narrow file_refs; the bounded index may have evicted earlier text. ' : '')
-          + 'Remote-only files are not downloaded. Install or authorize a missing converter explicitly; nothing is installed by this search.' } };
+          + 'Remote-only files are not downloaded. Install or authorize a missing converter explicitly; nothing is installed by this search.' };
+      if (scope === 'all') {
+        // Capture only a signature and the request, not extracted text or the
+        // whole scope. A page may collect this result after an approval wait.
+        resultGuards.set(result, resultGuard(deps, ctx, selected, String(converter), authority, scope_version));
+      }
+      return { ok: true, source_citations: visible.map(hit => hit.citation),
+        ...(coverage.missing_converter ? { missing_packs: converter === 'auto' ? ['recued-core.markitdown', 'recued-core.docling'] : [`recued-core.${String(converter)}`] } : {}), result };
     };
     const receive = (row: CollectionRecord, result: ChatDispatchResult): void => {
       validationPlan = documentReadPlanner(deps, String(converter));

@@ -6,6 +6,7 @@
   "housekeeping-read-recovery.spec.ts",
   "ai-models.spec.ts",
   "data.spec.ts",
+  "action-icons-more-pages.spec.ts",
   "task-bulk-actions.spec.ts",
   "saved-view-save-recovery.spec.ts",
   "calendar-event-editing.spec.ts",
@@ -27,6 +28,7 @@
   "logs.spec.ts",
   "approvals.spec.ts",
   "reception.spec.ts",
+  "action-icons-reception.spec.ts",
   "settings.spec.ts",
   "certificate-upload-editing.spec.ts",
   "certificate-upload-focus.spec.ts",
@@ -64,6 +66,7 @@
   "navigation-drawer.spec.ts",
   "live-control.spec.ts",
   "kitchen.spec.ts",
+  "action-icons-settings-kitchen.spec.ts",
   "account.spec.ts",
   "recovery.spec.ts",
   "passport-recovery-summary.spec.ts",
@@ -83,5 +86,8 @@
   "permission-regression.spec.ts",
   "automation-rehearsal.spec.ts",
   "contrast-floor.spec.ts",
-  "phone-targets.spec.ts"
+  "phone-targets.spec.ts",
+  "action-icons-admin.spec.ts",
+  "action-icons-preferences.spec.ts",
+  "action-icons-server.spec.ts"
 ]

@@ -231,12 +231,20 @@ const makeFakeEl = (
   tag: string,
   onFocus: (element: FakeEl) => void = () => {},
 ): FakeEl => {
+  let html = '', text = '';
   const el: FakeEl = {
     style: {},
     tagName: tag.toUpperCase(),
     className: '',
-    innerHTML: '',
-    textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value) { html = value; text = ''; },
+    // This lightweight document stores markup without creating child nodes.
+    // Read nested label text as the browser does, retaining semantic assertions.
+    get textContent() {
+      return html ? html.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (_match, entity: 'amp' | 'lt' | 'gt' | 'quot' | '#39') => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]) : text;
+    },
+    set textContent(value) { text = value; html = ''; },
     type: '',
     open: false,
     disabled: false,
@@ -1275,7 +1283,7 @@ describe('D-174 contracts route — list → detail shell', () => {
       buildMcpClientSnippets('wss://alice.example/ws').map((snippet) => [snippet.id, snippet.body]),
     );
     expect([...snippets.keys()]).toEqual([
-      'claude', 'claude-code', 'cursor', 'cline', 'codex', 'openclaw', 'custom',
+      'claude', 'claude-code', 'cursor', 'cline', 'codex', 'codex-plugin', 'openclaw', 'custom',
     ]);
     // Claude Desktop's config file starts local servers only: Recued's stdio
     // mode, by full path, named so the owner can save its key with Recued
@@ -1296,8 +1304,21 @@ describe('D-174 contracts route — list → detail shell', () => {
       args: ['--mcp'],
       env: { RECUED_MCP_TOKEN: "<this contract's key>" },
     });
+    // The Codex plugin loads Recued's stdio mode too, from the public package,
+    // and carries no key: it takes the same saved-key step, picked from the
+    // list because Codex names itself by its plugin folder (D-334).
+    expect(snippets.get('codex-plugin')!.split('\n')).toEqual([
+      'codex plugin marketplace add recued/agent-plugin',
+      'codex plugin add recued@recued',
+    ]);
+    const plugin = all.find((snippet) => snippet.id === 'codex-plugin')!.notes!;
+    expect(plugin[0]!.code).toBe('recued mcp-key set');
+    expect(plugin[0]!.text).toContain('.codex/plugins');
+    expect(plugin[1]!.text).toContain(`Recued before ${MCP_APP_KEY_SINCE}`);
+    expect(plugin[1]!.code).toBeUndefined();
+    expect(snippets.get('codex-plugin')).not.toContain("<this contract's key>");
     // Every other client is one paste.
-    expect(all.filter((snippet) => snippet.notes !== undefined).map((snippet) => snippet.id)).toEqual(['claude']);
+    expect(all.filter((snippet) => snippet.notes !== undefined).map((snippet) => snippet.id)).toEqual(['claude', 'codex-plugin']);
     // Cline defaults to SSE without a `type`.
     expect(JSON.parse(snippets.get('cline')!).mcpServers.recued).toMatchObject({
       type: 'streamableHttp',
@@ -1662,7 +1683,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     const snippets = collectByAttr(root, CONTRACTS_ROUTE_SNIPPET_ATTR);
     // One per client `buildMcpClientSnippets` knows, each under its own heading.
     expect(snippets).toHaveLength(buildMcpClientSnippets('ws://127.0.0.1:3001/ws').length);
-    expect(snippets).toHaveLength(7);
+    expect(snippets).toHaveLength(8);
     expect(snippets.every((snippet) => snippet.children[0]?.tagName === 'H3')).toBe(true);
     // Claude Desktop's card carries its second step and the older-server form,
     // each a line under the config with the command as code.

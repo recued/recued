@@ -56,20 +56,23 @@ interface FakeEl {
 }
 
 const makeFakeElement = (tag: string): FakeEl => {
+  let html = '', text = '';
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
-    textContent: '', type: '', name: '', value: '', placeholder: '',
+    get textContent() {
+      return html ? html.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (_match, entity: 'amp' | 'lt' | 'gt' | 'quot' | '#39') => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]) : text;
+    },
+    set textContent(value) { text = value; html = ''; },
+    type: '', name: '', value: '', placeholder: '',
     checked: false, disabled: false,
     attrs: new Map(), children: [], listeners: new Map(),
     setAttribute(k, v) { el.attrs.set(k, v); },
     getAttribute(k) { return el.attrs.get(k) ?? null; },
     appendChild(c) { el.children.push(c); return c; },
-    // ⚠ Models `innerHTML = ''` as a clear, which is what the panel (and every
-    // other settings panel) actually uses. The fake previously offered
-    // `replaceChildren` instead — and because I wrote the fake AND the panel,
-    // both agreed on a method the real composition root's fake does not have.
-    set innerHTML(v: string) { if (v === '') el.children.length = 0; },
-    get innerHTML() { return ''; },
+    // Replacing markup clears children and retains nested action-label text.
+    set innerHTML(value: string) { html = value; text = ''; el.children.length = 0; },
+    get innerHTML() { return html; },
     addEventListener(t, fn) {
       const list = el.listeners.get(t) ?? [];
       list.push(fn);

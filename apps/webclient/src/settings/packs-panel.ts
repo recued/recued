@@ -373,6 +373,7 @@ import {
   isPackServiceKind,
   packCopyFor,
 } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import type { BadgeTone } from '@recued/ui-shared/primitives';
 // D-182 §7.1 / D-196 — the {Access × Audience} install picker. It renders for
 // any pack with connection-backed ops or recipe tools so the install rpc carries
@@ -3170,7 +3171,7 @@ export const mountPacksPanel = (
 
   const renderReviewedRemovalControls = (parent: HTMLElement,slug: string): void => {
     if (confirmingDeleteFor !== slug) {
-      const button = doc.createElement('button');button.type = 'button';button.className = 'rx-btn rx-btn-secondary rx-btn-sm';button.textContent = hasRemovalRetry(slug) ? 'Recover removal receipt' : COPY.delete_label;
+      const button = doc.createElement('button');button.type = 'button';button.className = 'rx-btn rx-btn-secondary rx-btn-sm';button.innerHTML = hasRemovalRetry(slug) ? renderActionLabel('refresh', 'Recover removal receipt') : renderActionLabel('delete', COPY.delete_label);
       button.setAttribute(PACKS_ROW_DELETE_BTN_ATTR,slug);button.disabled = deleting || installing || dialogOpenFor !== null;
       button.onclick = () => openDeleteConfirm(slug);parent.append(button);return;
     }
@@ -3405,7 +3406,7 @@ export const mountPacksPanel = (
     retry.type = 'button';
     retry.setAttribute(PACKS_RETRY_BTN_ATTR, '');
     retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
-    retry.textContent = listRetrying ? COPY.retrying_label : COPY.retry_label;
+    retry.innerHTML = renderActionLabel('refresh', listRetrying ? COPY.retrying_label : COPY.retry_label);
     if (listRetrying) {
       retry.setAttribute('aria-disabled', 'true');
       retry.setAttribute('aria-busy', 'true');
@@ -3445,7 +3446,7 @@ export const mountPacksPanel = (
     region.setAttribute('role','region'); region.setAttribute('aria-label',`Release history for ${pack.name}`);
     const heading = doc.createElement('h4'); heading.textContent = `Release history for ${pack.name}`; region.append(heading);
     const review = updateReviewFor(pack,{ manifestHash: '',source: 'bundled',historyOnly: true },true); if (review) region.append(review.element);
-    const close = doc.createElement('button'); close.type = 'button'; close.textContent = 'Close release history'; close.className = 'rx-btn rx-btn-secondary rx-btn-sm';
+    const close = doc.createElement('button'); close.type = 'button'; close.innerHTML = renderActionLabel('close', 'Close release history'); close.className = 'rx-btn rx-btn-secondary rx-btn-sm';
     close.setAttribute(PACKS_DIALOG_CANCEL_BTN_ATTR,''); close.disabled = installing; close.onclick = closeDialog; region.append(close);
     region.onkeydown = event => { if (event.key === 'Escape' && !installing) { event.preventDefault(); closeDialog(); } };
     return region;
@@ -3467,7 +3468,7 @@ export const mountPacksPanel = (
     button.type = 'button';
     button.className = 'rx-btn rx-btn-secondary rx-btn-sm';
     button.setAttribute(mine ? PACKS_DETAIL_KITCHEN_EDIT_ATTR : PACKS_DETAIL_KITCHEN_COPY_ATTR, slug);
-    button.textContent = kitchenEditOpening === slug ? 'Opening…' : mine ? 'Edit in Kitchen' : 'Edit a copy in Kitchen';
+    button.innerHTML = renderActionLabel('rename', kitchenEditOpening === slug ? 'Opening…' : mine ? 'Edit in Kitchen' : 'Edit a copy in Kitchen');
     button.disabled = installing || deleting || kitchenEditOpening === slug;
     button.addEventListener('click', () => {
       if (kitchenEditOpening !== null) return;
@@ -3877,7 +3878,7 @@ export const mountPacksPanel = (
           delBtn.type = 'button';
           delBtn.setAttribute(PACKS_ROW_DELETE_BTN_ATTR, pack.slug);
           delBtn.className = 'rx-btn rx-btn-secondary rx-btn-sm packs-row-delete';
-          delBtn.textContent = COPY.delete_label;
+          delBtn.innerHTML = renderActionLabel('delete', COPY.delete_label);
           // Disabled while ANY install dialog is open, an install is
           // in flight, OR a Delete is mid-flight on a DIFFERENT row.
           // The single-rpc-at-a-time invariant (DD#10) keeps the panel
@@ -3903,9 +3904,9 @@ export const mountPacksPanel = (
           );
           confirmBtn.className =
             'rx-btn rx-btn-danger rx-btn-sm packs-row-delete-confirm';
-          confirmBtn.textContent = isInFlightForThis
+          confirmBtn.innerHTML = renderActionLabel('delete', isInFlightForThis
             ? COPY.deleting_label
-            : COPY.delete_confirm_label;
+            : COPY.delete_confirm_label);
           if (isInFlightForThis) {
             // Keep the activated confirmation as the keyboard anchor. The
             // submit state guard owns re-entry while these attributes expose
@@ -4077,9 +4078,9 @@ export const mountPacksPanel = (
     retry.className =
       'rx-btn rx-btn-secondary rx-btn-sm packs-detail-resolve-retry';
     const retrying = detailResolving === slug;
-    retry.textContent = retrying
+    retry.innerHTML = renderActionLabel('refresh', retrying
       ? COPY.retrying_label
-      : COPY.detail_resolve_error_retry_label;
+      : COPY.detail_resolve_error_retry_label);
     if (retrying) {
       retry.setAttribute('aria-disabled', 'true');
       retry.setAttribute('aria-busy', 'true');
@@ -4118,7 +4119,7 @@ export const mountPacksPanel = (
       retry.type = 'button';
       retry.setAttribute(PACKS_DETAIL_RECIPES_RETRY_ATTR, '');
       retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
-      retry.textContent = recipesLoading ? COPY.retrying_label : COPY.retry_label;
+      retry.innerHTML = renderActionLabel('refresh', recipesLoading ? COPY.retrying_label : COPY.retry_label);
       if (recipesLoading) {
         retry.setAttribute('aria-disabled', 'true');
         retry.setAttribute('aria-busy', 'true');

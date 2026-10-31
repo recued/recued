@@ -225,7 +225,8 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
               data-action="${props.kind === 'note' && props.state.mode === 'edit' && props.note_view ? 'return-note-reader'
                 : props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view ? 'return-commitment-reader' : 'close-work-entity-dialog'}"
               ${closeStateAttr}
-            >${e(props.kind === 'note' && props.state.mode === 'edit' && props.note_view ? 'Cancel' : props.close_label ?? 'Cancel')}</button>
+            >${e((props.kind === 'note' && props.state.mode === 'edit' && props.note_view
+                || props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view) ? 'Cancel' : props.close_label ?? 'Cancel')}</button>
             <button
               type="button"
               class="work-entity-dialog-submit"

@@ -50,6 +50,7 @@ import {
 interface FakeEl {
   tagName: string;
   className: string;
+  innerHTML: string;
   textContent: string;
   type: string;
   disabled: boolean;
@@ -80,10 +81,19 @@ interface FakeDoc {
 }
 
 const makeFakeEl = (tag: string): FakeEl => {
+  let html = '', text = '';
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
-    textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value) { html = value; text = ''; },
+    // This double stores markup without child nodes. Read nested action labels
+    // as the browser does, preserving the semantic composer assertions below.
+    get textContent() {
+      return html ? html.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (_match, entity: 'amp' | 'lt' | 'gt' | 'quot' | '#39') => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]) : text;
+    },
+    set textContent(value) { text = value; html = ''; },
     type: '',
     disabled: false,
     value: '',

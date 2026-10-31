@@ -3,7 +3,7 @@ import {
   type CalendarEventDestination, type CalendarEventDestinations,
   type CalendarEventCreateRequest, type CalendarEventCreateResult,
 } from '@recued/contracts';
-import { e } from '@recued/ui-shared';
+import { e, renderActionLabel } from '@recued/ui-shared';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { calendarWallClockCandidates, calendarWallClockValue } from './calendar-event-surface.js';
 
@@ -143,7 +143,10 @@ export const createCalendarCreateSurface = (deps: {
         ? 'The save could not be confirmed. Check this save, or check the selected calendar before creating another event. Your details have been kept.' : humanizeRpcError(cause);
     } finally { if (!disposed && mine === generation) { saving = false; paint(); } }
   };
-  const button = (name: string, label: string, primary = false) => `<button type="${name === 'save' ? 'submit' : 'button'}" class="data-button${primary ? ' data-button--primary' : ''}" ${name === 'save' ? '' : `${deps.actionAttr}="${CALENDAR_CREATE_ACTION}${name}"`} ${FOCUS}="${name}"${saving ? ' aria-disabled="true" aria-busy="true"' : ''}>${e(label)}</button>`;
+  const button = (name: string, label: string, primary = false) => {
+    const icon = name === 'save' ? needsCheck ? 'refresh' : 'booking' : name === 'reload' ? 'refresh' : null;
+    return `<button type="${name === 'save' ? 'submit' : 'button'}" class="data-button${primary ? ' data-button--primary' : ''}" ${name === 'save' ? '' : `${deps.actionAttr}="${CALENDAR_CREATE_ACTION}${name}"`} ${FOCUS}="${name}"${saving ? ' aria-disabled="true" aria-busy="true"' : ''}>${icon ? renderActionLabel(icon, label) : e(label)}</button>`;
+  };
   const field = (key: string, label: string, control: string) => `<label class="calendar-create-field"><span id="calendar-create-label-${key}">${e(label)}</span>${control}</label>`;
   const attr = (key: string) => `${CALENDAR_CREATE_FIELD}="${key}" ${FOCUS}="${key}"${key === 'allDay' ? '' : ` aria-labelledby="calendar-create-label-${key}"`}`;
   const repeatedTime = (key: 'start' | 'end') => {
@@ -239,6 +242,8 @@ export const createCalendarCreateSurface = (deps: {
 };
 
 export const CALENDAR_CREATE_STYLES = `
+.calendar-create .data-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+.calendar-create .data-button svg[aria-hidden=true] { flex:none; }
 .calendar-create { border:1px solid var(--border); border-radius:10px; padding:20px; display:grid; gap:16px; max-width:760px; background:var(--surface); min-width:0; }
 .calendar-create h3 { margin:0 0 5px; font-size:1.15rem; }
 .calendar-create-fields { display:grid; gap:14px; border:0; margin:0; padding:0; min-width:0; }

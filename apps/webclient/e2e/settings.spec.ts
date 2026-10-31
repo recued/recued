@@ -3605,9 +3605,11 @@ test.describe('Settings Exposure keyboard navigation', () => {
 
 test.describe('Settings Exposure connection example', () => {
   const examples = [
-    ['claude', "Claude Desktop, on the server's computer"], ['claude-code', 'Claude Code'],
-    ['cursor', 'Cursor'], ['cline', 'Cline'], ['codex', 'Codex'], ['openclaw', 'OpenClaw'],
-    ['custom', 'Another AI app'],
+    ['claude', "Claude Desktop, on the server's computer", '--mcp'],
+    ['claude-code', 'Claude Code', '/mcp'],
+    ['cursor', 'Cursor', '/mcp'], ['cline', 'Cline', '/mcp'], ['codex', 'Codex', '/mcp'],
+    ['codex-plugin', "Codex plugin, on the server's computer", 'codex plugin add recued@recued'],
+    ['openclaw', 'OpenClaw', '/mcp'], ['custom', 'Another AI app', '/mcp'],
   ] as const;
 
   const openExample = async (page: Page, width: number, activation: 'keyboard' | 'pointer' = 'keyboard') => {
@@ -3648,8 +3650,8 @@ test.describe('Settings Exposure connection example', () => {
           for (const [index, snippet] of snippets.entries()) {
             await expect(snippet).toHaveAttribute('data-recued-exposure-connect-snippet', examples[index]![0]);
             await expect(snippet).toHaveAttribute('tabindex', '0');
-            // Claude Desktop runs Recued's stdio mode locally: no address.
-            await expect(snippet).toContainText(examples[index]![0] === 'claude' ? '--mcp' : '/mcp');
+            // Local clients launch Recued; remote clients use its MCP address.
+            await expect(snippet).toContainText(examples[index]![2]);
             await page.keyboard.press('Tab');
             await expect(snippet).toBeFocused();
             await expect(snippet).toBeInViewport({ ratio: 1 });

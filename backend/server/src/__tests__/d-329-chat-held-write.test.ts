@@ -59,6 +59,15 @@ import { createGatedActionStore, type GatedActionRecord } from '../gated-action-
 import { createMcpActionStore, type McpActionRecord } from '../mcp-action-store.js';
 import { createPreflightResumer, type PreflightRunSettled } from '../preflight-resumer.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
+import { buildChatTier1Handlers } from '../chat-tool-handlers.js';
+import { createUserMemoryStore, type UserMemoryRow } from '../user-memory-store.js';
+import {
+  handleMemoryDelete,
+  handleMemorySaves,
+  type MemoryRedactionRecord,
+  type MemoryRpcDeps,
+} from '../memory-rpc-handler.js';
+import { createChatSavesReader, savesInMessages } from '../memory-save-count.js';
 
 const signature: RecuedServerSignature = { server_kind: 'recued', version: '1.0.0', instance_id: 'inst-d329' };
 const NOW = 1_760_000_000_000;
@@ -84,6 +93,8 @@ const harness = (opts: {
   check?: (name: string, args: unknown) => ChatDispatchResult | null;
   /** The registry's `askValueLabels`: the names of the records a call names. */
   labels?: (name: string, args: unknown) => ApprovalValueLabels | undefined;
+  /** Runs the write instead of answering `result`: a real tool's handler. */
+  run?: (name: string, args: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>;
 } = {}) => {
   const db = new Database(':memory:');
   ensureChatSchema(db);
@@ -107,6 +118,7 @@ const harness = (opts: {
     getByName: (name) => (name === writeTool ? entry(name, 'write') : name === 'calendar.search' ? entry(name, 'read') : null),
     dispatch: async (name, args, ctx): Promise<ChatDispatchResult> => {
       calls.push({ name, args, ctx });
+      if (opts.run !== undefined) return opts.run(name, args, ctx);
       return { ok: true, result: opts.result ?? { created: true, event_id: 'evt-1' } };
     },
     ...(opts.check !== undefined ? { checkBeforeAsking: async (name: string, args: unknown) => opts.check!(name, args) } : {}),
@@ -751,3 +763,83 @@ describe('D-329 — an approval that expired unanswered', () => {
   });
 });
 
+
+/** D-198 §13 — the Delete confirm counts an agent's earlier saves of a claim the owner
+ *  deleted, and a deleted note's words survive only in the chat that saved it: on the
+ *  approval card of a save held for the owner, or the call row of one a rule ran. Driven
+ *  through this harness so those records are the ones the chat writes, with the REAL
+ *  `memory.write` handler as the tool and the real memory and chat stores behind it. */
+describe('D-198 §13 — an agent save the owner deleted is counted from the chat that saved it', () => {
+  const MIA = "Dana Whitfield's daughter is called Mia";
+  const DAY = 86_400_000;
+  const memoryTool = () => {
+    const store = createUserMemoryStore(createInMemoryCollection<UserMemoryRow>(), {} as never, {});
+    const redactions = createInMemoryCollection<MemoryRedactionRecord>();
+    const handlers = buildChatTier1Handlers({
+      getContactStore: () => undefined,
+      getCollectionRegistry: () => undefined,
+      getAuditLog: () => undefined,
+      getEnrichmentStore: () => undefined,
+      getRecipeStore: () => ({ ids: () => [], get: () => null, getStored: () => null, listStored: () => [] }) as never,
+      getExecutorConfig: () => ({ manifests: { get: () => null } }) as never,
+      getExecuteRecipe: () => undefined,
+      getUserMemoryStore: () => store,
+      getMemoryRedactionStore: () => redactions,
+      getOpAdmissionGate: () => ({
+        isFrozenByPause: () => false, isOpGranted: () => true, isOwnerGoverned: () => true, isOwnerRecipeGranted: () => false,
+      }),
+    }) as Record<string, (args: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>>;
+    return { store, redactions, run: (name: string, args: unknown, ctx: ChatDispatchContext) => handlers[name]!(args, ctx) };
+  };
+  const owner = (m: ReturnType<typeof memoryTool>, h: ReturnType<typeof harness>): MemoryRpcDeps => ({
+    auditLog: { get: async () => null } as never,
+    userMemoryStore: m.store,
+    redactionStore: m.redactions,
+    readChatSaves: createChatSavesReader({ chatStore: h.rpcDeps.store, plans: h.plans }),
+  });
+  /** The one note `step` saved. */
+  const savedBy = async (m: ReturnType<typeof memoryTool>, step: () => Promise<unknown>) => {
+    const before = new Set((await m.store.list()).map((r) => r.memory_id));
+    await step();
+    const added = (await m.store.list()).filter((r) => !before.has(r.memory_id));
+    expect(added).toHaveLength(1);
+    return added[0]!;
+  };
+
+  it('held for the owner and approved, deleted, saved again: two saves, read from the approval cards', async () => {
+    const m = memoryTool();
+    const h = harness({ tool: 'memory.write', run: m.run });
+    const first = await savedBy(m, async () =>
+      handlePlanApprove(h.rpcDeps, { plan_id: planIdOf(await h.dispatch('turn-1', { summary: MIA })) }));
+    expect(first).toMatchObject({ summary: MIA, channel_session_id: h.session_id });
+    await handleMemoryDelete(owner(m, h), { memory_id: first.memory_id });
+    expect(await m.store.getRow(first.memory_id)).not.toHaveProperty('summary');
+    // A save the owner refuses writes nothing, so it is no save.
+    planIdOf(await h.dispatch('turn-2', { summary: MIA }));
+    await h.answerElsewhere('deny');
+    const again = await savedBy(m, async () =>
+      handlePlanApprove(h.rpcDeps, { plan_id: planIdOf(await h.dispatch('turn-3', { summary: `${MIA}.` })) }));
+    expect(await handleMemorySaves(owner(m, h), { memory_id: again.memory_id }))
+      .toEqual({ memory_id: again.memory_id, saves: 2, agents: 1 });
+  });
+
+  it('run by a standing rule, deleted, run again: two saves, read from the call rows', async () => {
+    const m = memoryTool();
+    const h = harness({ tool: 'memory.write', run: m.run, writeRules: true });
+    for (const [turn, summary] of [['turn-1', 'Dana prefers phone calls'], ['turn-2', 'The office closes at five'], ['turn-3', 'Ciarán starts on Monday']] as const) {
+      await handlePlanApprove(h.rpcDeps, { plan_id: planIdOf(await h.dispatch(turn, { summary })) });
+      h.tick(DAY);
+    }
+    const [suggestion] = h.writeRules!.listSuggestions(NOW + 3 * DAY);
+    h.writeRules!.accept(suggestion!.key_hash, {}, NOW + 3 * DAY);
+    const first = await savedBy(m, async () =>
+      expect(await h.dispatch('turn-4', { summary: MIA })).toMatchObject({ ok: true }));
+    await handleMemoryDelete(owner(m, h), { memory_id: first.memory_id });
+    const again = await savedBy(m, async () =>
+      expect(await h.dispatch('turn-5', { summary: MIA })).toMatchObject({ ok: true }));
+    // Both ran with no card: their words are on the chat's call rows.
+    expect(savesInMessages(await h.rpcDeps.store.listMessages(h.session_id))).toEqual([{ summary: MIA }, { summary: MIA }]);
+    expect(await handleMemorySaves(owner(m, h), { memory_id: again.memory_id }))
+      .toEqual({ memory_id: again.memory_id, saves: 2, agents: 1 });
+  });
+});

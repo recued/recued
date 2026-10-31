@@ -42,6 +42,7 @@ import {
   USAGE_CAP_PERIOD_REMAINING_SUFFIX,
 } from '@recued/ui-shared';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import { serializeShellRoute } from '../shell/route.js';
 import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
 import {
@@ -250,7 +251,7 @@ const pendingListFocusByDocument = new WeakMap<Document, string>();
 const TOKEN_PLACEHOLDER = '<this contract\'s key>';
 
 export interface McpClientSnippet {
-  readonly id: 'claude' | 'claude-code' | 'cursor' | 'cline' | 'codex' | 'openclaw' | 'custom';
+  readonly id: 'claude' | 'claude-code' | 'cursor' | 'cline' | 'codex' | 'codex-plugin' | 'openclaw' | 'custom';
   readonly label: string;
   /** What to paste: a config file's content, or a command. */
   readonly body: string;
@@ -273,6 +274,9 @@ export const MCP_APP_KEY_SINCE = '26.10.30';
 
 /** The name Claude Desktop's config gives its `recued --mcp`, for its saved key. */
 export const CLAUDE_DESKTOP_APP_NAME = 'claude-desktop';
+
+/** The Agent Plugins package for Codex and other plugin hosts (public on GitHub). */
+export const RECUED_AGENT_PLUGIN_REPO = 'recued/agent-plugin';
 
 const RECUED_PATH_PLACEHOLDER = '<full path to recued: run `which recued`, or `where recued` on Windows>';
 
@@ -370,6 +374,32 @@ export const buildMcpClientSnippets = (
         'bearer_token_env_var = "RECUED_MCP_TOKEN"',
       ].join('\n'),
     },
+    // On the server's computer Codex can load Recued as a plugin instead. A
+    // plugin carries no key and Codex passes none to a plugin's server, so the
+    // owner saves it with Recued (D-334): Codex names the app by the folder it
+    // gives the plugin, which `recued mcp-key set` lists once Codex has started
+    // it. Tested 2026-10-30: Codex 0.164 installed the plugin from GitHub, saw no
+    // tools, and after `mcp-key set` and a restart called the contract's tool on
+    // the released 26.10.30.
+    {
+      id: 'codex-plugin',
+      label: "Codex plugin, on the server's computer",
+      body: [
+        `codex plugin marketplace add ${RECUED_AGENT_PLUGIN_REPO}`,
+        'codex plugin add recued@recued',
+      ].join('\n'),
+      notes: [
+        {
+          text: 'Start Codex once, so Recued notes it. Then run this, choose the entry under .codex/plugins, '
+            + 'paste this contract\'s key when it asks, and restart Codex:',
+          code: 'recued mcp-key set',
+        },
+        {
+          text: `Recued before ${MCP_APP_KEY_SINCE} has no mcp-key, so the plugin gets no tools there. `
+            + 'Use the Codex entry above instead.',
+        },
+      ],
+    },
     // OpenClaw's gateway runs as a service, which does not see the shell's
     // variables but does load `~/.openclaw/.env`, so the key goes there and the
     // command carries only OpenClaw's placeholder for it. Tested against a live
@@ -446,6 +476,13 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   font-size: 20px;
   font-weight: 650;
 }
+[${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+[${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-action-icon > svg { flex-shrink: 0; }
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-link {
   box-sizing: border-box;
   min-height: 36px;
@@ -2721,7 +2758,8 @@ export const bootstrapContractsRoute = (
 
     const appendLimitsControl = (host: HTMLElement): void => {
       if (limitsDraft === null) {
-        const open = makeEl(doc, 'button', 'contracts-link', 'Change limits');
+        const open = makeEl(doc, 'button', 'contracts-link contracts-action-icon');
+        open.innerHTML = renderActionLabel('rename', 'Change limits');
         open.setAttribute('type', 'button');
         open.setAttribute(CONTRACTS_ROUTE_LIMITS_EDIT_ATTR, '');
         open.addEventListener('click', () => {
@@ -2783,7 +2821,8 @@ export const bootstrapContractsRoute = (
         'A new limit starts its count again. Changing only the end date keeps the uses already made.',
       ));
       const actions = makeEl(doc, 'div', 'contracts-revoke-wrap');
-      const save = makeEl(doc, 'button', undefined, limitsBusy ? 'Saving…' : 'Save limits');
+      const save = makeEl(doc, 'button', 'contracts-action-icon');
+      save.innerHTML = renderActionLabel('save', limitsBusy ? 'Saving…' : 'Save limits');
       save.setAttribute('type', 'button');
       save.setAttribute(CONTRACTS_ROUTE_LIMITS_SAVE_ATTR, '');
       if (limitsBusy) {

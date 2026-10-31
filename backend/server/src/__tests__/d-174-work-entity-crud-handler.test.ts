@@ -538,6 +538,37 @@ describe('D-174 work_entity.list / get', () => {
 });
 
 describe('owner project work', () => {
+  it('pages blocking commitments with exact membership, closed-state scope and merged contact display', async () => {
+    const project = store.writeProject({ id: 'launch', source_id: 'recued.project', title: 'Launch' }, NOW);
+    const base = { source_id: 'recued.commitment', direction: 'inbound' as const, derivation: 'user_declared' as const };
+    for (let index = 0; index < 12; index++) store.writeCommitment({ ...base, statement: `Unrelated ${index}`, promised_for_at: NOW - index }, NOW);
+    store.writeCommitment({ ...base, id: 'first', statement: 'Client approval', counterparty_contact_id: 'merged-loser',
+      promised_for_at: NOW - 2, due_status: 'overdue', blocks_project_ids: [project.id, project.id], sync_state: 'stale_unreachable' }, NOW);
+    store.writeCommitment({ ...base, id: 'second', statement: 'Our deliverable', direction: 'outbound', promised_for_at: NOW - 1,
+      blocks_project_ids: ['another-project', project.id] }, NOW);
+    store.writeCommitment({ ...base, id: 'undated', statement: 'No date yet', direction: 'internal', blocks_project_ids: [project.id] }, NOW);
+    store.writeCommitment({ ...base, id: 'closed', statement: 'Approval already received', lifecycle_state: 'fulfilled', promised_for_at: NOW,
+      blocks_project_ids: [project.id] }, NOW);
+    store.writeCommitment({ ...base, statement: 'Prefix does not match', blocks_project_ids: [project.id + '-other'] }, NOW);
+    store.writeCommitment({ ...base, statement: 'Orphaned link', blocks_project_ids: [project.id], sync_state: 'orphaned' }, NOW);
+    const deleted = store.writeCommitment({ ...base, statement: 'Deleted link', blocks_project_ids: [project.id] }, NOW);
+    await handleWorkEntityDelete(deps, { kind: 'commitment', id: deleted.id });
+    store.registerSource({ id: 'peer.commitment', top_tier_kind: 'commitment', source_kind: 'connection', source_label: 'Peer promises',
+      write_capable: false, registered_at: NOW, sync_posture: 'read_through' });
+    store.writeCommitment({ ...base, source_id: 'peer.commitment', statement: 'Migration residue', blocks_project_ids: [project.id] }, NOW);
+    deps.contactDisplay = { getByContactIdResolved: vi.fn(() => ({ name: 'Current contact', email: 'current@example.test', contact_id: 'survivor' })) };
+    const first = handleWorkEntityProjectItems(deps, { project_id: project.id, kind: 'commitment', limit: 2 });
+    expect(first).toMatchObject({ total: 3, commitment_status: 'open', provider_only_sources: ['Peer promises'], items: [
+      { id: 'first', title: 'Client approval', stale: true, commitment: { direction: 'inbound', due_status: 'overdue', counterparty_label: 'Current contact' } },
+      { id: 'second', commitment: { direction: 'outbound' } },
+    ] });
+    expect(handleWorkEntityProjectItems(deps, { project_id: project.id, kind: 'commitment', offset: 2, limit: 2 }))
+      .toMatchObject({ total: 3, items: [{ id: 'undated' }] });
+    expect(handleWorkEntityProjectItems(deps, { project_id: project.id, kind: 'commitment', commitment_status: 'all' }))
+      .toMatchObject({ total: 4, commitment_status: 'all', items: [{ id: 'first' }, { id: 'second' }, { id: 'undated' }, { id: 'closed' }] });
+    expect(store.readCommitment('first')?.counterparty_contact_id).toBe('merged-loser');
+  });
+
   it('pages exact project links over the complete visible dataset, with matching task counts', async () => {
     const project = store.writeProject({ id: 'project-one', source_id: 'recued.project', title: 'Launch' }, NOW);
     for (let index = 0; index < 1_005; index++) store.writeNote({ source_id: 'recued.note', body: `Unrelated ${index}` }, NOW + index);
@@ -567,7 +598,8 @@ describe('owner project work', () => {
   it('rejects unavailable project identities and invalid page scopes before listing children', async () => {
     const spy = vi.spyOn(deps.resolver, 'listByKind');
     expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'note' })).toThrow('no longer available');
-    expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'project' as never })).toThrow('either tasks or notes');
+    expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'project' as never })).toThrow('tasks, notes or commitments');
+    expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'task', commitment_status: 'all' })).toThrow('outstanding or all');
     expect(() => handleWorkEntityProjectItems(deps, { project_id: 'missing', kind: 'task', limit: 0 })).toThrow('limit of 1');
     const project = store.writeProject({ source_id: 'recued.project', title: 'Removed project' }, NOW);
     await handleWorkEntityDelete(deps, { kind: 'project', id: project.id });

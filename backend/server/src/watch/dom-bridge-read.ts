@@ -89,7 +89,8 @@ export interface BridgeDomReadDeps {
  *                             bridge / no open tab / bridge busy / SW
  *                             torn down). The COMMON resting state — NEVER
  *                             counts toward the cap.
- *    - `'policy'`           — a grant / scope denial the user must resolve.
+ *    - `'policy'`           — a grant / scope denial, or a protected field,
+ *                             the user must resolve.
  *    - `'error'`            — a genuine read failure (transport / blocked
  *                             tab / unexpected). Both `policy` + `error`
  *                             count toward the cap so a broken watch fails
@@ -184,7 +185,10 @@ export const classifyDomReadOutcome = (outcome: DispatchOutcome): DomReadOutcome
     code === 'authority_invalid' ||
     code === 'authority_expired' ||
     code === 'authority_invalid_grant_scope' ||
-    code === 'ingredient_domain_signature_invalid'
+    code === 'ingredient_domain_signature_invalid' ||
+    // A watch on a password, sign-in code or card field: the bridge never
+    // reads one, so it fails the way a denied read does rather than as noise.
+    code === 'field_protected'
   ) {
     return {
       ok: false,

@@ -37,6 +37,8 @@ import {
   CLI_BINDING_ENV_VALUE_MAX,
   SERVICE_RESTART_POLICIES,
   isClosedRequestSchema,
+  closedRequestSchemaDefinitionFindings,
+  closedRequestSchemaDefinitionIssues,
   HTTP_UPLOAD_MAX_BYTES_CEILING,
   chunkedUploadBoundViolations,
   API_EXECUTION_BINDING_KINDS,
@@ -93,6 +95,7 @@ type AddIssue = (
   code: string,
   path: string,
   message: string,
+  reference_span?: CompositionValidationIssue['reference_span'],
 ) => void;
 export type RecipeValidator = (input: unknown) => { issues: readonly ValidationIssue[] };
 
@@ -144,8 +147,9 @@ const addIssue = (
   code: string,
   path: string,
   message: string,
+  reference_span?: CompositionValidationIssue['reference_span'],
 ): void => {
-  issues.push({ severity, code, path, message });
+  issues.push({ severity, code, path, message, ...(reference_span ? { reference_span } : {}) });
 };
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
@@ -2062,6 +2066,12 @@ const validateOperations = (
     if (row.args !== undefined) {
       validateOperationArgs(row.args, `${path}.args`, add);
     }
+    for (const finding of closedRequestSchemaDefinitionFindings(row.request_schema)) {
+      const suffix = finding.path.map(key => typeof key === 'number' ? `[${key}]` : /^[A-Za-z_]\w*$/.test(key) ? '.' + key : '[' + JSON.stringify(key) + ']').join('');
+      const key = finding.path.at(-1);
+      add('error', `composition_request_schema_${finding.kind}`, path + '.request_schema' + suffix, finding.message,
+        finding.target === 'key' && typeof key === 'string' ? { target: 'key', offset: 0, length: key.length } : undefined);
+    }
     validateClosedRequestSchemaArgAlignment(row, path, add);
     if (row.required_scopes !== undefined && !isStringArray(row.required_scopes)) {
       add('error', 'composition_operation_required_scopes_shape', `${path}.required_scopes`, 'required_scopes must be a string array when present');
@@ -2364,7 +2374,12 @@ export const validateComposition = (
     issues.push(...validateIngredient(decomposed.ingredient).issues);
   }
   if (decomposed.catalog !== undefined) {
-    issues.push(...validateIngredient(decomposed.catalog).issues);
+    // Remove exact definition duplicates only. The same legacy code also carries
+    // backtracking refusals, which must remain blocking. Messages are opaque
+    // duplicate identities here; source paths come from the structured checker.
+    const definitions = new Set(Object.entries(decomposed.catalog.operations ?? {}).flatMap(([op, spec]) =>
+      closedRequestSchemaDefinitionIssues(spec.request_schema).map(message => `operation '${op}' closed request schema is invalid: ${message}`)));
+    issues.push(...validateIngredient(decomposed.catalog).issues.filter(issue => issue.code !== 'CATALOG_REQUEST_SCHEMA_INVALID' || !definitions.has(issue.message)));
   }
   for (const [idx, schema] of (decomposed.entity_schemas ?? []).entries()) {
     issues.push(...wrapEntityIssues(schema, idx));

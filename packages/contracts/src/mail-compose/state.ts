@@ -14,8 +14,10 @@ import {
   type MailComposeState,
   type MailComposeValues,
   type MailReplyContext,
+  type MailForwardContext,
 } from './types.js';
-import { deriveReplyValues } from './reply-context.js';
+import { deriveReplyValues, deriveReplyAllValues } from './reply-context.js';
+import { deriveForwardValues } from './forward-context.js';
 
 /** Initial compose state — dialog closed. */
 export const initialMailComposeState = (): MailComposeState => ({
@@ -56,16 +58,36 @@ export const openCreateComposeTransition = (
 export const openReplyComposeTransition = (
   state: MailComposeState,
   context: MailReplyContext,
+  recipients: 'sender' | 'all' = 'sender',
 ): MailComposeState => {
-  const reply = deriveReplyValues(context);
+  const reply = recipients === 'all' ? deriveReplyAllValues(context) : deriveReplyValues(context);
+  if (!reply) return state;
   return {
     ...state,
     dialog: {
       mode: 'reply',
+      ...(recipients === 'all' ? { reply_all: true } : {}),
       values: { ...EMPTY_MAIL_COMPOSE_VALUES, ...reply },
       errors: {},
       submitting: false,
       submit_error: null,
+    },
+  };
+};
+
+/** Open a new conversation containing the complete plain-text original. */
+export const openForwardComposeTransition = (
+  state: MailComposeState,
+  context: MailForwardContext,
+): MailComposeState => {
+  const values = deriveForwardValues(context);
+  if (!values) return state;
+  return {
+    ...state,
+    dialog: {
+      mode: 'forward', values,
+      ...(context.original_message.has_attachments ? { original_attachments_omitted: true } : {}),
+      errors: {}, submitting: false, submit_error: null,
     },
   };
 };

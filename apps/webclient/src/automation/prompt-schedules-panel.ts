@@ -1,7 +1,7 @@
 import type { ChatTurnAcceptance, PromptSchedule, PromptScheduleInput, PromptScheduleRunOutcome,
   PromptScheduleRunRequest, PromptScheduleTarget, PromptScheduleUpdate, PromptScheduleTiming, PromptSchedulePreview } from '@recued/contracts';
 import { describeCron, zonedWallClockToEpochMs } from '@recued/contracts';
-import { stampZone } from '@recued/ui-shared';
+import { stampZone, renderActionLabel, type IconName } from '@recued/ui-shared';
 import { reminderWallClockValue } from '../data/reminders-surface.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
@@ -95,7 +95,8 @@ export const mountPromptSchedulesPanel = (options: {
       [data-prompt-schedules] form>p{margin:0}
       [data-prompt-schedules] [role=alert]:empty{display:none}
       [data-prompt-schedules] [role=alert]:not(:empty){color:var(--danger,#b42318)}
-      [data-prompt-schedules] button{font:inherit;font-size:12px;font-weight:600;color:inherit;background:var(--surface,#fff);border:1px solid var(--border,#dfe3e8);border-radius:7px;padding:7px 11px;min-height:36px;cursor:pointer}
+      [data-prompt-schedules] button{font:inherit;font-size:12px;font-weight:600;color:inherit;background:var(--surface,#fff);border:1px solid var(--border,#dfe3e8);border-radius:7px;padding:7px 11px;min-height:36px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+      [data-prompt-schedules] button svg[aria-hidden=true]{flex:none}
       [data-prompt-schedules] button:hover{background:var(--surface-subtle,#f3f4f6)}
       [data-prompt-schedules] button[type=submit]{background:var(--accent,#087e96);border-color:var(--accent,#087e96);color:var(--on-accent,#fff);padding:10px 16px;min-height:42px}
       [data-prompt-schedules] .prompt-schedule-remove{color:var(--fg-muted,#606873);border-color:transparent;background:transparent}
@@ -150,8 +151,9 @@ export const mountPromptSchedulesPanel = (options: {
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text: string) => {
     const el = doc.createElement(tag); el.textContent = text; return el;
   };
-  const button = (parent: HTMLElement, label: string, action: () => void) => {
+  const button = (parent: HTMLElement, label: string, action: () => void, icon?: IconName) => {
     const b = node('button', label); b.type = 'button'; b.disabled = busy;
+    if (icon) b.innerHTML = renderActionLabel(icon, label);
     b.addEventListener('click', action); parent.append(b); return b;
   };
   const format = (at: number, timeZone: string) => new Date(at).toLocaleString(undefined, {
@@ -165,8 +167,8 @@ export const mountPromptSchedulesPanel = (options: {
     const shown = filter === null ? rows : rows.filter(row => promptScheduleChip(row) === filter);
     heading.textContent = shown.length ? `Scheduled prompts (${shown.length})` : 'Scheduled prompts';
     const controls = doc.createElement('div');
-    if (!options.hideCreate) button(controls, 'Schedule a prompt', () => edit()).dataset.promptFocus = 'create';
-    button(controls, 'Refresh', () => { void refresh(); }).dataset.promptFocus = 'refresh';
+    if (!options.hideCreate) button(controls, 'Schedule a prompt', () => edit(), 'schedule').dataset.promptFocus = 'create';
+    button(controls, 'Refresh', () => { void refresh(); }, 'refresh').dataset.promptFocus = 'refresh';
     if (options.compact) { controls.className = 'prompt-schedule-toolbar'; content.append(controls); }
     else toolbar.replaceChildren(heading, controls);
     if (error) { const p = node('p', error); p.setAttribute('role', 'alert'); content.append(p); }
@@ -234,7 +236,7 @@ export const mountPromptSchedulesPanel = (options: {
               throw new Error(`${humanizeRpcError(failure)} Retry Run now will use the same request.`);
             }
           });
-        });
+        }, 'play');
         run.dataset.promptFocus = `${row.schedule_id}:run`;
         run.disabled = busy || !row.run_now_available && !retry;
         run.title = row.run_now_available || retry ? 'Run the saved request once; keep this schedule unchanged.'
@@ -245,20 +247,20 @@ export const mountPromptSchedulesPanel = (options: {
       }); };
       if (row.enabled || row.last_status === 'queued' || row.mode === 'recurring' || (row.run_at ?? 0) > Date.now()) {
         const canPause = row.enabled || row.last_status === 'queued';
-        const toggle = button(actions, canPause ? 'Pause' : 'Resume', () => action(canPause ? 'pause' : 'resume'));
+        const toggle = button(actions, canPause ? 'Pause' : 'Resume', () => action(canPause ? 'pause' : 'resume'), canPause ? undefined : 'play');
         toggle.dataset.promptFocus = `${row.schedule_id}:toggle`;
       }
-      button(actions, 'Edit', () => edit(row)).dataset.promptFocus = `${row.schedule_id}:edit`;
+      button(actions, 'Edit', () => edit(row), 'rename').dataset.promptFocus = `${row.schedule_id}:edit`;
       const remove = button(actions, 'Remove', () => {
         confirming = { id: row.schedule_id, revision: row.revision }; render(`${row.schedule_id}:keep`);
-      }); remove.dataset.promptFocus = `${row.schedule_id}:remove`; remove.className = 'prompt-schedule-remove';
+      }, 'delete'); remove.dataset.promptFocus = `${row.schedule_id}:remove`; remove.className = 'prompt-schedule-remove';
       card.append(actions);
       if (confirming?.id === row.schedule_id) {
         const revision = confirming.revision;
         const confirm = node('p', 'Remove this schedule? Its conversation stays. A turn already running can finish.');
         confirm.className = 'prompt-schedule-confirm';
         button(confirm, 'Keep schedule', () => { confirming = null; render(`${row.schedule_id}:remove`); }).dataset.promptFocus = `${row.schedule_id}:keep`;
-        button(confirm, 'Remove schedule', () => action('remove', revision)).dataset.promptFocus = `${row.schedule_id}:confirm`;
+        button(confirm, 'Remove schedule', () => action('remove', revision), 'delete').dataset.promptFocus = `${row.schedule_id}:confirm`;
         card.append(confirm);
       }
       content.append(card);
@@ -367,6 +369,8 @@ export const mountPromptSchedulesPanel = (options: {
     const feedback = node('p', ''); feedback.setAttribute('role', 'alert'); form.append(feedback);
     const actions = doc.createElement('div'); actions.dataset.promptScheduleActions = '';
     const save = node('button', row ? 'Save changes' : 'Create schedule'); save.type = 'submit'; actions.append(save);
+    const saveIcon = row ? 'save' : 'schedule';
+    save.innerHTML = renderActionLabel(saveIcon, row ? 'Save changes' : 'Create schedule');
     const cancel = button(actions, 'Cancel', () => {
       closePreview(); editing = false; void refresh(); render(); if (!row) options.onCreateClosed?.();
     }); form.append(actions);
@@ -376,7 +380,7 @@ export const mountPromptSchedulesPanel = (options: {
       try { input = { title: title.value, prompt: prompt.value, ...readTiming() }; }
       catch (failure) { feedback.textContent = humanizeRpcError(failure); return; }
       busy = true; save.disabled = true; cancel.disabled = true; feedback.textContent = '';
-      form.setAttribute('aria-busy', 'true'); save.textContent = row ? 'Saving changes…' : 'Creating schedule…';
+      form.setAttribute('aria-busy', 'true'); save.innerHTML = renderActionLabel(saveIcon, row ? 'Saving changes…' : 'Creating schedule…');
       for (const input of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input,textarea,select')) input.disabled = true;
       void (async () => {
         try {
@@ -397,7 +401,7 @@ export const mountPromptSchedulesPanel = (options: {
           if (!row) options.onCreateClosed?.();
         } catch (failure) { if (!disposed && scope === scopeVersion) feedback.textContent = humanizeRpcError(failure) + ' Your draft is kept; cancel and refresh to check the saved schedule.'; }
         finally { if (scope === scopeVersion) busy = false; save.disabled = false; cancel.disabled = false;
-          form.setAttribute('aria-busy', 'false'); save.textContent = row ? 'Save changes' : 'Create schedule';
+          form.setAttribute('aria-busy', 'false'); save.innerHTML = renderActionLabel(saveIcon, row ? 'Save changes' : 'Create schedule');
           for (const input of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input,textarea,select')) input.disabled = false;
           mode.disabled = !!row;
         }

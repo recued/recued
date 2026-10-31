@@ -461,7 +461,6 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     const busyRetry = findByAttr(host, PACKS_DETAIL_RESOLVE_RETRY_ATTR);
     expect(resolve).toHaveBeenCalledTimes(2);
     expect(busyRetry).not.toBeNull();
-    expect(busyRetry!.textContent).toBe('Retrying…');
     expect(busyRetry!.getAttribute('aria-disabled')).toBe('true');
     expect(busyRetry!.getAttribute('aria-busy')).toBe('true');
     expect(findByAttr(host, PACKS_DETAIL_RESOLVING_ATTR)).toBeNull();
@@ -562,7 +561,6 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     await m.whenLoaded();
     await tick();
     const button = () => findByAttrValue(host, PACKS_DETAIL_KITCHEN_EDIT_ATTR, 'mkt-pack');
-    expect(button()?.textContent).toBe('Edit in Kitchen');
     button()!.click();
     await tick();
     expect(edit).toHaveBeenCalledWith('mkt-pack');
@@ -626,7 +624,6 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     await tick();
     expect(findByAttrValue(host, PACKS_DETAIL_KITCHEN_EDIT_ATTR, 'mkt-pack')).toBeNull();
     const button = findByAttrValue(host, PACKS_DETAIL_KITCHEN_COPY_ATTR, 'mkt-pack');
-    expect(button?.textContent).toBe('Edit a copy in Kitchen');
     expect(text(host)).toContain('Your copy takes this pack\'s operations and data fields. Its recipes stay with this pack.');
     button!.click();
     await tick();

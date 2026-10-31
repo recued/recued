@@ -1,5 +1,5 @@
 import type { HouseholdHomeAssistantList, YoursCommand, YoursSnapshot } from '@recued/contracts';
-import { e } from '@recued/ui-shared';
+import { e, renderActionLabel } from '@recued/ui-shared';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
 
 export const HOUSEHOLD_DELIVERY_PANEL_ATTR = 'data-household-delivery';
@@ -49,7 +49,7 @@ export const mountHouseholdDeliveryPanel = (opts: HouseholdDeliveryPanelOptions)
   readStatus.setAttribute('aria-atomic', 'true');
   readStatus.setAttribute('tabindex', '-1');
   const retry = doc.createElement('button');
-  retry.type = 'button'; retry.textContent = 'Retry household delivery';
+  retry.type = 'button'; retry.innerHTML = renderActionLabel('refresh', 'Retry household delivery');
   retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
   retry.setAttribute('data-household-retry', ''); retry.hidden = true;
   readFeedback.append(readStatus);
@@ -65,7 +65,7 @@ export const mountHouseholdDeliveryPanel = (opts: HouseholdDeliveryPanelOptions)
       ? confirming ? 'Saved. Checking the current household settings…'
         : readFailed ? 'Retrying household delivery…' : 'Loading household delivery…'
       : `${confirming ? `${labels[confirming.kind]} was saved, but Recued could not check the current settings: ` : ''}${error instanceof Error ? error.message : String(error)}`;
-    retry.textContent = confirming ? 'Retry checking saved settings' : 'Retry household delivery';
+    retry.innerHTML = renderActionLabel('refresh', confirming ? 'Retry checking saved settings' : 'Retry household delivery');
     retry.hidden = !readFailed;
     if (readFailed) { if (retry.parentElement !== readFeedback) readFeedback.append(retry); }
     else retry.remove();
@@ -135,7 +135,7 @@ export const mountHouseholdDeliveryPanel = (opts: HouseholdDeliveryPanelOptions)
       ${choice && index < 0 ? '<option value="missing" selected disabled>Selected group is unavailable</option>' : ''}
       ${optionLabels(value.telegram_connections, row => row.recipient).map((label, at) => `<option value="${at}"${at === index ? ' selected' : ''}>${e(label)}</option>`).join('')}</select></label>
       ${value.telegram_connections.length ? '' : '<p class="hd-hint">No Telegram group is connected yet. Add one in <a href="#connections">Connections</a>, then choose it here.</p>'}
-      <div class="hd-actions"><button type="submit" class="rx-btn rx-btn-secondary rx-btn-sm">Save household Telegram</button></div></form></section>`;
+      <div class="hd-actions"><button type="submit" class="rx-btn rx-btn-secondary rx-btn-sm">${renderActionLabel('save', 'Save household Telegram')}</button></div></form></section>`;
     const telegramForm = root.querySelector('form')!;
     const group = telegramForm.querySelector<HTMLSelectElement>('[name="group"]')!;
     const draftChoice = (): Choice => {
@@ -182,7 +182,7 @@ export const mountHouseholdDeliveryPanel = (opts: HouseholdDeliveryPanelOptions)
         <details class="hd-more" data-household-entity-manual open><summary>Type a list ID instead</summary>
         <label class="hd-field"><span>To-do list ID</span><input name="ha_entity" class="rx-input" aria-label="To-do list ID" value="${e(haDraft?.entity ?? selection?.entity_id ?? '')}" placeholder="todo.household" maxlength="205"></label>
         <p class="hd-hint">In Home Assistant, the list’s settings show its ID, which starts with todo.</p></details></div>
-        <div class="hd-actions"><button type="submit" class="rx-btn rx-btn-secondary rx-btn-sm">Save to-do list</button></div></form>
+        <div class="hd-actions"><button type="submit" class="rx-btn rx-btn-secondary rx-btn-sm">${renderActionLabel('save', 'Save to-do list')}</button></div></form>
         ${ha.issue ? `<p class="hd-note hd-note-issue">${e(ha.issue)}</p>` : ''}
         ${ha.uncertain ? `<p class="hd-note">${ha.uncertain} ${ha.uncertain === 1 ? 'change to the list is' : 'changes to the list are'} not confirmed yet. Recued checks again without adding duplicates.</p>` : ''}`;
       root.append(section);
@@ -398,6 +398,8 @@ export const mountHouseholdDeliveryPanel = (opts: HouseholdDeliveryPanelOptions)
  *  ⚠ `[hidden]` is restated because `.rx-btn` and the field rows set a
  *  display, which would otherwise show a destination's details while it is Off. */
 export const HOUSEHOLD_DELIVERY_PANEL_STYLES = `
+[${HOUSEHOLD_DELIVERY_PANEL_ATTR}] .rx-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+[${HOUSEHOLD_DELIVERY_PANEL_ATTR}] .rx-btn > svg { flex-shrink:0; }
 [${HOUSEHOLD_DELIVERY_PANEL_ATTR}] {
   display: flex;
   flex-direction: column;

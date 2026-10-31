@@ -28,6 +28,7 @@
  */
 
 import type { WebclientServerProfile } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared';
 
 import {
   retargetServerUrl,
@@ -200,7 +201,7 @@ export const mountServerAddressPanel = (
         const edit = doc.createElement('button');
         edit.className = 'rx-btn rx-btn-secondary';
         edit.setAttribute(SERVER_ADDRESS_EDIT_BTN_ATTR, '');
-        edit.textContent = 'Change address';
+        edit.innerHTML = renderActionLabel('rename', 'Change address');
         edit.addEventListener('click', (event) => {
           // Safari does not focus a button on pointer activation. A real
           // opening owns the editor; a scripted click keeps outside focus.
@@ -243,7 +244,7 @@ export const mountServerAddressPanel = (
           const save = doc.createElement('button');
           save.className = 'rx-btn rx-btn-primary';
           save.setAttribute(SERVER_ADDRESS_SAVE_BTN_ATTR, '');
-          save.textContent = 'Save';
+          save.innerHTML = renderActionLabel('save', 'Save');
           save.addEventListener('click', () => { void save_(row.profile.id); });
           remember('save', save);
           actions.appendChild(save);
@@ -251,7 +252,7 @@ export const mountServerAddressPanel = (
           const check = doc.createElement('button');
           check.className = 'rx-btn rx-btn-primary';
           check.setAttribute(SERVER_ADDRESS_CHECK_BTN_ATTR, '');
-          check.textContent = 'Check address';
+          check.innerHTML = renderActionLabel('check', 'Check address');
           check.disabled = row.state === 'checking' || row.state === 'saving';
           check.addEventListener('click', () => { void check_(row.profile.id); });
           remember('check', check);
@@ -261,7 +262,7 @@ export const mountServerAddressPanel = (
         const cancel = doc.createElement('button');
         cancel.className = 'rx-btn rx-btn-secondary';
         cancel.setAttribute(SERVER_ADDRESS_CANCEL_BTN_ATTR, '');
-        cancel.textContent = 'Cancel';
+        cancel.innerHTML = renderActionLabel('close', 'Cancel');
         cancel.disabled = row.state === 'saving';
         cancel.addEventListener('click', () => cancel_(row.profile.id));
         remember('cancel', cancel);

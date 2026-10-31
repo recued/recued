@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { OwnerDocumentSearch } from '../owner-document-search.js';
 import { updateOwnerCalendarEvent } from './calendar/remote-event-handler.js';
 import { createOwnerCalendarEvent, listCalendarEventDestinations } from './calendar/event-create-handler.js';
 import type { CalendarEventCreationStore } from '../storage/calendar-event-creations.js';
@@ -100,6 +101,7 @@ import type { AuditLogStore } from '@recued/storage';
 
 export interface CollectionHandlerDeps {
   registry: CollectionRegistry;
+  ownerDocumentSearch?: OwnerDocumentSearch;
   /** D-236 — injectable clock for the source-freshness verdict on
    *  `collection.list` / `.get` / `.search`. Defaults to `Date.now`. Present because a verdict
    *  derived against a hard-coded clock cannot be asserted at a fixed instant,
@@ -1085,6 +1087,8 @@ export type CollectionMethods =
   | 'collection.resync'
   | 'collection.deleteRecord'
   | 'collection.file.enroll'
+  | 'collection.file.document.search'
+  | 'collection.file.document.result'
   | 'collection.file.update'
   | 'collection.file.delete'
   | 'collection.file.resync'
@@ -1167,6 +1171,12 @@ export const makeCollectionHandlers = (
   deps: CollectionHandlerDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, CollectionMethods, WsClient> | undefined => {
   if (!deps) return undefined;
+  const ownerDocumentSearchFor = (client: WsClient) => {
+    if (!client.instance_id) throw new RpcError('unauthorized', 'Document search requires a registered paired client.', 401);
+    if (!deps.ownerDocumentSearch) throw new RpcError('not_configured', 'Document-content search is unavailable on this server.', 503);
+    return { service: deps.ownerDocumentSearch, source: { channel: 'user' as const, actor: 'user_self' as const,
+      user_id: client.user_id ?? 'local', client_token_id: client.client_token_id ?? client.instance_id } };
+  };
   const calendarEventDeps = (client: WsClient) => {
     if (!client.instance_id) throw new RpcError('unauthorized', 'Calendar event access requires a registered paired client.', 401);
     return {
@@ -1203,6 +1213,8 @@ export const makeCollectionHandlers = (
       'collection.resync',
       'collection.deleteRecord',
       'collection.file.enroll',
+      'collection.file.document.search',
+      'collection.file.document.result',
       'collection.file.update',
       'collection.file.delete',
       'collection.file.resync',
@@ -1224,6 +1236,14 @@ export const makeCollectionHandlers = (
       'collection.calendar.reauth',
     ],
     handlers: {
+      'collection.file.document.search': async (args, client) => {
+        const { service, source } = ownerDocumentSearchFor(client);
+        return service.search(args, source);
+      },
+      'collection.file.document.result': async (args, client) => {
+        const { service, source } = ownerDocumentSearchFor(client);
+        return service.get(args?.request_id, source);
+      },
       'collection.list': async (args) =>
         handleCollectionList(deps, args as Parameters<typeof handleCollectionList>[1]),
       'collection.search': async (args) =>

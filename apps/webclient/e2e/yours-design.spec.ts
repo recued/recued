@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 
 installFullAppHooks();
 
@@ -43,7 +44,7 @@ test('A text fact preserves its exact value and returns to the filtered asset li
   await form.getByLabel('Fact name', { exact: true }).fill('length');
   const value = '  about 25 meters\n測定は概算です  ';
   await form.getByLabel('Value', { exact: true }).fill(value);
-  await form.getByRole('button', { name: 'Save fact', exact: true }).click();
+  await clickActionGlyph(page, form.getByRole('button', { name: 'Save fact', exact: true }));
   const fact = route.locator('[data-yours-fact="attributes.length"]');
   await expect(fact).toBeVisible();
   expect(await fact.evaluate(node => node.firstChild?.textContent)).toBe(value);

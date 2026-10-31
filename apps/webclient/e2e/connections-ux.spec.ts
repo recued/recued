@@ -1,6 +1,7 @@
 import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 import { installConnectionsUxFixture } from './fixtures/connections-ux.js';
+import { clickActionGlyph } from './helpers/action-glyph.js';
 
 const origin = process.env.CONNECTIONS_UX_ORIGIN ?? HARNESS_ORIGIN;
 const route = (page: Page) => page.locator('[data-recued-connections-route]');
@@ -142,7 +143,7 @@ test('saving a connection retains the HTTP result of its follow-up check', async
   await route(page).locator('[data-conn-field="display_name"]').fill('Example service');
   await route(page).locator('[data-conn-field="config.base_url"]').fill('https://api.example.test');
   await route(page).locator('[data-conn-field="auth.token"]').fill('fixture-api-token');
-  await route(page).getByRole('button', { name: 'Save and test', exact: true }).click();
+  await clickActionGlyph(page, route(page).getByRole('button', { name: 'Save and test', exact: true }));
   await expect(route(page)).toContainText('Service responded with HTTP 500. Access was not verified.');
   await expect(route(page).locator('.connections-row-name')).toContainText(['Example service']);
 });
@@ -155,6 +156,19 @@ test('saved app and API editor transitions retain keyboard focus', async ({ page
   await route(page).getByRole('button', { name: '+ Add Connection', exact: true }).click(); await expect(route(page).locator('[data-connection-dialog-heading]')).toBeFocused();
   await route(page).locator('[data-action="connections-pick-kind"][data-kind="api"]').click(); await expect(route(page).locator('[data-connection-dialog-heading]')).toBeFocused();
   await expect(route(page).locator('[data-action="connections-choose-auth"][data-auth-type="oauth2_refresh"]')).toContainText('Recued direct OAuth');
+  await route(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+  const edit = route(page).locator('.connections-row[data-conn-key="api/sheets-work"]')
+    .getByRole('button', { name: 'Edit', exact: true });
+  await clickActionGlyph(page, edit);
+  await expect(route(page).locator('[data-connection-dialog-heading]')).toBeFocused();
+  await expect(route(page).locator('[data-conn-field="name"]')).toHaveValue('sheets-work');
+  await route(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(route(page).locator('[data-connection-dialog-heading]')).toHaveCount(0);
+  await edit.focus();
+  await page.keyboard.press('Enter');
+  await expect(route(page).locator('[data-connection-dialog-heading]')).toBeFocused();
+  await route(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(edit).toBeFocused();
 });
 
 test('cloud sources remain usable when the independent local-folder inventory fails', async ({ page }) => {

@@ -375,6 +375,7 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   'collection.connection.',
   // Direct owner event edits never grant an agent a write path.
   'collection.calendar.event.',
+  'collection.file.document.',
   // D-322: only the owner may activate a Mail/Calendar mirror against a saved
   // broker account. Agent reads/writes continue through the governed adapters.
   'collection.mail.enrollManagedOAuth',

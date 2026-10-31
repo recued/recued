@@ -13,6 +13,7 @@
  */
 
 import { e } from '../template.js';
+import { renderActionIcon, type IconName } from '../icon-render.js';
 
 export type ButtonVariant =
   | 'primary'     // solid accent background
@@ -26,6 +27,10 @@ export type ButtonSize = 'xs' | 'sm' | 'md';
 
 export interface ButtonProps {
   label: string;
+  icon?: IconName;
+  /** Requires an icon. HTML labels also need a plain ariaLabel; otherwise the
+   * label stays visible. The plain name supplies the default tooltip. */
+  iconOnly?: boolean;
   /** Visual variant. Defaults to `secondary`. */
   variant?: ButtonVariant;
   /** Size. Defaults to `md`. */
@@ -77,6 +82,8 @@ const legacyClasses = (variant: ButtonVariant, size: ButtonSize): string => {
 };
 
 export const button = (props: ButtonProps): string => {
+  const plainName = props.ariaLabel ?? (props.htmlLabel ? undefined : props.label);
+  const iconOnly = props.icon !== undefined && props.iconOnly === true && Boolean(plainName?.trim());
   const variant = props.variant ?? 'secondary';
   const size = props.size ?? 'md';
   const classes = [
@@ -85,17 +92,20 @@ export const button = (props: ButtonProps): string => {
     `rx-btn-${size}`,
     legacyClasses(variant, size),
     props.extraClass ?? '',
+    iconOnly ? 'rx-btn-icon-only' : '',
   ].filter(Boolean).join(' ');
 
-  const attrs: string[] = [`class="${classes}"`, `type="${props.type ?? 'button'}"`];
+  const attrs: string[] = [`class="${e(classes)}"`, `type="${props.type ?? 'button'}"`];
   if (props.id) attrs.push(`id="${e(props.id)}"`);
   if (props.action) attrs.push(`data-action="${e(props.action)}"`);
   if (props.disabled) attrs.push('disabled');
   if (props.ariaPressed !== undefined) attrs.push(`aria-pressed="${props.ariaPressed}"`);
   if (props.ariaDisabled) attrs.push('aria-disabled="true"');
   if (props.ariaBusy) attrs.push('aria-busy="true"');
-  if (props.title) attrs.push(`title="${e(props.title)}"`);
-  if (props.ariaLabel) attrs.push(`aria-label="${e(props.ariaLabel)}"`);
+  const title = props.title ?? (iconOnly ? plainName : undefined);
+  const ariaLabel = props.ariaLabel ?? (iconOnly ? plainName : undefined);
+  if (title) attrs.push(`title="${e(title)}"`);
+  if (ariaLabel) attrs.push(`aria-label="${e(ariaLabel)}"`);
   if (props.data) {
     for (const [k, v] of Object.entries(props.data)) {
       attrs.push(`data-${e(k)}="${e(v)}"`);
@@ -103,7 +113,10 @@ export const button = (props: ButtonProps): string => {
   }
 
   const body = props.htmlLabel ? props.label : e(props.label);
-  return `<button ${attrs.join(' ')}>${body}</button>`;
+  const content = props.icon
+    ? `${renderActionIcon(props.icon, 'rx-btn-icon')}${iconOnly ? '' : `<span>${body}</span>`}`
+    : body;
+  return `<button ${attrs.join(' ')}>${content}</button>`;
 };
 
 /** Self-contained CSS for the button primitive. No ancestor selectors —
@@ -126,12 +139,15 @@ export const BUTTON_STYLES = `
   justify-content: center;
   gap: 6px;
 }
+.rx-btn[hidden] { display: none; }
+.rx-btn > svg { flex-shrink: 0; }
 .rx-btn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--surface-sunk); }
 .rx-btn:disabled, .rx-btn[aria-disabled="true"] { cursor: not-allowed; opacity: 0.5; }
 
 .rx-btn-xs { padding: 4px 10px; font-size: 11px; }
 .rx-btn-sm { padding: 6px 12px; font-size: 12px; }
 .rx-btn-md { /* default sizing already on .rx-btn */ }
+.rx-btn-icon-only { padding: 8px; min-width: 36px; min-height: 36px; }
 
 .rx-btn-primary {
   background: var(--accent);

@@ -1,5 +1,5 @@
 import { ARCHIVE_RESTORE_DRILL_ISSUE_TEXT, type ArchiveRemoteBackup, type ArchiveRestoreDrill } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel } from '@recued/ui-shared';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
 import { createBackupFormValidation } from './backup-form-validation.js';
 import { createBackupStatusRefresh, type BackupStatusRefreshOutcome } from './backup-status-refresh.js';
@@ -48,7 +48,8 @@ export const mountRestoreDrills = (options: { host: HTMLElement; document: Docum
   words.setAttribute('data-drill-words', ''); label.appendChild(words); form.appendChild(label);
   validation.field(words, form, 'words', () => rejectedWords ? 'Use all 24 words of this backup’s recovery key.'
     : words.value.trim() === '' ? 'Enter the backup’s 24-word recovery key.' : undefined);
-  const start = make('button', 'Run recovery test'); start.type = 'submit'; start.className = 'rx-btn rx-btn-secondary';
+  const start = make('button'); start.type = 'submit'; start.className = 'rx-btn rx-btn-secondary';
+  start.innerHTML = renderActionLabel('play', 'Run recovery test');
   start.setAttribute('data-drill-start', ''); form.appendChild(start); host.appendChild(form);
   const feedback = make('p'); feedback.setAttribute('role', 'status'); feedback.setAttribute('data-drill-feedback', ''); host.appendChild(feedback);
   const setFeedback = (message: string, kind: FeedbackKind = 'action'): void => { feedbackKind = kind; feedback.textContent = message; };
@@ -66,7 +67,7 @@ export const mountRestoreDrills = (options: { host: HTMLElement; document: Docum
     refreshButton.setAttribute('aria-disabled', String(disposed || pending));
     refreshButton.setAttribute('aria-busy', String(pending));
     refreshButton.setAttribute('aria-label', 'Refresh recovery receipts');
-    refreshButton.textContent = pending ? starting || pendingControl ? 'Waiting to refresh recovery receipts…' : 'Refreshing recovery receipts…' : 'Refresh recovery receipts';
+    refreshButton.innerHTML = renderActionLabel('refresh', pending ? starting || pendingControl ? 'Waiting to refresh recovery receipts…' : 'Refreshing recovery receipts…' : 'Refresh recovery receipts');
   };
   const refreshStatus = createBackupStatusRefresh({ host, document: doc, prefix: 'drill',
     ...(options.now ? { now: options.now } : {}),
@@ -156,7 +157,9 @@ export const mountRestoreDrills = (options: { host: HTMLElement; document: Docum
       for (const receipt of result.drills) {
         let row = rows.get(receipt.operation_id);
         if (!row) {
-          const node = make('li'), summary = make('span'), cancel = make('button', 'Cancel test'), cleanup = make('button', 'Retry cleanup');
+          const node = make('li'), summary = make('span'), cancel = make('button'), cleanup = make('button');
+          cancel.innerHTML = renderActionLabel('close', 'Cancel test');
+          cleanup.innerHTML = renderActionLabel('refresh', 'Retry cleanup');
           node.setAttribute('data-drill-id', receipt.operation_id);
           for (const [button, action] of [[cancel, 'cancel'], [cleanup, 'cleanup']] as const) {
             button.type = 'button'; button.className = 'rx-btn rx-btn-secondary'; button.setAttribute(`data-drill-${action}`, receipt.operation_id);

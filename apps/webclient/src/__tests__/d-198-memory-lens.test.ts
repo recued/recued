@@ -42,6 +42,8 @@ import {
   MEMORY_OPEN_RUN_ACTION,
   MEMORY_REPLACE_ACTION,
   MEMORY_RESTORE_ACTION,
+  MEMORY_REVOKE_ACTION,
+  MEMORY_UNREVOKE_ACTION,
   memoryFilterActors,
   renderLensSwitcher,
   renderMemoryLens,
@@ -273,7 +275,7 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
     memory_id: 'umem_1', origin_actor: 'user_self', kind: 'note', ts: 999_000,
     has_body: true, body_preview: 'mine', size_bytes: 4,
   });
-  const audit = entry({ memory_id: 'run-1', origin_actor: 'system', kind: 'run', ts: 998_000 });
+  const audit = entry({ memory_id: 'run-1', origin_actor: 'system', kind: 'run', ts: 998_000, run_id: 'run-1' });
 
   it('shows "Add memory" only when writes are wired', () => {
     expect(renderMemoryLens({ ...baseProps, entries: [], canWrite: true })).toContain(MEMORY_ADD_ACTION);
@@ -322,13 +324,15 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
       'aria-label="Open run for memory Recipe execution remembered (run-2)"',
     );
     expect(html).toContain(
-      'aria-label="Forget memory Recipe execution remembered (run-2)"',
+      'aria-label="Hide run from AI Recipe execution remembered (run-2)"',
     );
   });
 
   it('renders a "View" affordance only for rows carrying a body', () => {
-    expect(renderMemoryLens({ ...baseProps, entries: [own], canWrite: true })).toContain(MEMORY_OPEN_ACTION);
-    expect(renderMemoryLens({ ...baseProps, entries: [audit], canWrite: true })).not.toContain(MEMORY_OPEN_ACTION);
+    // Quoted: the run row's "Open run" action (`memory-open-run`) contains the bare
+    // `memory-open` string, so only the exact attribute value says "no View".
+    expect(renderMemoryLens({ ...baseProps, entries: [own], canWrite: true })).toContain(`"${MEMORY_OPEN_ACTION}"`);
+    expect(renderMemoryLens({ ...baseProps, entries: [audit], canWrite: true })).not.toContain(`"${MEMORY_OPEN_ACTION}"`);
   });
 
   it('renders the inline delete-confirm for the pending row', () => {
@@ -366,7 +370,7 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
       pendingDeleteId: 'run-1',
       deletingId: 'run-1',
     });
-    expect(otherHtml).toContain('Forgetting…');
+    expect(otherHtml).toContain('Hiding…');
 
     const retryHtml = renderMemoryLens({
       ...baseProps,
@@ -696,37 +700,37 @@ describe('renderMemoryLens — Slice 4 redaction UI', () => {
     summary: 'ran a recipe', run_id: 'run-1',
   });
 
-  it('shows Forget (not Edit) on a non-own row when writes are wired', () => {
+  it('shows Hide from AI (not Edit) on a run when writes are wired (§13)', () => {
     const html = renderMemoryLens({ ...baseProps, entries: [audit], canWrite: true });
-    expect(html).toContain('>Forget<');
+    expect(html).toContain('>Hide from AI<');
     expect(html).toMatch(new RegExp(`${MEMORY_DELETE_ACTION}[^>]*data-memory-id="run-1"`));
     expect(html).not.toContain(MEMORY_EDIT_ACTION); // others' rows aren't editable (§3)
   });
 
-  it('renders a redacted row content-cleared + flagged, with no actions', () => {
+  it('renders a hidden run content-cleared + flagged, with no actions', () => {
     const redacted = entry({
       memory_id: 'run-9', origin_actor: 'contracted_user', kind: 'run', ts: 997_000,
-      redacted: true,
+      redacted: true, run_id: 'run-9',
     });
     const html = renderMemoryLens({ ...baseProps, entries: [redacted], canWrite: true });
-    expect(html).toContain('Redacted');
+    expect(html).toContain('Hidden from AI. Your Logs still show this run.');
     expect(html).toContain('is-redacted');
-    expect(html).not.toContain('memory-delete'); // no Forget/Delete on an already-redacted row
+    expect(html).not.toContain('memory-delete'); // nothing left to act on: a run cannot be erased
   });
 
-  it('detail: Forget on a non-own row; a redacted-state message on a redacted one', () => {
+  it('detail: Hide from AI on a run; a hidden-state message on a hidden one', () => {
     const forgettable: MemoryDetailState = {
       memory_id: 'run-1', loading: false,
       entry: { memory_id: 'run-1', origin_actor: 'system', kind: 'run', ts: 1, summary: 'ran', run_id: 'run-1' },
     };
-    expect(renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail: forgettable })).toContain('>Forget<');
+    expect(renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail: forgettable })).toContain('>Hide from AI<');
     const redacted: MemoryDetailState = {
       memory_id: 'run-2', loading: false,
-      entry: { memory_id: 'run-2', origin_actor: 'system', kind: 'run', ts: 1, redacted: true },
+      entry: { memory_id: 'run-2', origin_actor: 'system', kind: 'run', ts: 1, redacted: true, run_id: 'run-2' },
     };
     const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail: redacted });
-    expect(html).toContain('has been redacted');
-    expect(html).not.toContain('>Forget<');
+    expect(html).toContain('Hidden from AI.');
+    expect(html).not.toContain('>Hide from AI<');
   });
 });
 
@@ -743,9 +747,9 @@ describe('renderMemoryLens — a run you started is the record of a run, not a n
     has_body: true, body_preview: 'mine', size_bytes: 4,
   });
   const forgetButton = (id: string): RegExp =>
-    new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="${id}"[^>]*>Forget<`);
+    new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="${id}"[^>]*>Hide from AI<`);
 
-  it('offers Forget, never Edit or Delete, on your own run — while your note keeps both', () => {
+  it('offers Hide from AI, never Edit or Delete, on your own run — while your note keeps both', () => {
     const html = renderMemoryLens({ ...baseProps, entries: [ownNote, ownRun], canWrite: true });
     expect(html).not.toMatch(new RegExp(`${MEMORY_EDIT_ACTION}[^>]*data-memory-id="run-own"`));
     expect(html).toMatch(forgetButton('run-own'));
@@ -756,21 +760,21 @@ describe('renderMemoryLens — a run you started is the record of a run, not a n
     expect(html).not.toMatch(forgetButton('umem_mine'));
   });
 
-  it('asks to forget your run, not to delete it', () => {
+  it('asks to hide your run from AI, not to delete it', () => {
     const html = renderMemoryLens({
       ...baseProps, entries: [ownRun], canWrite: true, pendingDeleteId: 'run-own',
     });
-    expect(html).toContain('Forget this memory?');
+    expect(html).toContain('Hide this run from AI? Your Logs still show it in full.');
     expect(html).not.toContain('Delete this memory?');
   });
 
-  it('detail: Forget, not Edit, on your own run', () => {
+  it('detail: Hide from AI, not Edit, on your own run', () => {
     const detail: MemoryDetailState = {
       memory_id: 'run-own', loading: false,
       entry: { memory_id: 'run-own', origin_actor: 'user_self', kind: 'run', ts: 1, summary: 'ran', run_id: 'run-own' },
     };
     const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail });
-    expect(html).toContain('>Forget<');
+    expect(html).toContain('>Hide from AI<');
     expect(html).not.toContain(MEMORY_EDIT_ACTION);
   });
 });
@@ -838,7 +842,7 @@ describe('renderMemoryLens — an agent replacing or forgetting its own entries'
     expect(html).toContain('Forgotten by your chat. Reason: the user asked me to');
     expect(html).toMatch(new RegExp(`${MEMORY_RESTORE_ACTION}[^>]*data-memory-id="umem_7"`));
     expect(html).not.toMatch(new RegExp(`${MEMORY_RESTORE_ACTION}[^>]*data-memory-id="umem_8"`));
-    expect(html).toContain('<p class="memory-row-redacted">Redacted</p>');
+    expect(html).toContain('<p class="memory-row-redacted">Hidden, but its text is still on your server.</p>');
     expect(renderMemoryLens({ ...baseProps, entries: [forgotten], canWrite: false })).not.toContain(MEMORY_RESTORE_ACTION);
   });
 
@@ -890,11 +894,11 @@ describe('renderMemoryLens — replacing an agent note with your own version (D-
   const replaceButton = (id: string): RegExp =>
     new RegExp(`<button[^>]*"${MEMORY_REPLACE_ACTION}"[^>]*data-memory-id="${id}"[^>]*>`);
 
-  it('offers Replace beside Forget on a live, current agent note — never Edit', () => {
+  it('offers Replace beside Delete on a live, current agent note — never Edit', () => {
     const html = renderMemoryLens({ ...baseProps, entries: [agentNote], canWrite: true });
     expect(html).toMatch(replaceButton('umem_agent'));
     expect(html).toMatch(/aria-label="Replace memory Dana prefers phone calls \(umem_agent\)">Replace</);
-    expect(html).toContain('>Forget<');
+    expect(html).toContain('>Delete<');
     expect(html).not.toContain(MEMORY_EDIT_ACTION);
     // read-only mode offers nothing
     expect(renderMemoryLens({ ...baseProps, entries: [agentNote] })).not.toContain(MEMORY_REPLACE_ACTION);
@@ -911,15 +915,15 @@ describe('renderMemoryLens — replacing an agent note with your own version (D-
     const html = renderMemoryLens({ ...baseProps, entries, canWrite: true });
     expect(html).not.toContain(MEMORY_REPLACE_ACTION);
     // the replaced one can still be forgotten; the controls did not vanish with Replace
-    expect(html).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="umem_old"[^>]*>Forget<`));
+    expect(html).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="umem_old"[^>]*>Delete<`));
   });
 
-  it('shows the prefill in flight on Replace, holds Forget, and keeps a failure on its own row', () => {
+  it('shows the prefill in flight on Replace, holds Delete, and keeps a failure on its own row', () => {
     const opening = renderMemoryLens({ ...baseProps, entries: [agentNote], canWrite: true, openingEditId: 'umem_agent' });
     const replace = opening.match(replaceButton('umem_agent'))?.[0] ?? '';
     expect(replace).toContain('aria-busy="true"');
     expect(opening).toContain('Opening…');
-    expect(opening).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*aria-disabled="true"[^>]*>Forget<`));
+    expect(opening).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*aria-disabled="true"[^>]*>Delete<`));
 
     const failed = renderMemoryLens({
       ...baseProps, entries: [agentNote], canWrite: true,
@@ -942,13 +946,205 @@ describe('renderMemoryLens — replacing an agent note with your own version (D-
       .not.toContain('in place of the agent’s');
   });
 
-  it('detail: Replace beside Forget on an agent note', () => {
+  it('detail: Replace beside Delete on an agent note', () => {
     const detail: MemoryDetailState = {
       memory_id: 'umem_agent', loading: false,
       entry: { memory_id: 'umem_agent', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 1, summary: 'Dana prefers phone calls', body: 'full' },
     };
     const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail });
     expect(html).toMatch(replaceButton('umem_agent'));
-    expect(html).toContain('>Forget<');
+    expect(html).toContain('>Delete<');
+  });
+});
+
+describe('renderMemoryLens — Delete on an agent note, Hide from AI on a run (D-198 §13)', () => {
+  const agentNote = entry({
+    memory_id: 'umem_agent', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 998_000,
+    summary: 'Dana prefers phone calls',
+  });
+  const deleteButton = (id: string): RegExp =>
+    new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*data-memory-id="${id}"[^>]*>Delete<`);
+
+  it("asks before deleting an agent's note, and says the chat it came from keeps a copy", () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [agentNote], canWrite: true });
+    expect(html).toMatch(deleteButton('umem_agent'));
+    const pending = renderMemoryLens({ ...baseProps, entries: [agentNote], canWrite: true, pendingDeleteId: 'umem_agent' });
+    expect(pending).toContain('Delete this memory? Its text leaves your server; the chat it came from keeps a copy.');
+    expect(pending).toContain('aria-label="Confirm deleting memory Dana prefers phone calls (umem_agent)"');
+  });
+
+  it('shows a deleted note as who and when, with nothing left to act on', () => {
+    const deleted = entry({
+      memory_id: 'umem_gone', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 800_000,
+      redacted: true, deleted_at: 1_000_000 - 2 * 86_400_000,
+    });
+    const html = renderMemoryLens({ ...baseProps, entries: [deleted], canWrite: true });
+    expect(html).toContain('You deleted this 2d ago. Its text is gone from your server.');
+    expect(html).not.toContain(MEMORY_DELETE_ACTION);
+    expect(html).not.toContain(MEMORY_RESTORE_ACTION);
+    expect(html).not.toContain(MEMORY_REPLACE_ACTION);
+  });
+
+  it('offers Delete on a note hidden before Delete existed — its text is still on the server — but not on an agent forget', () => {
+    const hidden = entry({
+      memory_id: 'umem_hidden', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 900_000, redacted: true,
+    });
+    const agentForgot = entry({
+      memory_id: 'umem_forgot', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 900_000,
+      redacted: true, forgotten_by: 'your chat',
+    });
+    const html = renderMemoryLens({ ...baseProps, entries: [hidden, agentForgot], canWrite: true });
+    expect(html).toContain('Hidden, but its text is still on your server.');
+    expect(html).toMatch(deleteButton('umem_hidden'));
+    expect(html).not.toMatch(deleteButton('umem_forgot'));
+    expect(html).toMatch(new RegExp(`${MEMORY_RESTORE_ACTION}[^>]*data-memory-id="umem_forgot"`));
+    const pending = renderMemoryLens({ ...baseProps, entries: [hidden], canWrite: true, pendingDeleteId: 'umem_hidden' });
+    expect(pending).toContain('Its text leaves your server');
+    expect(pending).toContain(MEMORY_DELETE_CONFIRM_ACTION);
+    expect(renderMemoryLens({ ...baseProps, entries: [hidden] })).not.toContain(MEMORY_DELETE_ACTION);
+  });
+});
+
+describe('renderMemoryLens — Revoke and Un-revoke an agent note (D-198 §13)', () => {
+  const live = entry({
+    memory_id: 'umem_live', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 998_000,
+    summary: 'Dana prefers phone calls',
+  });
+  const revoked = entry({
+    memory_id: 'umem_wrong', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 900_000,
+    summary: 'Dana prefers phone calls', revoked_at: 1_000_000 - 2 * 86_400_000,
+  });
+  const button = (action: string, id: string, label: string): RegExp =>
+    new RegExp(`"${action}"[^>]*data-memory-id="${id}"[^>]*>${label}<`);
+
+  it('offers Revoke between Replace and Delete on a live, current agent note', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [live], canWrite: true });
+    expect(html).toMatch(button(MEMORY_REVOKE_ACTION, 'umem_live', 'Revoke'));
+    expect(html.indexOf('>Replace<')).toBeLessThan(html.indexOf('>Revoke<'));
+    expect(html.indexOf('>Revoke<')).toBeLessThan(html.indexOf('>Delete<'));
+    expect(html).not.toContain(MEMORY_UNREVOKE_ACTION);
+    expect(renderMemoryLens({ ...baseProps, entries: [live] })).not.toContain(MEMORY_REVOKE_ACTION);
+  });
+
+  it('keeps a revoked note readable, says what revoking it did, and offers Un-revoke, Replace and Delete', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [revoked], canWrite: true });
+    expect(html).toContain('Dana prefers phone calls');
+    expect(html).toContain('You revoked this 2d ago. AIs treat it as wrong and ask you before saving it again.');
+    expect(html).toMatch(button(MEMORY_UNREVOKE_ACTION, 'umem_wrong', 'Un-revoke'));
+    expect(html).not.toMatch(button(MEMORY_REVOKE_ACTION, 'umem_wrong', 'Revoke'));
+    expect(html).toContain('>Replace<');
+    expect(html).toContain('>Delete<');
+    expect(html).not.toContain('is-redacted');
+  });
+
+  it('⛔ offers no Revoke on a run, your own note, or a version a newer one replaced', () => {
+    const html = renderMemoryLens({
+      ...baseProps,
+      canWrite: true,
+      entries: [
+        entry({ memory_id: 'run-1', origin_actor: 'system', kind: 'run', ts: 1, run_id: 'run-1' }),
+        entry({ memory_id: 'umem_mine', origin_actor: 'user_self', kind: 'note', ts: 2 }),
+        entry({ memory_id: 'umem_old', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 3, replaced_by: 'umem_new' }),
+      ],
+    });
+    expect(html).not.toContain(MEMORY_REVOKE_ACTION);
+    expect(html).not.toContain(MEMORY_UNREVOKE_ACTION);
+  });
+
+  it('shows the act in flight on its own button, and a failure on its own row', () => {
+    const busy = renderMemoryLens({ ...baseProps, entries: [live], canWrite: true, restoringId: 'umem_live' });
+    expect(busy).toMatch(new RegExp(`"${MEMORY_REVOKE_ACTION}"[^>]*aria-busy="true"[^>]*>Revoking…<`));
+    const failed = renderMemoryLens({
+      ...baseProps, entries: [revoked], canWrite: true,
+      restoreError: { memoryId: 'umem_wrong', message: '<needs an update>' },
+    });
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain('&lt;needs an update&gt;');
+  });
+
+  it('detail: Revoke on a live agent note, Un-revoke and the revoked line on a revoked one', () => {
+    const detailOf = (e: MemoryListEntry): MemoryDetailState => ({
+      memory_id: e.memory_id, loading: false, entry: { ...e, body: 'full' },
+    });
+    expect(renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail: detailOf(live) }))
+      .toMatch(button(MEMORY_REVOKE_ACTION, 'umem_live', 'Revoke'));
+    const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail: detailOf(revoked) });
+    expect(html).toMatch(button(MEMORY_UNREVOKE_ACTION, 'umem_wrong', 'Un-revoke'));
+    expect(html).toContain('You revoked this 2d ago.');
+  });
+});
+
+describe("the Delete confirm's count (D-198 §13)", () => {
+  const live = entry({
+    memory_id: 'umem_live', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 998_000,
+    summary: "Dana Whitfield's daughter is called Mia",
+  });
+  const button = (action: string, id: string, label: string): RegExp =>
+    new RegExp(`"${action}"[^>]*data-memory-id="${id}"[^>]*>${label}<`);
+  const PLAIN = 'Delete this memory? Its text leaves your server; the chat it came from keeps a copy.';
+
+  it('says "Checking…" on Delete while it asks how often the note was saved', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [live], canWrite: true, checkingDeleteId: 'umem_live' });
+    expect(html).toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*aria-disabled="true" aria-busy="true"[^>]*>Checking…<`));
+    expect(html).not.toContain(MEMORY_DELETE_CONFIRM_ACTION);
+  });
+
+  it('saved more than once by one agent: asks to mark it wrong, and names what each button does', () => {
+    const html = renderMemoryLens({
+      ...baseProps, entries: [live], canWrite: true, pendingDeleteId: 'umem_live', deleteSaves: { saves: 3, agents: 1 },
+    });
+    expect(html).toContain(
+      'An agent has saved this 3 times. Mark it wrong so it asks you first? '
+      + 'If you delete it, its text leaves your server; the chat it came from keeps a copy.',
+    );
+    expect(html).toMatch(button(MEMORY_REVOKE_ACTION, 'umem_live', 'Mark it wrong'));
+    expect(html).toMatch(button(MEMORY_DELETE_CONFIRM_ACTION, 'umem_live', 'Delete'));
+    expect(html).toMatch(button(MEMORY_DELETE_CANCEL_ACTION, 'umem_live', 'Cancel'));
+    // Each button's name holds the words it shows.
+    expect(html).toMatch(/aria-label="Mark it wrong Dana Whitfield&#39;s daughter is called Mia \(umem_live\)"/);
+    expect(html).toMatch(/aria-label="Delete memory Dana Whitfield&#39;s daughter is called Mia \(umem_live\)"/);
+    expect(html.indexOf('>Mark it wrong<')).toBeLessThan(html.indexOf('>Delete<'));
+    expect(html).not.toContain(PLAIN);
+  });
+
+  it('saved by several agents, it says they', () => {
+    expect(renderMemoryLens({
+      ...baseProps, entries: [live], canWrite: true, pendingDeleteId: 'umem_live', deleteSaves: { saves: 4, agents: 2 },
+    })).toContain('Agents have saved this 4 times. Mark it wrong so they ask you first?');
+  });
+
+  it('while it deletes, Mark it wrong is held too', () => {
+    const html = renderMemoryLens({
+      ...baseProps, entries: [live], canWrite: true, pendingDeleteId: 'umem_live', deletingId: 'umem_live',
+      deleteSaves: { saves: 3, agents: 1 },
+    });
+    expect(html).toMatch(new RegExp(`"${MEMORY_REVOKE_ACTION}"[^>]*aria-disabled="true"[^>]*>Mark it wrong<`));
+    expect(html).toMatch(new RegExp(`"${MEMORY_DELETE_CONFIRM_ACTION}"[^>]*aria-busy="true"[^>]*>Deleting…<`));
+  });
+
+  it('⛔ a count on a note it could not mark wrong changes nothing: the confirm it always had', () => {
+    for (const other of [
+      entry({ memory_id: 'umem_live', origin_actor: 'user_self', kind: 'note', ts: 1, summary: 'mine' }),
+      { ...live, revoked_at: 900_000 },
+      { ...live, replaced_by: 'umem_new' },
+    ]) {
+      const html = renderMemoryLens({
+        ...baseProps, entries: [other], canWrite: true, pendingDeleteId: 'umem_live', deleteSaves: { saves: 3, agents: 1 },
+      });
+      expect(html).not.toContain('Mark it wrong');
+      expect(html).toMatch(button(MEMORY_DELETE_CONFIRM_ACTION, 'umem_live', 'Confirm'));
+    }
+  });
+
+  it('detail: the same Checking… and the same question', () => {
+    const detail: MemoryDetailState = { memory_id: 'umem_live', loading: false, entry: { ...live, body: 'full' } };
+    expect(renderMemoryLens({ ...baseProps, entries: [], canWrite: true, detail, checkingDeleteId: 'umem_live' }))
+      .toMatch(new RegExp(`"${MEMORY_DELETE_ACTION}"[^>]*aria-busy="true"[^>]*>Checking…<`));
+    const html = renderMemoryLens({
+      ...baseProps, entries: [], canWrite: true, detail, pendingDeleteId: 'umem_live', deleteSaves: { saves: 2, agents: 1 },
+    });
+    expect(html).toContain('An agent has saved this 2 times. Mark it wrong so it asks you first?');
+    expect(html).toMatch(new RegExp(`class="memory-btn"\\s+data-recued-data-action="${MEMORY_REVOKE_ACTION}"[^>]*>Mark it wrong<`));
+    expect(html).toMatch(button(MEMORY_DELETE_CONFIRM_ACTION, 'umem_live', 'Delete'));
   });
 });

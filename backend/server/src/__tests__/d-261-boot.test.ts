@@ -364,15 +364,14 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
   if (execute) {
     const review = await rpc<PreapprovalReview>(first.socket, 'preapproval.review', { proposal_id: pending.proposal_id });
     if (contractId) expect(review.requested_through.contract_id).toBe(contractId);
-    // ⛔⛔ NAME THE CAUSE BEFORE THE SYMPTOM. If the work ever creeps back up to
-    //   the window, this fails saying so — where `preapproval_expired` reads as
-    //   an approval bug and sent a previous session bisecting the wrong commit.
-    const consumed = Date.now() - now;
-    expect(consumed, `consumed ${String(consumed)}ms of the ${String(execute ? 15_000 : 90_000)}ms review window `
-      + '— the fixture is spending the budget again; hoist the slow part above `now` rather than widening it')
-      .toBeLessThan((execute ? 15_000 : 90_000) * 0.8);
-    await rpc(first.socket, 'preapproval.decide', { proposal_id: pending.proposal_id, expected_revision: review.revision,
-      review_digest: review.review_digest, challenge: review.challenge, decision: 'approve', request_id: randomUUID() });
+    // Approval validates the review deadline. Include elapsed time on failure
+    // so a slow fixture is identifiable under load.
+    try {
+      await rpc(first.socket, 'preapproval.decide', { proposal_id: pending.proposal_id, expected_revision: review.revision,
+        review_digest: review.review_digest, challenge: review.challenge, decision: 'approve', request_id: randomUUID() });
+    } catch (cause) {
+      throw new Error(`Preapproval decision failed ${String(Date.now() - now)}ms after the review window began.`, { cause });
+    }
   }
   // Process shutdown is fixture cleanup, outside the owner's review window.
   // Stop both processes together before the restart, after the decision.

@@ -55,6 +55,29 @@ export const toolNameFromRow = (content: string): string | undefined => {
   return name.length > 0 && !name.includes(' ') ? name : undefined;
 };
 
+/** The inverse of `renderToolRow`'s CALL half for one tool: the arguments object of a
+ *  `<tool_name>(<args>)` row, which holds them as JSON. Undefined for any other row — a
+ *  result row, another tool's call, a call with no arguments (a bare name) — and for
+ *  arguments that are not an object, so a row it cannot read is never read as one.
+ *
+ *  ⚠ The CALL row only. A durable call is written as two rows, the call and then its
+ *  result (`<tool_name>: <result>`), so a row holding both is not one this reads. */
+export const toolCallArgsFromRow = (
+  content: string,
+  tool_name: string,
+): Record<string, unknown> | undefined => {
+  const head = `${tool_name}(`;
+  if (!content.startsWith(head) || !content.endsWith(')')) return undefined;
+  try {
+    const args: unknown = JSON.parse(content.slice(head.length, -1));
+    return args !== null && typeof args === 'object' && !Array.isArray(args)
+      ? args as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /** Is this row's tool a READ, and therefore its stored result a snapshot?
  *
  *  ⛔⛔ READS THE SHIPPED TABLE, NEVER A COPY. The bench arm that proved this

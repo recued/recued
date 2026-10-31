@@ -104,7 +104,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   seller: 22,
   // mail / file / calendar / webhook / recipe retired 2026-10-05.
   watch: 3,
-  dom: 2,
+  // + D-335 slice A `core.dom.inspect`, the page read for an AI, slice B
+  // `core.dom.click`, and slice C `core.dom.tabs` and `core.dom.open`.
+  dom: 6,
 };
 
 describe('D-182 slice 3a — kernel op registry', () => {
@@ -241,7 +243,11 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.data.form-response.set-state|data|form-response-set-state|write',
       // `core.data.webhook.get` / `.list` went 2026-10-10 with the Phase D
       // webhook collection they read.
+      'core.dom.click|dom|dom-click|write',
+      'core.dom.inspect|dom|dom-inspect|read',
+      'core.dom.open|dom|dom-open|write',
       'core.dom.read|dom|dom-read|read',
+      'core.dom.tabs|dom|dom-tabs|read',
       'core.dom.write|dom|dom-write|write',
       'core.kitchen.draft.get|kitchen|kitchen-draft-get|read',
       'core.kitchen.draft.import|kitchen|kitchen-draft-import|write',

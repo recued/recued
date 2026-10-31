@@ -96,7 +96,7 @@
  *  pathway) + § A.11 (rotation result shape). */
 
 import type { RotationErrorCode, RotationResult } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel, type IconName } from '@recued/ui-shared';
 
 import { ROTATION_ERROR_COPY } from './rotation-center.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
@@ -323,6 +323,7 @@ export const mountTlsRenewPanel = (
 
   const makeButton = (
     label: string,
+    icon: IconName,
     attr: string,
     variant: 'danger' | 'primary' | 'secondary',
     onClick: () => void,
@@ -331,7 +332,7 @@ export const mountTlsRenewPanel = (
     const btn = doc.createElement('button');
     btn.setAttribute(attr, '');
     btn.type = 'button';
-    btn.textContent = label;
+    btn.innerHTML = renderActionLabel(icon, label);
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm tls-renew-btn tls-renew-btn-${variant}`;
     if (disabledFlag) btn.disabled = true;
     // A removed control must not act on a later render of the same state.
@@ -355,7 +356,7 @@ export const mountTlsRenewPanel = (
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
     focusTarget = makeButton(
-      'Renew now', TLS_RENEW_RENEW_BTN_ATTR, 'primary', () => transitionTo('confirm'),
+      'Renew now', 'refresh', TLS_RENEW_RENEW_BTN_ATTR, 'primary', () => transitionTo('confirm'),
     );
     actions.appendChild(focusTarget);
 
@@ -378,11 +379,11 @@ export const mountTlsRenewPanel = (
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
     focusTarget = makeButton(
-      'Cancel', TLS_RENEW_CANCEL_BTN_ATTR, 'secondary', () => transitionTo('idle'),
+      'Cancel', 'close', TLS_RENEW_CANCEL_BTN_ATTR, 'secondary', () => transitionTo('idle'),
     );
     actions.appendChild(focusTarget);
     actions.appendChild(
-      makeButton('Yes, renew', TLS_RENEW_CONFIRM_BTN_ATTR, 'primary', () => {
+      makeButton('Yes, renew', 'refresh', TLS_RENEW_CONFIRM_BTN_ATTR, 'primary', () => {
         pendingRenewPromise = runRenew();
       }),
     );
@@ -413,6 +414,7 @@ export const mountTlsRenewPanel = (
     actions.appendChild(
       makeButton(
         'Cancel',
+        'close',
         TLS_RENEW_CANCEL_BTN_ATTR,
         'secondary',
         () => undefined,
@@ -422,6 +424,7 @@ export const mountTlsRenewPanel = (
     actions.appendChild(
       makeButton(
         'Yes, renew',
+        'refresh',
         TLS_RENEW_CONFIRM_BTN_ATTR,
         'primary',
         () => undefined,
@@ -473,7 +476,7 @@ export const mountTlsRenewPanel = (
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
     focusTarget = makeButton(
-      'Close', TLS_RENEW_CLOSE_BTN_ATTR, 'secondary', () => transitionTo('idle'),
+      'Close', 'close', TLS_RENEW_CLOSE_BTN_ATTR, 'secondary', () => transitionTo('idle'),
     );
     actions.appendChild(focusTarget);
 
@@ -511,12 +514,12 @@ export const mountTlsRenewPanel = (
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
     actions.appendChild(
-      makeButton('Cancel', TLS_RENEW_CANCEL_BTN_ATTR, 'secondary', () =>
+      makeButton('Cancel', 'close', TLS_RENEW_CANCEL_BTN_ATTR, 'secondary', () =>
         transitionTo('idle'),
       ),
     );
     focusTarget = makeButton(
-      'Retry', TLS_RENEW_RETRY_BTN_ATTR, 'primary', () => transitionTo('confirm'),
+      'Retry', 'refresh', TLS_RENEW_RETRY_BTN_ATTR, 'primary', () => transitionTo('confirm'),
     );
     actions.appendChild(focusTarget);
 

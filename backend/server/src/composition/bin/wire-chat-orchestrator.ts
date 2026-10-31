@@ -42,6 +42,8 @@ import { resolveServerTimeZone } from '@recued/contracts';
 import { createKeyAgreementLookup, type KeyAgreementLookup } from '../../key-agreement.js';
 import { canonicalOpToolsForConnections } from '../../canonical-op-tool-catalog.js';
 import { resolveConnectionVendor } from '../../storage/connection-store.js';
+import { createOwnerDocumentSearch, type OwnerDocumentSearch } from '../../owner-document-search.js';
+import { isDocumentSearchResultCurrent } from '../../document-search-tool.js';
 import {
   LLMError,
   executeLLM,
@@ -242,6 +244,7 @@ import type { KeyManager } from '../../key-manager.js';
 import type { ContactStore } from '../../storage/contact-store.js';
 import type { MemoryEmbedder, UserMemoryStore } from '../../user-memory-store.js';
 import type { MemoryRedactionRecord } from '../../memory-rpc-handler.js';
+import { describeMemoryNow } from '../../memory-revision.js';
 import { createCorrectionEventsStore } from '../../storage/correction-events-store.js';
 import { createLocalManifestStore } from '../../ingredient-authoring/local-manifest-store.js';
 import { createMetaFieldPrivacyResolverFromLocalManifestStore } from '../../meta-field-privacy-resolver.js';
@@ -391,6 +394,7 @@ export interface ChatOrchestratorBundle {
   connectionMcpStore: ChatConnectionMcpStore;
   inboundTokenStore: ChatInboundTokenStore;
   internalRegistry: InternalToolRegistry;
+  ownerDocumentSearch: OwnerDocumentSearch;
   orchestrator: ChatOrchestrator;
   chatDeps: ChatRpcDeps;
   /** D-214 close/compile hook, retained for plan cancellation and the existing
@@ -1256,6 +1260,14 @@ export const composeChatOrchestrator = (
         const gate = getExecuteDeps()?.opAdmissionGate;
         if (gate === undefined || !isExecutionSource(source)) return true;
         return gate.isOpGranted(source, opGrantEntry('core.recall.search'));
+      },
+      // D-198 §13 — a past `memory.*` row recalled says where its notes stand now
+      // (removed, or replaced and by what). Late-bound like the stores themselves.
+      describeMemoryNow: async (ids) => {
+        const store = getUserMemoryStore?.();
+        return store === undefined
+          ? new Map<string, string>()
+          : describeMemoryNow(store, getMemoryRedactionStore?.(), ids);
       },
     },
   ), deps.installOfferCatalogue === undefined
@@ -2424,9 +2436,20 @@ export const composeChatOrchestrator = (
     plans: planApprovalStoreShared, chatStore, broadcast, signature: selfSignature,
   }), chatRunSettledSink);
   const runSettledListeners = new Set<(settled: PreflightRunSettled) => void>();
+  const ownerDocumentSearch = createOwnerDocumentSearch({
+    dispatch: async (args, ctx) => {
+      // The owner page has no Chat session. Use the same admission predicate
+      // and governed handler as registry dispatch, without inventing a chat.
+      if (!admitTier1('document.search', ctx)) return { ok: false, reason: 'classification_blocked' };
+      return chatToolRegistryInputs.tier1Handlers['document.search']!(args, ctx);
+    },
+    isCurrent: isDocumentSearchResultCurrent,
+  });
   return {
+    ownerDocumentSearch,
     chatStore,
     runSettledSink: (settled) => {
+      ownerDocumentSearch.settled(settled);
       for (const listener of runSettledListeners) {
         try { listener(settled); } catch (error) { console.error('[chat] run-settled listener failed', error); }
       }

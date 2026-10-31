@@ -53,6 +53,7 @@ import {
   initialMailComposeState,
   openCreateComposeTransition,
   openReplyComposeTransition,
+  openForwardComposeTransition,
   removeComposeAttachmentTransition,
   setComposeErrorsTransition,
   setComposeSubmitErrorTransition,
@@ -64,6 +65,7 @@ import {
   type MailComposeAttachment,
   type MailComposeState,
   type MailReplyContext,
+  type MailForwardContext,
   type MailComposeAiAction,
   type MailSenderSourceOption,
 } from '@recued/contracts';
@@ -171,7 +173,9 @@ export interface MailComposeMount {
   /** Open a blank compose. */
   openCreate(): boolean;
   /** Open a compose prefilled from a thread. */
-  openReply(context: MailReplyContext): boolean;
+  openReply(context: MailReplyContext, recipients?: 'sender' | 'all'): boolean;
+  /** Quote the complete original in a new conversation with no recipients. */
+  openForward(context: MailForwardContext): boolean;
   openSaved(draftId: string): Promise<boolean>;
   /** Current state — exposed for the route's own empty-state decisions. */
   state(): MailComposeState;
@@ -428,6 +432,7 @@ export const mountMailCompose = (
   let assistGeneration = 0;
   let brief = '';
   let replyContext: MailReplyContext | null = null;
+  let messageSender: { id: string; email: string } | null = null;
   let discardConfirm = false;
   let copyRecipientsOpen = false;
   let opener: HTMLElement | null = null;
@@ -451,6 +456,7 @@ export const mountMailCompose = (
    *  outcome surface: the dialog stays open, so "done" has to be visible here. */
   let mailboxStatus = '';
   const resetSaved = (): void => {
+    messageSender = null;
     outcome = null;
     saved = null; savedValues = ''; savedBrief = ''; draftStatus = ''; scheduleVisible = false; scheduleTime = ''; mailboxStatus = '';
     pendingSave = null; pendingSchedule = null;
@@ -458,6 +464,25 @@ export const mountMailCompose = (
 
   const sendCapable = (): MailSenderSourceOption[] =>
     sources.filter((s) => s.send_capable);
+
+  const assertMessageSender = (capability: 'send' | 'draft'): void => {
+    if (!messageSender) return;
+    const source = sources.find(source => source.id === composeDialog(state)?.values.sender_source);
+    if (!source || source.id !== messageSender.id || source.account_email.trim().toLowerCase() !== messageSender.email) {
+      throw new Error('The sending mailbox changed. Your message is preserved. Reopen the original email before sending, scheduling or saving to a mailbox.');
+    }
+    if (capability === 'send' ? !source.send_capable : !source.draft_capable) {
+      throw new Error(capability === 'send' ? 'Sending is unavailable for this mailbox.' : 'Saving drafts is unavailable for this mailbox.');
+    }
+  };
+  const checkFreshMessageSender = async (generation: number, capability: 'send' | 'draft'): Promise<boolean> => {
+    if (!messageSender) return true;
+    const listed = await deps.listMailInstances();
+    if (destroyed || generation !== draftGeneration) return false;
+    sources = listed.instances.map(senderOptionFromInstance);
+    assertMessageSender(capability);
+    return true;
+  };
 
   /** Preserve the owner's focused control and textarea selection when an
    * asynchronous AI or draft operation repaints the shared dialog. */
@@ -601,6 +626,7 @@ export const mountMailCompose = (
       savedValues = JSON.stringify(composeDialog(state)!.values);
       savedBrief = brief;
       deps.drafts.changed?.();
+      if (!await checkFreshMessageSender(generation, 'draft')) return;
       const response = await deps.runExecute({
         recipe_id: SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,
         config: { draft_id: saved.draft_id },
@@ -660,6 +686,7 @@ export const mountMailCompose = (
       deps.drafts.changed?.();
       if (schedule) {
         if (!unchanged) throw new Error('The message changed while saving. Review your latest edits before scheduling.');
+        if (!await checkFreshMessageSender(generation, 'send')) return;
         const requestSignature = JSON.stringify([saved.draft_id, saved.revision, runAt]);
         if (!pendingSchedule || pendingSchedule.signature !== requestSignature) pendingSchedule = { signature: requestSignature, request: {
           idempotency_key: crypto.randomUUID(), subject: { kind: 'mail_draft', draft_id: saved.draft_id, draft_revision: saved.revision },
@@ -710,6 +737,7 @@ export const mountMailCompose = (
       if (destroyed || generation !== draftGeneration) return;
       syncFromDom();
       sources = listed.instances.map(senderOptionFromInstance);
+      assertMessageSender('send');
       const current = composeDialog(state)!;
       const checked = composeStateToSendPayload(withoutBlankRecipients(current.values), {
         resolveContactEmail, findSenderSource: id => sources.find(source => source.id === id) ?? null,
@@ -1086,6 +1114,10 @@ export const mountMailCompose = (
     if (target.getAttribute('data-action') !== 'select-mail-compose-sender') return;
     // Same reason as the click path — changing the From account re-renders.
     syncFromDom();
+    if (composeDialog(state)?.mode === 'forward') {
+      const source = sources.find(source => source.id === target.value);
+      if (source) messageSender = { id: source.id, email: source.account_email.trim().toLowerCase() };
+    }
     setState(setComposeValuesTransition(state, { sender_source: target.value }));
   };
 
@@ -1160,25 +1192,47 @@ export const mountMailCompose = (
       focusCompose();
       return true;
     },
-    openReply(context) {
+    openReply(context, recipients = 'sender') {
       const dialog = composeDialog(state);
+      const sender = sendCapable().find((source) => source.id === context.original_source_id);
       if (
         readinessState.status !== 'ready'
-        || !sendCapable().some((source) => source.id === context.original_source_id)
+        || !sender
+        || (context.mailbox_address !== undefined && sender.account_email.trim().toLowerCase() !== context.mailbox_address.trim().toLowerCase())
         || dialog !== null
         || attachmentBusy
         || assistState.busyAction !== null
       ) {
         return false;
       }
+      const next = openReplyComposeTransition(state, context, recipients);
+      if (!next.dialog) return false;
       draftGeneration += 1;
       resetSaved();
       retireAttachment();
       resetAssist();
-      brief = ''; replyContext = context; discardConfirm = false; copyRecipientsOpen = false;
+      messageSender = { id: sender.id, email: sender.account_email.trim().toLowerCase() };
+      brief = ''; replyContext = context; discardConfirm = false;
+      copyRecipientsOpen = recipients === 'all' && next.dialog.values.cc.length > 0;
       opener = host.ownerDocument.activeElement as HTMLElement | null;
-      setState(openReplyComposeTransition(state, context));
+      setState(next);
       focusCompose();
+      return true;
+    },
+    openForward(context) {
+      const sender = sendCapable().find(source => source.id === context.original_source_id);
+      if (readinessState.status !== 'ready' || !sender
+        || sender.account_email.trim().toLowerCase() !== context.mailbox_address.trim().toLowerCase()
+        || composeDialog(state) || attachmentBusy || assistState.busyAction !== null) return false;
+      const next = openForwardComposeTransition(state, context);
+      if (!next.dialog) return false;
+      draftGeneration += 1;
+      resetSaved(); retireAttachment(); resetAssist();
+      messageSender = { id: sender.id, email: sender.account_email.trim().toLowerCase() };
+      brief = ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
+      opener = host.ownerDocument.activeElement as HTMLElement | null;
+      setState(next);
+      host.querySelector<HTMLElement>('[data-form-array-item="to"], [data-form-array-add="to"]')?.focus();
       return true;
     },
     async openSaved(draftId) {

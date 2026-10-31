@@ -21,7 +21,10 @@
  * normal edit — neither gate pins the drawing, only the leak and the colour.
  */
 
+import { ACTION_ICONS } from './action-icons.js';
+
 export const ICONS = Object.freeze({
+  ...ACTION_ICONS,
   "asset": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" role="img" aria-label="Assets"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"/><path d="m3 7.5 9 4.5 9-4.5M12 12v9M7.5 5.25l9 4.5"/></svg>`,
   "action": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Recued">
   <title>Recued toolbar action</title>
@@ -122,39 +125,10 @@ export const ICONS = Object.freeze({
   <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
   <line x1="3" y1="11" x2="21" y2="11"/>
 </svg>`,
-}) as Record<IconName, string>;
+});
 
-export type IconName =
-  | "action"
-  | "asset"
-  | "booking"
-  | "check"
-  | "commitment"
-  | "info"
-  | "logo"
-  | "marketplace"
-  | "note"
-  | "play"
-  | "project"
-  | "settings"
-  | "spinner"
-  | "task"
-  | "x";
+export type IconName = keyof typeof ICONS;
 
-export const ICON_NAMES: readonly IconName[] = Object.freeze([
-  "action",
-  "asset",
-  "booking",
-  "check",
-  "commitment",
-  "info",
-  "logo",
-  "marketplace",
-  "note",
-  "play",
-  "project",
-  "settings",
-  "spinner",
-  "task",
-  "x",
-]);
+export const ICON_NAMES: readonly IconName[] = Object.freeze(
+  (Object.keys(ICONS) as IconName[]).sort(),
+);

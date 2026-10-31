@@ -1,3 +1,4 @@
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { expect, test, type Page } from '@playwright/test';
 
 const zone = (page: Page) => page.locator('[data-recued-server-timezone-zone]');
@@ -19,6 +20,22 @@ const errors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => { const list: string[] = []; errors.set(page, list); page.on('pageerror', error => list.push(error.message)); });
 test.afterEach(({ page }) => { expect(errors.get(page)).toEqual([]); });
 const guards = (page: Page) => page.evaluate(() => window.__timezone.guards());
+
+test('timezone glyphs save once and check an uncertain result without replaying it', async ({ page }) => {
+  await open(page);
+  await zone(page).fill('Asia/Tokyo');
+  await clickActionGlyph(page, save(page));
+  await expect(save(page)).toBeDisabled();
+  await clickActionGlyph(page, save(page));
+  expect(await writes(page)).toEqual([{ mode: 'fixed', zone: 'Asia/Tokyo' }]);
+  await release(page, 'set', 0, 'applied_error');
+  await expect(zone(page)).toHaveValue('Asia/Tokyo');
+  await clickActionGlyph(page, page.getByRole('button', { name: 'Check saved timezone', exact: true }));
+  await release(page, 'get', 1);
+  await expect(page.getByRole('button', { name: 'Check saved timezone', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Saved as Asia/Tokyo.', { exact: true })).toBeVisible();
+  expect(await writes(page)).toHaveLength(1);
+});
 
 for (const width of [390, 1280]) {
   test(`restored timezone text clears its draft and follows the next saved snapshot at ${width}px`, async ({ page }) => {

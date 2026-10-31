@@ -125,6 +125,8 @@ import type {
   WebclientCertPinState,
 } from '@recued/contracts';
 import { generateRecoveryKey } from '@recued/crypto';
+import { applyPreset, type ExposureState } from '@recued/contracts';
+import { EXPOSURE_CONNECT_BTN_ATTR } from '../settings/exposure-panel.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Minimal fake DOM — extends the panel test's pattern with the
@@ -3008,5 +3010,64 @@ describe('D-273 — the port-mapping seam is wired end to end', () => {
     // the very deletion it exists to catch.
     expect(src).toMatch(/^\s*networkPortMappingCaller,\s*$/m);
     expect(src).toMatch(/^\s*networkAutoPortMappingSetCaller:\s*$/m);
+  });
+});
+
+describe('Exposure saved address after its initial inventory read', () => {
+  const state: ExposureState = {
+    resolution: applyPreset('lan_only', { acknowledged: false }),
+    derived_preset_label: 'lan_only', public_mcp_acknowledgement: { acknowledged: false },
+    last_changed_at: 1, changed_by_client_id: 'fixture',
+  };
+  const setupAddress = async (outcome: 'known' | 'absent' | 'error') => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const backing = createInMemoryWebclientLocalStore(outcome === 'known'
+      ? { server_url: 'wss://saved.example.test/ws' } : {});
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const read = vi.fn(async () => ({ state, apex_mode: 'serve_webclient' as const }));
+    const write = vi.fn(async () => ({ state, clients_disconnected: 0 }));
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement, document: doc as unknown as Document,
+      localStore: { ...backing, get: async key => {
+        if (key === 'server_url') {
+          await gate;
+          if (outcome === 'error') throw new Error('Saved address temporarily unavailable.');
+        }
+        return backing.get(key);
+      } },
+      initialSectionId: 'server', initialServerTabId: 'exposure',
+      exposureGetCaller: read, exposureApplyPresetCaller: write,
+      exposureSetPathResolutionCaller: write, exposureSetPublicMcpAckCaller: write,
+    });
+    await route.exposurePanel()!.refresh();
+    const initialReads = read.mock.calls.length;
+    expect(initialReads).toBeGreaterThan(0);
+    return { host, route, read, write, release, initialReads };
+  };
+
+  for (const outcome of ['known', 'absent', 'error'] as const) {
+    it(`reconciles a late ${outcome} address without another inventory read or write`, async () => {
+      const fixture = await setupAddress(outcome);
+      expect(findByAttr(fixture.host, EXPOSURE_CONNECT_BTN_ATTR)).toBeNull();
+      fixture.release();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(findByAttr(fixture.host, EXPOSURE_CONNECT_BTN_ATTR) !== null).toBe(outcome === 'known');
+      expect(fixture.read).toHaveBeenCalledTimes(fixture.initialReads);
+      expect(fixture.write).not.toHaveBeenCalled();
+      fixture.route.dispose();
+    });
+  }
+
+  it('ignores an address that arrives after the settings route is disposed', async () => {
+    const fixture = await setupAddress('known');
+    const retiredRoute = fixture.host.children[0]!;
+    fixture.route.dispose(); fixture.release();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(fixture.host.children).toHaveLength(0);
+    expect(findByAttr(retiredRoute, EXPOSURE_CONNECT_BTN_ATTR)).toBeNull();
+    expect(fixture.read).toHaveBeenCalledTimes(fixture.initialReads);
+    expect(fixture.write).not.toHaveBeenCalled();
   });
 });

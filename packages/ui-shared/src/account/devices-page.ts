@@ -47,6 +47,7 @@
 import { e } from '../template.js';
 import { section } from '../primitives/section.js';
 import { formatClientDateTime } from '../date-time.js';
+import { renderActionLabel } from '../icon-render.js';
 
 export type PairListEntryKind = 'webclient' | 'bridge' | 'cli';
 
@@ -142,7 +143,7 @@ const renderRefresh = (refresh: DevicesPageState['refresh']): string => {
     <div class="account-devices-refresh">
       <button type="button" class="account-devices-action"
         data-action="refresh-devices" aria-label="Refresh devices"${refresh.pending ? ' aria-disabled="true" aria-busy="true"' : ''}>
-        ${refresh.pending ? 'Refreshing…' : 'Refresh'}
+        ${renderActionLabel('refresh', refresh.pending ? 'Refreshing…' : 'Refresh')}
       </button>
       <p class="account-devices-last-checked" data-devices-last-checked role="status">${checkedLabel}</p>
     </div>
@@ -181,7 +182,7 @@ const renderActionsCell = (row: DevicesPageRow, state: DevicesPageState): string
       data-action="rename-device"
       data-instance-id="${e(row.instance_id)}"
       aria-label="Rename ${e(deviceLabel)}">
-      Rename
+      ${renderActionLabel('rename', 'Rename')}
     </button>`
     : '';
   // Self-revoke blocked — render no Revoke button on the current row
@@ -199,7 +200,7 @@ const renderActionsCell = (row: DevicesPageRow, state: DevicesPageState): string
       data-action="revoke-device"
       data-instance-id="${e(row.instance_id)}"
       aria-label="Revoke ${e(deviceLabel)}">
-      Revoke
+      ${renderActionLabel('delete', 'Revoke')}
     </button>
     </div>
   `;
@@ -226,11 +227,11 @@ const renderRenameForm = (row: DevicesPageRow, state: DevicesPageState): string 
       <div class="account-devices-rename-actions">
         <button type="submit" class="account-devices-action"
           data-action="save-rename" data-instance-id="${e(row.instance_id)}"${busy}>
-          ${saving ? 'Saving…' : 'Save'}
+          ${renderActionLabel('save', saving ? 'Saving…' : 'Save')}
         </button>
         <button type="button" class="account-devices-action"
           data-action="cancel-rename" data-instance-id="${e(row.instance_id)}"${saving ? ' aria-disabled="true"' : ''}>
-          Cancel
+          ${renderActionLabel('close', 'Cancel')}
         </button>
       </div>
     </form>
@@ -257,7 +258,7 @@ const renderConfirmPanel = (
     : '';
   const confirmLabel = revoking
     ? 'Revoking…'
-    : `Yes, revoke &ldquo;${e(row.display_name)}&rdquo;`;
+    : `Yes, revoke “${row.display_name}”`;
   const confirmAccessibleLabel = revoking
     ? `Revoking ${deviceLabel}`
     : `Confirm revoke ${deviceLabel}`;
@@ -281,14 +282,14 @@ const renderConfirmPanel = (
               data-action="cancel-revoke"
               data-instance-id="${e(row.instance_id)}"
               aria-label="Cancel revoke ${e(deviceLabel)}"${inertAttr}>
-              Cancel
+              ${renderActionLabel('close', 'Cancel')}
             </button>
             <button type="button"
               class="account-devices-action account-devices-action--confirm-revoke"
               data-action="confirm-revoke"
               data-instance-id="${e(row.instance_id)}"
               aria-label="${e(confirmAccessibleLabel)}"${confirmBusyAttr}>
-              ${confirmLabel}
+              ${renderActionLabel('delete', confirmLabel)}
             </button>
           </div>
         </div>

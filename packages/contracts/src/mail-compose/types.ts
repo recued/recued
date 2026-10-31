@@ -21,12 +21,8 @@
  *
  *  Spec: D-145 § A.5 (Email compose UI). */
 
-/** Closed list of compose modes — `create` opens a fresh compose;
- *  `reply` is opened from a thread context with reply-context
- *  prepopulation pre-applied (see `reply-context.ts`). PA7 ships only
- *  these two; future modes (`forward` / `draft`) ride on the same
- *  state machine. */
-export const MAIL_COMPOSE_MODES = ['create', 'reply'] as const;
+/** Forward starts a new message; only reply carries RFC thread headers. */
+export const MAIL_COMPOSE_MODES = ['create', 'reply', 'forward'] as const;
 export type MailComposeMode = (typeof MAIL_COMPOSE_MODES)[number];
 
 /** A compose-dialog values shape. Refs (`to` / `cc` / `bcc` /
@@ -54,6 +50,10 @@ export interface MailComposeValues {
  *  compose dialog is closed, an object means it's open. */
 export interface MailComposeDialogState {
   mode: MailComposeMode;
+  /** The owner chose all verified participants; sending still uses reply mode. */
+  reply_all?: boolean;
+  /** Original attachment bytes are not copied by plain-text forwarding. */
+  original_attachments_omitted?: boolean;
   values: MailComposeValues;
   /** Field-level inline errors keyed by canonical field name. */
   errors: Readonly<Record<string, string>>;
@@ -123,6 +123,9 @@ export const MAIL_COMPOSE_MAX_ATTACHMENTS = 20;
  *  original; the substrate emits a partial values shape with
  *  `in_reply_to` / `to` / `subject` / `sender_source` prepopulated. */
 export interface MailReplyContext {
+  /** Verified address of the receiving mailbox. Older servers may omit it;
+   * Reply all needs it to exclude that mailbox from the recipients. */
+  mailbox_address?: string;
   /** The mail being replied to. */
   original_message: {
     /** RFC Message-ID of the original, including angle brackets. */
@@ -133,7 +136,8 @@ export interface MailReplyContext {
     /** Sender of the original (becomes the prepopulated single
      *  `to` recipient). */
     from: string;
-    /** Privacy seeds for addresses repeated in the original message text. */
+    /** Verified recipients, also privacy seeds for the original message text.
+     * Both lists must be present before Reply all can be offered. */
     to?: readonly string[];
     cc?: readonly string[];
     /** Provider thread identity for display only; never an RFC header. */
@@ -149,6 +153,23 @@ export interface MailReplyContext {
    *  capability before opening the compose; the dispatch helper
    *  re-validates at submit time. */
   original_source_id: string;
+}
+
+/** A fresh provider read, independent of reply addresses or RFC threading.
+ * Contains no blind recipients, provider identifiers or attachment bytes. */
+export interface MailForwardContext {
+  original_source_id: string;
+  mailbox_address: string;
+  original_message: {
+    from: string;
+    to: readonly string[];
+    cc: readonly string[];
+    subject: string;
+    received_at: number;
+    body: string;
+    body_truncated: boolean;
+    has_attachments: boolean;
+  };
 }
 
 /** A Source dropdown entry the compose substrate accepts for the

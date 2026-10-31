@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
-  GLOBAL_RUN_PALETTE_TRIGGER, HARNESS_URL, RUN_PALETTE, installFullAppHooks,
+  HARNESS_URL, RUN_PALETTE, installFullAppHooks, openGlobalRunPalette,
 } from './helpers/full-app.js';
 
 type Reply = { result?: unknown; error?: { code: string; message: string } };
@@ -59,7 +59,7 @@ const boot = async (page: Page, mode: PickerFixture['mode'] = 'error') => {
       },
     });
   }, mode);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
   await page.getByRole('combobox', { name: 'Recipe', exact: true }).fill('Follow up on this job');
   await page.getByRole('option', { name: /Follow up on this job/ }).click();
   await page.locator(`[${RUN_PALETTE}] [data-recued-run-palette-action]`).filter({ hasText: /^Run$/ }).click();

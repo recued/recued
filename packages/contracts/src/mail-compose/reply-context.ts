@@ -8,6 +8,8 @@
  *  Spec: D-145 § A.5.4 (Reply-context handling). */
 
 import type { MailComposeValues, MailReplyContext } from './types.js';
+import { parseAddress } from '../contact.js';
+import { mailRecipientInvalidReason } from '../mail.js';
 
 const RE_PREFIX = /^re:\s/i;
 
@@ -34,3 +36,35 @@ export const deriveReplyValues = (
   sender_source: context.original_source_id,
   references: [...new Set([...(context.original_message.references ?? []), context.original_message.id])],
 });
+
+/** Reply all uses only verified, individually valid addresses. Unknown or
+ * incomplete metadata never becomes a guessed recipient list. */
+export const deriveReplyAllValues = (
+  context: MailReplyContext,
+): (ReturnType<typeof deriveReplyValues> & Pick<MailComposeValues, 'cc' | 'bcc'>) | null => {
+  const email = (value: unknown): string | null => {
+    if (typeof value !== 'string' || mailRecipientInvalidReason(value) !== null) return null;
+    const address = parseAddress(value)?.email;
+    // Removing a display-name wrapper must not expose a second address list.
+    return address && mailRecipientInvalidReason(address) === null ? address : null;
+  };
+  const self = email(context.mailbox_address);
+  const original = context.original_message;
+  if (!self || !Array.isArray(original.to) || !Array.isArray(original.cc)) return null;
+  const reply = deriveReplyValues(context);
+  const primary = reply.to.map(email);
+  if (!primary.length || primary.some(address => address === null || address === self)) return null;
+  const seen = new Set([self]);
+  const to: string[] = [], cc: string[] = [];
+  for (const [addresses, output] of [[reply.to, to], [original.to, to], [original.cc, cc]] as const) {
+    for (const value of addresses) {
+      const address = email(value);
+      if (!address) return null;
+      if (!seen.has(address)) { seen.add(address); output.push(address); }
+    }
+  }
+  // A second action is useful only when it includes someone Reply would omit.
+  const normal = new Set(primary);
+  if (![...to, ...cc].some(address => !normal.has(address))) return null;
+  return { ...reply, to, cc, bcc: [] };
+};

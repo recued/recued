@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "4194175215ff2416f2707d166a7cf4d87939d398",
-    "tree": "1782d41831456b95762afd87d437b0934965a9f6",
-    "committed_at": "2026-10-30T04:18:47-07:00"
+    "commit": "efcad76cc1554101c7a4dd2d9d604c8343484cfb",
+    "tree": "3c7d304298330f340954c0f500ce8d12e087eda6",
+    "committed_at": "2026-10-31T07:16:47-07:00"
   },
-  "export_manifest_sha256": "5042b98747ef43dea4454f1af0e848210eb94705d38e8e38486f5f2fe9592579",
-  "version": "26.10.30",
+  "export_manifest_sha256": "93c2cd832b376f78089c6c2c2800c9e1b9d49a8101a43b7c145c718f6417cd5f",
+  "version": "26.10.31",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -46,6 +46,7 @@
     "backend/server/scripts/release-docker-attestation.mjs",
     "backend/server/scripts/release-keygen.mjs",
     "backend/server/scripts/release-publish.mjs",
+    "backend/server/scripts/release-r2-s3.ts",
     "backend/server/scripts/seed-bench-warehouse.ts",
     "backend/server/scripts/version-date.mjs",
     "backend/server/src/__tests__/chat-doc-index-parity.test.ts",
@@ -55,11 +56,14 @@
     "backend/server/src/__tests__/d-178-release-publish-channel-paths.test.ts",
     "backend/server/src/__tests__/d-178-release-publish-signing-gate.test.ts",
     "backend/server/src/__tests__/d-260-expiry-horizon-guard.test.ts",
+    "backend/server/src/__tests__/helpers/fake-r2-s3-serve.ts",
+    "backend/server/src/__tests__/helpers/fake-r2-s3.ts",
     "backend/server/src/__tests__/phase-e-docker-runtime.test.ts",
     "backend/server/src/__tests__/phase-e-package.test.ts",
     "backend/server/src/__tests__/prefetch-pii-coverage-measure.test.ts",
     "backend/server/src/__tests__/release-docker-attestation.test.ts",
     "backend/server/src/__tests__/release-native-attestation.test.ts",
+    "backend/server/src/__tests__/release-r2-s3.test.ts",
     "backend/server/src/dev",
     "packages/contracts/src/__tests__/connection-signing.test.ts",
     "packages/contracts/src/__tests__/d-148-phase-1-role-boundary.test.ts",
@@ -95,7 +99,11 @@
       "backend/server/src/__tests__/bills-pack-live.test.ts",
       "backend/server/src/__tests__/bookings-pack-live.test.ts",
       "backend/server/src/__tests__/bridge-dom-idempotency.test.ts",
+      "backend/server/src/__tests__/bridge-page-fields-browser.test.ts",
+      "backend/server/src/__tests__/bridge-page-inspect-browser.test.ts",
       "backend/server/src/__tests__/broadcast-kind-reachability.test.ts",
+      "backend/server/src/__tests__/browser-toolkit-browser.test.ts",
+      "backend/server/src/__tests__/browser-toolkit-pack.test.ts",
       "backend/server/src/__tests__/build-externals-declared.test.ts",
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
       "backend/server/src/__tests__/byte-budget-char-slice.test.ts",
@@ -872,7 +880,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "da7512a6c32a5d2583b6e3b235315a0e134ff4402cb5a6d759b217047080d99e",
+    "sha256": "12e8e65d6908637c27a63dfd1f8babcdf00566f8cf48ec2d60145ed030244eb3",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -1020,7 +1028,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 8006,
-    "sha256": "7cf2dff039c5b3c66880b0585870d2a1d23637721d70797f0ca471f2ec2be187"
+    "file_count": 8044,
+    "sha256": "f55a683e65f96de79260f9594bcd4d0499f156e9a2f9d20f76a41f42a8b4e9a3"
   }
 }

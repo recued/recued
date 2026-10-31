@@ -5,7 +5,7 @@ import type {
   ProactiveToday, SituationBasis, SituationCluster, SituationItem, SituationReason, SituationRef, SituationWindow, Sphere,
 } from '@recued/contracts';
 import { isDateOnlyDue, resolveTaskListFilter } from '@recued/contracts';
-import { e, renderTaskDueActions, TASK_DUE_STYLES } from '@recued/ui-shared';
+import { e, renderActionLabel, renderTaskDueActions, TASK_DUE_STYLES } from '@recued/ui-shared';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { BootstrapDataRouteOptions } from './bootstrap-data-route.js';
@@ -484,6 +484,8 @@ const renderCluster = (cluster: SituationCluster | undefined, summary?: string, 
 
 export const TODAY_VIEW_STYLES = `
 ${TASK_DUE_STYLES}
+.today-action { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+.today-action > svg { flex-shrink:0; }
 .today-view { max-width:960px; margin-top:18px; }
 .today-header { display:flex; justify-content:space-between; align-items:start; gap:16px; }
 .today-header h2 { margin:0 0 6px; font-size:22px; }
@@ -565,7 +567,7 @@ const renderTaskEditor = (actions: TodayTaskActions | undefined, actionAttr: str
       <input type="datetime-local" ${actionAttr}="today-task-due" aria-describedby="today-task-time-help" value="${e(edit.value)}"${edit.busy ? ' disabled' : ''}>
     </label><p class="today-task-hint" id="today-task-time-help">Changes this task’s due date. Times use your device’s time zone.</p>` : edit.clearDue ? '<p class="today-task-hint">Remove this task’s due date. The task will remain in Data → Tasks.</p>' : ''}
     ${edit.error ? `<p role="alert" tabindex="-1" data-today-task-error>${e(edit.error)}</p>` : ''}
-    ${edit.action === 'reschedule' || edit.error ? `<button type="button" class="today-task-primary" ${actionAttr}="today-task-save"${locked}>${edit.busy ? 'Saving…' : edit.clearDue ? 'Clear date' : edit.action === 'reschedule' ? 'Save due date' : 'Try again'}</button>` : ''}
+    ${edit.action === 'reschedule' || edit.error ? `<button type="button" class="today-task-primary today-action" ${actionAttr}="today-task-save"${locked}>${renderActionLabel(edit.action === 'reschedule' ? 'save' : 'refresh', edit.busy ? 'Saving…' : edit.clearDue ? 'Clear date' : edit.action === 'reschedule' ? 'Save due date' : 'Try again')}</button>` : ''}
     <button type="button" ${actionAttr}="today-task-cancel"${locked}>${edit.action === 'reschedule' ? 'Cancel' : 'Close'}</button>
   </div>`;
 };
@@ -588,10 +590,10 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
     <header class="today-header"><div><h2>Today</h2>
       <p>Tasks, commitments, and calendar events in one place.</p>
       ${snapshot === null ? '' : `<p>Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>`}
-    </div><button type="button" class="today-refresh" ${actionAttr}="refresh-today" aria-disabled="${loading}">Refresh</button></header>
+    </div><button type="button" class="today-refresh today-action" ${actionAttr}="refresh-today" aria-disabled="${loading}">${renderActionLabel('refresh', 'Refresh')}</button></header>
     ${snapshot?.proactive?.phone_ready === false ? '<p role="status">Reminders currently reach only the app. <a href="#connections">Connect a phone channel</a>.</p>' : ''}
     ${actions?.notice ? `<p role="status" tabindex="-1" data-today-task-notice>${e(actions.notice)}${actions.undoDismissal
-      ? ` <button type="button" ${actionAttr}="today-situation-restore" data-today-dismissal="${e(actions.undoDismissal)}">Undo</button>` : ''}</p>` : ''}
+      ? ` <button type="button" class="today-action" ${actionAttr}="today-situation-restore" data-today-dismissal="${e(actions.undoDismissal)}">${renderActionLabel('undo', 'Undo')}</button>` : ''}</p>` : ''}
     ${actions?.error ? `<p role="alert" tabindex="-1" data-today-task-error>${e(actions.error)}</p>` : ''}
     ${actions?.edit && !snapshot?.items.some(item => item.key === actions.edit?.key) ? renderTaskEditor(actions, actionAttr) : ''}
     ${snapshot === null ? '<p role="status">Loading Today…</p>' : `

@@ -55,6 +55,7 @@
 import {
   BRIDGE_COMMAND_DEFAULT_TIMEOUT_MS,
   BRIDGE_COMMAND_MAX_TIMEOUT_MS,
+  bridgeRunsCommand,
   isPatternWithinGrantedOrigins,
   RpcError,
   type AggregateCapacityGap,
@@ -143,7 +144,14 @@ export interface DispatchRequest {
 
 export type CapacityGapReason =
   | 'bridge_online'
-  | 'bridge_label_unavailable';
+  | 'bridge_label_unavailable'
+  /** D-335 — a Bridge could serve the site, but its profile does not list the
+   *  action, or not a write by page or ref (`bridgeRunsCommand`): it predates it
+   *  and would answer "unsupported". */
+  | 'bridge_update_required'
+  /** D-335 slice G — a Bridge is connected, but none is allowed on the site:
+   *  the owner has not granted it there (the side panel's "Allow every site"). */
+  | 'site_not_granted';
 
 export type DispatchOutcome =
   | {
@@ -154,7 +162,9 @@ export type DispatchOutcome =
     }
   | {
       kind: 'capacity_gap';
-      capacity_gap: { kind: 'bridge_online' };
+      /** `permission_missing`, naming the target, when a Bridge is connected
+       *  but none is allowed there (`site_not_granted`); else `bridge_online`. */
+      capacity_gap: { kind: 'bridge_online' } | { kind: 'permission_missing'; permission: string };
       reason: CapacityGapReason;
       attempts: number;
     }
@@ -314,6 +324,10 @@ export interface BridgeDispatcher {
    *  resolve / timeout / send-failure, so the check sees the right
    *  owner during the result's in-flight window. */
   canResolve(command_id: string, client_token_id: string): boolean;
+  /** D-335 slice G — how many Browser Bridges are connected now. A run reads
+   *  it to refuse a page step before it starts when none is
+   *  (`ExecutionContext.browserBridge`). */
+  connectedBridges?(): number;
 }
 
 export interface ReviewedBridgeBinding {
@@ -386,18 +400,19 @@ const mapToCapacityGap = (
 
 /** D-169 § A.8 — eligibility pre-filter. Returns the subset of
  *  connected bridges whose capability profile's `granted_origins`
- *  list includes a pattern matching the resolved
- *  `target_domain_pattern`. Today the match is exact-membership: the
- *  command's target pattern must appear in the bridge's granted
- *  origins. A future amendment can widen to Chrome-match-pattern
- *  overlap (`'*://*.hubspot.com/*'` granted covers `'*://app.hubspot.com/*'`
- *  command) without changing the call site here. */
+ *  cover the resolved `target_domain_pattern`.
+ *
+ *  D-335 slice G — covered, not listed. Until then the target had to
+ *  appear in the granted origins exactly, so a Bridge the owner allowed on
+ *  every site was eligible for no step aimed at one site, and
+ *  `*://*.hubspot.com/*` did not cover `*://app.hubspot.com/*`. The Bridge
+ *  checks the command against Chrome's own grant again before it runs. */
 export const filterEligible = (
   bridges: BridgeConnectionRecord[],
   target_pattern: string,
 ): BridgeConnectionRecord[] =>
   bridges.filter((b) =>
-    b.capabilities.granted_origins.includes(target_pattern),
+    isPatternWithinGrantedOrigins(target_pattern, b.capabilities.granted_origins),
   );
 
 /** D-169 § A.8 — iteration ordering. Sorts eligible bridges by:
@@ -585,6 +600,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
   };
 
   return {
+    connectedBridges: () => options.registry.list().length,
     describeDocument(request) {
       const pattern = resolveTargetDomainPattern(request);
       if (!pattern || !options.registry.documents) return null;
@@ -592,6 +608,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       for (const bridge of options.registry.list()) {
         if (request.preferred_bridge_label && bridge.client_label !== request.preferred_bridge_label) continue;
         if (!isPatternWithinGrantedOrigins(pattern, bridge.capabilities.granted_origins)) continue;
+        if (!bridgeRunsCommand(bridge.capabilities, request.action, request.args)) continue;
         for (const document of options.registry.documents(bridge.client_token_id)) {
           if (isPatternWithinGrantedOrigins(document.url, [pattern])) candidates.push({ client_token_id: bridge.client_token_id, document });
         }
@@ -630,9 +647,17 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         idempotency_key: request.idempotency_key,
         ...(reviewed ? { reviewed_document: structuredClone(reviewed.binding.document) } : {}),
       };
+      // D-335 — a Bridge that predates the action, or a write by page or ref,
+      // would answer "unsupported" after the send; this says what to do before.
+      const updateRequired: DispatchOutcome = { kind: 'capacity_gap', capacity_gap: { kind: 'bridge_online' },
+        reason: 'bridge_update_required', attempts: 0 };
+      const runsAction = (bridge: BridgeConnectionRecord) =>
+        bridgeRunsCommand(bridge.capabilities, request.action, request.args);
 
       if (reviewed) {
         const binding = structuredClone(reviewed.binding);
+        const bound = options.registry.get(binding.client_token_id);
+        if (bound && !runsAction(bound)) return updateRequired;
         const beforeSend = async () => {
           await reviewed.beforeSend();
           const bridge = options.registry.get(binding.client_token_id);
@@ -669,6 +694,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
             attempts: 0,
           };
         }
+        if (!runsAction(labeled)) return updateRequired;
         const out = await dispatchToBridge(
           labeled.client_token_id,
           command_template,
@@ -713,13 +739,15 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       if (eligible.length === 0) {
         return {
           kind: 'capacity_gap',
-          capacity_gap: { kind: 'bridge_online' },
-          reason: 'bridge_online',
+          capacity_gap: { kind: 'permission_missing', permission: target_domain_pattern },
+          reason: 'site_not_granted',
           attempts: 0,
         };
       }
+      const capable = eligible.filter(runsAction);
+      if (capable.length === 0) return updateRequired;
       const ordered = await orderForDispatch(
-        eligible,
+        capable,
         target_domain_pattern,
         options.auditLog,
       );

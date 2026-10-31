@@ -46,6 +46,7 @@
 
 import type { InstancePrefKey, InstancePrefs } from '@recued/contracts';
 import { getPref } from '@recued/contracts';
+import { renderActionLabel } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -190,7 +191,7 @@ export const mountTransparencyPanel = (
   const retry = doc.createElement('button');
   retry.type = 'button';
   retry.className = 'rx-btn rx-btn-secondary';
-  retry.textContent = 'Retry transparency settings';
+  retry.innerHTML = renderActionLabel('refresh', 'Retry transparency settings');
   retry.setAttribute(TRANSPARENCY_PANEL_RETRY_ATTR, '');
   loadFeedback.appendChild(loadStatus);
 

@@ -65,6 +65,10 @@ const createRunTemp = (): string => {
  *  isolation, whatever one file leaves behind is what the next file in that worker sees. */
 const SHARES_PROCESS_STATE = [
   /\bvi\s*\.\s*(?:mock|doMock|unmock|doUnmock|stubGlobal|stubEnv|resetModules|useFakeTimers)\s*\(/,
+  // The runtime role (`@recued/contracts` `setRole`) cannot be unset once set, and the
+  // engine reads it: a file that runs as the server would leave the next file running
+  // as the server too (D-335 slice G). A call, not a quoted mention (`indexOf("setRole(…")`).
+  /(?<!['"`])\bsetRole\s*\(/,
   /\bprocess\.env\b(?:\.[\w$]+|\[[^\]]+\])?\s*=(?!=)|\bdelete\s+process\.env\b|Object\.assign\(\s*process\.env\b/,
   /\b(?:globalThis|global)\.[\w$]+\s*=(?!=)/,
   /\bprocess\.(?:chdir|umask)\s*\(/,

@@ -4,7 +4,8 @@ export interface PublicProofTarget {
   /** The local candidate file the response must equal byte for byte. */
   file: string;
   /** `get`: download and compare every byte. `head`: exact Content-Length and an
-   *  ETag equal to the file's MD5, downloading only when the ETag proves nothing. */
+   *  ETag equal to the file's MD5 (or, for a file uploaded in parts, its parts ETag),
+   *  downloading only when the ETag proves nothing. */
   method: 'get' | 'head';
   headers: string[];
   timeoutSeconds: number;
@@ -17,6 +18,9 @@ export interface PublicProofExpectation extends PublicProofTarget {
   expectedSha256: string;
   /** Required for a `head` target. */
   expectedMd5?: string;
+  /** A `head` target's ETag when the file was uploaded in parts: the MD5 of
+   *  the parts' MD5s, a hyphen, the part count. Absent for a file of one part. */
+  expectedMultipartEtag?: string;
 }
 
 export interface PublicProofHeadResult {
@@ -70,6 +74,7 @@ export declare const publicProofTargets: (input: {
 export declare const sha256OfFile: (path: string) => string;
 export declare const md5OfFile: (path: string) => string;
 export declare const etagMd5: (etag: string | null | undefined) => string | null;
+export declare const etagMultipart: (etag: string | null | undefined) => string | null;
 export declare const curlFetchExact: (
   request: Parameters<PublicProofFetch>[0],
 ) => Promise<PublicProofFetchResult>;

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   ACCOUNT_MENU_TRIGGER, ATTENTION_CLOSE, ATTENTION_DIALOG,
-  GLOBAL_RUN_PALETTE_TRIGGER, HARNESS_URL, installFullAppHooks,
+  HARNESS_URL, installFullAppHooks,
 } from './helpers/full-app.js';
 
 /** Attention browser journeys against the deterministic full-app harness. */
@@ -136,8 +136,6 @@ test('the Attention popover closes when keyboard focus leaves it', async ({ page
   await page.keyboard.press('Tab');
 
   await expect(dialog).toHaveCount(0);
-  await expect(page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`)).toBeFocused();
-  await page.keyboard.press('Tab');
   await expect(page.locator(`[${ACCOUNT_MENU_TRIGGER}]`)).toBeFocused();
 });
 

@@ -79,6 +79,7 @@ import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 interface FakeEl {
   tagName: string;
   className: string;
+  innerHTML: string;
   textContent: string;
   type: string;
   disabled: boolean;
@@ -108,10 +109,18 @@ interface FakeDoc {
 }
 
 const makeFakeEl = (tag: string, onFocus?: (el: FakeEl) => void): FakeEl => {
+  let html = '', text = '';
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
-    textContent: '',
+    get innerHTML() { return html; },
+    set innerHTML(value) { html = value; text = ''; },
+    // Model text inside labelled markup without dropping the semantic assertions.
+    get textContent() {
+      return html ? html.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g,
+        (_match, entity: 'amp' | 'lt' | 'gt' | 'quot' | '#39') => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]) : text;
+    },
+    set textContent(value) { text = value; html = ''; },
     type: '',
     disabled: false,
     hidden: false,

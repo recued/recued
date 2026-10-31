@@ -113,6 +113,14 @@ export const handleBridgeCapabilityProfilePush = (
       'bridge.capabilityProfile.push',
     );
   }
+  // D-335 — what the Bridge runs. A newer Bridge may name actions this server
+  // does not know, so only the shape is checked; dispatch reads it per action.
+  const actions = profile.supported_actions;
+  if (actions !== undefined && (!Array.isArray(actions) || actions.length > 64
+    || !actions.every(action => typeof action === 'string' && action.length > 0 && action.length <= 64))) {
+    throw new RpcError('invalid_argument', 'bridge.capabilityProfile.push: supported_actions must be a short list of action names',
+      undefined, 'bridge.capabilityProfile.push');
+  }
   const documents = profile.dom_documents;
   if (documents !== undefined && (!documents || documents.version !== 1 || !Array.isArray(documents.documents)
     || documents.documents.length > BRIDGE_REVIEW_DOCUMENT_LIMIT || !documents.documents.every(isBridgeDocumentIdentity)

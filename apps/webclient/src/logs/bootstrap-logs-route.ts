@@ -74,6 +74,7 @@ import {
   REFERENCE_PROVENANCE_STYLES,
   formatClientDateTime,
   renderProvenance,
+  renderActionLabel,
   renderReferenceIdentity,
   renderReferenceLink,
   RefPicker,
@@ -728,6 +729,10 @@ const LOGS_ROUTE_STYLES = `
   font-size: 13px;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 36px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -738,6 +743,7 @@ const LOGS_ROUTE_STYLES = `
   font-size: 13px;
   cursor: pointer;
 }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-button > svg { flex-shrink: 0; }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-button--primary {
   border-color: var(--accent);
   background: var(--accent);
@@ -2896,7 +2902,7 @@ const renderActive = (
     <section ${LOGS_ROUTE_ACTIVE_ATTR}>
       <div class="logs-active-head">
         <h2>Active work</h2>
-        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active" aria-label="${refreshLabel} active runs"${refreshAttrs}>${refreshLabel}</button>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active" aria-label="${refreshLabel} active runs"${refreshAttrs}>${renderActionLabel('refresh', refreshLabel)}</button>
       </div>
       <p class="logs-section-note">Current work and queued calls on this server.</p>
       ${error !== undefined && entries.length > 0 ? '<p class="logs-section-note">Showing the last loaded snapshot.</p>' : ''}
@@ -3018,7 +3024,7 @@ const renderPasses = (
     <section ${LOGS_ROUTE_PASSES_ATTR}>
       <div class="logs-active-head">
         <h2>Active passes</h2>
-        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes" aria-label="${refreshLabel} active passes"${refreshAttrs}>${refreshLabel}</button>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes" aria-label="${refreshLabel} active passes"${refreshAttrs}>${renderActionLabel('refresh', refreshLabel)}</button>
       </div>
       <p class="logs-section-note">Temporary session permissions. Revoking a pass changes future authorization.</p>
       ${error !== undefined && grants.length > 0 ? '<p class="logs-section-note">Showing the last loaded snapshot.</p>' : ''}
@@ -3279,11 +3285,11 @@ const renderDetail = (
   if (error !== undefined) {
     return `<section ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
       ? ''
-      : `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}">Retry</button>`}</section>`;
+      : `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}">${renderActionLabel('refresh', 'Retry')}</button>`}</section>`;
   }
   if (loading || detail === null) {
     return `<section ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail" aria-busy="true"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR} role="status">Loading ${e(selectedRunId ?? 'run')}...</p>${retrying && selectedRunId !== null
-      ? `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}" aria-disabled="true" aria-busy="true">Retrying…</button>`
+      ? `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}" aria-disabled="true" aria-busy="true">${renderActionLabel('refresh', 'Retrying…')}</button>`
       : ''}</section>`;
   }
 
@@ -3885,7 +3891,7 @@ export const bootstrapLogsRoute = (
       <p class="logs-filter-draft">Status filters use the recorded run state. Outcomes also show item results.</p>
       <p class="logs-filter-draft" data-recued-logs-filter-draft${hasFilterDraft() ? '' : ' hidden'}>Filter edits are not applied. Choose Apply to update history.</p>
       </section>
-      <div class="logs-history-head"><div><h2>Run history</h2><p class="logs-history-count">${loadingFeed && runs.length === 0 ? 'Loading recorded runs…' : `${runs.length} loaded ${runs.length === 1 ? 'run' : 'runs'} · newest first${nextCursor === null ? '' : ' · more available'}`}</p></div><button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-history" aria-label="${refreshingHistory ? 'Refreshing' : 'Refresh'} history"${loadingFeed || loadingMore ? ' aria-disabled="true"' : ''}${refreshingHistory ? ' aria-busy="true"' : ''}>${refreshingHistory ? 'Refreshing…' : 'Refresh'}</button></div>
+      <div class="logs-history-head"><div><h2>Run history</h2><p class="logs-history-count">${loadingFeed && runs.length === 0 ? 'Loading recorded runs…' : `${runs.length} loaded ${runs.length === 1 ? 'run' : 'runs'} · newest first${nextCursor === null ? '' : ' · more available'}`}</p></div><button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-history" aria-label="${refreshingHistory ? 'Refreshing' : 'Refresh'} history"${loadingFeed || loadingMore ? ' aria-disabled="true"' : ''}${refreshingHistory ? ' aria-busy="true"' : ''}>${renderActionLabel('refresh', refreshingHistory ? 'Refreshing…' : 'Refresh')}</button></div>
       <div class="logs-layout">
         <section class="logs-panel">
           ${renderFeed(

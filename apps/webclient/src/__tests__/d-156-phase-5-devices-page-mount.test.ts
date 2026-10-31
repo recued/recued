@@ -416,7 +416,7 @@ describe('mountDevicesPage — initial render + roster fetch', () => {
     fakeHost.clickAction('retry-list');
     await flush();
     expect(runPairList).toHaveBeenCalledTimes(2);
-    expect(fakeHost.getHtml()).toContain('>Retry</button>');
+    expect(fakeHost.getHtml()).toMatch(/data-action="retry-list"[^>]*>[\s\S]*?Retry[\s\S]*?<\/button>/);
     expect(fakeHost.getFocusedAction()).toEqual({
       action: 'retry-list',
       instanceId: '',

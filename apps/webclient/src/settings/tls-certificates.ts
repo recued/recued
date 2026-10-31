@@ -32,7 +32,7 @@ import {
   type TLSDomainUploadResult,
   type TLSDomainUploadValidation,
 } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import { formatClientDateTime, renderActionLabel, type IconName } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { CERTIFICATES_WORKSPACE_STYLES } from './certificates-workspace-styles.js';
 
@@ -587,6 +587,7 @@ export const mountTlsCertificatesPanel = (
 
   const makeButton = (
     label: string,
+    icon: IconName,
     attr: string,
     variant: 'primary' | 'secondary' | 'danger',
     onClick: () => void,
@@ -596,7 +597,7 @@ export const mountTlsCertificatesPanel = (
     const btn = doc.createElement('button');
     btn.type = 'button';
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm`;
-    btn.textContent = label;
+    btn.innerHTML = renderActionLabel(icon, label);
     btn.setAttribute(attr, attrValue);
     const writeAction = attr === TLS_CERTS_UPLOAD_OPEN_BTN_ATTR ||
       attr === TLS_CERTS_UPLOAD_SUBMIT_BTN_ATTR || attr === TLS_CERTS_REMOVE_OPEN_BTN_ATTR ||
@@ -795,13 +796,13 @@ export const mountTlsCertificatesPanel = (
 
       const actions = doc.createElement('div');
       actions.className = 'tls-certs-actions';
-      const replace = makeButton('Replace', TLS_CERTS_UPLOAD_OPEN_BTN_ATTR, 'secondary', () => {
+      const replace = makeButton('Replace', 'upload', TLS_CERTS_UPLOAD_OPEN_BTN_ATTR, 'secondary', () => {
         openUploadFrom(replace, row.domain);
       }, false, row.domain);
       uploadReplaceButtons.set(row.domain, replace);
       actions.appendChild(replace);
       if (opts.runRemove !== undefined) {
-        const remove = makeButton('Remove', TLS_CERTS_REMOVE_OPEN_BTN_ATTR, 'danger', () => {
+        const remove = makeButton('Remove', 'delete', TLS_CERTS_REMOVE_OPEN_BTN_ATTR, 'danger', () => {
           // Carry focus only when this action owned it before the row was rebuilt.
           const keepFocus = doc.activeElement === remove;
           handle.openRemove(row.domain);
@@ -828,7 +829,7 @@ export const mountTlsCertificatesPanel = (
         }
         const confirmActions = doc.createElement('div');
         confirmActions.className = 'tls-certs-actions';
-        const cancel = makeButton('Cancel', TLS_CERTS_REMOVE_CANCEL_BTN_ATTR, 'secondary', () => {
+        const cancel = makeButton('Cancel', 'close', TLS_CERTS_REMOVE_CANCEL_BTN_ATTR, 'secondary', () => {
           const keepFocus = doc.activeElement === cancel;
           handle.cancelRemove();
           if (keepFocus) focusButton(removeOpenButtons.get(row.domain));
@@ -838,6 +839,7 @@ export const mountTlsCertificatesPanel = (
         confirmActions.appendChild(
           makeButton(
             state.remove.saving ? 'Removing…' : 'Remove certificate',
+            'delete',
             TLS_CERTS_REMOVE_CONFIRM_BTN_ATTR,
             'danger',
             () => {
@@ -893,7 +895,7 @@ export const mountTlsCertificatesPanel = (
     if (uploadSubmitButton) {
       uploadSubmitButton.disabled = state.loading || state.upload.saving || state.remove.saving;
       const label = state.upload.saving ? 'Uploading…' : 'Upload certificate';
-      if (uploadSubmitButton.textContent !== label) uploadSubmitButton.textContent = label;
+      if (uploadSubmitButton.textContent !== label) uploadSubmitButton.innerHTML = renderActionLabel('upload', label);
     }
     if (uploadCancelButton) uploadCancelButton.disabled = state.upload.saving;
   };
@@ -974,7 +976,7 @@ export const mountTlsCertificatesPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'tls-certs-actions';
-    uploadCancelButton = makeButton('Cancel', TLS_CERTS_UPLOAD_CANCEL_BTN_ATTR, 'secondary', () => {
+    uploadCancelButton = makeButton('Cancel', 'close', TLS_CERTS_UPLOAD_CANCEL_BTN_ATTR, 'secondary', () => {
       const keepFocus = doc.activeElement === uploadCancelButton;
       const origin = uploadSeedDomain;
       handle.cancelUpload();
@@ -983,6 +985,7 @@ export const mountTlsCertificatesPanel = (
     actions.appendChild(uploadCancelButton);
     uploadSubmitButton = makeButton(
       state.upload.saving ? 'Uploading…' : 'Upload certificate',
+      'upload',
       TLS_CERTS_UPLOAD_SUBMIT_BTN_ATTR,
       'primary',
       () => {
@@ -1037,7 +1040,7 @@ export const mountTlsCertificatesPanel = (
         makeNote(`${refreshing ? 'Could not refresh certificates.' : 'Could not load certificates.'} ${state.error}`,
           'tls-certs-error', TLS_CERTS_ERROR_ATTR),
       );
-      const retry = makeButton('Retry', TLS_CERTS_READ_RETRY_ATTR, 'secondary', () => {
+      const retry = makeButton('Retry', 'refresh', TLS_CERTS_READ_RETRY_ATTR, 'secondary', () => {
         if (readFocusTarget !== retry) return;
         void load();
       }, state.upload.saving || state.remove.saving);
@@ -1103,7 +1106,7 @@ export const mountTlsCertificatesPanel = (
     if (!state.upload.open) {
       const actions = doc.createElement('div');
       actions.className = 'tls-certs-actions';
-      const open = makeButton('Upload a certificate', TLS_CERTS_UPLOAD_OPEN_BTN_ATTR, 'primary', () => {
+      const open = makeButton('Upload a certificate', 'upload', TLS_CERTS_UPLOAD_OPEN_BTN_ATTR, 'primary', () => {
         openUploadFrom(open);
       }, state.loading || state.upload.saving || state.remove.saving);
       uploadOpenButton = open;

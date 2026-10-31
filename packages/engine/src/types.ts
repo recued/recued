@@ -534,6 +534,10 @@ export interface ExecutionContext {
    *  browser-only adapter (DOM, Chat) when running on the server.
    *  Omit to skip the check (backward compatible). */
   manifestGetter?: (slug: string, requestedVersion?: number) => IngredientManifest | null;
+  /** D-335 slice G — a Browser Bridge is connected to this server, so a DOM
+   *  step can run through it. False or absent on the server: a recipe with one
+   *  is refused before it starts (`findRoleRestrictions`). */
+  browserBridge?: boolean;
   /** Entity-field lookup for a `record_fields` output block: the installed
    *  pack's declaration for `<entity>`, normalized across the two runtime
    *  shapes (`surfaces.records.schema.entities` for a storage ingredient,

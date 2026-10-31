@@ -403,6 +403,7 @@ export interface AppContext extends LlmSubstrate {
   executionCaseSourcePruner:
     ChatOrchestratorBundle['executionCaseSourcePruner'] | undefined;
   internalRegistryRef: InternalToolRegistry | undefined;
+  ownerDocumentSearch?: ChatOrchestratorBundle['ownerDocumentSearch'];
   /** D-177 N.11 rule 5 (slice D) — the chat bundle's per-session
    *  forwarded-sender candidate index, retained so the execution-context
    *  composer can close `executeDeps.scopedSenderCandidates` over it
@@ -1800,6 +1801,7 @@ export const composeAppContext = (
     executionCaseArgumentStore: chatBundle?.executionCaseArgumentStore,
     executionCaseSourcePruner: chatBundle?.executionCaseSourcePruner,
     internalRegistryRef: chatBundle?.internalRegistry,
+    ownerDocumentSearch: chatBundle?.ownerDocumentSearch,
     chatForwardedSenderIndexRef: chatBundle?.forwardedSenderIndex,
     /** D-137 — writes the result half of a paired tool call when a held run
      *  settles. The BOOT SITE publishes it into the execution refs bag; it

@@ -209,11 +209,18 @@ import { authoringContractId } from './grant-governing-contract.js';
 import {
   checkForgetOwnEntry,
   checkOwnEntry,
+  coversClaim,
   currentVersionOf,
   forgetOwnEntry,
   forgottenIds,
+  forgottenIn,
   liveReplacementOf,
+  matchRevokedClaim,
   memoryRowAuthor,
+  noteClaimWords,
+  ownersVersionOf,
+  revokesIn,
+  unrevokeAgentNote,
   withRevisionLock,
 } from './memory-revision.js';
 import { emitMemoryUser } from './events/emit-sites.js';
@@ -2258,6 +2265,9 @@ const topMargin = (ranks: ReadonlyArray<number | null>): number | null => {
   return Math.round(Math.min(1, Math.max(0, margin)) * 1000) / 1000;
 };
 
+/** D-198 §13 — at most this many revoked notes a query is told about. */
+const MEMORY_SEARCH_REJECTED_MAX = 3;
+
 /** Every non-result exit is a GUIDED EMPTY, never an error. An `ok:false` from a
  *  recall tool makes the agent retry-to-timeout (the loop the 2026-06-09
  *  `enrichment.search` fix closed, which cited memory.search's own never-error
@@ -2786,7 +2796,22 @@ const createMemorySearchHandler =
       // from recall entirely (unlike the transparent feed, which shows a
       // content-cleared tombstone). This is the surface that reaches a granted
       // door, so it must never hand back forgotten content.
-      const redacted = await forgottenIds(deps.getMemoryRedactionStore?.());
+      const marks = (await deps.getMemoryRedactionStore?.()?.list()) ?? [];
+      const redacted = forgottenIn(marks);
+      // D-198 §13 — the owner's REVOKES among them: never served as facts, but a query
+      // that reaches one is told the owner marked it wrong (`rejected`), so the agent
+      // does not assert it again from somewhere else. One read with `redacted`, so a
+      // revoke landing between two reads can never put a note in both lists.
+      const revokes = revokesIn(marks);
+      const rejectionOf = (r: UserMemoryRow) => {
+        const claim = r.summary ?? r.body_preview;
+        return {
+          memory_id: r.memory_id,
+          ...(claim !== undefined ? { summary: claim } : {}),
+          revoked_at: revokes.get(r.memory_id)!.revoked_at,
+          note: 'The owner marked this wrong. Do not state it as true, and ask them before saving it again.',
+        };
+      };
       // D-198 §10 — the caller's own entries are marked `by_you`, the ones it may
       // replace or forget.
       const author = ctx.execution_source
@@ -2799,6 +2824,18 @@ const createMemorySearchHandler =
           ? args.memory_id
           : undefined;
       if (memoryId !== undefined) {
+        const revokedRow = revokes.has(memoryId) ? await store.getRow(memoryId) : null;
+        if (revokedRow !== null) {
+          return {
+            ok: true,
+            result: {
+              memories: [],
+              rejected: [rejectionOf(revokedRow)],
+              budget: { limit_bytes: MEMORY_FETCH_ONE_CAP_BYTES, used_bytes: 0, truncated_count: 0 },
+              hint: `the owner marked '${memoryId}' wrong — see rejected`,
+            },
+          };
+        }
         if (redacted.has(memoryId)) return emptyMemoryResult('that memory was forgotten');
         const resolved = await store.get(memoryId);
         if (resolved === null) return emptyMemoryResult(`no memory with id '${memoryId}'`);
@@ -2937,6 +2974,45 @@ const createMemorySearchHandler =
       );
 
       const page = filtered.slice(offset, offset + MEMORY_SEARCH_PAGE_SIZE);
+      // D-198 §13 — only a QUERY's matches (a listing has no rung), and only the first
+      // page's: a listing is the pool, and a rejection is an answer to what was asked.
+      // Only at the exact or relaxed rung, as for a save (`matchRevokedClaim`): a loose
+      // match merely shares a word, and a meaning match has no measured threshold. The
+      // search reads each word as it is spelled, so a revoked note is also asked by the
+      // claim words, which read every naming word in `SAME_CLAIM_WORDS` as "called": the
+      // query's, two at least, all in the note. One per revoke: the versions it covers
+      // would each repeat it.
+      const rejected: Array<ReturnType<typeof rejectionOf>> = [];
+      if (offset === 0 && query !== undefined) {
+        const reached = matchKind === 'exact' || matchKind === 'relaxed'
+          ? ordered.filter((r) => revokes.has(r.memory_id))
+          : [];
+        for (const memory_id of revokes.keys()) {
+          const row = await store.getRow(memory_id);
+          if (row !== null && coversClaim(query, noteClaimWords(row))) reached.push(row);
+        }
+        const heads = new Set<string>();
+        for (const r of reached) {
+          const revoke = revokes.get(r.memory_id)!;
+          if (heads.has(revoke.head)) continue;
+          if (since !== undefined && effectiveTime(r) < since) continue;
+          if (until !== undefined && effectiveTime(r) > until) continue;
+          heads.add(revoke.head);
+          rejected.push(rejectionOf(r));
+          if (rejected.length === MEMORY_SEARCH_REJECTED_MAX) break;
+        }
+      }
+      if (page.length === 0 && rejected.length > 0) {
+        return {
+          ok: true,
+          result: {
+            memories: [],
+            rejected,
+            budget: { limit_bytes: MEMORY_SEARCH_BUDGET_BYTES, used_bytes: 0, truncated_count: 0 },
+            hint: `nothing current matches '${query}', but the owner marked a matching memory wrong — see rejected`,
+          },
+        };
+      }
       if (page.length === 0) {
         if (query === undefined) {
           return emptyMemoryResult('no memories saved yet — write one with memory.write');
@@ -3002,6 +3078,7 @@ const createMemorySearchHandler =
           ...(matchKind !== undefined ? { match: matchKind } : {}),
           ...(margin !== null ? { top_margin: margin } : {}),
           ...(hasMore ? { next_cursor: encodeMemoryCursor(offset + page.length) } : {}),
+          ...(rejected.length > 0 ? { rejected } : {}),
         },
       };
     } catch (e) {
@@ -3054,6 +3131,16 @@ const createMemoryWriteHandler =
       typeof args.replaces === 'string' && args.replaces.trim().length > 0
         ? args.replaces.trim()
         : undefined;
+    // D-198 §13 — `despite_revoked`: the id of a note the owner REVOKED, passed only to
+    // save its claim again on purpose. Such a call always reaches the owner's approval:
+    // no standing write rule stands in for it (`useWriteRule`).
+    const despiteRevoked =
+      typeof args.despite_revoked === 'string' && args.despite_revoked.trim().length > 0
+        ? args.despite_revoked.trim()
+        : undefined;
+    if (replaces !== undefined && despiteRevoked !== undefined) {
+      return invalidArgs('pass replaces or despite_revoked, not both');
+    }
 
     // Grant gate — the enforcement boundary (§3). Owner chat resolves to the
     // permissive owner contract; a door needs `core.memory.write` (default-off).
@@ -3106,9 +3193,17 @@ const createMemoryWriteHandler =
       const forgotten = await forgottenIds(deps.getMemoryRedactionStore?.());
       const owned = await checkOwnEntry(store, forgotten, target, author);
       if (!owned.ok) {
-        return owned.refusal === 'forgotten'
-          ? `${owned.message}, so there is nothing to replace; save a new memory instead`
-          : `${owned.message}. Leave it as it is; if it looks wrong, tell the user`;
+        if (owned.refusal !== 'forgotten') {
+          return `${owned.message}. Leave it as it is; if it looks wrong, tell the user`;
+        }
+        // D-198 §13 — a delete and a revoke sit under the same overlay as a forget; name
+        // each for what it is. A delete is neutral; a revoke is the owner saying "wrong".
+        const mark = await deps.getMemoryRedactionStore?.()?.get(target);
+        if (mark?.revoked === true) {
+          return `the owner marked '${target}' wrong, so there is nothing to replace; `
+            + 'if you have the correct version, save it as a new memory';
+        }
+        return `${mark?.deleted === true ? `'${target}' was deleted by the owner` : owned.message}, so there is nothing to replace; save a new memory instead`;
       }
       const current = await currentVersionOf(store, forgotten, target);
       if (current === target) return undefined;
@@ -3118,14 +3213,69 @@ const createMemoryWriteHandler =
         ? `the owner replaced '${target}' with their own version ('${current}'). Leave it as it is; if it looks wrong, tell the user`
         : `'${target}' was already replaced by '${current}'; pass '${current}' as replaces instead`;
     };
-    // D-329 — a check makes the write's own checks, `replaces` included, and stops before
-    // it writes.
+    /** D-198 §13 — why this save may not go ahead over the owner's revoke, or
+     *  `undefined` when it may. A save naming `despite_revoked` must name a note that IS
+     *  revoked; any other save is matched against the revoked notes. Where the owner
+     *  also wrote their own version, that version is their word, as for a replace
+     *  (§12): no save goes over it, approved or not. */
+    const revokeRefusal = async (): Promise<string | undefined> => {
+      const redactions = deps.getMemoryRedactionStore?.();
+      const ownersVersion = async (revoked: string) =>
+        ownersVersionOf(
+          store,
+          await forgottenIds(redactions),
+          (await redactions?.get(revoked))?.revoke_of ?? revoked,
+        );
+      if (despiteRevoked !== undefined) {
+        if ((await redactions?.get(despiteRevoked))?.revoked !== true) {
+          return `'${despiteRevoked}' is not a memory the owner revoked; pass despite_revoked only with the id a refused save named`;
+        }
+        const owners = await ownersVersion(despiteRevoked);
+        return owners === undefined
+          ? undefined
+          : `the owner replaced '${despiteRevoked}' with their own version ('${owners}'). Leave it as it is; if it looks wrong, tell the user`;
+      }
+      const hit = await matchRevokedClaim(store, redactions, body === undefined ? summary : `${summary} ${body}`);
+      if (hit === undefined) return undefined;
+      const on = new Date(hit.revoked_at).toISOString().slice(0, 10);
+      const owners = await ownersVersion(hit.memory_id);
+      return owners !== undefined
+        ? `the owner marked a memory like this wrong on ${on}: "${hit.summary}" ('${hit.memory_id}'), and wrote their `
+          + `own version ('${owners}'). Don't save it; if it looks wrong, tell the user`
+        : `the owner marked a memory like this wrong on ${on}: `
+          + `"${hit.summary}" ('${hit.memory_id}'). Don't save it. If you have good reason to think it is true now `
+          + `(the user just told you so), call memory.write again with despite_revoked: '${hit.memory_id}'; the owner `
+          + 'will be asked to approve it, and approving it ends their revoke';
+    };
+    // D-329 — a check makes the write's own checks, `replaces` and the owner's revokes
+    // included, and stops before it writes.
     if (check) {
-      const refused = replaces === undefined ? undefined : await replaceRefusal(replaces);
+      const refused = (replaces === undefined ? undefined : await replaceRefusal(replaces))
+        ?? await revokeRefusal();
       return refused === undefined ? WOULD_RUN : invalidArgs(refused);
     }
     try {
+      if (despiteRevoked !== undefined) {
+        // D-198 §13 — saved again on purpose, and (being `write`) approved by the owner:
+        // the new note takes the revoked one's place and the revoke closes.
+        const redactions = deps.getMemoryRedactionStore?.();
+        const outcome = await withRevisionLock(store, async () => {
+          const refused = await revokeRefusal();
+          if (refused !== undefined || redactions === undefined) {
+            return { ok: false as const, refused: refused ?? 'memory store unavailable' };
+          }
+          const head = (await redactions.get(despiteRevoked))?.revoke_of ?? despiteRevoked;
+          const result = await write(head);
+          await unrevokeAgentNote(redactions, despiteRevoked);
+          return { ok: true as const, result };
+        });
+        if (!outcome.ok) return invalidArgs(outcome.refused);
+        emitMemoryUser(deps.getEventBus?.(), outcome.result.memory_id);
+        return { ok: true, result: { ...outcome.result, revoke_closed: despiteRevoked } };
+      }
       if (replaces === undefined) {
+        const refused = await revokeRefusal();
+        if (refused !== undefined) return invalidArgs(refused);
         const result = await write(undefined);
         // Fan a `memory` refresh so paired Memory lenses live-update (§7.7).
         emitMemoryUser(deps.getEventBus?.(), result.memory_id);
@@ -3134,7 +3284,7 @@ const createMemoryWriteHandler =
       // D-198 §10 — check then write under the store's revision lock, so two
       // writes batched into one turn cannot both replace the same entry.
       const outcome = await withRevisionLock(store, async () => {
-        const refused = await replaceRefusal(replaces);
+        const refused = (await replaceRefusal(replaces)) ?? await revokeRefusal();
         if (refused !== undefined) return { ok: false as const, refused };
         return { ok: true as const, result: await write(replaces) };
       });

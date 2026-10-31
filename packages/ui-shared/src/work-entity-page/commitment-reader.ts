@@ -3,10 +3,10 @@ import { e } from '../template.js';
 
 export const commitmentDirectionLabel = (direction: Commitment['direction']): string =>
   ({ outbound: 'I owe', inbound: 'Waiting for others', internal: 'For myself' })[direction];
-export const commitmentStatusLabel = (entity: Commitment): string => entity.lifecycle_state === 'pending'
+export const commitmentStatusLabel = (entity: Pick<Commitment, 'lifecycle_state' | 'due_status'>): string => entity.lifecycle_state === 'pending'
   ? entity.due_status === 'overdue' ? 'Overdue' : entity.due_status === 'due_soon' ? 'Due soon' : 'Open'
   : ({ fulfilled: 'Fulfilled', cancelled: 'Cancelled', expired: 'Expired' })[entity.lifecycle_state];
-export const commitmentDeadlineLabel = (entity: Commitment): string => {
+export const commitmentDeadlineLabel = (entity: Pick<Commitment, 'promised_for_at'>): string => {
   if (entity.promised_for_at === undefined) return 'No deadline';
   const day = dueDayIso(entity.promised_for_at);
   return day !== null
@@ -24,6 +24,7 @@ export interface WorkEntityCommitmentView {
   counterparty_label: string;
   opening?: boolean;
   notice?: string;
+  project_link?: { title: string; linked: boolean };
 }
 
 export const renderCommitmentReader = (view: WorkEntityCommitmentView, context: {
@@ -50,11 +51,14 @@ export const renderCommitmentReader = (view: WorkEntityCommitmentView, context: 
           ${entity.monetary_value ? meta('Amount', `${entity.monetary_value.amount} ${entity.monetary_value.currency}`) : ''}</dl>
         ${context.error ? `<div class="work-entity-dialog-submit-error" role="alert" tabindex="-1">${e(context.error)}</div>` : ''}
         ${view.notice ? `<p role="status" data-commitment-notice tabindex="-1">${e(view.notice)}</p>` : ''}
+        ${view.project_link ? `<p class="work-entity-note-warning">${e(view.project_link.linked
+          ? `Already linked to ${view.project_link.title}.` : `Project: ${view.project_link.title}`)}</p>` : ''}
         ${context.history_html ? `<details class="work-entity-note-secondary"><summary>Activity timeline</summary>${context.history_html}</details>` : ''}
       </div>
       <footer class="work-entity-dialog-actions">
         <button type="button" class="work-entity-dialog-cancel" data-action="close-work-entity-dialog"${blocked}>${e(context.close_label ?? 'Back to commitments')}</button>
         ${view.can_edit ? `<button type="button" class="work-entity-dialog-cancel" data-action="edit-commitment"${blocked}>${view.opening ? 'Opening…' : 'Edit'}</button>` : ''}
+        ${view.can_edit && view.project_link && !view.project_link.linked ? `<button type="button" class="work-entity-dialog-cancel" data-action="link-commitment-to-project"${blocked}>Link to project</button>` : ''}
         ${context.can_fulfill ? `<button type="button" class="work-entity-dialog-submit" data-action="fulfill-work-entity-commitment"${blocked}>Mark fulfilled</button>` : ''}
         ${context.can_cancel ? `<button type="button" class="work-entity-dialog-cancel" data-action="cancel-work-entity-commitment"${blocked}>Cancel commitment</button>` : ''}
       </footer>

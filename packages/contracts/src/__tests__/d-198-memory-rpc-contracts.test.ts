@@ -46,6 +46,15 @@ describe('D-198 memory rpc registry wiring', () => {
     expect('replaces' in create).toBe(false);
   });
 
+  it('§13 — revoking is a pair of methods of its own (revoke, unrevoke), refused by an older server', () => {
+    expect(SERVER_RPC_METHOD_SET.has('memory.revoke')).toBe(true);
+    expect(SERVER_RPC_METHOD_SET.has('memory.unrevoke')).toBe(true);
+  });
+
+  it('§13 — the Delete confirm asks its count by a method of its own, so an older server refuses it and the confirm asks as before', () => {
+    expect(SERVER_RPC_METHOD_SET.has('memory.saves')).toBe(true);
+  });
+
   it('does NOT revive the D-157-P0-deleted `audit.*` read family', () => {
     // The management surface is `memory.*`; reviving `audit.list` etc. would
     // regress D-157 P0. The transparent feed is `memory.list`, not `audit.list`.

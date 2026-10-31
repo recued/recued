@@ -7,10 +7,10 @@
  *  Reads `memory.list` (owner-trusted, whole-feed) and shows EVERY origin
  *  (D-198 §3 transparency), filterable by write-actor (You / Agents / System).
  *  Authorship is origin-scoped: you have full CRUD on the memories you wrote
- *  (`isOwnMemoryEntry`); engine / AI / contracted rows, and the record of a run
- *  you started, are view + Forget only (no edit/delete rendered). An agent's
- *  note can also be REPLACED with your own version (D-198 §12,
- *  `isReplaceableEntry`): a new note of yours that takes its place in recall.
+ *  (`isOwnMemoryEntry`). An agent's note is never edited: you REPLACE it with
+ *  your own version (D-198 §12, `isReplaceableEntry`) or DELETE it, erasing its
+ *  text (§13). A run — engine, agent or one you started — is HIDDEN FROM AI only,
+ *  because the signed audit log cannot be erased (`removeActFor`).
  *
  *  Pure render (returns HTML strings) + styles + click-/field-dispatch
  *  constants the route wires. Body previews are already clamped by the
@@ -71,6 +71,10 @@ export const MEMORY_DELETE_CONFIRM_ACTION = 'memory-delete-confirm';
 export const MEMORY_DELETE_CANCEL_ACTION = 'memory-delete-cancel';
 /** D-198 §10 — the owner undoes an AGENT's forget (`memory.restore`). */
 export const MEMORY_RESTORE_ACTION = 'memory-restore';
+/** D-198 §13 — the owner marks an agent's note wrong (`memory.revoke`) and lifts that
+ *  (`memory.unrevoke`). One click each, like Restore: each undoes the other. */
+export const MEMORY_REVOKE_ACTION = 'memory-revoke';
+export const MEMORY_UNREVOKE_ACTION = 'memory-unrevoke';
 export const MEMORY_COMPOSE_SUBMIT_ACTION = 'memory-compose-submit';
 export const MEMORY_COMPOSE_CANCEL_ACTION = 'memory-compose-cancel';
 export const MEMORY_COMPOSE_DISCARD_KEEP_ACTION = 'memory-compose-discard-keep';
@@ -241,6 +245,12 @@ export interface MemoryLensProps {
   loadingMore?: boolean;
   /** Slice 2 — the row awaiting a delete confirm (inline two-step). */
   pendingDeleteId?: string;
+  /** D-198 §13 — the agent's note whose Delete is asking how often an agent saved it,
+   *  before its confirm opens. */
+  checkingDeleteId?: string;
+  /** D-198 §13 — for the row awaiting a delete confirm: an agent saved its claim this
+   *  often (twice or more), so the confirm offers to mark it wrong instead. */
+  deleteSaves?: MemoryDeleteSaves;
   /** The confirmed Delete/Forget write currently owned by one row. */
   deletingId?: string;
   /** Row-local Delete/Forget failure; keeps the confirmation retryable. */
@@ -249,9 +259,11 @@ export interface MemoryLensProps {
   openingEditId?: string;
   /** Row-local Edit prefill failure; keeps Edit visible and retryable. */
   editError?: { memoryId: string; message: string };
-  /** D-198 §10 — the agent-forgotten row whose Restore is in flight. */
+  /** D-198 §10/§13 — the row whose one-click act is in flight: Restore, Revoke or
+   *  Un-revoke (a row shows at most one of them). */
   restoringId?: string;
-  /** D-198 §10 — row-local Restore failure; keeps Restore visible and retryable. */
+  /** D-198 §10/§13 — that act's row-local failure; keeps its button visible and
+   *  retryable. */
   restoreError?: { memoryId: string; message: string };
   /** Slice 2 — whether the owner CRUD callers are wired; gates the write
    *  affordances (Add / Edit / Delete). Absent = read-only (no affordances). */
@@ -327,6 +339,13 @@ const revisionNote = (
       ? '<p class="memory-row-revision">Corrects an earlier entry</p>'
       : '';
 
+/** D-198 §13 — the line under an agent's note the owner revoked. */
+const revokedNote = (entry: Pick<MemoryListEntry, 'revoked_at'>, now: number): string =>
+  entry.revoked_at !== undefined
+    ? `<p class="memory-row-revision">You revoked this ${e(formatRelativeTime(entry.revoked_at, now))}. `
+      + 'AIs treat it as wrong and ask you before saving it again.</p>'
+    : '';
+
 /** A memory the owner WROTE — the only entry they can edit or delete. A run they
  *  started is `user_self` too and shows under You, but it is the record of a run
  *  (`run_id` — the contract's "audit-authored" marker): the server refuses to
@@ -348,6 +367,79 @@ export const isReplaceableEntry = (
   && entry.redacted !== true
   && entry.replaced_by === undefined;
 
+/** D-198 §13 — an agent's note the owner may revoke (mark wrong): one they may replace,
+ *  not revoked already. */
+export const isRevocableEntry = (
+  entry: Pick<MemoryListEntry, 'origin_actor' | 'run_id' | 'redacted' | 'replaced_by' | 'revoked_at'>,
+): boolean => isReplaceableEntry(entry) && entry.revoked_at === undefined;
+
+/** D-198 §13 — how often agents saved a note's claim (`memory.saves`), when it is twice
+ *  or more. */
+export interface MemoryDeleteSaves {
+  saves: number;
+  agents: number;
+}
+
+/** D-198 §13 — the Delete confirm's question when agents keep saving what the owner
+ *  deletes. A delete is neutral, so the claim would be saved again; marked wrong, it is
+ *  saved again only with the owner's say-so. */
+export const memoryDeleteSavesPrompt = ({ saves, agents }: MemoryDeleteSaves): string =>
+  `${agents > 1
+    ? `Agents have saved this ${saves} times. Mark it wrong so they ask you first?`
+    : `An agent has saved this ${saves} times. Mark it wrong so it asks you first?`} `
+  + 'If you delete it, its text leaves your server; the chat it came from keeps a copy.';
+
+/** D-198 §13 — what removing an entry does, by what the entry IS. Your note and an
+ *  agent's note are DELETED (an agent's has its text erased, and the chat it was
+ *  saved in keeps a copy); a run cannot be erased, because the audit log is signed,
+ *  so it is HIDDEN FROM AI and your Logs still show it in full. */
+interface RemoveAct {
+  button: string;
+  aria: string;
+  prompt: string;
+  verb: string;
+  progress: string;
+  noun: string;
+}
+
+const removeActFor = (entry: Pick<MemoryListEntry, 'origin_actor' | 'run_id'>): RemoveAct =>
+  entry.run_id !== undefined
+    ? {
+        button: 'Hide from AI', aria: 'Hide run from AI', verb: 'hiding', progress: 'Hiding…', noun: 'run',
+        prompt: 'Hide this run from AI? Your Logs still show it in full.',
+      }
+    : {
+        button: 'Delete', aria: 'Delete memory', verb: 'deleting', progress: 'Deleting…', noun: 'memory',
+        prompt: isOwnMemoryEntry(entry)
+          ? 'Delete this memory?'
+          : 'Delete this memory? Its text leaves your server; the chat it came from keeps a copy.',
+      };
+
+/** D-198 §13 — an agent's note the owner hid before Delete existed (a redaction with
+ *  no delete and no agent forget): hidden from everyone, its text still on the
+ *  server. Delete is offered so it can be erased. */
+const isHiddenNoteStillOnServer = (
+  entry: Pick<MemoryListEntry, 'origin_actor' | 'run_id' | 'redacted' | 'deleted_at' | 'forgotten_by'>,
+): boolean =>
+  entry.redacted === true
+  && entry.deleted_at === undefined
+  && entry.forgotten_by === undefined
+  && entry.run_id === undefined
+  && entry.origin_actor !== 'user_self';
+
+/** The line a removed entry shows in place of its content. */
+const removedNote = (
+  entry: Pick<MemoryListEntry, 'origin_actor' | 'run_id' | 'redacted' | 'deleted_at' | 'forgotten_by' | 'forgotten_reason'>,
+  now: number,
+): string =>
+  entry.deleted_at !== undefined
+    ? `You deleted this ${formatRelativeTime(entry.deleted_at, now)}. Its text is gone from your server.`
+    : entry.forgotten_by !== undefined
+      ? `${forgottenNote(entry)}.`
+      : entry.run_id !== undefined
+        ? 'Hidden from AI. Your Logs still show this run.'
+        : 'Hidden, but its text is still on your server.';
+
 const renderFilterChip = (
   filter: MemoryOriginFilter,
   active: MemoryOriginFilter,
@@ -365,12 +457,62 @@ const renderFilterChip = (
         : ''}</button>`;
 };
 
+/** The inline Delete / Hide-from-AI confirm, in a row or the detail view (`btnClass`).
+ *
+ *  D-198 §13 — on an agent's note an agent has saved twice or more (`deleteSaves`), it
+ *  asks whether to mark it wrong instead, and its buttons say what each does: Mark it
+ *  wrong (`memory.revoke`, which undoes) or Delete. */
+const renderRemoveConfirm = (
+  entry: MemoryListEntry | MemoryGetResponse,
+  act: RemoveAct,
+  btnClass: 'memory-row-btn' | 'memory-btn',
+  actionAttr: string,
+  deletingId: string | undefined,
+  deleteError: string | undefined,
+  locked: boolean,
+  deleteSaves: MemoryDeleteSaves | undefined,
+): string => {
+  const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
+  const actionName = (label: string): string => memoryActionName(label, entry);
+  const deleting = deletingId === entry.memory_id;
+  const saves = deleteSaves !== undefined && isRevocableEntry(entry) ? deleteSaves : undefined;
+  const markWrong = saves !== undefined
+    ? `<button type="button" class="${btnClass}"
+          ${actionAttr}="${MEMORY_REVOKE_ACTION}" ${idAttr}${deleting || locked
+            ? ' aria-disabled="true"'
+            : ''} aria-label="${actionName('Mark it wrong')}">Mark it wrong</button>`
+    : '';
+  // The longer question takes its own line, so its three answers stay together below it.
+  const prompt = saves !== undefined
+    ? `<span class="memory-row-confirm-question">${e(memoryDeleteSavesPrompt(saves))}</span>`
+    : e(act.prompt);
+  return `<span class="memory-row-confirm">${prompt}
+        ${markWrong}<button type="button" class="${btnClass} ${btnClass}--danger"
+          ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}${deleting
+            ? ' aria-disabled="true" aria-busy="true"'
+            : locked
+              ? ' aria-disabled="true"'
+            : ''} aria-label="${actionName(deleting
+              ? `${act.progress} ${act.noun}`
+              : saves !== undefined ? act.aria : `Confirm ${act.verb} ${act.noun}`)}">${deleting
+                ? act.progress
+                : saves !== undefined ? act.button : 'Confirm'}</button>
+        <button type="button" class="${btnClass}"
+          ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}${deleting || locked
+            ? ' aria-disabled="true"'
+            : ''} aria-label="${actionName(`Cancel ${act.verb} ${act.noun}`)}">Cancel</button>
+        ${deleteError !== undefined
+          ? `<span class="memory-row-delete-error" role="alert">${e(deleteError)}</span>`
+          : ''}</span>`;
+};
+
 /** The per-row action foot: the audit run link, a "View" affordance for rows
  *  carrying a full body, and — when writes are wired (§3) — Edit + Delete on the
- *  memories the owner WROTE, or **Forget** (redact) on everything else: others'
- *  rows (engine / AI / contracted) and the record of a run, the owner's own runs
- *  included. All destructive actions are an inline two-step confirm. A row
- *  that is ALREADY redacted keeps only its run link (nothing left to act on). */
+ *  memories the owner WROTE, Replace + Delete on an agent's note (§12/§13), and
+ *  Hide from AI on the record of a run, the owner's own runs included
+ *  (`removeActFor`). All destructive actions are an inline two-step confirm. A row
+ *  that is ALREADY removed keeps its run link, Restore on an agent's forget, and
+ *  Delete on a note hidden before Delete existed. */
 const renderRowFoot = (
   entry: MemoryListEntry,
   actionAttr: string,
@@ -384,13 +526,24 @@ const renderRowFoot = (
   locked: boolean,
   restoringId: string | undefined,
   restoreError: { memoryId: string; message: string } | undefined,
+  checkingDeleteId: string | undefined,
+  deleteSaves: MemoryDeleteSaves | undefined,
 ): string => {
   const isOwn = isOwnMemoryEntry(entry);
   const isRedacted = entry.redacted === true;
   const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
   const actionName = (label: string): string => memoryActionName(label, entry);
-  const destructiveVerb = isOwn ? 'deleting' : 'forgetting';
-  const destructiveProgress = isOwn ? 'Deleting…' : 'Forgetting…';
+  const act = removeActFor(entry);
+  const confirmRemove = (): string =>
+    renderRemoveConfirm(entry, act, 'memory-row-btn', actionAttr, deletingId, deleteError, locked, deleteSaves);
+  const removeButton = (held: boolean): string => {
+    const checking = checkingDeleteId === entry.memory_id;
+    return `<button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${checking
+      ? ' aria-disabled="true" aria-busy="true"'
+      : held || locked
+        ? ' aria-disabled="true"'
+        : ''} aria-label="${actionName(checking ? `Checking… ${act.noun}` : act.aria)}">${checking ? 'Checking…' : act.button}</button>`;
+  };
   const runLink =
     entry.run_id !== undefined && entry.run_id.length > 0
       ? renderReferenceLink({
@@ -417,7 +570,11 @@ const renderRowFoot = (
           ? `<span class="memory-row-restore-error" role="alert">${e(restoreError.message)}</span>`
           : ''}`
       : '';
-    const inner = `${runLink}${restore}`;
+    // §13 — a note hidden before Delete existed still has its text on the server.
+    const erase = canWrite && isHiddenNoteStillOnServer(entry)
+      ? (pendingDeleteId === entry.memory_id ? confirmRemove() : removeButton(false))
+      : '';
+    const inner = `${runLink}${restore}${erase}`;
     return inner.length > 0 ? `<div class="memory-row-foot">${inner}</div>` : '';
   }
   const openBtn =
@@ -429,24 +586,7 @@ const renderRowFoot = (
   let controls = '';
   if (canWrite) {
     if (pendingDeleteId === entry.memory_id) {
-      const prompt = isOwn ? 'Delete this memory?' : 'Forget this memory?';
-      const deleting = deletingId === entry.memory_id;
-      controls = `<span class="memory-row-confirm">${prompt}
-        <button type="button" class="memory-row-btn memory-row-btn--danger"
-          ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}${deleting
-            ? ' aria-disabled="true" aria-busy="true"'
-            : locked
-              ? ' aria-disabled="true"'
-            : ''} aria-label="${actionName(deleting
-              ? `${destructiveProgress} memory`
-              : `Confirm ${destructiveVerb} memory`)}">${deleting ? destructiveProgress : 'Confirm'}</button>
-        <button type="button" class="memory-row-btn"
-          ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}${deleting || locked
-            ? ' aria-disabled="true"'
-            : ''} aria-label="${actionName(`Cancel ${destructiveVerb} memory`)}">Cancel</button>
-        ${deleteError !== undefined
-          ? `<span class="memory-row-delete-error" role="alert">${e(deleteError)}</span>`
-          : ''}</span>`;
+      controls = confirmRemove();
     } else if (isOwn) {
       const openingEdit = openingEditId === entry.memory_id;
       controls = `<button type="button" class="memory-row-btn"
@@ -455,17 +595,14 @@ const renderRowFoot = (
             : locked
               ? ' aria-disabled="true"'
             : ''} aria-label="${actionName(openingEdit ? 'Opening… memory' : 'Edit memory')}">${openingEdit ? 'Opening…' : 'Edit'}</button>
-        <button type="button" class="memory-row-btn memory-row-btn--danger"
-          ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingEdit || locked
-            ? ' aria-disabled="true"'
-            : ''} aria-label="${actionName('Delete memory')}">Delete</button>
+        ${removeButton(openingEdit)}
         ${editError?.memoryId === entry.memory_id
           ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
           : ''}`;
     } else {
-      // Others' rows, and the record of any run (yours too), are view + redact
-      // only (§3) — no edit. An agent's note can also be replaced with your own
-      // version (§12), which opens the form the way Edit does.
+      // Others' rows, and the record of any run (yours too), cannot be edited (§3).
+      // An agent's note can be replaced with your own version (§12), which opens
+      // the form the way Edit does, or deleted (§13); a run is hidden from AI.
       const replaceable = isReplaceableEntry(entry);
       const openingReplace = replaceable && openingEditId === entry.memory_id;
       const replace = replaceable
@@ -476,9 +613,26 @@ const renderRowFoot = (
               ? ' aria-disabled="true"'
             : ''} aria-label="${actionName(openingReplace ? 'Opening… memory' : 'Replace memory')}">${openingReplace ? 'Opening…' : 'Replace'}</button>`
         : '';
-      controls = `${replace}<button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingReplace || locked
-        ? ' aria-disabled="true"'
-        : ''} aria-label="${actionName('Forget memory')}">Forget</button>${
+      // §13 — Revoke a live, current agent note; Un-revoke one you revoked. One click
+      // each, sharing Restore's in-flight slot.
+      const isRevoked = entry.revoked_at !== undefined;
+      const toggle = isRevoked || replaceable
+        ? (() => {
+            const busy = restoringId === entry.memory_id;
+            const [action, label, progress] = isRevoked
+              ? [MEMORY_UNREVOKE_ACTION, 'Un-revoke', 'Un-revoking…']
+              : [MEMORY_REVOKE_ACTION, 'Revoke', 'Revoking…'];
+            return `<button type="button" class="memory-row-btn" ${actionAttr}="${action}" ${idAttr}${busy
+              ? ' aria-disabled="true" aria-busy="true"'
+              : openingReplace || locked
+                ? ' aria-disabled="true"'
+                : ''} aria-label="${actionName(busy ? `${progress} memory` : `${label} memory`)}">${busy ? progress : label}</button>${
+              restoreError?.memoryId === entry.memory_id
+                ? `<span class="memory-row-restore-error" role="alert">${e(restoreError.message)}</span>`
+                : ''}`;
+          })()
+        : '';
+      controls = `${replace}${toggle}${removeButton(openingReplace)}${
         replaceable && editError?.memoryId === entry.memory_id
           ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
           : ''}`;
@@ -502,6 +656,8 @@ const renderRow = (
   locked: boolean,
   restoringId: string | undefined,
   restoreError: { memoryId: string; message: string } | undefined,
+  checkingDeleteId: string | undefined,
+  deleteSaves: MemoryDeleteSaves | undefined,
 ): string => {
   const summary = entry.summary ?? '';
   const bodyPreview = entry.body_preview ?? '';
@@ -516,9 +672,9 @@ const renderRow = (
   // A redacted row still displays (transparency, §3) — origin / kind / time
   // stay; its content is replaced with a muted "Redacted" marker.
   const bodyLines = isRedacted
-    ? `<p class="memory-row-redacted">${entry.forgotten_by !== undefined ? e(forgottenNote(entry)) : 'Redacted'}</p>`
+    ? `<p class="memory-row-redacted">${e(removedNote(entry, now))}</p>`
     : `${primary ? `<p class="memory-row-title">${e(primary)}</p>` : ''}${
-        secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}${revisionNote(entry)}`;
+        secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}${revisionNote(entry)}${revokedNote(entry, now)}`;
   return `<li class="memory-row${isRedacted ? ' is-redacted' : ''}" data-origin="${e(entry.origin_actor)}">
     <div class="memory-row-head">
       ${renderMemoryOrigin(entry)}
@@ -540,6 +696,8 @@ const renderRow = (
       locked,
       restoringId,
       restoreError,
+      checkingDeleteId,
+      deleteSaves,
     )}
   </li>`;
 };
@@ -689,6 +847,8 @@ const renderDetail = (
   openingEditId: string | undefined,
   editError: { memoryId: string; message: string } | undefined,
   canWrite: boolean,
+  checkingDeleteId: string | undefined,
+  deleteSaves: MemoryDeleteSaves | undefined,
 ): string => {
   const back = `<button type="button" class="memory-btn" ${actionAttr}="${MEMORY_DETAIL_CLOSE_ACTION}">← Back</button>`;
   let body: string;
@@ -703,27 +863,11 @@ const renderDetail = (
     const isRedacted = entry.redacted === true;
     const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
     const actionName = (label: string): string => memoryActionName(label, entry);
-    const destructiveVerb = isOwn ? 'deleting' : 'forgetting';
-    const destructiveProgress = isOwn ? 'Deleting…' : 'Forgetting…';
+    const act = removeActFor(entry);
     let controls = '';
     if (canWrite && !isRedacted) {
       if (pendingDeleteId === entry.memory_id) {
-        const prompt = isOwn ? 'Delete this memory?' : 'Forget this memory?';
-        const deleting = deletingId === entry.memory_id;
-        controls = `<span class="memory-row-confirm">${prompt}
-            <button type="button" class="memory-btn memory-btn--danger"
-              ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}${deleting
-                ? ' aria-disabled="true" aria-busy="true"'
-                : ''} aria-label="${actionName(deleting
-                  ? `${destructiveProgress} memory`
-                  : `Confirm ${destructiveVerb} memory`)}">${deleting ? destructiveProgress : 'Confirm'}</button>
-            <button type="button" class="memory-btn"
-              ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}${deleting
-                ? ' aria-disabled="true"'
-                : ''} aria-label="${actionName(`Cancel ${destructiveVerb} memory`)}">Cancel</button>
-            ${deleteError !== undefined
-              ? `<span class="memory-row-delete-error" role="alert">${e(deleteError)}</span>`
-              : ''}</span>`;
+        controls = renderRemoveConfirm(entry, act, 'memory-btn', actionAttr, deletingId, deleteError, false, deleteSaves);
       } else if (isOwn) {
         const openingEdit = openingEditId === entry.memory_id;
         controls = `<button type="button" class="memory-btn"
@@ -738,8 +882,8 @@ const renderDetail = (
              ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
              : ''}`;
       } else {
-        // Others' rows, and the record of any run, are view + redact only (§3);
-        // an agent's note can also be replaced with your own version (§12).
+        // Others' rows, and the record of any run, cannot be edited (§3): an
+        // agent's note can be replaced (§12) or deleted (§13); a run is hidden.
         const replaceable = isReplaceableEntry(entry);
         const openingReplace = replaceable && openingEditId === entry.memory_id;
         const replace = replaceable
@@ -748,22 +892,29 @@ const renderDetail = (
                ? ' aria-disabled="true" aria-busy="true"'
                : ''} aria-label="${actionName(openingReplace ? 'Opening… memory' : 'Replace memory')}">${openingReplace ? 'Opening…' : 'Replace'}</button>`
           : '';
-        controls = `${replace}<button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingReplace
-          ? ' aria-disabled="true"'
-          : ''} aria-label="${actionName('Forget memory')}">Forget</button>${
+        const isRevoked = entry.revoked_at !== undefined;
+        const toggle = isRevoked || replaceable
+          ? `<button type="button" class="memory-btn" ${actionAttr}="${isRevoked ? MEMORY_UNREVOKE_ACTION : MEMORY_REVOKE_ACTION}" ${idAttr}${openingReplace
+            ? ' aria-disabled="true"'
+            : ''} aria-label="${actionName(isRevoked ? 'Un-revoke memory' : 'Revoke memory')}">${isRevoked ? 'Un-revoke' : 'Revoke'}</button>`
+          : '';
+        const checking = checkingDeleteId === entry.memory_id;
+        controls = `${replace}${toggle}<button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${checking
+          ? ' aria-disabled="true" aria-busy="true"'
+          : openingReplace
+            ? ' aria-disabled="true"'
+            : ''} aria-label="${actionName(checking ? `Checking… ${act.noun}` : act.aria)}">${checking ? 'Checking…' : act.button}</button>${
           replaceable && editError?.memoryId === entry.memory_id
             ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
             : ''}`;
       }
     }
     const content = isRedacted
-      ? `<p class="memory-row-redacted">${entry.forgotten_by !== undefined
-        ? `${e(forgottenNote(entry))}.`
-        : 'This memory has been redacted.'}</p>`
+      ? `<p class="memory-row-redacted">${e(removedNote(entry, now))}</p>`
       : `${entry.summary !== undefined ? `<p class="memory-detail-summary">${e(entry.summary)}</p>` : ''}${
           entry.body !== undefined
             ? `<pre class="memory-detail-body">${e(entry.body)}</pre>`
-            : '<p class="memory-lens-empty">This entry has no body.</p>'}${revisionNote(entry)}`;
+            : '<p class="memory-lens-empty">This entry has no body.</p>'}${revisionNote(entry)}${revokedNote(entry, now)}`;
     body = `<div class="memory-detail-head">
         ${renderMemoryOrigin(entry)}
         <span class="memory-row-kind">${e(entry.kind)}</span>
@@ -803,6 +954,8 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
       props.openingEditId,
       props.editError,
       canWrite,
+      props.checkingDeleteId,
+      props.deleteSaves,
     ));
   }
   if (compose !== undefined && compose.open) {
@@ -877,6 +1030,8 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
           listLocked,
           props.restoringId,
           props.restoreError,
+          props.checkingDeleteId,
+          props.deleteSaves,
         ),
       )
       .join('')}</ul>${
@@ -961,6 +1116,7 @@ export const MEMORY_LENS_STYLES = `
 .memory-btn--primary:hover { filter: brightness(0.95); background: var(--accent); }
 .memory-row-btn--danger, .memory-btn--danger { color: var(--danger); border-color: var(--danger); }
 .memory-row-confirm { max-width: 100%; min-width: 0; font-size: 0.8125rem; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; overflow-wrap: anywhere; }
+.memory-row-confirm-question { min-width: 0; flex-basis: 100%; }
 .memory-row-delete-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }
 .memory-row-edit-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }
 .memory-row-restore-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }

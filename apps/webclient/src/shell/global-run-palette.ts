@@ -1,7 +1,7 @@
 /** Shell-owned entry point for the installed-recipe Run palette.
  *
  * The palette used to be mounted by Chat. This controller gives the existing
- * palette one app-lifetime owner, one persistent top-bar trigger, and one
+ * palette one app-lifetime owner, one navigation-drawer trigger, and one
  * keyboard shortcut, while continuing to reuse its recipe classification and
  * Run | Schedule modal unchanged.
  */
@@ -91,7 +91,7 @@ export const mountGlobalRunPalette = (
   glyph.textContent = '▶';
   const label = doc.createElement('span');
   label.className = 'webclient-global-run-label';
-  label.textContent = 'Run';
+  label.textContent = 'Run a recipe';
   const key = doc.createElement('kbd');
   key.className = 'webclient-global-run-key';
   key.setAttribute('aria-hidden', 'true');

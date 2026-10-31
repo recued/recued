@@ -52,6 +52,9 @@ import type {
   EnrichmentTrustRow,
   ConfidenceDriftSignal,
   ExecutionListQuery,
+  MailConversationItem,
+  MailConversationSnapshot,
+  MailMessageSnapshot,
 } from '@recued/contracts';
 import {
   HARNESS_SERVER_FINGERPRINT,
@@ -5704,6 +5707,45 @@ const buildFakeTransport = (
             };
           }
         }
+        // Cited mail opens the bounded reader. Keep its metadata and body
+        // grounded in the same fixture as the collection and Chat reference.
+        if (connectedSourceAnswerDemo && (
+          rpc.method === 'collection.mail.conversation.get'
+          || rpc.method === 'collection.mail.message.get'
+        )) {
+          const args = rpc.args as { slug?: unknown; record_id?: unknown };
+          if (args.slug !== 'work' || args.record_id !== sourceAnswerMailRecord.record_id) {
+            error = { code: 'NOT_FOUND', message: 'Mail fixture record not found.' };
+          } else {
+            const item: MailConversationItem = {
+              record_id: sourceAnswerMailRecord.record_id,
+              source_id: sourceAnswerMailRecord.source_id,
+              modified_at: sourceAnswerMailRecord.modified_at,
+              size_bytes: sourceAnswerMailRecord.size_bytes,
+              to: ['person@example.com'],
+              from: sourceAnswerMailRecord.hot_fields.from,
+              subject: sourceAnswerMailRecord.hot_fields.subject,
+              received_at: sourceAnswerMailRecord.received_at,
+              direction: 'inbound',
+              folder: sourceAnswerMailRecord.hot_fields.folder,
+              is_read: sourceAnswerMailRecord.hot_fields.is_read,
+              has_attachments: false,
+              snippet: sourceAnswerMailRecord.body_inline,
+            };
+            result = rpc.method === 'collection.mail.conversation.get'
+              ? {
+                  slug: 'work', anchor: item, thread_id: null,
+                  incarnation: 'source-answer-mailbox', mailbox_address: 'person@example.com',
+                  messages: [item],
+                } satisfies MailConversationSnapshot
+              : {
+                  slug: 'work', record_id: item.record_id, from: item.from,
+                  to: item.to, cc: [], subject: item.subject, received_at: item.received_at,
+                  body: sourceAnswerMailRecord.body_inline, body_truncated: false,
+                  read: 'stored', reply: null, forward: null,
+                } satisfies MailMessageSnapshot;
+          }
+        }
         if (rpc.method === 'collection.get' && connectedSourceAnswerDemo) {
           const args = rpc.args as {
             platform?: unknown;
@@ -7553,6 +7595,7 @@ const buildFakeTransport = (
         // Empty authentication inventories are ordinary first-run states.
         if (result === undefined && error === undefined) {
           if (rpc.method === 'data.file.attachments.sources') result = { sources: [] };
+          if (rpc.method === 'data.file.attachments.list') result = { files: [] };
           if (rpc.method === 'packs.reconnect_later' && (rpc.args as { action?: string })?.action === 'list') result = { action: 'list', groups: [], unresolved_packs: [] };
           if (rpc.method === 'server.oauthApps' && (rpc.args as { action?: string })?.action === 'list') result = { action: 'list', apps: oauthConfigured || firstSyncDemo
             ? [{ id: 'default', issuer: 'google', label: 'Default Google app', client_id: 'GOOGLE-CID', has_secret: true, revision: 1 },

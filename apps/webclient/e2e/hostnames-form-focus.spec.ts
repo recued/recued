@@ -563,7 +563,7 @@ for (const width of [390, 1280]) {
       }
       await method.selectOption('dns_txt'); await expect(method).toBeFocused();
       await expect(verificationProof(page)).toHaveValue(`${manualProof}-edited`); expect(await unload(page)).toBe(true);
-      const outside = page.locator('[data-recued-global-run-palette-trigger]'); await outside.focus();
+      const outside = page.locator('[data-recued-webclient-search-trigger]'); await outside.focus();
       await method.evaluate(node => {
         (node as HTMLSelectElement).value = 'http_token'; node.dispatchEvent(new Event('change', { bubbles: true }));
       });
@@ -1047,7 +1047,7 @@ for (const width of [390, 1280]) {
 
     test(`Hostnames ${mode} changes leave outside keyboard focus alone at ${width}px`, async ({ page }) => {
       await open(page, width, mode);
-      const outside = page.locator('[data-recued-global-run-palette-trigger]');
+      const outside = page.locator('[data-recued-webclient-search-trigger]');
       await outside.focus();
       await expect(outside).toBeFocused();
       await port(page, mode, 8446).evaluate(input => {

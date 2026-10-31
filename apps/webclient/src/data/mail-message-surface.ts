@@ -2,7 +2,8 @@ import type {
   CollectionRecord, MailConversationItem, MailConversationRequest, MailConversationSnapshot,
   MailMessageRef, MailMessageSnapshot,
 } from '@recued/contracts';
-import { e, formatClientDateTime, MAIL_COMPOSE_STYLES } from '@recued/ui-shared';
+import { deriveReplyAllValues, deriveForwardValues } from '@recued/contracts';
+import { e, formatClientDateTime, MAIL_COMPOSE_STYLES, renderActionIcon } from '@recued/ui-shared';
 import { mountMailCompose, type MailComposeDeps, type MailComposeMount } from '../mail/mail-compose-host.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { COLLECTION_DETAIL_HEADING_ATTR } from './collection-explorer.js';
@@ -48,6 +49,8 @@ export const MAIL_MESSAGE_STYLES = `
 .data-mail-message dd { margin: 0; overflow-wrap: anywhere; }
 .data-mail-message pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.65; }
 .data-mail-message-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.data-mail-message-actions .data-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.data-mail-message-actions .data-mail-message-refresh { min-width: 42px; min-height: 42px; }
 .data-mail-message-note { margin: 0; color: var(--fg-muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .data-mail-conversation-older { justify-self: start; }
 @media (max-width: 720px) {
@@ -84,11 +87,14 @@ export const createMailMessageSurface = (opts: {
   let portal: HTMLElement | null = null;
   let compose: MailComposeMount | null = null;
   let composeWasOpen = false;
+  let composeTarget: 'reply' | 'reply-all' | 'forward' = 'reply';
   const action = (name: string): string => `${opts.actionAttr}="mail-message-${name}"`;
   const busy = (pending: boolean): string => pending ? ' aria-disabled="true" aria-busy="true"' : '';
   const paint = (): void => opts.render();
-  const focusReply = (): void => {
-    opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-reply"]`)?.focus();
+  const focusComposeAction = (): void => {
+    (opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-${composeTarget}"]`)
+      ?? opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-reply"]`)
+      ?? opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-refresh"]`))?.focus();
   };
   const beforeLeave = (): boolean => {
     if (compose?.state().dialog) { portal?.querySelector<HTMLElement>('[data-mail-compose-ai-brief]')?.focus(); return false; }
@@ -110,8 +116,11 @@ export const createMailMessageSurface = (opts: {
       const isOpen = compose?.state().dialog != null;
       if (composeWasOpen && !isOpen && !disposed) {
         const outcome = compose?.lastOutcome();
-        if (outcome) { notice = outcome === 'held' ? 'Reply is waiting for approval.' : 'Reply sent.'; paint(); }
-        focusReply();
+        if (outcome) {
+          const message = composeTarget === 'forward' ? 'Forward' : 'Reply';
+          notice = outcome === 'held' ? `${message} is waiting for approval.` : `${message} sent.`; paint();
+        }
+        focusComposeAction();
       }
       composeWasOpen = isOpen;
     } });
@@ -207,31 +216,41 @@ export const createMailMessageSurface = (opts: {
     ref = scoped(id); snapshot = null; notice = ''; expanded = true;
     syncSelectedRecord(); void read();
   };
-  const reply = async (): Promise<void> => {
-    if (!ref || !snapshot?.reply || !opts.callers.get || opening || loading || refreshing || compose?.state().dialog) return;
+  const composeMessage = async (target: 'reply' | 'reply-all' | 'forward'): Promise<void> => {
+    if (!ref || !snapshot || !opts.callers.get || opening || loading || refreshing || compose?.state().dialog) return;
+    if (target === 'forward' ? !snapshot.forward || !deriveForwardValues(snapshot.forward)
+      : !snapshot.reply || target === 'reply-all' && !deriveReplyAllValues(snapshot.reply)) return;
     const host = ensureCompose(); if (!host) return;
     const current = ref, root = generation, request = ++readGeneration;
+    composeTarget = target;
     opening = true; error = null; notice = ''; paint();
     try {
       const [fresh] = await Promise.all([opts.callers.get(current), host.refresh()]);
       if (disposed || root !== generation || request !== readGeneration) return;
       acceptMessage(fresh, current);
-      // A different sending mailbox cannot lend its capability to this reply.
-      if (!fresh.reply) error = fresh.reply_unavailable_reason ?? 'Reply is unavailable for this email.';
-      else if (fresh.reply.original_source_id !== current.slug || !host.openReply(fresh.reply)) error = 'Sending is unavailable for this mailbox. Check its connection before replying.';
+      // A different sending mailbox cannot lend its capability to this action.
+      if (target === 'forward') {
+        if (!fresh.forward || !deriveForwardValues(fresh.forward)) error = fresh.forward_unavailable_reason ?? 'Forward is no longer available for this email. Refresh the email to try again.';
+        else if (fresh.forward.original_source_id !== current.slug || !host.openForward(fresh.forward)) error = 'Sending is unavailable for this mailbox. Check its connection before forwarding.';
+      } else if (!fresh.reply) error = fresh.reply_unavailable_reason ?? 'Reply is unavailable for this email.';
+      else if (target === 'reply-all' && !deriveReplyAllValues(fresh.reply)) error = 'Reply all is no longer available for this email. Review the recipients or use Reply.';
+      else if (fresh.reply.original_source_id !== current.slug || !host.openReply(fresh.reply, target === 'reply-all' ? 'all' : 'sender')) error = 'Sending is unavailable for this mailbox. Check its connection before replying.';
     } catch (err) { if (!disposed && root === generation && request === readGeneration) error = humanizeRpcError(err); }
     finally { if (!disposed && root === generation && request === readGeneration) { opening = false; paint(); } }
   };
   const renderMessage = (): string => {
     const controls = `<div class="data-mail-message-actions">${snapshot?.reply && opts.compose
-      ? `<button type="button" class="data-button" data-mail-focus="reply" ${action('reply')}${busy(loading || opening || refreshing)}>${opening ? 'Checking reply…' : 'Reply'}</button>` : ''}
-      <button type="button" class="data-button" data-mail-focus="refresh" ${action('refresh')}${busy(loading || opening || refreshing)}>Refresh email</button></div>`;
+      ? `<button type="button" class="data-button" data-mail-focus="reply" ${action('reply')}${busy(loading || opening || refreshing)}>${renderActionIcon('reply')}<span>${opening && composeTarget === 'reply' ? 'Checking reply…' : 'Reply'}</span></button>
+        ${deriveReplyAllValues(snapshot.reply) ? `<button type="button" class="data-button" data-mail-focus="reply-all" ${action('reply-all')}${busy(loading || opening || refreshing)}>${renderActionIcon('reply-all')}<span>${opening && composeTarget === 'reply-all' ? 'Checking reply…' : 'Reply all'}</span></button>` : ''}` : ''}
+      ${snapshot?.forward && opts.compose && deriveForwardValues(snapshot.forward) ? `<button type="button" class="data-button" data-mail-focus="forward" ${action('forward')}${busy(loading || opening || refreshing)}>${renderActionIcon('forward')}<span>${opening && composeTarget === 'forward' ? 'Checking email…' : 'Forward'}</span></button>` : ''}
+      <button type="button" class="data-button data-mail-message-refresh" data-mail-focus="refresh" ${action('refresh')} aria-label="Refresh email" title="Refresh email"${busy(loading || opening || refreshing)}>${renderActionIcon('refresh')}</button></div>`;
     return `<article class="data-mail-message" aria-label="Email message" aria-busy="${loading}">
       ${controls}${loading ? '<p role="status">Reading email…</p>' : ''}${error ? `<p role="alert" tabindex="-1" data-mail-focus="error">${e(error)}</p>` : ''}
       ${notice ? `<p role="status">${e(notice)}</p>` : ''}
       ${snapshot ? `<dl><dt>From</dt><dd>${e(snapshot.from)}</dd><dt>To</dt><dd>${e(snapshot.to.join(', '))}</dd>
         ${snapshot.cc.length ? `<dt>Cc</dt><dd>${e(snapshot.cc.join(', '))}</dd>` : ''}</dl>
       ${snapshot.reply_unavailable_reason ? `<p class="data-mail-message-note">${e(snapshot.reply_unavailable_reason)}</p>` : ''}
+      ${snapshot.forward_unavailable_reason && snapshot.forward_unavailable_reason !== snapshot.reply_unavailable_reason ? `<p class="data-mail-message-note">${e(snapshot.forward_unavailable_reason)}</p>` : ''}
       ${snapshot.read === 'stored' ? '<p class="data-mail-message-note">Showing the stored copy.</p>' : ''}
       ${snapshot.body_truncated ? '<p role="status" class="data-mail-message-note">Showing the beginning of this long email. AI reply drafting is unavailable for a partial message.</p>' : ''}
       ${snapshot.body === null ? '<p role="status">The email body is unavailable.</p>' : `<pre>${e(snapshot.body || '(Empty message)')}</pre>`}` : ''}
@@ -280,7 +299,9 @@ export const createMailMessageSurface = (opts: {
       if (name === 'mail-message-refresh' && ref && !opening && !loading && !refreshing && beforeLeave()) void read();
       if (name === 'mail-message-conversation-refresh' && !opening && beforeLeave()) void loadConversation();
       if (name === 'mail-message-older' && conversation?.next_before && !opening && beforeLeave()) void loadConversation(true);
-      if (name === 'mail-message-reply') void reply();
+      if (name === 'mail-message-reply') void composeMessage('reply');
+      if (name === 'mail-message-reply-all') void composeMessage('reply-all');
+      if (name === 'mail-message-forward') void composeMessage('forward');
       if (name === 'mail-message-select' || name === 'mail-message-toggle') {
         const id = target?.getAttribute('data-mail-record'); if (id) {
           select(id, name === 'mail-message-toggle');
@@ -327,13 +348,14 @@ export const createMailMessageSurface = (opts: {
       if (!previous || previous.slug !== ref?.slug || previous.record_id !== ref.record_id) return;
       const target = Array.from(root.querySelectorAll<HTMLElement>('[data-mail-focus]'))
         .find(node => node.getAttribute('data-mail-focus') === previous.key)
-        ?? (previous.key === 'reply' ? root.querySelector<HTMLElement>('[data-mail-focus="error"]') : null);
+        ?? (previous.key === 'reply' || previous.key === 'reply-all' || previous.key === 'forward' ? root.querySelector<HTMLElement>('[data-mail-focus="error"]') : null);
       target?.focus({ preventScroll: true });
     },
     beforeLeave,
     reset: (): void => {
       generation++; readGeneration++; anchor = null; ref = null; conversation = null; messages = []; snapshot = null;
       loading = false; opening = false; refreshing = false; olderLoading = false; olderLoaded = false; error = null; conversationError = null; notice = '';
+      composeTarget = 'reply';
     },
     hasUnsavedChanges: (): boolean => compose?.hasUnsavedChanges() === true,
     hasInFlightWork: (): boolean => opening || compose?.hasInFlightWork() === true,

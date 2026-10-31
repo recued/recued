@@ -155,10 +155,12 @@ describe('file-source migration through the production switch boundary', () => {
       auth: reviewed.auth, impact_fingerprint: reviewed.impact.fingerprint },undefined as never);
     if (result.action !== 'migration_prepare') throw new Error('Bulk review');
     let ready = result.migration;
+    // Match the migration suite's allowance for background encryption under load.
+    const settle = { timeout: 10_000 };
     await vi.waitFor(async () => {
       const status = await f.handlers['collection.connection.managedOAuth']({ action: 'migration_status', id: result.migration.id },undefined as never);
       if (status.action !== 'migration_status') throw new Error('Bulk status'); ready = status.migrations[0]!; expect(ready.state).toBe('ready');
-    });
+    }, settle);
     expect(ready.rows[0]!.state).toBe('verified'); expect(ready.rows[0]!.impact?.file_source?.status).toBe('verified');expect(ready.rows[0]!.impact?.file_source?.download?.status).toBe('verified');
     expect(f.state()).toEqual(before);
     const applying = await f.handlers['collection.connection.managedOAuth']({ action: 'migration_apply', id: ready.id, fingerprint: ready.fingerprint! },undefined as never);
@@ -166,7 +168,7 @@ describe('file-source migration through the production switch boundary', () => {
     await vi.waitFor(async () => {
       const status = await f.handlers['collection.connection.managedOAuth']({ action: 'migration_status', id: result.migration.id },undefined as never);
       if (status.action !== 'migration_status') throw new Error('Bulk status'); expect(status.migrations[0]!.state).toBe('completed'); expect(status.migrations[0]!.rows[0]!.state).toBe('migrated');
-    });
+    }, settle);
     expect(f.state().source).toEqual(before.source); expect(f.state().sync).toEqual(before.sync); expect(f.state().file).toEqual(before.file);
   });
   it('rolls back a failed durable credential transaction without changing source or consuming the authorization', async () => {

@@ -133,6 +133,31 @@ describe('conversation files', () => {
 });
 
 describe('choose retained files for Chat', () => {
+  it('lists a full metadata page without per-file database reads or writes and preserves selection identities', async () => {
+    const f = fixture();
+    for (let i = 0; i < 31; i++) await f.files.ingest({ bytes: Buffer.from(`file ${i}`), filename: `File ${i}.txt`,
+      mime_type: 'text/plain', source_id: `source-${i}`, origin: 'webclient_upload', scan_status: 'clean' });
+    const changesBefore = f.db.prepare('SELECT total_changes() AS count').get();
+    const prepare = vi.spyOn(f.db, 'prepare');
+    let page: ReturnType<typeof f.lifecycle.listSelections>;
+    try {
+      expect(f.lifecycle.listSelections({ limit: 1 }).files).toHaveLength(1);
+      const readsForOne = prepare.mock.calls.filter(([sql]) => /^\s*SELECT\b/i.test(sql)).length;
+      prepare.mockClear();
+      page = f.lifecycle.listSelections({ limit: 30 });
+      const readsForPage = prepare.mock.calls.filter(([sql]) => /^\s*SELECT\b/i.test(sql)).length;
+      expect(readsForPage).toBe(readsForOne);
+      expect(readsForPage).toBeLessThanOrEqual(3);
+    } finally { prepare.mockRestore(); }
+    expect(f.db.prepare('SELECT total_changes() AS count').get()).toEqual(changesBefore);
+    expect(page.files).toHaveLength(30);
+    expect(page.next_cursor).toBeTruthy();
+    expect(page.files).toEqual(page.files.map(file => f.lifecycle.selection(file.file_id)));
+    const last = f.lifecycle.listSelections({ limit: 30, cursor: page.next_cursor });
+    expect(last.files).toHaveLength(1);
+    expect(new Set([...page.files, ...last.files].map(file => file.file_id)).size).toBe(31);
+  });
+
   it('searches before limiting, pages without repeats, and keeps archived files selectable', async () => {
     const f = fixture();
     for (let i = 0; i < 36; i++) await f.files.ingest({ bytes: Buffer.from(`file ${i}`), filename: `${i < 3 ? 'Older match' : 'Other'} ${i}.txt`,

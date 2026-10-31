@@ -71,6 +71,15 @@ export const recordWriteRuleAnswer = (
   }
 };
 
+/** D-198 §13 — a write the owner is asked about EVERY time, whatever rule they
+ *  accepted: saving a claim they revoked (marked wrong) again, which only reaches here
+ *  once the agent names the revoke on purpose. Checked in the one place both gates
+ *  (the chat's and the MCP door's) ask for a rule, so neither can let it through. */
+const asksEveryTime = (tool: string, args: unknown): boolean =>
+  tool === 'memory.write'
+  && args !== null && typeof args === 'object'
+  && typeof (args as { despite_revoked?: unknown }).despite_revoked === 'string';
+
 /** Spend one use of the live rule that stands in for this held write's ask, if one does. */
 export const useWriteRule = (
   store: WriteRuleStore | undefined,
@@ -80,6 +89,7 @@ export const useWriteRule = (
   now: number = Date.now(),
 ): WriteRuleRow | undefined => {
   if (store === undefined) return undefined;
+  if (asksEveryTime(tool, args)) return undefined;
   const key = writeRuleKeyOf(source, tool, args);
   if (key === undefined) return undefined;
   try {

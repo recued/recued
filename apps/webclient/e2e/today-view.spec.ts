@@ -1,3 +1,4 @@
+import { clickActionGlyph } from './helpers/action-glyph.js';
 import { expect, test, type Page } from '@playwright/test';
 
 test.use({ locale: 'en-US', timezoneId: 'America/Los_Angeles', viewport: { width: 390, height: 844 } });
@@ -32,6 +33,16 @@ const mutations = (page: Page): Promise<unknown[]> => page.evaluate(() =>
   JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[]);
 
 const dueField = (page: Page) => page.getByLabel('New due date and time', { exact: true });
+
+test('Today refresh glyph reloads records without creating a mutation', async ({ page }) => {
+  await boot(page);
+  const before = await page.evaluate(() => window.__app.rpcCallCount('work_entity.list'));
+  await clickActionGlyph(page, page.getByRole('button', { name: 'Refresh', exact: true }));
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('work_entity.list'))).toBeGreaterThan(before);
+  await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  expect(await mutations(page)).toEqual([]);
+});
+
 const backgroundRefresh = async (page: Page): Promise<void> => {
   const before = await page.evaluate(() => window.__app.rpcCallCount('work_entity.list'));
   await page.evaluate(() => {
@@ -146,7 +157,7 @@ test.describe('native segmented rescheduling', () => {
     await boot(page);
     await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
     const due = await partial(page, 0); await backgroundRefresh(page);
-    await page.getByRole('button', { name: 'Save due date', exact: true }).click();
+    await clickActionGlyph(page, page.getByRole('button', { name: 'Save due date', exact: true }));
     await expect(page.locator('[data-today-task-error]')).toContainText('Pick a valid due date');
     await expect(due).toBeFocused();
     expect(await due.evaluate(input => (input as HTMLInputElement).validity.badInput)).toBe(true);

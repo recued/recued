@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import {
   CHAT_ACTIVATION_ACTION, CREATE_OVERLAY, DRAWER_ACTION, DRAWER_TOGGLE,
   GLOBAL_RUN_PALETTE_TRIGGER, HARNESS_URL, RUN_PALETTE, SHELL_TOPBAR,
-  installFullAppHooks,
+  installFullAppHooks, openGlobalRunPalette,
 } from './helpers/full-app.js';
 
 /** Run palette browser journeys against the deterministic full-app harness. */
@@ -15,7 +15,7 @@ installFullAppHooks();
 
 const PREFILL_URL = `${HARNESS_URL}?data=records&run_prefill=1`;
 const openContextRecipe = async (page: Page, name: string) => {
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
   await page.getByRole('combobox', { name: 'Recipe' }).fill(name);
   await page.getByRole('option', { name: new RegExp(name) }).click();
   await page.locator(`[${RUN_PALETTE_ACTION}]`).filter({ hasText: /^Run$/ }).click();
@@ -26,7 +26,7 @@ test('page context ranks actual matches first and fills renamed arguments withou
   await page.goto(`${PREFILL_URL}#data/records/publisher-a/same-board/job/job-1`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(page.locator('[data-action="records-close-record"]')).toBeVisible();
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
   await page.getByRole('combobox', { name: 'Recipe' }).click();
   const options = page.getByRole('option');
   await expect(options.first()).toContainText('Follow up on this job');
@@ -240,18 +240,26 @@ test('page context uses the selected Yours asset and clears on its list', async 
 });
 
 test('the shell owns one Run palette across routes and Ctrl+K opens it globally', async ({ page }) => {
+  await page.addInitScript(() => Object.assign(window, {
+    __connectionsFixture: async (method: string) => method === 'prefs.get'
+      ? { result: { prefs: { 'ui.pinned_apps': ['keyboard-drawer'] } } }
+      : method === 'packs.list'
+        ? { result: { packs: [{ slug: 'keyboard-drawer', name: 'Pinned app', installed: true }] } }
+        : undefined,
+  }));
   await page.setViewportSize({ width: 280, height: 653 });
   await page.goto(`${HARNESS_URL}?run_palette=autorun#data`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const trigger = page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`);
-  await expect(trigger).toBeVisible();
+  const pinned = page.locator('[data-recued-webclient-drawer-app="keyboard-drawer"]');
+  await expect(pinned).toHaveCount(1);
+  await expect(trigger).toBeHidden();
   await expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
   await expect(trigger).toHaveAttribute(
     'aria-keyshortcuts',
     'Control+K Meta+K',
   );
-  expect((await trigger.boundingBox())?.height).toBeGreaterThanOrEqual(44);
   const topbarGeometry = await page.locator(`[${SHELL_TOPBAR}]`).evaluate(
     (topbar) => {
       const rect = topbar.getBoundingClientRect();
@@ -271,7 +279,20 @@ test('the shell owns one Run palette across routes and Ctrl+K opens it globally'
   );
 
   const overlay = page.locator(`[${RUN_PALETTE}]`);
-  await trigger.click();
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator('[data-recued-webclient-drawer]')
+    .getByRole('button', { name: 'Close navigation', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await expect(pinned).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Shift+Tab');
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(overlay).toHaveCount(1);
   await page.keyboard.press('Control+K');
   await expect(overlay).toHaveCount(1);
@@ -279,7 +300,7 @@ test('the shell owns one Run palette across routes and Ctrl+K opens it globally'
     .toBe(true);
   await page.keyboard.press('Escape');
   await expect(overlay).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await expect(page.locator(`[${DRAWER_TOGGLE}]`)).toBeFocused();
 
   const content = page.locator('[data-recued-webclient-content]');
   await content.focus();
@@ -302,7 +323,7 @@ test('the shell owns one Run palette across routes and Ctrl+K opens it globally'
   await page.evaluate(() => window.__app.setHash('#settings'));
   await expect(page).toHaveURL(/#settings$/);
   await expect(overlay).toHaveCount(0);
-  await expect(trigger).toBeVisible();
+  await expect(trigger).toBeHidden();
 
   await page.locator(`[${DRAWER_TOGGLE}]`).click();
   await page.locator(`[${DRAWER_ACTION}="create"]`).click();
@@ -357,7 +378,7 @@ test('the Run palette stays contained with usable mobile targets', async ({ page
   await page.goto(`${HARNESS_URL}?run_palette=autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
   // Installed recipes retire Chat's first-run card; the shell launcher stays.
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   const geometry = await dialog.evaluate((node) => {
@@ -411,7 +432,7 @@ test('the Run palette contains a long installed recipe after selection', async (
   await page.setViewportSize({ width: 280, height: 480 });
   await page.goto(`${HARNESS_URL}?run_palette=long`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   const picker = dialog.getByRole('combobox', { name: 'Recipe' });
@@ -455,8 +476,7 @@ test('the Run palette contains a long installed recipe after selection', async (
 test('the Run palette leaves composing Escape to its recipe picker', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  const trigger = page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`);
-  await trigger.click();
+  await openGlobalRunPalette(page);
 
   const overlay = page.locator(`[${RUN_PALETTE}]`);
   const picker = page.getByRole('combobox', { name: 'Recipe' });
@@ -486,7 +506,7 @@ test('the Run palette leaves composing Escape to its recipe picker', async ({ pa
   await expect(picker).toHaveAttribute('aria-expanded', 'false');
   await page.keyboard.press('Escape');
   await expect(overlay).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await expect(page.locator(`[${DRAWER_TOGGLE}]`)).toBeFocused();
 });
 
 test('the Run palette keeps inventory recovery focused and single-flight', async ({ page }) => {
@@ -497,7 +517,7 @@ test('the Run palette keeps inventory recovery focused and single-flight', async
   await page.waitForFunction(() => window.__app?.ready === true);
   expect(await page.evaluate(() => window.__app.rpcCallCount('recipe.list')))
     .toBe(0);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
   ).toBe(1);
@@ -539,7 +559,7 @@ test('the Run palette keeps inventory recovery focused and single-flight', async
 test('the Run palette guards an in-flight auto-run toggle and route leave', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=autorun&hold_rpc=auto_run.update`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await expect(recipe).toBeVisible();
@@ -620,7 +640,7 @@ test('the Run palette guards an in-flight auto-run toggle and route leave', asyn
 test('the Run palette switches a recipe on through its settings, never arming it bare', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=not-switched-on`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await recipe.fill('Watch pipeline');
@@ -652,7 +672,7 @@ test('the Run palette retains a pending toggle through its Automation handoff', 
     `${HARNESS_URL}?run_palette=autorun&hold_rpc=auto_run.update`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await expect(recipe).toBeVisible();
@@ -702,7 +722,7 @@ test('the Run palette retains a pending toggle through its Automation handoff', 
 test('the Run palette restores auto-run action focus after its state changes', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await recipe.fill('Watch pipeline');
@@ -722,7 +742,7 @@ test('the Run palette restores auto-run action focus after its state changes', a
 test('the Run palette reports a failed auto-run update in place', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=autorun-fail`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await openGlobalRunPalette(page);
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await recipe.fill('Watch pipeline');

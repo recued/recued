@@ -65,6 +65,7 @@
  *  Spec: D-148 § A.7 + the R26.2 design
  *  (`handover_webclient_ia_implementation.md` § Exposure & Serving). */
 
+import { renderActionLabel, type IconName } from '@recued/ui-shared';
 import {
   ROOT_APEX_MODES,
   type ExposurePreset,
@@ -293,8 +294,8 @@ export interface MountExposurePanelOptions {
    *  (`server_url`), which can genuinely be absent.
    *
    *  ⚠ A GETTER, not a value: the bootstrap reads `server_url` asynchronously
-   *  while this panel mounts synchronously, so a snapshot taken at mount would
-   *  be `undefined` forever. Read at RENDER time instead. */
+   *  while this panel mounts synchronously. After that read settles, call
+   *  `refreshConnectionExample()` to reconcile the button without a new RPC. */
   getServerUrl?: () => string | undefined;
 }
 
@@ -317,6 +318,8 @@ export interface ExposurePanelStateView {
 export interface ExposurePanelMount {
   getState(): ExposurePanelStateView;
   refresh(): Promise<void>;
+  /** Reconcile the saved-address action without fetching or repainting the panel. */
+  refreshConnectionExample(): void;
   dispose(): void;
   // ── Test drivers ──────────────────────────────────────────────
   clickPreset(preset: ExposurePreset): void;
@@ -450,6 +453,8 @@ export const mountExposurePanel = (
   let readFocusTarget: HTMLElement | null = null;
   let publicMcpModal: PublicMcpModalState = { kind: 'idle' };
   let connectExampleOpen = false;
+  let connectionExampleHost: HTMLElement | null = null;
+  let connectionExampleButton: HTMLButtonElement | null = null;
   let connectExampleFocusNodes: HTMLElement[] = [];
   let connectExampleCard: HTMLElement | null = null;
   let wsLockoutModal: WsLockoutModalState = { kind: 'idle' };
@@ -549,9 +554,9 @@ export const mountExposurePanel = (
       const button = doc.createElement('button');
       button.setAttribute('type', 'button');
       button.setAttribute(EXPOSURE_LAN_CHECK_ATTR, 'true');
-      button.textContent = checkingLan
+      button.innerHTML = renderActionLabel('refresh', checkingLan
         ? 'Checking…'
-        : reached !== null ? 'Check again' : 'Check from the internet';
+        : reached !== null ? 'Check again' : 'Check from the internet');
       if (checkingLan) button.setAttribute('disabled', 'true');
       button.addEventListener('click', runLanCheck);
       section.appendChild(button);
@@ -564,6 +569,8 @@ export const mountExposurePanel = (
     const keepReadFocus = readFocusTarget !== null && doc.activeElement === readFocusTarget;
     readFocusTarget = null;
     lanPostureHost = null;
+    connectionExampleHost = null;
+    connectionExampleButton = null;
     const connectFocusIndex = connectExampleFocusNodes.length === 0 ? 0
       : connectExampleFocusNodes.findIndex(node => node === doc.activeElement);
     const connectScrollTop = connectExampleCard?.scrollTop ?? 0;
@@ -993,7 +1000,7 @@ export const mountExposurePanel = (
     msg.className = 'exposure-load-error-msg';
     msg.textContent = loadError ?? PANEL_COPY.load_error;
     box.appendChild(msg);
-    const retry = makeButton('Retry', EXPOSURE_RETRY_BTN_ATTR, 'secondary', () => {
+    const retry = makeButton('Retry', 'refresh', EXPOSURE_RETRY_BTN_ATTR, 'secondary', () => {
       if (disposed || findEl(EXPOSURE_RETRY_BTN_ATTR) !== retry) return;
       void refresh();
     });
@@ -1214,6 +1221,7 @@ export const mountExposurePanel = (
 
     const btn = makeButton(
       active ? PANEL_COPY.public_mcp_revoke : PANEL_COPY.public_mcp_enable,
+      active ? 'unlink' : 'link',
       EXPOSURE_PUBLIC_MCP_BTN_ATTR,
       active ? 'danger' : 'secondary',
       onManagePublicMcpClick,
@@ -1223,10 +1231,23 @@ export const mountExposurePanel = (
     // Rendered whenever the server URL is known, NOT only when public MCP is
     // on: the snippet is equally the answer for a LAN-only agent, and hiding it
     // behind the acknowledgement would imply MCP requires public exposure.
+    connectionExampleHost = card;
+    refreshConnectionExample();
+    wrapper.appendChild(card);
+  }
+
+  function refreshConnectionExample(): void {
+    if (disposed || connectionExampleHost === null) return;
     const exampleUrl = opts.getServerUrl?.();
-    if (exampleUrl !== undefined && exampleUrl !== '') {
-      card.appendChild(makeButton(
+    if (exampleUrl === undefined || exampleUrl === '') {
+      connectionExampleButton?.remove();
+      connectionExampleButton = null;
+      return;
+    }
+    if (connectionExampleButton === null) {
+      connectionExampleButton = makeButton(
         PANEL_COPY.connect_example,
+        'link',
         EXPOSURE_CONNECT_BTN_ATTR,
         'secondary',
         () => {
@@ -1236,9 +1257,9 @@ export const mountExposurePanel = (
           render();
         },
         busy,
-      ));
+      );
+      connectionExampleHost.appendChild(connectionExampleButton);
     }
-    wrapper.appendChild(card);
   }
 
   /** The connection-example modal — read-only, no phrase, no mutation. It shows
@@ -1283,6 +1304,7 @@ export const mountExposurePanel = (
     }
     const close = makeButton(
       PANEL_COPY.connect_modal_close,
+      'close',
       EXPOSURE_MODAL_CANCEL_ATTR,
       'secondary',
       cancelModal,
@@ -1520,6 +1542,7 @@ export const mountExposurePanel = (
 
     const cancelButton = makeButton(
       copy.cancel_label,
+      'close',
       EXPOSURE_MODAL_CANCEL_ATTR,
       'secondary',
       cancelModal,
@@ -1527,6 +1550,7 @@ export const mountExposurePanel = (
     );
     const submitButton = makeButton(
       copy.submit_label,
+      'save',
       EXPOSURE_MODAL_SUBMIT_ATTR,
       m.mode === 'revoke' ? 'danger' : 'primary',
       () => {
@@ -1569,6 +1593,7 @@ export const mountExposurePanel = (
     const canSubmit = m.kind === 'open' && m.phrase_valid;
     const cancelButton = makeButton(
       'Cancel',
+      'close',
       EXPOSURE_MODAL_CANCEL_ATTR,
       'secondary',
       cancelModal,
@@ -1576,6 +1601,7 @@ export const mountExposurePanel = (
     );
     const submitButton = makeButton(
       'Confirm',
+      'save',
       EXPOSURE_MODAL_SUBMIT_ATTR,
       'danger',
       () => {
@@ -1671,6 +1697,7 @@ export const mountExposurePanel = (
 
   function makeButton(
     label: string,
+    icon: IconName,
     attr: string,
     variant: 'danger' | 'primary' | 'secondary',
     onClick: () => void,
@@ -1679,7 +1706,7 @@ export const mountExposurePanel = (
     const btn = doc.createElement('button');
     btn.setAttribute(attr, '');
     btn.type = 'button';
-    btn.textContent = label;
+    btn.innerHTML = renderActionLabel(icon, label);
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm exposure-btn`;
     if (disabledFlag) btn.disabled = true;
     btn.addEventListener('click', onClick);
@@ -1758,9 +1785,12 @@ export const mountExposurePanel = (
       model: currentModel(),
     }),
     refresh,
+    refreshConnectionExample,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      connectionExampleHost = null;
+      connectionExampleButton = null;
       connectExampleFocusNodes = [];
       connectExampleCard = null;
       if (unsubscribe) unsubscribe();

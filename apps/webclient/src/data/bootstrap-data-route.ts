@@ -1,6 +1,8 @@
+import { createContactMergeRecovery, MERGE_RECOVERY_PREFIX, MERGE_RECOVERY_STYLES, type ContactMergeRecoveryCallers } from './contact-merge-recovery.js';
 import { DEFAULT_COMMITMENT_VIEW_FILTERS, parseCommitmentViewFilters, type CommitmentViewFilters } from '@recued/contracts';
 import { commitmentCounterpartyLabel, type WorkEntityCommitmentView } from '@recued/ui-shared/work-entity-page';
 import { createAssetSearch, type AssetSearchCaller } from './asset-search.js';
+import { createDocumentContentSearch, DOCUMENT_SEARCH_ACTION, DOCUMENT_SEARCH_FILE, DOCUMENT_SEARCH_FOCUS, DOCUMENT_SEARCH_STYLES, type DocumentSearchCallers } from './document-content-search.js';
 import { readSearchAssetReturn, saveSearchAssetReturn } from '../shell/search-asset-return.js';
 import { mountSpherePlacement, type SpherePlacementCallers } from '../yours/sphere-placement.js';
 import { isContactAnnualDate, isDateOnlyDue } from '@recued/contracts';
@@ -14,6 +16,7 @@ import { connectionsFileAuthenticationAddress } from '../connections/connections
 import { openFilePreview, readStoredFileDownload, type FilePreviewCallers } from '../files/file-preview.js';
 import { openFileChatPicker, type FileChatCallers } from '../chat/existing-file-picker.js';
 import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug, SAVED_FILES_SLUG, savedFilesInstance } from './cloud-file-explorer.js';
+import { createSavedFileBrowser, savedFileRecord, renderSavedFileSearch, renderSavedFileFooter, type SavedFileListCaller } from './saved-file-browser.js';
 import type { CloudFileSource } from '@recued/contracts';
 /** D-174 P5 - top-level Data route.
  *
@@ -77,6 +80,11 @@ import type {
   MemoryReplaceRequest,
   MemoryRestoreRequest,
   MemoryRestoreResult,
+  MemoryRevokeRequest,
+  MemoryRevokeResult,
+  MemorySavesRequest,
+  MemorySavesResult,
+  MemoryUnrevokeRequest,
   MemoryListResponse,
   MemoryMutationResult,
   MemoryUpdateRequest,
@@ -272,6 +280,8 @@ import {
   MEMORY_DELETE_CONFIRM_ACTION,
   MEMORY_REPLACE_ACTION,
   MEMORY_RESTORE_ACTION,
+  MEMORY_REVOKE_ACTION,
+  MEMORY_UNREVOKE_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
   MEMORY_DETAIL_HEADING_ATTR,
   MEMORY_EDIT_ACTION,
@@ -293,6 +303,7 @@ import {
   MEMORY_OPEN_RUN_ACTION,
   MEMORY_ROW_ID_ATTR,
   isReplaceableEntry,
+  isRevocableEntry,
   memoryFilterActors,
   renderLensSwitcher,
   renderMemoryLens,
@@ -736,7 +747,7 @@ export type DataContactDeleteCaller = (
 // authors them.
 
 export type DataContactMergeListCaller = (
-  args: { status?: 'pending' | 'merged' | 'rejected'; limit?: number },
+  args: { status?: 'pending' | 'merged' | 'rejected'; limit?: number; cursor?: string },
 ) => Promise<{ candidates: ContactMergeCandidate[]; next_cursor?: string }>;
 export type DataContactMergeConfirmCaller = (
   args: { candidate_ids: string[]; survivor_email: string },
@@ -844,6 +855,16 @@ export type DataMemoryRestoreCaller = (args: MemoryRestoreRequest) => Promise<Me
 /** D-198 §12 — the owner replaces an agent's entry with their own version
  *  (`memory.replace`). Absent → Replace reports that saving is unavailable. */
 export type DataMemoryReplaceCaller = (args: MemoryReplaceRequest) => Promise<MemoryMutationResult>;
+/** D-198 §13 — the owner marks an agent's note wrong (`memory.revoke`) and lifts it
+ *  (`memory.unrevoke`). Absent → the button reports nothing happened. */
+export type DataMemoryRevokeCaller = (args: MemoryRevokeRequest) => Promise<MemoryRevokeResult>;
+export type DataMemoryUnrevokeCaller = (args: MemoryUnrevokeRequest) => Promise<MemoryRevokeResult>;
+/** D-198 §13 — how often an agent saved a note's claim (`memory.saves`), asked before the
+ *  Delete confirm opens on an agent's note. Absent → the confirm asks as it always did. */
+export type DataMemorySavesCaller = (args: MemorySavesRequest) => Promise<MemorySavesResult>;
+/** D-198 §13 — how long Delete waits for `memory.saves` before it opens the plain confirm.
+ *  The count is a local read; a server slow to answer it never holds up a delete. */
+export const MEMORY_SAVES_WAIT_MS = 2_000;
 
 /** D-198 Slice 5 — the generic collection-explorer reads (schema-driven
  *  list→detail over the adapter-backed collections). All three present → the
@@ -959,6 +980,7 @@ export interface BootstrapDataRouteOptions {
   workEntityListCaller?: DataWorkEntityListCaller;
   workEntitySearchCaller?: DataWorkEntitySearchCaller;
   assetSearchCaller?: AssetSearchCaller;
+  documentSearchCallers?: DocumentSearchCallers;
   searchContinuityOwner?: object;
   projectItemsCaller?: ProjectItemsCaller;
   workEntityGetCaller?: DataWorkEntityGetCaller;
@@ -986,6 +1008,8 @@ export interface BootstrapDataRouteOptions {
    *  Absent → the Contacts tab shows no "Find duplicates" entry point at all,
    *  rather than a page that cannot act. */
   contactMergeListCaller?: DataContactMergeListCaller;
+  contactMergeSplitPreviewCaller?: ContactMergeRecoveryCallers['preview'];
+  contactMergeSplitCaller?: ContactMergeRecoveryCallers['split'];
   contactMergeConfirmCaller?: DataContactMergeConfirmCaller;
   contactMergeRejectCaller?: DataContactMergeRejectCaller;
   contactMergeScanNowCaller?: DataContactMergeScanNowCaller;
@@ -1048,6 +1072,12 @@ export interface BootstrapDataRouteOptions {
   memoryRestoreCaller?: DataMemoryRestoreCaller;
   /** D-198 §12 — `memory.replace`, for the Replace on an agent's note. */
   memoryReplaceCaller?: DataMemoryReplaceCaller;
+  /** D-198 §13 — `memory.revoke` / `memory.unrevoke`, for Revoke and Un-revoke. */
+  memoryRevokeCaller?: DataMemoryRevokeCaller;
+  memoryUnrevokeCaller?: DataMemoryUnrevokeCaller;
+  /** D-198 §13 — `memory.saves`, for the Delete confirm's "An agent has saved this 3
+   *  times. Mark it wrong so it asks you first?". */
+  memorySavesCaller?: DataMemorySavesCaller;
   /** D-198 Slice 5 — the collection explorer reads. All three present → the
    *  mail / calendar tabs browse list→detail (from the raw-id drill-down);
    *  absent → the tab shows a not-wired notice. */
@@ -1110,6 +1140,7 @@ export interface BootstrapDataRouteOptions {
   /** D-172 Half-A "open" — file-content read for the Files tab download. Absent
    *  → no download button (metadata-only drill-down). */
   fileReadCaller?: DataFileReadCaller;
+  fileListCaller?: SavedFileListCaller;
   fileChatCallers?: FileChatCallers;
   onUseFileInChat?: (target: { file: import('@recued/contracts').FileAttachmentSelection; sessionId: string | null }) => void;
   fileUsageCaller?: (args: { record_id: string }) => Promise<FileLifecyclePreview>;
@@ -1291,6 +1322,7 @@ type ContactMergeDialogState = MergeReviewDialogState & {
 };
 
 /** D-205 #2b — the merge scan page (`#data/contact/scan`). */
+interface ContactRecoveryRender { html?: string; available: boolean; busy: boolean }
 interface ContactScanState {
   /** The ui-shared dialog's own state — items / cursor / survivor overrides /
    *  saving / error. We own it; the dialog is a pure render of it. */
@@ -4225,10 +4257,17 @@ const renderContactScanView = (
   state: ContactScanState,
   canScan: boolean,
   now: number,
+  recovery?: ContactRecoveryRender,
 ): string => {
   const pending = state.dialog.items.length;
   const scanInProgress = state.scanning || state.progress !== null;
-  const mutationPending = state.scanning || state.dialog.saving;
+  const mutationPending = state.scanning || state.dialog.saving || recovery?.busy;
+  const views = recovery?.available ? `<nav class="data-contact-toolbar contact-merge-views" aria-label="Contact merge views">
+    <button type="button" class="data-button" data-action="merge-recovery-pending" aria-pressed="${!recovery.html}"${mutationPending ? ' disabled' : ''}>Possible duplicates</button>
+    <button type="button" class="data-button" data-action="merge-recovery-open" aria-pressed="${!!recovery.html}"${mutationPending ? ' disabled' : ''}>Merged history</button></nav>` : '';
+  if (recovery?.html) return `<section ${DATA_ROUTE_CONTACT_SCAN_ATTR}>
+    <div class="data-contact-toolbar"><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="close-contact-scan"${mutationPending ? ' disabled' : ''}>← Back to contacts</button></div>
+    <h2 class="data-section-title">Merged contacts</h2>${views}${recovery.html}</section>`;
   const summary = state.progress !== null
     ? renderScanProgress(state.progress, now)
     : state.last_scan !== null
@@ -4267,6 +4306,7 @@ const renderContactScanView = (
         ${scanButton}
       </div>
       <h2 class="data-section-title">Possible duplicates</h2>
+      ${views}
       <p class="data-row-subtle">Recued groups contacts that look like the same person. Nothing is merged until you say so, and a merge can be undone.</p>
       ${summary}
       ${resolutionReceipt}
@@ -4345,9 +4385,10 @@ const renderContactSurface = (
   canUploadFile: boolean,
   now: number,
   loadedCount?: number,
+  recovery?: ContactRecoveryRender,
 ): string => {
   if (contactScan !== null) {
-    return renderContactScanView(contactScan, canScan, now);
+    return renderContactScanView(contactScan, canScan, now, recovery);
   }
   // D-205 #5b — the import page. Mutually exclusive with the scan + the detail,
   // exactly like they are with each other (one tab, one view — the openers close
@@ -5308,6 +5349,7 @@ export const bootstrapDataRoute = (
     style.setAttribute(DATA_ROUTE_STYLES_MARKER, '');
     style.textContent = [
       DATA_ROUTE_STYLES,
+      MERGE_RECOVERY_STYLES,
       FORM_RENDERER_STYLES,
       MAIL_MESSAGE_STYLES,
       WORK_ENTITY_PAGE_STYLES,
@@ -5335,6 +5377,7 @@ export const bootstrapDataRoute = (
       REMINDER_CREATE_STYLES,
       // 2026-08-28 — universal search across every collection.
       UNIVERSAL_SEARCH_STYLES,
+      DOCUMENT_SEARCH_STYLES,
       // D-221 — full-ref, schema-driven pack Records owner explorer.
       RECORDS_EXPLORER_STYLES,
       // D-315 §6 — Data → Received → Mail facts.
@@ -5403,6 +5446,11 @@ export const bootstrapDataRoute = (
   let memoryPendingDeleteId: string | undefined;
   let memoryDeletingId: string | null = null;
   let memoryDeleteError: { memoryId: string; message: string } | null = null;
+  // D-198 §13 — the agent's note whose Delete is asking how often an agent saved it, and
+  // the answer, kept for that note's confirm when it is twice or more.
+  let memoryCheckingDeleteId: string | null = null;
+  let memoryCheckDeleteSeq = 0;
+  let memoryDeleteSaves: { memoryId: string; saves: number; agents: number } | null = null;
   // D-198 §10 — the agent-forgotten row whose Restore is in flight, and its failure.
   let memoryRestoringId: string | null = null;
   let memoryRestoreError: { memoryId: string; message: string } | null = null;
@@ -5614,7 +5662,7 @@ export const bootstrapDataRoute = (
   let workEntityDialogEntity: WorkEntity | null = null;
   let projectWork: ProjectWork | null = null;
   let projectEditing = false;
-  let projectChildReturn: { kind: 'task' | 'note'; id?: string; scrollTop: number; page: WorkEntityPageState; entities: WorkEntity[]; total: number } | null = null;
+  let projectChildReturn: { kind: 'task' | 'note' | 'commitment'; id?: string; linking?: true; scrollTop: number; page: WorkEntityPageState; entities: WorkEntity[]; total: number } | null = null;
   let pendingProjectRestore: { key: string; scrollTop: number } | null = null;
   let commitmentMode: 'read' | 'edit' = 'read';
   let commitmentNotice: string | undefined;
@@ -5771,6 +5819,21 @@ export const bootstrapDataRoute = (
   let pendingContactEditFocusEmail: string | null = null;
   // D-205 #2b — the merge scan page. Null when closed.
   let contactScan: ContactScanState | null = null;
+  const contactRecovery = createContactMergeRecovery(
+    opts.contactMergeListCaller && opts.contactGetCaller && opts.contactMergeSplitPreviewCaller && opts.contactMergeSplitCaller
+      ? { list: opts.contactMergeListCaller, preview: opts.contactMergeSplitPreviewCaller, split: opts.contactMergeSplitCaller } : undefined,
+    focus => {
+      if (disposed || activeLens !== 'data' || activeTab !== 'contact' || !contactScan) return;
+      const previous = (doc.activeElement as HTMLElement | null)?.getAttribute?.('data-merge-recovery-focus');
+      render();
+      const key = focus ?? previous;
+      if (key && contactRecovery.isOpen()) {
+        const element = Array.from(opts.root.querySelectorAll<HTMLElement>('[data-merge-recovery-focus]')).find(item => item.getAttribute('data-merge-recovery-focus') === key);
+        element?.focus?.({ preventScroll: true });
+      }
+    },
+    () => { if (!disposed) pendingLoadPromise = refreshActive(true); },
+  );
   // D-205 #5b — `#data/contact/import`.
   let contactImport: ContactImportState | null = null;
   // Guards against a stale hydrate painting over a fresher one (scan → confirm →
@@ -5891,6 +5954,9 @@ export const bootstrapDataRoute = (
   let cloudFileCursor: string | undefined;
   let cloudFilePage = 1;
   let cloudLoadingMore = false; let cloudBrowseError = '';
+  let savedFileQueryInput = '';
+  let savedFileReturn: { recordId: string; scrollTop: number } | null = null;
+  let pendingSavedFileRestore: { recordId: string | null; scrollTop: number } | null = null;
   let explorerSelectedSlug: string | null = null;
   // Keep intended source identity separately from the latest available roster.
   // A disconnected selection must survive repeated refreshes and tab returns.
@@ -5907,6 +5973,15 @@ export const bootstrapDataRoute = (
   // empty for the second. Collapsing them would tell an owner their data is
   // absent when the search simply has not run.
   let universalSearchQuery = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.query : '';
+  type DocumentSearchOrigin = { sequence: number; query: string; fileId: string; scrollTop: number; hash: string };
+  let documentSearchReturn: DocumentSearchOrigin | null = null;
+  let documentSearchOpening: DocumentSearchOrigin | null = null;
+  let pendingDocumentSearchRestore: { fileId: string; scrollTop: number } | null = null;
+  let pendingDocumentSearchFocus: string | null = null;
+  const documentSearch = createDocumentContentSearch(opts.documentSearchCallers, () => {
+    if (activeLens === 'data' && activeTab === 'search') render();
+  });
+  documentSearch.setQuery(universalSearchQuery);
   let universalSearchGroups: CollectionSearchGroup[] | undefined;
   let universalSearchWorkGroups: WorkEntitySearchGroup[] | undefined;
   let universalSearchContacts: ContactRecord[] = [];
@@ -5974,6 +6049,7 @@ export const bootstrapDataRoute = (
     universalSearchError, universalSearchRecipes, universalSearchPacks,
     universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery,
     assets: assetSearch.snapshot(),
+    documents: documentSearch.snapshot(),
     pending: { records: universalSearchLoading || universalSearchGroups === undefined && !universalSearchError,
       work: universalSearchWorkLoading || universalSearchWorkGroups === undefined && !universalSearchWorkError && !universalSearchWorkUnsupported,
       contacts: universalSearchContactLoading && universalSearchContacts.length === 0,
@@ -5991,6 +6067,7 @@ export const bootstrapDataRoute = (
       universalSearchError, universalSearchRecipes, universalSearchPacks,
       universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery } = savedAssetSearch.state);
     assetSearch.restore(savedAssetSearch.state.assets);
+    documentSearch.restore(savedAssetSearch.state.documents);
     assetSearchIds = new Set(assetSearch.state().matches.map(row => row.id));
     initialSearchResume = savedAssetSearch.state.pending;
     pendingUniversalSearchFocus = false;
@@ -6006,6 +6083,12 @@ export const bootstrapDataRoute = (
   }
 
   let explorerRecords: CollectionRecord[] = [];
+  const savedFiles = createSavedFileBrowser(opts.fileListCaller, (): void => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'files' || explorerSelectedSlug !== SAVED_FILES_SLUG) return;
+    if (savedFiles.snapshot().unsupported) return;
+    explorerRecords = savedFiles.snapshot().files.map(savedFileRecord);
+    render();
+  });
   let explorerDetail: CollectionExplorerDetailState | null = null;
   let explorerLiveRefreshPending = false;
   // D-210 step 3 — the open calendar record's timeline (its move history:
@@ -6060,6 +6143,7 @@ export const bootstrapDataRoute = (
       : null;
 
   const resetExplorerState = (): void => {
+    savedFiles.reset(); savedFileQueryInput = ''; savedFileReturn = pendingSavedFileRestore = null;
     calendarAgenda.cancel();
     calendarAgendaReturn = null; pendingCalendarAgendaRestore = null;
     calendarEventSurface.reset();
@@ -6598,6 +6682,9 @@ export const bootstrapDataRoute = (
     const detailControls = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls + followWork;
     const detailActions = tab === 'files' && detailControls !== ''
       ? `<div class="data-file-actions">${detailControls}</div>${lifecyclePanel}` : detailControls;
+    const browsingSavedFiles = tab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller !== undefined;
+    const savedFileSnapshot = savedFiles.snapshot();
+    const savedFileState = { ...savedFileSnapshot, loading: savedFileSnapshot.loading || explorerLoading };
     const explorer = renderCollectionExplorer({
       collection: collectionName,
       instances: explorerInstances,
@@ -6614,7 +6701,9 @@ export const bootstrapDataRoute = (
       selectedSlug: explorerSelectedSlug,
       records: (tab === 'calendar' || tab === 'mail') && explorerSelectedSlug ? explorerRecords.filter(row => facetIncludes({ collection: tab, id: `${explorerSelectedSlug}:${row.record_id}` })) : explorerRecords,
       detail,
-      loading: explorerLoading || loading,
+      loading: browsingSavedFiles && !savedFileState.unsupported ? savedFileState.loading : explorerLoading || loading,
+      ...(browsingSavedFiles && !savedFileState.unsupported ? { emptyCopy: savedFileState.pages === 0 && savedFileState.error
+        ? 'Saved files have not been loaded.' : savedFileState.query ? 'No saved files match this filename.' : 'No saved files yet.' } : {}),
       ...(explorerError !== undefined ? { error: explorerError } : {}),
       ...(explorerErrorRetryable ? { retryable: true } : {}),
       ...(explorerRetrying ? { retrying: true } : {}),
@@ -6659,7 +6748,9 @@ export const bootstrapDataRoute = (
       ${uploadShell}
       ${renderFileSourceCta()}
       ${cloudBrowse}
-      ${explorer}
+      ${browsingSavedFiles && !detail ? renderSavedFileSearch(savedFileState, savedFileQueryInput, DATA_ROUTE_ACTION_ATTR) : ''}
+      ${documentSearchReturn ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="${DOCUMENT_SEARCH_ACTION}back">← Back to search</button></p>` : ''}${explorer}
+      ${browsingSavedFiles && !detail ? renderSavedFileFooter(savedFileState, DATA_ROUTE_ACTION_ATTR, savedFileState.pages > 0 || explorerRecords.length > 0) : ''}
       ${cloudBrowseError ? `<p role="alert">${e(cloudBrowseError)}</p>` : ''}
       ${cloudSource && !detail && cloudFileCursor ? `<button type="button" class="data-button"
         ${DATA_ROUTE_ACTION_ATTR}="file-cloud-more"${cloudLoadingMore || explorerLoading ? ' disabled' : ''}>${cloudLoadingMore ? 'Loading…' : 'Load more files'}</button>` : ''}
@@ -6789,8 +6880,19 @@ export const bootstrapDataRoute = (
   };
 
   const render = (): void => {
+    if (activeLens !== 'data' || activeTab !== 'contact' || !contactScan) contactRecovery.close();
+    const focusedRecovery = (doc.activeElement as HTMLElement | null)?.getAttribute?.('data-merge-recovery-focus');
+    documentSearch.setQuery(universalSearchQuery);
+    documentSearch.setActive(activeLens === 'data' && activeTab === 'search');
+    const documentFocus = pendingDocumentSearchFocus ?? doc.activeElement?.getAttribute?.(DOCUMENT_SEARCH_FOCUS);
+    pendingDocumentSearchFocus = null;
+    const recordsFocus = activeLens === 'data' && activeTab === 'records' ? activeRecordsFocusIdentity() : null;
     let searchFocusFallback = false;
     let agendaFocusFallback = false;
+    const savedFileListVisible = activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && explorerDetail === null && opts.fileListCaller !== undefined;
+    const savedFileScroll = savedFileListVisible ? pendingSavedFileRestore?.scrollTop
+      ?? (renderedActiveTab === 'files' && routeRoot.querySelector?.('[data-saved-file-search]') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
+    const focusedSavedFileAction = savedFileListVisible ? (doc.activeElement as HTMLElement | null)?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) : undefined;
     const agendaVisible = activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null;
     const agendaFocus = agendaVisible ? (doc.activeElement as HTMLElement | null)?.getAttribute?.(AGENDA_FOCUS) : null;
     const agendaSourcesOpen = agendaVisible
@@ -6807,7 +6909,7 @@ export const bootstrapDataRoute = (
     const projectScroll = projectRead ? pendingProjectRestore?.scrollTop
       ?? (routeRoot.querySelector?.('.project-overview') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
     const revealAssetSearchFocus = pendingAssetSearchRestore?.reveal === true;
-    const searchScrollTop = activeTab === 'search' ? pendingAssetSearchRestore?.scrollTop ?? pendingContactSearchRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
+    const searchScrollTop = activeTab === 'search' ? pendingDocumentSearchRestore?.scrollTop ?? pendingAssetSearchRestore?.scrollTop ?? pendingContactSearchRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
       ?? (renderedActiveTab === 'search' && routeRoot.querySelector?.('.rq-search') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
     const oldNoteReader = routeRoot.querySelector?.<HTMLElement>('.work-entity-note-reader');
     const oldNoteFocus = oldNoteReader?.contains(doc.activeElement) ? doc.activeElement : null;
@@ -7279,10 +7381,12 @@ export const bootstrapDataRoute = (
             : activeLens === 'data'
               && renderedActiveTab === activeTab
               && activeTab === 'files'
-              && activeSearch?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query'
+              && activeSearch != null
+              && ['file-cloud-query', 'file-saved-query'].includes(activeSearch?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) ?? '')
               ? {
                   tab: activeTab,
                   kind: 'cloud-file' as const,
+                  action: activeSearch?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) ?? 'file-cloud-query',
                   selectionStart: activeSearch.selectionStart,
                   selectionEnd: activeSearch.selectionEnd,
                   selectionDirection: activeSearch.selectionDirection,
@@ -7382,6 +7486,7 @@ export const bootstrapDataRoute = (
           canUploadFile,
           (opts.now ?? Date.now)(),
           contacts.length,
+          { available: contactRecovery.available(), busy: contactRecovery.busy(), ...(contactRecovery.isOpen() ? { html: contactRecovery.render() } : {}) },
         )
       : isReceivedTab(activeTab)
         ? renderFormResponseSurface(
@@ -7490,9 +7595,12 @@ export const bootstrapDataRoute = (
                 || workEntityState.dialog.entity_id !== entity.id) return undefined;
               return { entity, mode: commitmentMode, can_edit: canEditCommitment(entity),
                 counterparty_label: commitmentCounterpartyLabel(entity, commitmentContactLabels),
-                opening: pendingWorkEntityDialogOpen?.id === entity.id, notice: commitmentNotice };
+                opening: pendingWorkEntityDialogOpen?.id === entity.id, notice: commitmentNotice,
+                ...(projectChildReturn?.linking && projectWork ? { project_link: {
+                  title: projectWork.project.title, linked: entity.blocks_project_ids.includes(projectWork.project.id),
+                } } : {}) };
             })(),
-            projectChildReturn ? 'Back to project' : workSearchReturn ? 'Back to search' : undefined,
+            projectChildReturn?.linking ? 'Back to commitments' : projectChildReturn ? 'Back to project' : workSearchReturn ? 'Back to search' : undefined,
             projectOverviewProps(),
             activeTab === 'task' && !workEntityState.dialog && taskBulk.enabled()
               ? { selection: taskBulk.selection(), html: taskBulk.render() } : undefined,
@@ -7500,6 +7608,7 @@ export const bootstrapDataRoute = (
         : activeTab === 'search'
           ? renderUniversalSearch({
               query: universalSearchQuery,
+              ...(documentSearch.available() ? { documentSearch: documentSearch.state() } : {}),
               ...(opts.assetSearchCaller ? { assetSearch: assetSearch.state() } : {}),
               ...(opts.contactListCaller ? { contactSearch: { contacts: universalSearchContacts,
                 total: universalSearchContactTotal, loading: universalSearchContactLoading, more: universalSearchContactMore,
@@ -7592,6 +7701,10 @@ export const bootstrapDataRoute = (
           hasMore: memoryCursor !== null,
           loadingMore: memoryLoadingMore,
           ...(memoryPendingDeleteId !== undefined ? { pendingDeleteId: memoryPendingDeleteId } : {}),
+          ...(memoryCheckingDeleteId !== null ? { checkingDeleteId: memoryCheckingDeleteId } : {}),
+          ...(memoryDeleteSaves !== null && memoryDeleteSaves.memoryId === memoryPendingDeleteId
+            ? { deleteSaves: { saves: memoryDeleteSaves.saves, agents: memoryDeleteSaves.agents } }
+            : {}),
           ...(memoryDeletingId !== null ? { deletingId: memoryDeletingId } : {}),
           ...(memoryDeleteError !== null
             && memoryDeleteError.memoryId === memoryPendingDeleteId
@@ -7686,7 +7799,8 @@ export const bootstrapDataRoute = (
       </header>`}
       ${routeReturn}
       ${projectChildReturn && workEntityState.dialog === null
-        ? `<p><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-project-overview">Back to project</button></p>` : ''}
+        ? `<aside class="project-link-context"><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-project-overview">Back to project</button>
+          ${projectChildReturn.linking && projectWork ? `<p>Choose a saved commitment to link to <strong>${e(projectWork.project.title)}</strong>. Open it and choose Link to project.</p>` : ''}</aside>` : ''}
       ${!projectChildReturn && workSearchReturn && workEntityState.dialog === null
         ? `<p><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-work-search">Back to search</button></p>` : ''}
       ${renderLensSwitcher(
@@ -7694,7 +7808,8 @@ export const bootstrapDataRoute = (
         DATA_ROUTE_ACTION_ATTR,
         memoryExporting
           || memoryFilteringOrigin !== null
-          || hasRecordsInFlightWork(),
+          || hasRecordsInFlightWork()
+          || contactRecovery.busy(),
       )}
       ${activeLens === 'memory'
         ? ''
@@ -7702,7 +7817,8 @@ export const bootstrapDataRoute = (
             activeTab,
             savingFormResponse
               || formResponseDiscardGuardOpen
-              || hasRecordsInFlightWork(),
+              || hasRecordsInFlightWork()
+              || contactRecovery.busy(),
           )}
       ${loading && activeLens !== 'memory' && activeTab !== 'calendar' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(errors)}
@@ -7778,6 +7894,7 @@ export const bootstrapDataRoute = (
       }
     }
     renderedActiveTab = activeTab;
+    if (recordsFocus) focusRecordsIdentity(recordsFocus);
     if (agendaVisible) {
       const disclosure = routeRoot.querySelector?.<HTMLDetailsElement>('details[data-calendar-agenda-sources]');
       if (disclosure) disclosure.open = pendingCalendarAgendaRestore?.sourcesOpen ?? agendaSourcesOpen ?? false;
@@ -7790,7 +7907,7 @@ export const bootstrapDataRoute = (
       }
       pendingCalendarAgendaRestore = null;
     }
-    if (activeTab === 'search' && (focusedSearchControl || pendingWorkSearchRestore || pendingContactSearchRestore || pendingAssetSearchRestore)) {
+    if (activeTab === 'search' && (focusedSearchControl || pendingWorkSearchRestore || pendingContactSearchRestore || pendingAssetSearchRestore) && !documentFocus && !pendingDocumentSearchRestore) {
       const origin = pendingWorkSearchRestore;
       const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('.rq-search button, .rq-search a')).find(element => pendingAssetSearchRestore
         ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_ASSET_ACTION
@@ -7805,6 +7922,12 @@ export const bootstrapDataRoute = (
       (target ?? routeRoot.querySelector<HTMLElement>(`[${SEARCH_INPUT_ATTR}]`))?.focus({ preventScroll: true });
       searchFocusFallback = target === undefined;
       pendingWorkSearchRestore = null; pendingContactSearchRestore = null; pendingAssetSearchRestore = null;
+    }
+    if (activeLens === 'data' && activeTab === 'search' && (documentFocus || pendingDocumentSearchRestore)) {
+      const key = pendingDocumentSearchRestore?.fileId ?? documentFocus;
+      const owner = [...routeRoot.querySelectorAll<HTMLElement>(`[${DOCUMENT_SEARCH_FOCUS}]`)].find(element => element.getAttribute(DOCUMENT_SEARCH_FOCUS) === key)
+        ?? routeRoot.querySelector<HTMLElement>(`[${DOCUMENT_SEARCH_FOCUS}="heading"]`);
+      owner?.focus({ preventScroll: true }); pendingDocumentSearchRestore = null;
     }
     if (activeElement?.hasAttribute?.('data-data-sphere')) routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus();
     if (opts.savedView !== undefined && currentView() !== null
@@ -7903,7 +8026,7 @@ export const bootstrapDataRoute = (
         : focusedSearch.kind === 'universal'
         ? routeRoot.querySelector?.<HTMLInputElement>(`[${SEARCH_INPUT_ATTR}]`) ?? null
         : focusedSearch.kind === 'cloud-file'
-        ? routeRoot.querySelector?.<HTMLInputElement>(`input[${DATA_ROUTE_ACTION_ATTR}="file-cloud-query"]`) ?? null
+        ? routeRoot.querySelector?.<HTMLInputElement>(`input[${DATA_ROUTE_ACTION_ATTR}="${focusedSearch.action}"]`) ?? null
         : routeRoot.querySelector<HTMLInputElement>(
             `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
             + `[data-kind="${focusedSearch.tab}"]`,
@@ -8465,6 +8588,23 @@ export const bootstrapDataRoute = (
       const host = workSearchScrollHost();
       if (host) host.scrollTop = mailScrollTop;
     }
+    if (savedFileListVisible) {
+      const origin = pendingSavedFileRestore;
+      if (origin) {
+        const row = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${COLLECTION_RECORD_ID_ATTR}]`))
+          .find(node => node.getAttribute(COLLECTION_RECORD_ID_ATTR) === origin.recordId);
+        (row ?? routeRoot.querySelector<HTMLElement>(`input[${DATA_ROUTE_ACTION_ATTR}="file-saved-query"]`))?.focus({ preventScroll: true });
+        pendingSavedFileRestore = null;
+      } else if (focusedSavedFileAction && ['file-saved-search', 'file-saved-more', 'file-saved-retry', 'file-saved-check'].includes(focusedSavedFileAction)) {
+        const action = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${focusedSavedFileAction}"]`);
+        (action ?? routeRoot.querySelector<HTMLElement>(`input[${DATA_ROUTE_ACTION_ATTR}="file-saved-query"]`))?.focus({ preventScroll: true });
+      }
+      const host = workSearchScrollHost();
+      if (host && savedFileScroll !== undefined) host.scrollTop = savedFileScroll;
+    }
+    if (focusedRecovery && contactRecovery.isOpen() && activeLens === 'data' && activeTab === 'contact') {
+      Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-merge-recovery-focus]')).find(element => element.getAttribute('data-merge-recovery-focus') === focusedRecovery && !element.hasAttribute('disabled'))?.focus?.({ preventScroll: true });
+    }
     opts.onViewChange?.(currentView());
   };
 
@@ -8900,11 +9040,26 @@ export const bootstrapDataRoute = (
     const caller = opts.collectionListCaller;
     cloudFileCursor = undefined; cloudBrowseError = ''; cloudLoadingMore = false;
     cloudFilePage = 1;
-    if (caller === undefined && !(sourceId && opts.fileChatCallers?.cloud)) {
+    const saved = platform === 'file' && slug === SAVED_FILES_SLUG && opts.fileListCaller !== undefined;
+    if (caller === undefined && !saved && !(sourceId && opts.fileChatCallers?.cloud)) {
       explorerRecords = [];
       return;
     }
     try {
+      if (saved) {
+        await savedFiles.search(savedFiles.snapshot().query, showArchivedFiles);
+        if (disposed || seq !== explorerSeq) return;
+        // The legacy list is held outside the new controller. A failed check
+        // must not erase it or immediately repeat the read through a fallback.
+        if (savedFiles.snapshot().unsupported && savedFiles.snapshot().error) return;
+        if (!savedFiles.snapshot().unsupported || !caller) {
+          explorerRecords = savedFiles.snapshot().files.map(savedFileRecord);
+          explorerError = undefined; explorerErrorRetryable = false;
+          return;
+        }
+        // An older server retains the existing first-page browser, alongside
+        // a clear update hint instead of a search that can never complete.
+      }
       const response = sourceId && opts.fileChatCallers?.cloud
         ? await opts.fileChatCallers.cloud.list({ source_id: sourceId, query: cloudFileQuery, limit: 30 })
         : await caller!({ platform, slug, limit: DEFAULT_LIMIT,
@@ -8926,6 +9081,23 @@ export const bootstrapDataRoute = (
       }
       explorerError = humanizeRpcError(err);
       explorerErrorRetryable = true;
+    }
+  };
+
+  const browseSavedFiles = async (action: 'search' | 'more' | 'retry'): Promise<void> => {
+    if (activeLens !== 'data' || activeTab !== 'files' || explorerSelectedSlug !== SAVED_FILES_SLUG
+      || explorerDetail !== null || !opts.fileListCaller) return;
+    const state = savedFiles.snapshot();
+    if (action === 'more' && (!state.canLoadMore || explorerLoading) || action === 'retry' && (state.loading || explorerLoading)) return;
+    const seq = ++explorerSeq;
+    explorerLoading = false; savedFileReturn = null;
+    pendingSavedFileRestore = action === 'search' ? { recordId: null, scrollTop: 0 } : null;
+    try {
+      if (action === 'more') await savedFiles.more();
+      else if (action === 'retry') await savedFiles.retry();
+      else await savedFiles.search(savedFileQueryInput, showArchivedFiles);
+    } finally {
+      if (!disposed && seq === explorerSeq) { explorerLoading = false; loading = false; render(); }
     }
   };
 
@@ -9159,7 +9331,7 @@ export const bootstrapDataRoute = (
       }
       if (disposed || seq !== explorerSeq) return;
       // The files saved in Recued first, whatever else is connected.
-      if (tab === 'files' && opts.collectionListCaller !== undefined) {
+      if (tab === 'files' && (opts.collectionListCaller !== undefined || opts.fileListCaller !== undefined)) {
         instances = [savedFilesInstance, ...instances.filter((i) => i.slug !== SAVED_FILES_SLUG)];
       }
       explorerInstances = instances.filter((i) => i.platform === platform);
@@ -9235,6 +9407,7 @@ export const bootstrapDataRoute = (
     if (!calendarCreateSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
     calendarEventSurface.reset();
     mailMessageSurface.reset();
+    savedFiles.reset(); savedFileQueryInput = ''; savedFileReturn = pendingSavedFileRestore = null;
     cloudFileQuery = cloudFileQueryInput = ''; cloudFileCursor = undefined; cloudBrowseError = '';
     explorerSelectedSlug = slug;
     if (opts.savedView !== undefined) savedExplorerScopes.set(activeTab, slug);
@@ -9387,6 +9560,10 @@ export const bootstrapDataRoute = (
     if (!calendarEventSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
     calendarEventSurface.reset();
     mailMessageSurface.reset();
+    if (activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller) {
+      if (explorerDetail === null) savedFileReturn = { recordId: record_id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+      savedFiles.cancel(); explorerLoading = false;
+    }
     fileLifecycle = undefined; fileLifecycleGeneration++; fileLifecycleNotice = '';
     retireRunVerificationForDifferentItem(activeTab, record_id);
     pendingRescheduleOpenFocusId = null;
@@ -9470,10 +9647,14 @@ export const bootstrapDataRoute = (
   };
 
   const closeExplorerDetail = (alreadyNavigated = false): void => {
+    if (activeTab === 'files' && documentSearchReturn) { returnToDocumentSearch(alreadyNavigated); return; }
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => closeExplorerDetail(alreadyNavigated))) return;
     calendarEventSurface.reset();
     mailMessageSurface.reset();
+    if (activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && savedFileReturn) {
+      pendingSavedFileRestore = savedFileReturn; savedFileReturn = null;
+    }
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const returnRecordId =
       activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
@@ -10624,7 +10805,7 @@ export const bootstrapDataRoute = (
     universalSearchNavigation = navigationGeneration;
     const isCurrent = (): boolean => !disposed
       && seq === universalSearchSeq && universalSearchNavigation === navigationGeneration
-      && activeLens === 'data' && (activeTab === 'search' || workSearchReturn?.sequence === seq || contactSearchReturn?.sequence === seq)
+      && activeLens === 'data' && (activeTab === 'search' || workSearchReturn?.sequence === seq || contactSearchReturn?.sequence === seq || documentSearchReturn?.sequence === seq)
       && query === universalSearchQuery.trim();
     if (resume.records) {
       universalSearchLoading = true; universalSearchGroups = undefined;
@@ -10791,7 +10972,7 @@ export const bootstrapDataRoute = (
     if (!query) return;
     const current = () => !disposed && sequence === universalSearchSeq && page === universalSearchContactPageSeq
       && query === universalSearchQuery.trim() && universalSearchNavigation === navigationGeneration
-      && (activeTab === 'search' || workSearchReturn?.sequence === sequence || contactSearchReturn?.sequence === sequence);
+      && (activeTab === 'search' || workSearchReturn?.sequence === sequence || contactSearchReturn?.sequence === sequence || documentSearchReturn?.sequence === sequence);
     const previous = universalSearchContacts;
     let offset = replace ? 0 : universalSearchContactOffset;
     const goal = replace ? Math.max(5, previous.length) : offset + 10;
@@ -10838,7 +11019,7 @@ export const bootstrapDataRoute = (
     const current = () => !disposed && sequence === universalSearchSeq
       && pageSequence === universalSearchWorkPageSeq.get(kind) && query === universalSearchQuery.trim()
       && universalSearchNavigation === navigationGeneration
-      && (activeTab === 'search' || workSearchReturn?.sequence === sequence || contactSearchReturn?.sequence === sequence);
+      && (activeTab === 'search' || workSearchReturn?.sequence === sequence || contactSearchReturn?.sequence === sequence || documentSearchReturn?.sequence === sequence);
     universalSearchWorkLoadingKinds.add(kind);
     if (activeTab === 'search') render();
     let offset = replace ? 0 : universalSearchWorkOffsets.get(kind) ?? group.matches.length;
@@ -11046,6 +11227,7 @@ export const bootstrapDataRoute = (
   let savedViewLinked = opts.savedView !== undefined;
   let savedViewBinding = opts.savedView;
   const syncDataHash = (): void => {
+    if (activeTab === 'files' && documentSearchOpening && documentSearchOpening === documentSearchReturn) return;
     const definition = currentView();
     if (savedViewLinked && savedViewBinding !== undefined && definition !== null
       && sameSavedDataViewDefinition(definition, savedViewBinding.definition)) {
@@ -11121,7 +11303,8 @@ export const bootstrapDataRoute = (
       && deepLinkEntity === contactSearchReturn.email && dataHistory.current().hash === contactSearchReturn.hash;
     const fromAgenda = activeTab === 'calendar' && calendarAgendaReturn
       && explorerDetail !== null && dataHistory.current().hash === calendarAgendaReturn.hash;
-    dataHistory.navigate(dataAddress(hash, deepLinkEntity), fromSearch || fromAgenda ? { intent: 'push' } : undefined);
+    const fromDocumentSearch = activeTab === 'files' && documentSearchReturn && dataHistory.current().hash === documentSearchReturn.hash;
+    dataHistory.navigate(dataAddress(hash, deepLinkEntity), fromSearch || fromAgenda || fromDocumentSearch ? { intent: 'push' } : undefined);
   };
 
   const cancelContactEditOpen = (): void => {
@@ -11136,6 +11319,7 @@ export const bootstrapDataRoute = (
     sourceSlug?: string,
     preserveWorkSearch = false,
   ): Promise<void> => {
+    if (contactRecovery.busy()) return;
     if (activeTab === tab && sourceSlug === undefined) return;
     if (taskBulk.busy()) { focusTaskBatch(); return; }
     if (!mailMessageSurface.beforeLeave()) return;
@@ -11166,6 +11350,7 @@ export const bootstrapDataRoute = (
     if (focusActivatedTab) pendingCollectionTabFocus = tab;
     if (activeTab === 'search' && !preserveWorkSearch) retireUniversalSearch();
     if (!preserveWorkSearch) {
+      documentSearchReturn = null; documentSearchOpening = null;
       workSearchReturn = null; contactSearchReturn = null; pendingContactSearchRestore = null;
       projectWork?.dispose(); projectWork = null; projectChildReturn = null; pendingProjectRestore = null;
     }
@@ -11325,6 +11510,48 @@ export const bootstrapDataRoute = (
       || !explorerInstances.some(instance => instance.slug === slug)
     ) return;
     if (recordId !== undefined) await openExplorerRecord(recordId);
+  };
+
+  const returnToDocumentSearch = (alreadyNavigated = false): void => {
+    const origin = documentSearchReturn;
+    if (!origin || disposed) return;
+    documentSearchReturn = null; documentSearchOpening = null;
+    loadGeneration++; navigationGeneration++; universalSearchNavigation = navigationGeneration;
+    resetExplorerState(); activeTab = 'search'; loading = false; errors = {};
+    universalSearchQuery = origin.query; pendingUniversalSearchFocus = false;
+    pendingDocumentSearchRestore = { fileId: origin.fileId, scrollTop: origin.scrollTop };
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, undefined)); else syncDataHash();
+    render();
+    void documentSearch.check();
+  };
+  const previewCurrentFile = (): void => {
+    const fileId = explorerDetail?.record_id;
+    if (!fileId || activeTab !== 'files' || !opts.filePreviewCallers) return;
+    filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
+    filePreviewRecord = { id: fileId, slug: explorerSelectedSlug };
+    void openFilePreview(doc, { record_id: fileId }, opts.filePreviewCallers, abort.signal).finally(() => {
+      if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
+    });
+  };
+  const openDocumentSearchFile = async (fileId: string): Promise<void> => {
+    if (activeTab !== 'search' || !documentSearch.state().matches.some(hit => hit.file_ref === fileId)) return;
+    const origin = { sequence: universalSearchSeq, query: universalSearchQuery, fileId,
+      scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash };
+    documentSearchReturn = origin; documentSearchOpening = origin;
+    const before = navigationGeneration;
+    const opening = selectTab('files', false, 'received', true);
+    const navigation = navigationGeneration, explorerGeneration = explorerSeq;
+    const stillCurrent = () => !disposed && documentSearchReturn === origin
+      && navigation !== before && navigationGeneration === navigation && activeTab === 'files';
+    try {
+      await opening;
+    } finally { if (documentSearchOpening === origin) documentSearchOpening = null; }
+    if (navigation === before && documentSearchReturn === origin) { documentSearchReturn = null; return; }
+    if (stillCurrent() && explorerSeq === explorerGeneration && explorerSelectedSlug === 'received') {
+      await openExplorerRecord(fileId);
+      if (stillCurrent() && explorerDetail?.record_id === fileId && explorerDetail.record) previewCurrentFile();
+    }
+    else if (documentSearchReturn === origin) { syncDataHash(); render(); }
   };
 
   // D-198 Slice 1b — switch the Data | Memory lens. Orthogonal to the tab; the
@@ -11580,6 +11807,7 @@ export const bootstrapDataRoute = (
     memoryDetail = null;
     memoryDetailReturnId = null;
     memoryPendingDeleteId = undefined;
+    dropMemoryDeleteCheck();
     render();
     captureMemoryComposeBaseline();
     focusMemoryComposeField('kind');
@@ -11617,6 +11845,7 @@ export const bootstrapDataRoute = (
     memoryEditOpeningId = memory_id;
     memoryEditError = null;
     memoryPendingDeleteId = undefined;
+    dropMemoryDeleteCheck();
     render();
     focusMemoryEditAction(memory_id);
     try {
@@ -11781,6 +12010,7 @@ export const bootstrapDataRoute = (
     if (getCaller === undefined) return;
     const seq = ++memoryDetailOpenSeq;
     memoryPendingDeleteId = undefined;
+    dropMemoryDeleteCheck();
     memoryDetailReturnId = memory_id;
     memoryDetail = { memory_id, loading: true };
     render();
@@ -11817,6 +12047,7 @@ export const bootstrapDataRoute = (
     memoryDetail = null;
     memoryDetailReturnId = null;
     memoryPendingDeleteId = undefined;
+    dropMemoryDeleteCheck();
     render();
     focusMemoryDetailReturnTarget(returnId);
   };
@@ -11870,16 +12101,56 @@ export const bootstrapDataRoute = (
     target?.scrollIntoView?.({ block: 'nearest' });
   };
 
+  /** D-198 §13 — forget a Delete still asking how often its note was saved: whatever the
+   *  owner did since (another Delete, another view) wins over its late answer. */
+  const dropMemoryDeleteCheck = (): void => {
+    memoryCheckDeleteSeq += 1;
+    memoryCheckingDeleteId = null;
+  };
+
   const requestMemoryDelete = (memory_id: string): void => {
     if (memoryDeletingId !== null) {
       focusMemoryDeleteConfirm(memoryDeletingId);
       return;
     }
-    memoryPendingDeleteId = memory_id;
+    if (memoryCheckingDeleteId === memory_id) return;
+    dropMemoryDeleteCheck();
+    const openConfirm = (counted?: MemorySavesResult): void => {
+      memoryCheckingDeleteId = null;
+      memoryPendingDeleteId = memory_id;
+      memoryDeleteSaves = counted !== undefined && counted.saves >= 2
+        ? { memoryId: memory_id, saves: counted.saves, agents: counted.agents }
+        : null;
+      memoryDeleteError = null;
+      memoryError = undefined;
+      render();
+      focusMemoryDeleteConfirm(memory_id);
+    };
+    // D-198 §13 — on an agent's note the owner could mark wrong, ask first how often an
+    // agent saved it: twice or more, and the confirm offers that instead. An older server
+    // (no `memory.saves`), a failure or a slow answer opens the plain confirm.
+    const entry = memoryDetail?.entry?.memory_id === memory_id
+      ? memoryDetail.entry
+      : memoryEntries.find((candidate) => candidate.memory_id === memory_id);
+    const savesCaller = opts.memorySavesCaller;
+    if (savesCaller === undefined || entry === undefined || !isRevocableEntry(entry)) {
+      openConfirm();
+      return;
+    }
+    const seq = memoryCheckDeleteSeq;
+    memoryCheckingDeleteId = memory_id;
+    memoryPendingDeleteId = undefined;
     memoryDeleteError = null;
-    memoryError = undefined;
     render();
-    focusMemoryDeleteConfirm(memory_id);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void Promise.race([
+      savesCaller({ memory_id }),
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), MEMORY_SAVES_WAIT_MS); }),
+    ]).then((counted) => counted, () => undefined).then((counted) => {
+      clearTimeout(timer);
+      if (disposed || seq !== memoryCheckDeleteSeq) return;
+      openConfirm(counted);
+    });
   };
 
   const cancelMemoryDelete = (): void => {
@@ -11889,6 +12160,7 @@ export const bootstrapDataRoute = (
     }
     const memoryId = memoryPendingDeleteId;
     memoryPendingDeleteId = undefined;
+    memoryDeleteSaves = null;
     memoryDeleteError = null;
     render();
     if (memoryId !== undefined) {
@@ -11920,6 +12192,7 @@ export const bootstrapDataRoute = (
       }
       memoryPendingDeleteId = undefined;
       memoryDeletingId = null;
+      memoryDeleteSaves = null;
       memoryDeleteError = null;
       pendingLoadPromise = refreshActive();
       focusMemoryDeleteCompletion();
@@ -11939,28 +12212,52 @@ export const bootstrapDataRoute = (
 
   /** D-198 §10 — Restore an entry an AGENT forgot. One step: it removes nothing,
    *  and the owner can forget the entry again from the same row. */
-  const restoreMemory = async (memory_id: string): Promise<void> => {
+  /** D-198 §10/§13 — a one-click row act: Restore an agent's forget, Revoke an agent's
+   *  note, or Un-revoke it. They share one in-flight slot (a row shows one of them). */
+  const runMemoryRowAct = async (
+    action: typeof MEMORY_RESTORE_ACTION | typeof MEMORY_REVOKE_ACTION | typeof MEMORY_UNREVOKE_ACTION,
+    memory_id: string,
+  ): Promise<void> => {
     if (memoryRestoringId !== null) return;
-    const restoreCaller = opts.memoryRestoreCaller;
-    if (restoreCaller === undefined) return;
+    const caller = action === MEMORY_RESTORE_ACTION
+      ? opts.memoryRestoreCaller
+      : action === MEMORY_REVOKE_ACTION ? opts.memoryRevokeCaller : opts.memoryUnrevokeCaller;
+    if (caller === undefined) return;
+    // §13 — "Mark it wrong" in a Delete confirm answers it: the confirm closes.
+    if (memoryPendingDeleteId === memory_id) {
+      memoryPendingDeleteId = undefined;
+      memoryDeleteSaves = null;
+      memoryDeleteError = null;
+    }
     memoryRestoringId = memory_id;
     memoryRestoreError = null;
     memoryError = undefined;
     opaqueMutationsInFlight += 1;
     render();
     try {
-      await restoreCaller({ memory_id });
+      await caller({ memory_id });
       if (disposed) return;
       memoryRestoringId = null;
       pendingLoadPromise = refreshActive();
       await pendingLoadPromise;
-      if (!disposed) focusMemoryRowAction(MEMORY_DELETE_ACTION, memory_id);
+      // Land on the act that undoes this one.
+      if (!disposed) {
+        focusMemoryRowAction(action === MEMORY_REVOKE_ACTION
+          ? MEMORY_UNREVOKE_ACTION
+          : action === MEMORY_UNREVOKE_ACTION ? MEMORY_REVOKE_ACTION : MEMORY_DELETE_ACTION, memory_id);
+      }
     } catch (err) {
       if (disposed) return;
       memoryRestoringId = null;
-      memoryRestoreError = { memoryId: memory_id, message: errMessage(err) };
+      // An older server has no `memory.revoke`, and says so (D-198 §13).
+      memoryRestoreError = {
+        memoryId: memory_id,
+        message: action !== MEMORY_RESTORE_ACTION && classifyRpcError(err).code === 'unknown_method'
+          ? 'Your Recued server needs an update to revoke a memory.'
+          : errMessage(err),
+      };
       render();
-      focusMemoryRowAction(MEMORY_RESTORE_ACTION, memory_id);
+      focusMemoryRowAction(action, memory_id);
     } finally {
       opaqueMutationsInFlight -= 1;
     }
@@ -12068,6 +12365,7 @@ export const bootstrapDataRoute = (
     memoryDetail = null;
     memoryDetailReturnId = null;
     memoryPendingDeleteId = undefined;
+    dropMemoryDeleteCheck();
     render();
     captureMemoryImportBaseline();
     focusMemoryImportField();
@@ -12495,6 +12793,9 @@ export const bootstrapDataRoute = (
     }
     workEntityState = closeDialogTransition(workEntityState);
     retireWorkEntityDialogDraft();
+    if (projectChildReturn?.linking && activeTab === 'commitment') {
+      syncDataHash(); render(); focusWorkEntityDialogReturnTarget(); return;
+    }
     if (projectChildReturn) { returnToProjectOverview(); return; }
     if (projectWork && activeTab === 'project' && projectEditing) {
       workEntityState = openEditDialogTransition(workEntityState, projectWork.project, getCanonicalSchema('project'));
@@ -12540,7 +12841,9 @@ export const bootstrapDataRoute = (
       sourceId,
       { ...initialValuesForKind(workEntityState.kind),
         ...(projectChildReturn && projectWork ? workEntityState.kind === 'task'
-          ? { parent_project: projectWork.project.id } : { related_project: [projectWork.project.id] } : {}) },
+          ? { parent_project: projectWork.project.id }
+          : workEntityState.kind === 'note' ? { related_project: [projectWork.project.id] }
+            : workEntityState.kind === 'commitment' ? { blocks_project: [projectWork.project.id] } : {} : {}) },
     );
     workEntityDialogReturnFocus = {
       mode: 'create',
@@ -12563,7 +12866,7 @@ export const bootstrapDataRoute = (
     && sources.some(source => source.id === entity.source_id && source.top_tier_kind === 'project'
       && source.write_capable && source.sync_posture !== 'read_through');
 
-  const projectCreateSource = (kind: 'task' | 'note'): string | null =>
+  const projectCreateSource = (kind: 'task' | 'note' | 'commitment'): string | null =>
     opts.workEntityUpsertCaller && opts.workEntityGetCaller
       ? resolveCreateDialogSourceId(kind, null, enabledSourcesForKind(sources, kind)) : null;
 
@@ -12576,10 +12879,12 @@ export const bootstrapDataRoute = (
         || projectWork.freshness !== undefined && !['fresh', 'local'].includes(projectWork.freshness.state),
       source_incomplete: projectWork.freshness?.list_complete === false,
       can_edit: canEditProject(projectWork.project), can_create_task: projectCreateSource('task') !== null,
-      can_create_note: projectCreateSource('note') !== null, close_label: workSearchReturn ? 'Back to search' : 'Back to projects' };
+      can_create_note: projectCreateSource('note') !== null, can_create_commitment: projectCreateSource('commitment') !== null,
+      can_link_commitment: canLinkProjectCommitment(), commitment_status: projectWork.commitmentStatus,
+      close_label: workSearchReturn ? 'Back to search' : 'Back to projects' };
   };
 
-  const openProjectWorkItem = async (kind: 'task' | 'note', id?: string): Promise<void> => {
+  const openProjectWorkItem = async (kind: 'task' | 'note' | 'commitment', id?: string): Promise<void> => {
     const overview = projectWork;
     if (!overview || activeTab !== 'project' || projectEditing || pendingWorkEntityDialogOpen) return;
     if (id !== undefined && !overview.sections[kind].items.some(item => item.id === id)) return;
@@ -12597,6 +12902,49 @@ export const bootstrapDataRoute = (
     else await openEditWorkEntityDialog(kind, id);
   };
 
+  const canLinkProjectCommitment = (): boolean => !!(opts.workEntityListCaller && opts.workEntityUpsertCaller && opts.workEntityGetCaller
+    && sources.some(source => source.top_tier_kind === 'commitment' && source.write_capable && source.sync_posture !== 'read_through'));
+
+  const openProjectCommitmentList = async (): Promise<void> => {
+    const overview = projectWork, tabAtStart = activeTab;
+    if (!overview || tabAtStart !== 'project' || projectEditing || pendingWorkEntityDialogOpen || !canLinkProjectCommitment()) return;
+    projectChildReturn = { kind: 'commitment', linking: true, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+      page: workEntityState, entities: [...workEntities], total: workEntityTotal };
+    const origin = projectChildReturn;
+    const before = navigationGeneration;
+    const opening = selectTab('commitment', false, undefined, true);
+    const navigation = navigationGeneration;
+    if (navigation === before) { projectChildReturn = null; return; }
+    await opening;
+    if (disposed || navigation !== navigationGeneration || projectWork !== overview || projectChildReturn !== origin
+      || activeTab !== 'commitment' || workEntityState.dialog !== null) return;
+    const search = routeRoot.querySelector<HTMLInputElement>(`input[${SHARED_ACTION_ATTR}="search-work-entities"][data-kind="commitment"]`);
+    const target = search ?? collectionNavigationTarget('commitment');
+    target?.focus?.({ preventScroll: true }); target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const linkCommitmentToProject = async (): Promise<void> => {
+    const overview = projectWork, origin = projectChildReturn, selected = workEntityDialogEntity;
+    const modeAtStart = commitmentMode;
+    if (!overview || !origin?.linking || activeTab !== 'commitment' || selected?._kind !== 'commitment'
+      || modeAtStart !== 'read' || workEntityState.dialog?.submitting || pendingWorkEntityDialogOpen || !canEditCommitment(selected)) return;
+    const sequence = workEntityDialogOpenSeq + 1;
+    await openEditWorkEntityDialog('commitment', selected.id, 'edit');
+    const current = workEntityDialogEntity;
+    if (disposed || sequence !== workEntityDialogOpenSeq || projectWork !== overview || projectChildReturn !== origin
+      || current?._kind !== 'commitment' || current.id !== selected.id || !workEntityState.dialog
+      || commitmentMode !== 'edit' || !canEditCommitment(current)) return;
+    if (current.blocks_project_ids.includes(overview.project.id)) {
+      commitmentMode = 'read'; commitmentNotice = 'This commitment is already linked to the project.'; render();
+      routeRoot.querySelector<HTMLElement>('[data-commitment-notice]')?.focus({ preventScroll: true }); return;
+    }
+    // The existing editor owns Save and discard. Its baseline still describes
+    // the freshly read record, so leaving now protects this unsaved link.
+    workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog.values,
+      blocks_project: [...current.blocks_project_ids, overview.project.id] });
+    render(); focusWorkEntityDialogField('blocks_project');
+  };
+
   const returnToProjectOverview = (): void => {
     const origin = projectChildReturn;
     const overview = projectWork;
@@ -12612,7 +12960,7 @@ export const bootstrapDataRoute = (
     workEntityDialogOriginal = { ...workEntityState.dialog!.values };
     workEntityDialogReturnFocus = { mode: 'edit', kind: 'project', id: overview.project.id };
     projectEditing = false;
-    pendingProjectRestore = { key: origin.id ? `${origin.kind}:${origin.id}` : `new-${origin.kind}`, scrollTop: origin.scrollTop };
+    pendingProjectRestore = { key: origin.linking ? 'link-commitment' : origin.id ? `${origin.kind}:${origin.id}` : `new-${origin.kind}`, scrollTop: origin.scrollTop };
     syncDataHash(); render(); captureWorkEntityDialogBaseline();
     void openEditWorkEntityDialog('project', overview.project.id, 'read', true);
   };
@@ -12738,8 +13086,10 @@ export const bootstrapDataRoute = (
         loadingWorkEntityDetail = false;
         errors = { ...errors, work_entities: errMessage(err) };
         if (kind === 'note' && noteIntent !== 'read') noteNotice = { kind: 'error', text: `Could not open the editor. ${errMessage(err)}` };
+        if (kind === 'commitment' && noteIntent !== 'read') commitmentNotice = `Could not open the editor. ${errMessage(err)}`;
         render();
         if (kind === 'note' && noteIntent !== 'read') routeRoot.querySelector<HTMLElement>('[data-note-notice]')?.focus();
+        else if (kind === 'commitment' && noteIntent !== 'read') routeRoot.querySelector<HTMLElement>('[data-commitment-notice]')?.focus();
         else if (!preserveFocus) focusWorkEntityDialogReturnTarget();
         return;
       }
@@ -12807,7 +13157,7 @@ export const bootstrapDataRoute = (
     if (kind === 'booking') opts.onOwnerRecordOpened?.({ collection: kind, id });
     loadWorkEntityTimeline(kind, id, seq);
     if (entity._kind === 'project' && projectWork && !projectEditing) {
-      void projectWork.load('task', true); void projectWork.load('note', true);
+      void projectWork.load('task', true); void projectWork.load('note', true); void projectWork.load('commitment', true);
     }
   };
 
@@ -13308,7 +13658,9 @@ export const bootstrapDataRoute = (
           || ('source_id' in request && saved.source_id !== request.source_id)
           || request.kind === 'task' && saved._kind === 'task' && request.parent_project_id !== undefined && saved.parent_project_id !== request.parent_project_id
           || request.kind === 'note' && saved._kind === 'note' && request.related_project_ids !== undefined
-            && !workEntityEditFieldMatches('related_project_ids', request.related_project_ids, saved.related_project_ids)) {
+            && !workEntityEditFieldMatches('related_project_ids', request.related_project_ids, saved.related_project_ids)
+          || request.kind === 'commitment' && saved._kind === 'commitment' && request.blocks_project_ids !== undefined
+            && !workEntityEditFieldMatches('blocks_project_ids', request.blocks_project_ids, saved.blocks_project_ids)) {
           throw new Error('The source did not confirm the new item. Your draft is still here.');
         }
       }
@@ -14431,6 +14783,7 @@ export const bootstrapDataRoute = (
         : null;
     retireRunVerificationForDifferentItem('contact', trimmed);
     // Mutually exclusive with the scan page — see `openContactScan`.
+    contactRecovery.close();
     contactScan = null;
     contactScanSeq += 1;
     const navigation = navigationGeneration;
@@ -14618,6 +14971,7 @@ export const bootstrapDataRoute = (
     render();
   };
   const finishFileMutation = async (current: FileLifecyclePanelState, action: FileLifecycleMutation['action'], notice?: string): Promise<void> => {
+    savedFiles.remove(new Set([current.fileId, ...(current.preview ? [current.preview.record_id] : [])]));
     explorerRecords = explorerRecords.filter(record => record.record_id !== current.fileId && record.record_id !== current.preview?.record_id);
     fileLifecycle = undefined; explorerDetail = null;
     fileLifecycleNotice = notice ?? (action === 'archive' ? 'File put away. You can still find it under archived files, and in your conversations.'
@@ -14960,6 +15314,7 @@ export const bootstrapDataRoute = (
     cancelContactEditOpen();
     contactDetail = null;
     loadingContactDetail = false;
+    contactRecovery.close();
     contactScan = null;
     if (contactImport === null) contactImport = initialContactImportState();
     syncDataHash();
@@ -15125,11 +15480,13 @@ export const bootstrapDataRoute = (
   };
 
   const closeContactScan = (): void => {
+    if (contactRecovery.busy()) return;
     if (
       contactScan === null
       || contactScan.scanning
       || contactScan.dialog.saving
     ) return;
+    contactRecovery.close();
     contactScan = null;
     contactScanSeq += 1;
     const { contact_merge: _cleared, ...rest } = errors;
@@ -15347,6 +15704,7 @@ export const bootstrapDataRoute = (
   };
 
   const onClick = (ev: Event): void => {
+    if (contactRecovery.busy()) { ev.preventDefault(); return; }
     // Form-renderer array Add/Remove for the work-entity dialog's
     // `data.contact` ref arrays (note/project related contacts). These
     // buttons carry `data-form-array-add` / `data-form-array-remove`,
@@ -15398,6 +15756,12 @@ export const bootstrapDataRoute = (
       ?? '';
     if (activeLens === 'data' && activeTab === 'task' && taskBulk.handleAction(action)) return;
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (contactRecovery.busy()) return;
+    if (activeLens === 'data' && activeTab === 'contact' && contactScan && action.startsWith(MERGE_RECOVERY_PREFIX)) {
+      if (action === 'merge-recovery-pending') { contactRecovery.close(); render(); }
+      else contactRecovery.handle(action, target.getAttribute('data-merge-recovery-id') ?? undefined);
+      return;
+    }
     if (activeLens === 'data' && activeTab === 'calendar' && calendarCreateSurface.handleAction(action)) return;
     if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null
       && calendarAgenda.handleAction(action, target)) return;
@@ -15532,6 +15896,8 @@ export const bootstrapDataRoute = (
       || action === MEMORY_DELETE_CONFIRM_ACTION
       || action === MEMORY_DELETE_CANCEL_ACTION
       || action === MEMORY_RESTORE_ACTION
+      || action === MEMORY_REVOKE_ACTION
+      || action === MEMORY_UNREVOKE_ACTION
     ) {
       const memoryId = target.getAttribute(MEMORY_ROW_ID_ATTR);
       if (memoryId === null || memoryId.length === 0) return;
@@ -15540,7 +15906,11 @@ export const bootstrapDataRoute = (
       else if (action === MEMORY_REPLACE_ACTION) void openMemoryEdit(memoryId, 'replace');
       else if (action === MEMORY_DELETE_ACTION) requestMemoryDelete(memoryId);
       else if (action === MEMORY_DELETE_CONFIRM_ACTION) void confirmMemoryDelete(memoryId);
-      else if (action === MEMORY_RESTORE_ACTION) void restoreMemory(memoryId);
+      else if (
+        action === MEMORY_RESTORE_ACTION
+        || action === MEMORY_REVOKE_ACTION
+        || action === MEMORY_UNREVOKE_ACTION
+      ) void runMemoryRowAct(action, memoryId);
       else cancelMemoryDelete();
       return;
     }
@@ -15823,6 +16193,21 @@ export const bootstrapDataRoute = (
         returnHash: doc.defaultView?.location.hash ?? '#data/search', state: captureSearchState(),
         scroll: { top: workSearchScrollHost()?.scrollTop ?? 0, left: 0 } });
       // Leave native anchor navigation intact, including keyboard and new-tab use.
+      return;
+    }
+    if (action.startsWith(DOCUMENT_SEARCH_ACTION)) {
+      const name = action.slice(DOCUMENT_SEARCH_ACTION.length);
+      if (name === 'back') returnToDocumentSearch();
+      else if (name === 'open') { const id = target.getAttribute(DOCUMENT_SEARCH_FILE); if (id) void openDocumentSearchFile(id); }
+      else if (activeTab === 'search') {
+        pendingDocumentSearchFocus = 'heading';
+        documentSearch.setQuery(universalSearchQuery);
+        if (name === 'start') void documentSearch.start();
+        else if (name === 'continue') void documentSearch.start('cursor');
+        else if (name === 'more') void documentSearch.start('offset');
+        else if (name === 'retry') void documentSearch.retry();
+        else if (name === 'check') void documentSearch.check();
+      }
       return;
     }
     if (action === SEARCH_MORE_ASSETS_ACTION) {
@@ -16191,15 +16576,25 @@ export const bootstrapDataRoute = (
     if (action === 'file-cloud-search' || action === 'file-cloud-more') {
       void browseCloudFiles(action === 'file-cloud-more'); return;
     }
+    if (action === 'file-saved-search' || action === 'file-saved-more' || action === 'file-saved-retry') {
+      pendingLoadPromise = browseSavedFiles(action === 'file-saved-more' ? 'more' : action === 'file-saved-retry' ? 'retry' : 'search'); return;
+    }
+    if (action === 'file-saved-check') {
+      if (activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG
+        && !explorerLoading && !savedFiles.snapshot().loading) {
+        const seq = ++explorerSeq;
+        explorerLoading = true; render();
+        // Saved files are a known local source; checking the method needs no
+        // connected-source roster refresh, which could discard this fallback.
+        pendingLoadPromise = fetchExplorerRecords('file', SAVED_FILES_SLUG, seq).finally(() => {
+          if (!disposed && seq === explorerSeq) { explorerLoading = false; render(); }
+        });
+      }
+      return;
+    }
     if (action === 'file-cloud-refresh') { if (activeTab === 'files') startRefresh(); return; }
     if (action === 'file-preview') {
-      const fileId = explorerDetail?.record_id;
-      if (!fileId || activeTab !== 'files' || !opts.filePreviewCallers) return;
-      filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
-      filePreviewRecord = { id: fileId, slug: explorerSelectedSlug };
-      void openFilePreview(doc, { record_id: fileId }, opts.filePreviewCallers, abort.signal).finally(() => {
-        if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
-      }); return;
+      previewCurrentFile(); return;
     }
     if (action === 'file-use-in-chat') {
       const fileId = explorerDetail?.record_id;
@@ -16215,6 +16610,7 @@ export const bootstrapDataRoute = (
     }
     if (action === 'file-usage') { if (!fileLifecycle?.busy) pendingLoadPromise = loadFileUsage(); return; }
     if (action === 'file-toggle-archived') {
+      savedFiles.cancel();
       showArchivedFiles = !showArchivedFiles; fileLifecycle = undefined; fileLifecycleGeneration++;
       pendingLoadPromise = loadExplorer('files').then(() => { if (!disposed) render(); }); return;
     }
@@ -16236,14 +16632,21 @@ export const bootstrapDataRoute = (
       if (projectWork && canEditProject(projectWork.project)) void openEditWorkEntityDialog('project', projectWork.project.id, 'edit');
       return;
     }
+    if (action === 'project-commitment-link-existing') { void openProjectCommitmentList(); return; }
+    if (action === 'project-commitment-scope') {
+      const status = target.getAttribute('data-project-status');
+      if (activeTab === 'project' && projectWork && !projectEditing && (status === 'open' || status === 'all')) projectWork.setCommitmentStatus(status);
+      return;
+    }
+    if (action === 'link-commitment-to-project') { void linkCommitmentToProject(); return; }
     if (action === 'project-work-open' || action === 'project-work-new') {
       const kind = target.getAttribute('data-project-kind');
-      if (kind === 'task' || kind === 'note') void openProjectWorkItem(kind, action === 'project-work-new' ? undefined : target.getAttribute('data-project-item-id') ?? undefined);
+      if (kind === 'task' || kind === 'note' || kind === 'commitment') void openProjectWorkItem(kind, action === 'project-work-new' ? undefined : target.getAttribute('data-project-item-id') ?? undefined);
       return;
     }
     if (action === 'project-work-more' || action === 'project-work-retry') {
       const kind = target.getAttribute('data-project-kind');
-      if ((kind === 'task' || kind === 'note') && projectWork && !projectWork.sections[kind].loading) {
+      if ((kind === 'task' || kind === 'note' || kind === 'commitment') && projectWork && !projectWork.sections[kind].loading) {
         void projectWork.load(kind, action === 'project-work-retry');
       }
       return;
@@ -16430,6 +16833,7 @@ export const bootstrapDataRoute = (
         universalSearchLoading = target.value.trim() !== '';
       }
       universalSearchQuery = target.value;
+      documentSearch.setQuery(universalSearchQuery);
       // ⛔ NO `render()` HERE. Repainting on every keystroke replaces the input
       // element the owner is typing into, which drops the caret to the end and
       // makes editing mid-string impossible. The value is already on screen —
@@ -16498,6 +16902,9 @@ export const bootstrapDataRoute = (
     ) {
       rescheduleForm = { ...rescheduleForm, value: target.value };
       return;
+    }
+    if (typeof target.getAttribute === 'function' && target.getAttribute('data-merge-recovery-link') !== null) {
+      contactRecovery.assign(Number(target.getAttribute('data-merge-recovery-link')), target.value); return;
     }
     // D-205 #5c — the file picker. `<input type=file>` fires `change`/`input`, and the
     // picked file rides on `.files`, never on `.value` (which is a fake path).
@@ -16585,6 +16992,7 @@ export const bootstrapDataRoute = (
         };
         return;
       }
+      if (target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-saved-query') { savedFileQueryInput = target.value; return; }
       if (target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query') {
         cloudFileQueryInput = target.value; return;
       }
@@ -16719,6 +17127,10 @@ export const bootstrapDataRoute = (
   };
 
   const onKeyDown = (ev: KeyboardEvent): void => {
+    if (contactRecovery.busy() && (ev.key === 'Escape' || targetWithAttr(ev, DATA_ROUTE_TAB_ATTR))) { ev.preventDefault(); return; }
+    if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-saved-query') {
+      ev.preventDefault(); pendingLoadPromise = browseSavedFiles('search'); return;
+    }
     if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query') {
       ev.preventDefault(); void browseCloudFiles(false); return;
     }
@@ -17007,6 +17419,11 @@ export const bootstrapDataRoute = (
     // Import publishes a warehouse event before its receipt reaches this UI.
     // Keep that event (and unrelated writes) from retiring the active handoff.
     // A remote page walk or search also stays stable until an explicit refresh.
+    if (activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller) {
+      const state = savedFiles.snapshot();
+      if (state.loading || state.unsupported || state.pages > 1 || state.query.length > 0 || state.error || savedFileQueryInput.trim() !== state.query
+        || (doc.activeElement as HTMLElement | null)?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-saved-query') return;
+    }
     if (activeLens === 'data' && activeTab === 'files'
       && (filePreviewRecord !== null || fileChatRecord !== null || (explorerSelectedSlug !== null && cloudFileSourceId(explorerSelectedSlug)
         && (explorerLoading || cloudLoadingMore || cloudFilePage > 1 || cloudFileQuery.length > 0
@@ -17124,13 +17541,13 @@ export const bootstrapDataRoute = (
       // the list out from under an in-flight commit would only race it.
       opts.subscribe('merge_candidate', () => {
         if (disposed || contactScan === null) return;
-        if (contactScan.scanning || contactScan.dialog.saving) return;
+        if (contactScan.scanning || contactScan.dialog.saving || contactRecovery.isOpen()) return;
         void hydrateMergeQueue();
       }),
     );
   }
 
-  const hasDataInFlightWork = (): boolean => taskBulk.busy() || opaqueMutationsInFlight > 0
+  const hasDataInFlightWork = (): boolean => contactRecovery.busy() || taskBulk.busy() || opaqueMutationsInFlight > 0
     || workEntityState.dialog?.submitting === true
     || contactDialog?.submitting === true
     || savingFormResponse
@@ -17236,6 +17653,9 @@ export const bootstrapDataRoute = (
       if (activeTab === 'reminder') await remindersSurface.whenLoaded();
     },
     navigateDeepLink: (hash) => {
+      if (!disposed && activeLens === 'data' && activeTab === 'files' && documentSearchReturn?.hash === hash && !hasDataInFlightWork()) {
+        returnToDocumentSearch(true); return true;
+      }
       if (!disposed && activeLens === 'data' && activeTab === 'calendar' && explorerDetail !== null
         && calendarAgendaReturn?.hash === hash && !hasDataInFlightWork() && !calendarEventSurface.hasUnsavedChanges()) {
         closeExplorerDetail(true);
@@ -17307,7 +17727,10 @@ export const bootstrapDataRoute = (
       }
       disposed = true;
       retireUniversalSearch();
+      contactRecovery.dispose();
       assetSearch.dispose();
+      documentSearch.dispose();
+      savedFiles.dispose();
       remindersSurface.dispose();
       taskBulk.dispose();
       calendarAgenda.dispose();

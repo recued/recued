@@ -3095,20 +3095,11 @@ export const bootstrapSettingsRoute = (
 
     if (canMountExposure) {
       // The Exposure panel's "Connection example" needs the paired server URL,
-      // but `localStore` is async and the mount is synchronous — so read it
-      // fire-and-forget into a local the panel reads at RENDER time. Absent
-      // (read fails, or never paired) ⇒ the button simply does not render,
-      // which is the intended fail-quiet: a snippet naming a guessed host is
-      // worse than no snippet.
+      // but `localStore` is async and the mount is synchronous. Reconcile just
+      // that action when the address arrives, even if the inventory rendered
+      // first. An absent or failed read keeps it hidden rather than guessing.
       let exposureServerUrl: string | undefined;
-      void (async () => {
-        try {
-          exposureServerUrl = (await opts.localStore.get('server_url')) ?? undefined;
-        } catch {
-          exposureServerUrl = undefined;
-        }
-      })();
-      exposure = mountExposurePanel({
+      const mountedExposure = mountExposurePanel({
         host: serverHosts['exposure']!,
         // D-272 — the LAN bind posture moved here from Connect a device. It is a
         // finding about what is open, not a step toward connecting anything.
@@ -3170,6 +3161,16 @@ export const bootstrapSettingsRoute = (
         // wired (a preset/grid change on another paired client reflects here).
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
       });
+      exposure = mountedExposure;
+      void (async () => {
+        try {
+          exposureServerUrl = (await opts.localStore.get('server_url')) ?? undefined;
+        } catch {
+          exposureServerUrl = undefined;
+        }
+        // Capture this mount so a late read cannot update a replacement panel.
+        mountedExposure.refreshConnectionExample();
+      })();
     }
 
     if (canMountHostnames) {

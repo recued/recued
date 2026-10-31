@@ -150,6 +150,15 @@ export const etagMd5 = (etag) => {
   return m ? m[1].toLowerCase() : null;
 };
 
+/** The ETag of an object uploaded in parts (`"<md5>-<parts>"`), lowercased and
+ *  unquoted; null for anything else. Equal to the ETag the file's own parts give
+ *  (the MD5 of the parts' MD5s, a hyphen, the part count), it proves the bytes as
+ *  an MD5 does. */
+export const etagMultipart = (etag) => {
+  const m = /^"?([0-9a-f]{32}-\d+)"?$/i.exec(String(etag ?? '').trim());
+  return m ? m[1].toLowerCase() : null;
+};
+
 /** Run a command without blocking the event loop, so requests can overlap. */
 const runAsync = (command, args) => new Promise((settle) => {
   let settled = false;
@@ -291,6 +300,12 @@ export const provePublicRelease = async ({
       return `${head.contentLength} bytes, expected ${target.expectedSize}`;
     }
     const md5 = etagMd5(head.etag);
+    // A binary the publisher uploaded in parts carries the parts ETag of those
+    // exact bytes; another parts ETag is left to the download below.
+    if (head.contentLength !== null && md5 === null && target.expectedMultipartEtag
+      && etagMultipart(head.etag) === target.expectedMultipartEtag) {
+      return '';
+    }
     if (head.contentLength === null || md5 === null) {
       // No length, or an ETag that is not a plain MD5: the headers prove
       // nothing, so this object alone is downloaded and compared.

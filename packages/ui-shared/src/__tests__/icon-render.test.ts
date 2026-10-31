@@ -1,9 +1,35 @@
 import { describe, it, expect } from 'vitest';
-import { renderIcon, ICONS, ICON_NAMES } from '../icon-render.js';
+import { renderIcon, renderActionIcon, renderActionLabel, ICONS, ICON_NAMES } from '../icon-render.js';
 
 // ────────────────────────────────────────────────────────────────
 
 describe('renderIcon', () => {
+  it('keeps action labels literal and lets their text name the control', () => {
+    const html = renderActionLabel('save', 'Save <changes> & continue');
+    expect(html).toContain('<span>Save &lt;changes&gt; &amp; continue</span>');
+    expect(html).toContain('aria-hidden="true"');
+    expect(html).not.toContain('aria-label=');
+  });
+
+  it('keeps class text inside its attribute and ignores invalid runtime sizes', () => {
+    const html = renderIcon('reply', 'icon" data-unexpected="yes');
+    expect(html).toContain('class="icon&quot; data-unexpected=&quot;yes"');
+    expect(html).not.toContain(' data-unexpected="yes"');
+    for (const size of [0, -1, Number.NaN, Infinity, '18" data-unexpected="yes']) {
+      expect(renderIcon('reply', undefined, { size: size as number })).toBe(renderIcon('reply'));
+    }
+  });
+
+  it('hides decorative action glyphs without removing standalone image names', () => {
+    const decorative = renderActionIcon('settings');
+    expect(decorative).toContain('aria-hidden="true"');
+    expect(decorative).toContain('focusable="false"');
+    expect(decorative).not.toMatch(/role="img"|aria-label=|<title>|<desc>/);
+    const standalone = renderIcon('settings');
+    expect(standalone).toContain('role="img"');
+    expect(standalone).toContain('aria-label="Settings"');
+  });
+
   it('returns the raw svg when no className is given', () => {
     const html = renderIcon('settings');
     expect(html).toMatch(/^<svg /);

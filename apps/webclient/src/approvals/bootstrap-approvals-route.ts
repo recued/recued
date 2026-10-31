@@ -24,6 +24,7 @@ import {
   type ChatPlanCardDecision,
 } from '@recued/ui-shared/approval-card';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import { APPROVAL_VIEW_NAV_STYLES, createApprovalViewNav } from './review-layout.js';
 import type {
   ServerApprovalResolveResult,
@@ -128,6 +129,10 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   font-weight: 650;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   box-sizing: border-box;
   margin-left: auto;
   flex-shrink: 0;
@@ -224,6 +229,10 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   background: var(--surface);
   color: var(--muted);
   cursor: pointer;
+  gap: 6px;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] :is(.approvals-refresh, .approvals-plan-resolution-dismiss) > svg {
+  flex-shrink: 0;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-announcer {
   position: absolute;
@@ -613,7 +622,7 @@ export const bootstrapApprovalsRoute = (
   refreshButton.type = 'button';
   refreshButton.className = 'approvals-refresh';
   refreshButton.setAttribute(APPROVALS_ROUTE_REFRESH_ATTR, '');
-  refreshButton.textContent = 'Refresh';
+  refreshButton.innerHTML = renderActionLabel('refresh', 'Refresh');
   header.appendChild(refreshButton);
   routeRoot.appendChild(header);
   routeRoot.appendChild(viewNav);
@@ -724,7 +733,7 @@ export const bootstrapApprovalsRoute = (
     dismiss.type = 'button';
     dismiss.className = 'approvals-plan-resolution-dismiss';
     dismiss.setAttribute(APPROVALS_ROUTE_PLAN_RESOLUTION_DISMISS_ATTR, '');
-    dismiss.textContent = 'Dismiss';
+    dismiss.innerHTML = renderActionLabel('close', 'Dismiss');
     dismiss.addEventListener('click', () => {
       if (opts.chatPlans?.dismissResolution === undefined) return;
       opts.chatPlans.dismissResolution(resolution.plan_id);
@@ -1317,11 +1326,11 @@ export const bootstrapApprovalsRoute = (
       && (chatPlanState?.error ?? null) === null;
 
     const refreshBusy = refreshingQueue || loading;
-    refreshButton.textContent = refreshingQueue
+    refreshButton.innerHTML = renderActionLabel('refresh', refreshingQueue
       ? 'Refreshing…'
       : loading
         ? 'Checking…'
-        : 'Refresh';
+        : 'Refresh');
     if (refreshBusy) {
       refreshButton.setAttribute('aria-disabled', 'true');
       refreshButton.setAttribute('aria-busy', 'true');

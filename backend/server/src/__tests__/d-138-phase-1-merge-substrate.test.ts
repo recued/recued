@@ -654,6 +654,7 @@ describe('D-138 P1 — contact.merge.split rpc', () => {
       state: 'auto',
       linked_at: 1,
       linked_by: 'reconciler:hubspot',
+      connection_name: 'work',
     });
     store.enqueueMergeCandidate({
       id: 'cand-1',
@@ -668,6 +669,7 @@ describe('D-138 P1 — contact.merge.split rpc', () => {
       survivor_email: 'a@x.com',
     });
     expect(store.get('b@x.com')!.merged_into).toBe('a@x.com');
+    expect(db.prepare('SELECT connection_name FROM contact_platform_link WHERE platform_id=?').get('h1')).toEqual({ connection_name: 'work' });
     // Split: redistribute the platform_id back onto b@x.com.
     const result = await handleContactMergeSplit(newDeps(), {
       merged_email: 'b@x.com',
@@ -687,6 +689,55 @@ describe('D-138 P1 — contact.merge.split rpc', () => {
     });
     expect(result.canonicals.find((c) => c.email === 'b@x.com')!.merged_into).toBeUndefined();
     expect(store.isPairRejected('a@x.com', 'b@x.com')).toBe(true);
+  });
+});
+
+describe('contact merge recovery', () => {
+  it('rejects a stale preview and separates a branch without reverting later fields or aliases', async () => {
+    seedContact('a@x.com', { name: 'First person', phone: '+12025550101' });
+    seedContact('b@x.com', { name: 'Second person' });
+    seedContact('c@x.com', { name: 'Third person' });
+    store.upsertContactAlias({ contact_id: store.get('a@x.com')!.contact_id!, kind: 'email_alias', alias_pattern: 'alias@x.com', source: 'manual', source_id: 'manual', created_at: 1 });
+    store.setMergedInto([store.get('a@x.com')!], 'b@x.com', 2);
+    store.setMergedInto([store.get('b@x.com')!], 'c@x.com', 3);
+    const before = store.previewMergeSplit('b@x.com');
+    expect(before.separating.map(row => row.email)).toEqual(['a@x.com', 'b@x.com']);
+    store.upsertManual({ email: 'c@x.com', name: 'Later owner correction' });
+    await expect(handleContactMergeSplit(newDeps(), { merged_email: 'b@x.com', expected_preview: before.token, platform_id_redistribution: [] })).rejects.toMatchObject({ code: 'conflict' });
+    expect(store.get('b@x.com')!.merged_into).toBe('c@x.com');
+    const fresh = store.previewMergeSplit('b@x.com');
+    await handleContactMergeSplit(newDeps(), { merged_email: 'b@x.com', expected_preview: fresh.token, platform_id_redistribution: [] });
+    expect(store.get('c@x.com')!.name).toBe('Later owner correction');
+    expect(store.get('c@x.com')!.phone).toBeUndefined();
+    expect(store.get('b@x.com')!.phone).toBe('+12025550101');
+    expect(store.resolveCanonicalEmail('alias@x.com').canonical_email).toBe('b@x.com');
+    expect(store.inspectMergeSplit({ merged_email: 'b@x.com', other_email: 'c@x.com' })).toMatchObject({ status: 'separate', canonicals: [{ email: 'b@x.com' }, { email: 'c@x.com' }] });
+    const inspection = store.inspectMergeSplit({ merged_email: 'b@x.com', other_email: 'c@x.com' });
+    expect(inspection.status === 'separate' && inspection.groups[0]!.members).toEqual(['a@x.com', 'b@x.com'].map(email => ({ email, contact_id: store.get(email)!.contact_id })));
+    store.setMergedInto([store.get('b@x.com')!], 'c@x.com', 4);
+    expect(store.inspectMergeSplit({ merged_email: 'b@x.com', other_email: 'c@x.com' }).status).toBe('merged');
+    expect(store.isPairRejected('a@x.com', 'c@x.com')).toBe(true);
+    expect(store.isPairRejected('b@x.com', 'c@x.com')).toBe(true);
+  });
+
+  it('validates provider allocation and rolls the whole separation back on a write failure', async () => {
+    seedContact('a@x.com'); seedContact('b@x.com'); seedContact('other@x.com');
+    store.linkPlatformId({ canonical_email: 'a@x.com', vendor: 'hubspot', platform_id: 'h1', state: 'auto', linked_at: 1, linked_by: 'original', connection_name: 'work' });
+    store.setMergedInto([store.get('b@x.com')!], 'a@x.com', 2);
+    const preview = store.previewMergeSplit('b@x.com');
+    const move = { platform_id_entry: preview.links[0]!.entry, target_canonical_email: 'b@x.com' };
+    await expect(handleContactMergeSplit(newDeps(), { merged_email: 'b@x.com', expected_preview: preview.token, platform_id_redistribution: [{ ...move, target_canonical_email: 'other@x.com' }] })).rejects.toMatchObject({ code: 'bad_request' });
+    const events = vi.fn();
+    const observedStore = createContactStore(db, { onPlatformLinkChanged: events });
+    db.exec("CREATE TRIGGER refuse_split BEFORE INSERT ON contact_rejection BEGIN SELECT RAISE(ABORT, 'injected split failure'); END;");
+    await expect(handleContactMergeSplit({ ...newDeps(), contactStore: observedStore }, { merged_email: 'b@x.com', expected_preview: preview.token, platform_id_redistribution: [move] })).rejects.toThrow('injected split failure');
+    expect(store.get('b@x.com')!.merged_into).toBe('a@x.com');
+    expect(store.lookupPlatformLink('hubspot', 'h1')).toBe('a@x.com');
+    expect(events).not.toHaveBeenCalled();
+    db.exec('DROP TRIGGER refuse_split');
+    await handleContactMergeSplit(newDeps(), { merged_email: 'b@x.com', expected_preview: preview.token, platform_id_redistribution: [move] });
+    expect(store.lookupPlatformLink('hubspot', 'h1')).toBe('b@x.com');
+    expect(db.prepare('SELECT connection_name, linked_at FROM contact_platform_link WHERE platform_id=?').get('h1')).toEqual({ connection_name: 'work', linked_at: 1 });
   });
 });
 
