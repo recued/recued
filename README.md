@@ -2,14 +2,19 @@
 
 # Recued
 
-Recued is a server you run yourself. It sits between AI and your accounts.
-Your mail, calendar, files, and CRM records stay on a machine you control.
+Give an AI agent the key to your email or CRM, and it can do anything that
+key allows. Recued is a self-hosted gateway between AI agents and your
+accounts, and the agent never gets the key. It gets only the tools you grant
+it. By default, anything that writes, sends, or deletes waits for your yes.
+So an agent can be useful without acting behind your back. Your mail,
+calendar, files, and CRM records stay on a machine you control.
+
+[![A real run, shortened. An AI agent asks Recued to send an email. Recued holds it and shows you an approval card. You click Approve, and only then is the email sent.](.github/assets/recued-approval-gate.gif)](https://recued.com/docs/concepts/grants-and-approvals/)
 
 It works two ways. An AI agent you already use gets in over MCP, through a
 contract that lists exactly what it may do. Or Recued does the job itself: you
 ask in its chat, or a recipe runs on a schedule or when something happens.
-Either way, every action passes one gate. By default, anything that writes or
-deletes waits for your yes.
+Either way, every action passes the same gate.
 
 Recued does not replace the AI you use. Claude, ChatGPT, Codex, or a local
 model still does the thinking. Recued is where that thinking meets your data
@@ -52,13 +57,6 @@ also holds the workspace packages they are built from.
 - **Same gate.** Its own jobs pass the same gate as an outside agent. By
   default, a step that writes or deletes still waits for your yes.
 
-## What Recued is not
-
-- Not a coding agent.
-- Not a general chat app. Its chat is for your own records and accounts.
-- Not a runner for `SKILL.md` files. Recued cannot run them.
-- Not built for open-ended questions that take many steps over a long stretch.
-
 ## What Recued is
 
 - One server, one owner. Each Recued server stands on its own. It stands for
@@ -82,6 +80,13 @@ also holds the workspace packages they are built from.
   plus an unlimited pool of extra provider slots it rotates through.
 - Every risky action can be gated. Then it runs only after you say yes.
 - Free to run. No feature is locked away.
+
+## What Recued is not
+
+- Not a coding agent.
+- Not a general chat app. Its chat is for your own records and accounts.
+- Not a runner for `SKILL.md` files. Recued cannot run them.
+- Not built for open-ended questions that take many steps over a long stretch.
 
 ## Install
 
@@ -118,7 +123,7 @@ with `sudo` too. The installer prints the exact command. Here is why. Without a 
 seal the key file to the machine. That way reads a host key only root can
 read. A Linux desktop session installs a user unit and needs no root.
 
-## Pack
+## Packs
 
 A pack is a JSON file. It says how to connect to any resource: a CLI, a SaaS,
 a REST API, or MCP. You can set permissions for each operation. By default,
@@ -143,29 +148,27 @@ Every Monday morning: pull the past week's rising search terms from Google
 Trends. Then work out whether there is anything worth selling against them.
 
 The hard step is the first one, and it is not a lookup. Trending searches name
-people, teams, and events: `bmw championship payout`, `chapecoense vs são
-paulo`, `hurricanes weather`. None of those is a product. A golf tournament
-means gloves and rangefinders. A storm means battery lanterns. And plenty of
-terms warrant nothing at all. Deciding that is judgement. It is the one part
-of this job a model has to do. What follows is plain math. Ask the catalogue
-what each keyword sells. Look up what those clicks cost to bid on. Subtract.
-Rank.
+people, teams, and events: `bmw championship payout`, `hurricanes weather`.
+None of those is a product. A golf tournament means gloves and rangefinders. A
+storm means battery lanterns. And plenty of terms warrant nothing at all.
+Deciding that is the one part of this job a model has to do. The rest is
+fetching and arithmetic: what each keyword sells, what its clicks cost, and
+what is left.
 
-As a recipe, that is thirty-six steps. Two of them call a model. One call
-turns trending terms into product keywords. One call writes the buying brief.
-Everything in between always gives the same answer for the same input. That
-kind of work needs no context window (the model's working memory). The 619KB
-export, the 110 catalogue fetches, and the 1,249 product rows they return
-never enter one. Both model calls are a fixed size by design. So the input
-side stays near 3,000 tokens, whether the model picks 32 keywords or 58.
-Tokens are the small pieces of text a model counts. Point it at a 6MB
-export and a 10,000-product catalogue, and that figure does not move.
+We ran the same job three ways, on the same data with the same model.
+Tokens are the small pieces of text a model counts.
 
-The same job as a skill is not a strawman, a weak version set up to lose. The
-strongest version does not read
-the export at all. Give the agent a shell, and it fetches straight to disk. It
-parses with a bundled script. So those bytes never enter a context window, and
-they cost nothing to receive. But look at what it has become: a program with a
+| the same job as | tokens | result |
+|:---|---:|:---|
+| a recipe: 36 steps, 2 model calls | 13,385 | top 15 exact, in order |
+| a skill that fetches to disk (we wrote this one) | 61,045 | top 15 exact, in order |
+| a skill written blind, data through its context | 116,834 · 133,836 | no valid answer |
+
+<sub>The blind skill is a good one, not a strawman. Why its runs gave no valid
+answer is in the write-up.</sub>
+
+The best skill is not less correct. It reached the same fifteen products in
+the same order. But look at what it has become: a program with a
 natural-language wrapper. It needs its own secret keys, retries, and rate
 limits. It needs a place to keep the file. And it needs a way to run on
 Tuesday, when nobody opens a session. A recipe is that program, on a server
@@ -174,7 +177,7 @@ that already has all of those.
 The full write-up is in **[`examples/`](./examples/README.md)**. It has the
 recipe itself. It has the skill it is measured against, written blind. It says
 what is real here and what is mocked. And it tells what happened when one
-sentence of that prompt was wrong.
+sentence of our own prompt was wrong.
 
 ## What you can run on Recued, for your life and business
 
